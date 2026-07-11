@@ -61,8 +61,8 @@ conversion reaction A⇌B) lives at `tests/data/toy_v1/`.
 - read-only: `get_model(format)`, `get_model_structure`, `validate_problem`.
 
 **Batching** — `begin_batch(label)` → run several operations (applied + logged, not yet
-versioned) → `commit_batch(label)` snapshots them as **one** version; `abort_batch`
-discards staged edits. `optimize`/`rollback_to`/`reset` are blocked while a batch is open.
+versioned) → `commit_batch(label)` snapshots them as **one** version (fitted once);
+`abort_batch` discards staged edits. `rollback_to`/`reset` are blocked while a batch is open.
 
 **Parameters** — `get_parameters` (read-only; values are set by the fit), `sync_parameters`.
 Parameter *values* are set only by the automatic fit; adjust the search space with the
@@ -75,18 +75,20 @@ parameters, the fit metrics (`neg_log_likelihood`, `chi2`), improvement metrics
 versions can be ranked by objective), and the simulation dataframe. Pass `n_starts` on a
 commit to fit harder (`0` = simulate without fitting); batching fits once on `commit_batch`.
 
-**Fit inspection** — `get_simulations()` returns the stored simulation dataframe, and
-`inspect_fit(top_n)` breaks the fit down beyond the scalar objective (both read the stored
-dataframe — no re-simulation):
+**Fit inspection** — `get_fit_summary()` returns just the metrics (no records; a cheap
+score check); `get_simulations(worst_n?)` returns the stored simulation dataframe (optionally
+only the N worst points); `inspect_fit(top_n)` breaks the fit down beyond the scalar
+objective (all read the stored dataframe — no re-simulation):
 - Per-point records carry the raw residual (`measurement - simulation`, in observable
   units), the **noise-weighted** residual (`(m - s) / σ` on the observable scale — the
   term that enters χ²), and the evaluated noise σ. Weighted residuals reproduce PEtab's
   own `calculate_chi2` exactly.
 - `inspect_fit` aggregates residual statistics **overall** and across each cross section —
-  **observables**, **experiments/conditions**, **timepoints** — reporting counts,
-  mean/std/RMSE/SSE of raw residuals, and weighted stats (`chi2`, `reduced_chi2`,
-  `mean_weighted_residual`, and a bias z-score), plus the `top_n` **worst-fit points** and
-  **bias flags** for groups with a systematic over/under-prediction.
+  **observables**, **conditions**, **timepoints** — reporting counts, mean/std/RMSE/SSE of
+  raw residuals, and weighted stats (`chi2`, `reduced_chi2`, `mean_weighted_residual`, and a
+  bias z-score), plus the `top_n` **worst-fit points**, **bias flags** (systematic
+  over/under-prediction), and **trend flags** (residuals drifting with time — a
+  dynamics/asymptote error a mean-based flag misses).
 
 **Provenance, versions & errors** — `get_provenance`, `get_errors`, `list_versions`,
 `get_version`, `diff_versions`, `rollback_to(version)`, `current_version`, `reset`.
