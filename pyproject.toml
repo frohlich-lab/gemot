@@ -48,13 +48,8 @@ Repository = "https://github.com/ffroehlich/petab_mcp"
 [tool.hatch.build.targets.wheel]
 packages = ["src/petab_mcp"]
 
-# Ship the tool-usage skills inside the installed package (as petab_mcp/_skills)
-# so `list_skills`/`get_skill` work from an installed wheel, not just a checkout.
-[tool.hatch.build.targets.wheel.force-include]
-".skills" = "petab_mcp/_skills"
-
 [tool.hatch.build.targets.sdist]
-include = ["src/petab_mcp", "tests", ".skills", "README.md", "LICENSE"]
+include = ["src/petab_mcp", "tests", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

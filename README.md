@@ -73,9 +73,9 @@ by objective).
 `get_version`, `diff_versions`, `rollback_to(version)`, `current_version`, `reset`.
 
 **Skills** — `list_skills`, `get_skill(name, file?)`. The server ships tool-usage
-documentation as [agent skills](https://modelcontextprotocol.io) under `.skills/`
-and exposes them over MCP so a client can learn the workflow without leaving the
-session (see below).
+documentation as [agent skills](https://modelcontextprotocol.io) bundled under
+`src/petab_mcp/_skills/` and exposes them over MCP so a client can learn the workflow
+without leaving the session (see below).
 
 Resources: `petab://model/antimony`, `petab://model/sbml`, `petab://observables`,
 `petab://conditions`, `petab://measurements`, `petab://parameters`,
@@ -84,10 +84,12 @@ Resources: `petab://model/antimony`, `petab://model/sbml`, `petab://observables`
 
 ## Skills
 
-`.skills/` holds self-describing **skills** — markdown docs that explain how to use
-this server's tools — in the standard agent-skill layout (a directory per skill with
-a `SKILL.md` frontmatter header plus supporting files). The bundled
-`petab-model-building` skill documents the disciplined edit→score→audit workflow.
+`src/petab_mcp/_skills/` holds self-describing **skills** — markdown docs that explain
+how to use this server's tools — in the standard agent-skill layout (a directory per
+skill with a `SKILL.md` frontmatter header plus supporting files). Bundling them inside
+the package means they resolve identically from a source checkout and an installed
+wheel. The `petab-model-building` skill documents the disciplined edit→score→audit
+workflow.
 
 Skills are exposed to MCP clients as:
 
@@ -96,9 +98,8 @@ Skills are exposed to MCP clients as:
 - resources — `petab://skills` (a JSON index) and `petab://skills/{name}` (a skill's
   `SKILL.md`).
 
-The directory is discovered automatically (bundled with the package, or a `.skills`
-folder in a source checkout). Override it with `--skills-dir DIR` or
-`PETAB_MCP_SKILLS_DIR`; drop your own skill directory in to extend the docs.
+Override the directory with `--skills-dir DIR` or `PETAB_MCP_SKILLS_DIR` to point at
+your own skills; drop another skill directory into `_skills/` to extend the bundled docs.
 
 ## Design notes
 
