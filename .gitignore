@@ -16,3 +16,7 @@ petab_mcp_amici/
 
 # Provenance/version store written next to a problem
 .petab_mcp/
+
+# Per-run scratch copy + persistent AMICI build cache from the example runner
+examples/reaction_conversion/work/
+examples/reaction_conversion/.amici_build/
