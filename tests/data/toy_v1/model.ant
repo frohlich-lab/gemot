@@ -1,0 +1,13 @@
+model conversion_reaction
+  compartment compartment_ = 1;
+  species A in compartment_;
+  species B in compartment_;
+  A = A_init;
+  B = B_init;
+  A_init = 1.0;
+  B_init = 0.0;
+  k1 = 0.5;
+  k2 = 0.1;
+  r1: A => B; k1 * A;
+  r2: B => A; k2 * B;
+end

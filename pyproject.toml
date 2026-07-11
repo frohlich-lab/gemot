@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "petab-mcp"
+version = "0.1.0"
+description = "A local MCP server for interactively editing a PEtab (v1) model/parameters and scoring against fixed data."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Fabian Fröhlich" }]
+keywords = ["petab", "mcp", "systems-biology", "sbml", "parameter-estimation", "amici"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+# Core dependencies deliberately exclude the heavy simulation stack so the package
+# installs (and its non-simulation tools work) without a C++ toolchain. AMICI and
+# pyPESTO are opt-in extras; the tools that need them fail with a clear install hint.
+dependencies = [
+    "mcp>=1.2",
+    "petab>=0.5",
+    "python-libsbml>=5.19",
+    "antimony>=2.12",
+    "pandas>=1.5",
+    "numpy>=1.23",
+    "pydantic>=2",
+    "sympy>=1.10",
+]
+
+[project.optional-dependencies]
+amici = ["amici>=0.30"]
+optimize = ["pypesto[petab]>=0.5"]
+all = ["amici>=0.30", "pypesto[petab]>=0.5"]
+dev = ["pytest>=7", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+petab-mcp = "petab_mcp.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ffroehlich/petab_mcp"
+Repository = "https://github.com/ffroehlich/petab_mcp"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/petab_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/petab_mcp", "tests", "README.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

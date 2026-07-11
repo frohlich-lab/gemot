@@ -1,0 +1,6 @@
+parameterId	parameterScale	lowerBound	upperBound	nominalValue	estimate
+k1	log10	0.0001	100.0	0.5	1
+k2	log10	0.0001	100.0	0.1	1
+sigma_B	lin	0.0001	100.0	0.1	0
+A_init	lin	0.0	100.0	1.0	0
+B_init	lin	0.0	100.0	0.0	0
