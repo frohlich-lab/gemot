@@ -136,7 +136,9 @@ your own skills; drop another skill directory into `_skills/` to extend the bund
 - **Provenance, versioning & error logging.** `.petab_mcp/provenance.jsonl` is an
   append-only event log; `.petab_mcp/versions/vN/` snapshots the Antimony model +
   parameter table; `.petab_mcp/errors.jsonl` records rejected operations / failed tool
-  calls (surfaced via `get_errors`); `.petab_mcp/petab_mcp.log` is a human-readable log.
+  calls (surfaced via `get_errors`); `.petab_mcp/petab_mcp.log` is a human-readable log
+  (including a concise per-commit fit summary), and `.petab_mcp/pypesto.log` captures
+  pyPESTO's own multistart optimizer report for each fit.
   `rollback_to` restores a prior version as a new, auditable version. Batching chains
   several operations into a single version.
 - **Fit on commit + comparison.** Every commit fits and records its objective and how it
