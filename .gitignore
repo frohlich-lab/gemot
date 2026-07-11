@@ -13,3 +13,6 @@ venv/
 *_amici/
 amici_models/
 petab_mcp_amici/
+
+# Provenance/version store written next to a problem
+.petab_mcp/

@@ -35,10 +35,15 @@ def yaml_path() -> str:
 
 
 @pytest.fixture
-def session(yaml_path):
+def session(yaml_path, tmp_path):
+    from petab_mcp.references import StubReferenceResolver
     from petab_mcp.session import PetabSession
 
-    return PetabSession(yaml_path)
+    return PetabSession(
+        yaml_path,
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+    )
 
 
 @pytest.fixture
