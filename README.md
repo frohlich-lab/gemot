@@ -72,9 +72,33 @@ by objective).
 **Provenance, versions & errors** — `get_provenance`, `get_errors`, `list_versions`,
 `get_version`, `diff_versions`, `rollback_to(version)`, `current_version`, `reset`.
 
+**Skills** — `list_skills`, `get_skill(name, file?)`. The server ships tool-usage
+documentation as [agent skills](https://modelcontextprotocol.io) under `.skills/`
+and exposes them over MCP so a client can learn the workflow without leaving the
+session (see below).
+
 Resources: `petab://model/antimony`, `petab://model/sbml`, `petab://observables`,
 `petab://conditions`, `petab://measurements`, `petab://parameters`,
-`petab://provenance`, `petab://versions`, `petab://errors`.
+`petab://provenance`, `petab://versions`, `petab://errors`, `petab://skills`,
+`petab://skills/{name}`.
+
+## Skills
+
+`.skills/` holds self-describing **skills** — markdown docs that explain how to use
+this server's tools — in the standard agent-skill layout (a directory per skill with
+a `SKILL.md` frontmatter header plus supporting files). The bundled
+`petab-model-building` skill documents the disciplined edit→score→audit workflow.
+
+Skills are exposed to MCP clients as:
+
+- tools — `list_skills()` and `get_skill(name, file?)` (the reliable path, since
+  every client consumes tools);
+- resources — `petab://skills` (a JSON index) and `petab://skills/{name}` (a skill's
+  `SKILL.md`).
+
+The directory is discovered automatically (bundled with the package, or a `.skills`
+folder in a source checkout). Override it with `--skills-dir DIR` or
+`PETAB_MCP_SKILLS_DIR`; drop your own skill directory in to extend the docs.
 
 ## Design notes
 
