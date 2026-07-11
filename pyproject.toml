@@ -18,9 +18,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 
-# Core dependencies deliberately exclude the heavy simulation stack so the package
-# installs (and its non-simulation tools work) without a C++ toolchain. AMICI and
-# pyPESTO are opt-in extras; the tools that need them fail with a clear install hint.
+# The simulation stack (AMICI + pyPESTO) is a hard requirement: fitting and simulation
+# run automatically on every model commit, so the server assumes they are present.
+# Installing therefore needs a C++ toolchain, CMake/Ninja, and swig (see README).
 dependencies = [
     "mcp>=1.2",
     "petab>=0.5",
@@ -30,12 +30,11 @@ dependencies = [
     "numpy>=1.23",
     "pydantic>=2",
     "sympy>=1.10",
+    "amici>=0.30",
+    "pypesto[petab]>=0.5",
 ]
 
 [project.optional-dependencies]
-amici = ["amici>=0.30"]
-optimize = ["pypesto[petab]>=0.5"]
-all = ["amici>=0.30", "pypesto[petab]>=0.5"]
 dev = ["pytest>=7", "pytest-asyncio>=0.23"]
 
 [project.scripts]

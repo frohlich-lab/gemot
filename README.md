@@ -13,18 +13,21 @@ assistants such as [petabgpt](https://github.com/frohlich-lab/petabgpt).
 - Operations **auto-maintain SBML↔PEtab consistency**: new symbols become model
   parameters or species, orphans are pruned, and **every species uses a parametric
   initial condition** (`S = S_init`), so the parameter table always matches the model.
-- Every change is **versioned and logged** (provenance): model alterations, training
-  (optimization) runs, and rollbacks are persisted to disk with full metadata.
+- Every commit **automatically fits + simulates**: it estimates the free parameters,
+  simulates against the fixed data, and stores a **simulation dataframe** on the new
+  version, so statistical analysis reads a persisted result instead of re-simulating.
+- Every change is **versioned and logged** (provenance): each version records the fitted
+  parameters, fit metrics, and simulation dataframe; alterations and rollbacks are
+  persisted to disk with full metadata.
 
 Simulation/objective use [AMICI](https://github.com/AMICI-dev/AMICI); optimization uses
-[pyPESTO](https://github.com/ICB-DCM/pyPESTO).
+[pyPESTO](https://github.com/ICB-DCM/pyPESTO). Both are **required** — fitting runs on
+every commit.
 
 ## Install
 
 ```bash
-pip install -e '.[amici,optimize]'      # full: simulation + optimization
-pip install -e '.[amici]'               # simulation/objective only
-pip install -e .                        # edit/validate/provenance only (no AMICI)
+pip install -e .          # installs AMICI + pyPESTO (a C++ toolchain is required)
 ```
 
 AMICI compiles generated C++ and needs a toolchain: a C++ compiler, CMake, Ninja, and
@@ -61,28 +64,29 @@ conversion reaction A⇌B) lives at `tests/data/toy_v1/`.
 versioned) → `commit_batch(label)` snapshots them as **one** version; `abort_batch`
 discards staged edits. `optimize`/`rollback_to`/`reset` are blocked while a batch is open.
 
-**Parameters** — `get_parameters`, `update_parameters(updates)` (quick, non-versioned
-tuning of nominalValue / estimate / bounds / scale), `sync_parameters`.
+**Parameters** — `get_parameters` (read-only; values are set by the fit), `sync_parameters`.
+Parameter *values* are set only by the automatic fit; adjust the search space with the
+versioned `change_parameter_bounds` / `change_parameter_scale` operations.
 
-**Evaluation** — `simulate`, `evaluate_objective`, `optimize(n_starts, seed)` (pyPESTO;
-records a training version with improvement metrics — `objective_before`,
-`self_improvement`, `improvement_vs_best_prior`, `is_new_best` — so versions can be ranked
-by objective).
+**Fit + simulation (automatic on commit)** — every commit fits the free parameters
+(pyPESTO multistart) and simulates, then snapshots a single version carrying the fitted
+parameters, the fit metrics (`neg_log_likelihood`, `chi2`), improvement metrics
+(`objective_before`, `self_improvement`, `improvement_vs_best_prior`, `is_new_best` — so
+versions can be ranked by objective), and the simulation dataframe. Pass `n_starts` on a
+commit to fit harder (`0` = simulate without fitting); batching fits once on `commit_batch`.
 
-**Fit inspection** — `inspect_fit(top_n)` and `residual_statistics(group_by)` break the
-current fit down beyond the scalar objective:
-- Per-point residuals carry the raw residual (`measurement - simulation`, in observable
+**Fit inspection** — `get_simulations()` returns the stored simulation dataframe, and
+`inspect_fit(top_n)` breaks the fit down beyond the scalar objective (both read the stored
+dataframe — no re-simulation):
+- Per-point records carry the raw residual (`measurement - simulation`, in observable
   units), the **noise-weighted** residual (`(m - s) / σ` on the observable scale — the
   term that enters χ²), and the evaluated noise σ. Weighted residuals reproduce PEtab's
   own `calculate_chi2` exactly.
-- Residual statistics are aggregated **overall** and across each cross section —
-  **observables**, **experiments/conditions**, **timepoints**. Each group reports counts,
+- `inspect_fit` aggregates residual statistics **overall** and across each cross section —
+  **observables**, **experiments/conditions**, **timepoints** — reporting counts,
   mean/std/RMSE/SSE of raw residuals, and weighted stats (`chi2`, `reduced_chi2`,
-  `mean_weighted_residual`, and a bias z-score).
-- `inspect_fit` also returns the `top_n` **worst-fit points** and **bias flags** for groups
-  whose mean weighted residual is significantly non-zero (systematic over/under-prediction).
-- `residual_statistics(group_by)` targets one cross section: `observable`, `condition`
-  (a.k.a. `experiment`), `time`, or `all`.
+  `mean_weighted_residual`, and a bias z-score), plus the `top_n` **worst-fit points** and
+  **bias flags** for groups with a systematic over/under-prediction.
 
 **Provenance, versions & errors** — `get_provenance`, `get_errors`, `list_versions`,
 `get_version`, `diff_versions`, `rollback_to(version)`, `current_version`, `reset`.
@@ -95,7 +99,7 @@ without leaving the session (see below).
 Resources: `petab://model/antimony`, `petab://model/sbml`, `petab://observables`,
 `petab://conditions`, `petab://measurements`, `petab://parameters`,
 `petab://provenance`, `petab://versions`, `petab://errors`, `petab://fit`,
-`petab://skills`, `petab://skills/{name}`.
+`petab://simulations`, `petab://skills`, `petab://skills/{name}`.
 
 ## Skills
 
@@ -135,16 +139,17 @@ your own skills; drop another skill directory into `_skills/` to extend the bund
   calls (surfaced via `get_errors`); `.petab_mcp/petab_mcp.log` is a human-readable log.
   `rollback_to` restores a prior version as a new, auditable version. Batching chains
   several operations into a single version.
-- **Training comparison.** Each `optimize` records its objective and how it compares to the
-  best previously trained version, so competing model versions can be ranked by fit.
+- **Fit on commit + comparison.** Every commit fits and records its objective and how it
+  compares to the best prior version, so competing model versions can be ranked by fit
+  without a separate optimize step.
 - **Cheap parameter edits, cached compilation.** AMICI models are cached by SBML hash;
   a structural operation recompiles, parameter edits do not.
 
 ## Development
 
 ```bash
-pip install -e '.[amici,optimize,dev]'
-pytest            # AMICI/pyPESTO tests skip if absent; PubMed path is stubbed
+pip install -e '.[dev]'   # AMICI + pyPESTO are core deps; dev adds pytest
+pytest                    # AMICI/pyPESTO fit tests skip if absent; PubMed path is stubbed
 ```
 
 ## License

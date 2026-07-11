@@ -51,3 +51,18 @@ def engine(session, tmp_path):
     from petab_mcp.engine import AmiciEngine
 
     return AmiciEngine(session, build_root=str(tmp_path / "amici"))
+
+
+@pytest.fixture
+def fit_session(session, tmp_path):
+    """A session with the AMICI engine wired and auto-fit on (small n_starts).
+
+    Use for tests that exercise the fit-on-commit path; the engine is reachable as
+    ``fit_session.engine``.
+    """
+    from petab_mcp.engine import AmiciEngine
+
+    session.engine = AmiciEngine(session, build_root=str(tmp_path / "amici"))
+    session.auto_fit = True
+    session.auto_fit_starts = 2
+    return session
