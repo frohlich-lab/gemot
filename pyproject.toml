@@ -32,6 +32,7 @@ dependencies = [
     "sympy>=1.10",
     "amici>=0.30",
     "pypesto[petab]>=0.5",
+    "fides>=0.7",
 ]
 
 [project.optional-dependencies]

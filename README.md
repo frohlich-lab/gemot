@@ -21,8 +21,8 @@ assistants such as [petabgpt](https://github.com/frohlich-lab/petabgpt).
   persisted to disk with full metadata.
 
 Simulation/objective use [AMICI](https://github.com/AMICI-dev/AMICI); optimization uses
-[pyPESTO](https://github.com/ICB-DCM/pyPESTO). Both are **required** — fitting runs on
-every commit.
+[pyPESTO](https://github.com/ICB-DCM/pyPESTO) with the [Fides](https://github.com/fides-dev/fides)
+trust-region optimizer. All are **required** — fitting runs on every commit.
 
 ## Install
 
