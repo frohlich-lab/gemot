@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-DATA_DIR = Path(__file__).parent / "data" / "toy_v2"
+DATA_DIR = Path(__file__).parent / "data" / "toy_v1"
 YAML_PATH = DATA_DIR / "problem.yaml"
 
 

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "petab-mcp"
 version = "0.1.0"
-description = "A local MCP server for interactively editing a PEtab (v2) model/parameters and scoring against fixed data."
+description = "A local MCP server for interactively editing a PEtab (v1) model/parameters and scoring against fixed data."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
