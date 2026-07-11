@@ -69,6 +69,21 @@ records a training version with improvement metrics — `objective_before`,
 `self_improvement`, `improvement_vs_best_prior`, `is_new_best` — so versions can be ranked
 by objective).
 
+**Fit inspection** — `inspect_fit(top_n)` and `residual_statistics(group_by)` break the
+current fit down beyond the scalar objective:
+- Per-point residuals carry the raw residual (`measurement - simulation`, in observable
+  units), the **noise-weighted** residual (`(m - s) / σ` on the observable scale — the
+  term that enters χ²), and the evaluated noise σ. Weighted residuals reproduce PEtab's
+  own `calculate_chi2` exactly.
+- Residual statistics are aggregated **overall** and across each cross section —
+  **observables**, **experiments/conditions**, **timepoints**. Each group reports counts,
+  mean/std/RMSE/SSE of raw residuals, and weighted stats (`chi2`, `reduced_chi2`,
+  `mean_weighted_residual`, and a bias z-score).
+- `inspect_fit` also returns the `top_n` **worst-fit points** and **bias flags** for groups
+  whose mean weighted residual is significantly non-zero (systematic over/under-prediction).
+- `residual_statistics(group_by)` targets one cross section: `observable`, `condition`
+  (a.k.a. `experiment`), `time`, or `all`.
+
 **Provenance, versions & errors** — `get_provenance`, `get_errors`, `list_versions`,
 `get_version`, `diff_versions`, `rollback_to(version)`, `current_version`, `reset`.
 
@@ -79,8 +94,8 @@ without leaving the session (see below).
 
 Resources: `petab://model/antimony`, `petab://model/sbml`, `petab://observables`,
 `petab://conditions`, `petab://measurements`, `petab://parameters`,
-`petab://provenance`, `petab://versions`, `petab://errors`, `petab://skills`,
-`petab://skills/{name}`.
+`petab://provenance`, `petab://versions`, `petab://errors`, `petab://fit`,
+`petab://skills`, `petab://skills/{name}`.
 
 ## Skills
 
