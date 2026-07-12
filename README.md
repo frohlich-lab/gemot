@@ -77,8 +77,10 @@ commit to fit harder (`0` = simulate without fitting); batching fits once on `co
 
 **Fit inspection** — `get_fit_summary()` returns just the metrics (no records; a cheap
 score check); `get_simulations(worst_n?)` returns the stored simulation dataframe (optionally
-only the N worst points); `inspect_fit(top_n)` breaks the fit down beyond the scalar
-objective (all read the stored dataframe — no re-simulation):
+only the N worst points); `get_fitting_log(tail_lines?)` returns the tail of pyPESTO's own
+optimizer log (multistart convergence, parameters pinned at bounds, ill-conditioning — the
+*numerical* view of the fit); `inspect_fit(top_n)` breaks the fit down beyond the scalar
+objective (all read the stored dataframe / persisted log — no re-simulation):
 - Per-point records carry the raw residual (`measurement - simulation`, in observable
   units), the **noise-weighted** residual (`(m - s) / σ` on the observable scale — the
   term that enters χ²), and the evaluated noise σ. Weighted residuals reproduce PEtab's
@@ -101,7 +103,7 @@ without leaving the session (see below).
 Resources: `petab://model/antimony`, `petab://model/sbml`, `petab://observables`,
 `petab://conditions`, `petab://measurements`, `petab://parameters`,
 `petab://provenance`, `petab://versions`, `petab://errors`, `petab://fit`,
-`petab://simulations`, `petab://skills`, `petab://skills/{name}`.
+`petab://fit/log`, `petab://simulations`, `petab://skills`, `petab://skills/{name}`.
 
 ## Skills
 

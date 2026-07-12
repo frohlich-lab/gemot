@@ -19,5 +19,5 @@ petab_mcp_amici/
 .petab_mcp/
 
 # Per-run scratch copy + persistent AMICI build cache from the example runner
-examples/reaction_conversion/work/
-examples/reaction_conversion/.amici_build/
+examples/enzyme_kinetics/work/
+examples/enzyme_kinetics/.amici_build/
