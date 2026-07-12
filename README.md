@@ -47,6 +47,25 @@ no `model.ant`); the agent then zero-shots the whole model once from Antimony wi
 and is **durable** — restarting resumes the latest version. A ready toy problem (reversible
 conversion reaction A⇌B) lives at `tests/data/toy_v1/`.
 
+## Examples
+
+[`examples/`](examples/) holds end-to-end **model-repair demos**: an OpenRouter-hosted LLM,
+driving a panel of three specialist analyst subagents (via
+[`deepagents`](https://github.com/langchain-ai/deepagents)) through these tools, has to
+diagnose and repair a **deliberately mis-specified** PEtab problem. Each ships pre-fitted to
+the best its wrong structure can do, so only a *structural* fix helps; an independent judge
+checks the repaired **mechanism**, not just the fit. Every example also has a no-LLM
+`--driver scripted` self-test.
+
+| Example | System | Planted bug → structural fix |
+|---|---|---|
+| [`enzyme_kinetics/`](examples/enzyme_kinetics/) | Two-reaction enzymatic network, two doses | Michaelis–Menten → **substrate inhibition** (`…/(Km+S+S²/Ki)`) |
+| [`predator_prey/`](examples/predator_prey/) | Rosenzweig–MacArthur limit cycle | Lotka–Volterra bilinear → **Holling type-II** saturating response (2 coupled reactions) |
+| [`repressilator/`](examples/repressilator/) | Three-gene ring oscillator | Non-cooperative Hill `n=1` → **cooperative** `n≥2` (3 symmetric reactions) |
+
+See [`examples/README.md`](examples/README.md) for the shared harness (the analyst panel,
+Arize Phoenix tracing, judging, and how to run).
+
 ## Tools
 
 **Read-only (the fixed design)** — `describe_problem`, `list_observables`,

@@ -1,0 +1,24 @@
+# Runner dependencies shared by every example's deepagents driver.
+#
+# The petab-mcp server itself must also be installed (AMICI + pyPESTO are core deps):
+#     pip install -e .                         # from the repo root (needs swig + a C++ compiler)
+#
+# and an OpenRouter API key must be exported so the driver can reach the model:
+#     export OPENROUTER_API_KEY=sk-or-...      # https://openrouter.ai/keys
+#
+# The --driver scripted mode (the no-LLM harness self-test) needs only the petab-mcp
+# server (none of the packages below). Regenerating an example's synthetic data
+# (generate_data.py) needs only amici + petab, which the server install already provides.
+
+deepagents==0.6.12
+langchain-mcp-adapters==0.3.0
+langchain-openai==0.3.0
+
+# Arize Phoenix agent tracing (ON by default; disable at runtime with --no-phoenix).
+# Traces every LLM + MCP tool call the agent makes as OpenTelemetry spans viewable in the
+# Phoenix UI. arize-phoenix-otel + the LangChain instrumentor EXPORT the spans; the full
+# `arize-phoenix` package provides the local in-process UI the runner launches when no
+# PHOENIX_COLLECTOR_ENDPOINT is set.
+arize-phoenix>=6
+arize-phoenix-otel>=0.6
+openinference-instrumentation-langchain>=0.1

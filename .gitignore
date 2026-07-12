@@ -18,6 +18,8 @@ petab_mcp_amici/
 # Provenance/version store written next to a problem
 .petab_mcp/
 
-# Per-run scratch copy + persistent AMICI build cache from the example runner
-examples/enzyme_kinetics/work/
-examples/enzyme_kinetics/.amici_build/
+# Per-run scratch copy, persistent AMICI build cache, and data-regeneration build dir
+# written by every example runner (examples/<name>/…)
+examples/*/work/
+examples/*/.amici_build/
+examples/*/.gen_build/
