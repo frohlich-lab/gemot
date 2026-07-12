@@ -8,8 +8,8 @@ assistants such as [petabgpt](https://github.com/frohlich-lab/petabgpt).
 - The experimental design (**measurements, conditions, observables**) is read-only.
 - The **model is authored and edited only in Antimony**, and only through three
   constrained operations: **add a reaction, change a rate law, remove a reaction**.
-- Every operation **must cite a justification and ≥1 reference**, validated against
-  **PubMed**.
+- Every operation **must cite a justification**; references are **optional** (validated
+  against **PubMed** when provided).
 - Operations **auto-maintain SBML↔PEtab consistency**: new symbols become model
   parameters or species, orphans are pruned, and **every species uses a parametric
   initial condition** (`S = S_init`), so the parameter table always matches the model.
@@ -50,7 +50,7 @@ conversion reaction A⇌B) lives at `tests/data/toy_v1/`.
 **Read-only (the fixed design)** — `describe_problem`, `list_observables`,
 `list_conditions`, `get_measurements(condition_id?, observable_id?)`.
 
-**Model operations** (each requires `justification`; model ops also require `references`) —
+**Model operations** (each requires a `justification`; `references` are optional) —
 - `add_reaction(reaction, justification, references)` — `reaction` is an Antimony line,
   e.g. `"J: A + B -> C; k_f*A*B"`; new species/parameters + parametric ICs are added
   automatically.
