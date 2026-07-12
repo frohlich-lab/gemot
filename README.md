@@ -41,8 +41,10 @@ petab-mcp --petab-yaml path/to/problem.yaml
 ```
 
 The canonical model is Antimony: if a `model.ant` sits next to the YAML it is the
-source of truth. Provenance is written to `<problem_dir>/.petab_mcp/` by default and is
-**durable** — restarting resumes the latest version. A ready toy problem (reversible
+source of truth. A problem may also ship **without** a model (an empty SBML skeleton and
+no `model.ant`); the agent then zero-shots the whole model once from Antimony with
+`init_model` (see below). Provenance is written to `<problem_dir>/.petab_mcp/` by default
+and is **durable** — restarting resumes the latest version. A ready toy problem (reversible
 conversion reaction A⇌B) lives at `tests/data/toy_v1/`.
 
 ## Tools
@@ -51,6 +53,9 @@ conversion reaction A⇌B) lives at `tests/data/toy_v1/`.
 `list_conditions`, `get_measurements(condition_id?, observable_id?)`.
 
 **Model operations** (each requires a `justification`; `references` are optional) —
+- `init_model(antimony, justification, references?)` — zero-shot the whole model from an
+  Antimony string when none is initialized yet (`describe_problem` → `model_initialized:
+  false`). **Refused once a model exists**; thereafter use the incremental edits below.
 - `add_reaction(reaction, justification, references)` — `reaction` is an Antimony line,
   e.g. `"J: A + B -> C; k_f*A*B"`; new species/parameters + parametric ICs are added
   automatically.
