@@ -72,6 +72,42 @@ def _make_call(session: ClientSession):
     return call
 
 
+class _ToolClock:
+    """Accumulates wall-time spent inside MCP tool calls (the server-side compute)."""
+
+    __slots__ = ("seconds", "calls")
+
+    def __init__(self) -> None:
+        self.seconds = 0.0
+        self.calls = 0
+
+
+def _wrap_tool_clock(session: ClientSession) -> _ToolClock:
+    """Time every ``session.call_tool`` into a returned clock (best-effort).
+
+    Both the runner's own calls and the deepagents panel's calls route through
+    ``session.call_tool`` (langchain-mcp-adapters invokes the bound session), so shadowing
+    the instance method captures ALL tool time — which for these demos is dominated by the
+    AMICI compile + every pyPESTO fit + the SQL queries. Subtracting it from the wall clock
+    isolates the LLM/inference time. If the method can't be shadowed the clock simply stays
+    at zero (timing is reported as unavailable) rather than breaking the run.
+    """
+    clock = _ToolClock()
+    original = session.call_tool
+
+    async def timed(*args, **kwargs):
+        start = time.monotonic()
+        try:
+            return await original(*args, **kwargs)
+        finally:
+            clock.seconds += time.monotonic() - start
+            clock.calls += 1
+
+    with contextlib.suppress(Exception):
+        session.call_tool = timed  # type: ignore[method-assign]
+    return clock
+
+
 # --------------------------------------------------------------------------- steps
 def cleanup(scenario: Scenario) -> Path:
     """Recreate work/ from the pristine broken problem (also drops old provenance)."""
@@ -83,9 +119,19 @@ def cleanup(scenario: Scenario) -> Path:
     return work
 
 
-async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta: dict) -> int:
-    """Gather the post-repair state, delegate the domain verdict to ``scenario.check``,
-    print a RESULT report, write ``result.json``, and return an exit code."""
+async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta: dict,
+                 clock: "_ToolClock", t0: float) -> int:
+    """Judge the repaired model against the true model by BIC (structure-agnostic).
+
+    Success ⇔ the repaired model can't be rejected relative to the true (data-generating)
+    model: ``BIC(candidate) - BIC(true) <= scenario.bic_threshold``. We don't require any
+    particular rate-law FORM (models need not be structurally identifiable) and we don't
+    special-case invented species — BIC's ``k·ln(n)`` penalty makes an extra parameter earn
+    its keep. A χ² goodness-of-fit p-value (residuals vs the known noise) is reported
+    alongside. The scenario's optional ``diagnostics`` hook adds report-only detail.
+    """
+    from .scenario import bic, chi2_gof_pvalue
+
     structure = await call("get_model_structure")
     reactions = structure.get("reactions", []) or []
     current_species = set(structure.get("species", []) or [])
@@ -93,33 +139,69 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
 
     final = await call("get_fit_summary")
     final_nll = float(final["neg_log_likelihood"])
+    n = int(final.get("n_data_points") or 0)
+    # k = number of ESTIMATED parameters (estimate=1), NOT len(fitted_parameters): the latter
+    # also counts fixed params (noise σ, and the reconcile-added parametric initial
+    # conditions), which would inflate the penalty and diverge from how reference.json counts
+    # k. Both sides must count free parameters the same way.
+    params = await call("get_parameters")
+    k = sum(1 for p in params if p.get("estimate")) if isinstance(params, list) else 0
+    chi2 = final.get("chi2")
+    chi2 = float(chi2) if chi2 is not None else None
     head = int((await call("current_version")).get("version", 0))
     diff = await call("diff_versions", from_version=0, to_version=head) if head else {}
     errors = await call("get_errors", limit=20)
     delta = baseline.nll - final_nll
 
-    ctx = JudgeContext(
-        call=call,
-        baseline=baseline,
-        final_nll=final_nll,
-        structure=structure,
-        new_species=new_species,
-        delta=delta,
-    )
-    verdict = await scenario.check(ctx)
+    # BIC gate against the true-model reference.
+    ref = scenario.reference()
+    bic_cand = bic(final_nll, k, n) if n else None
+    bic_ref = bic(ref["nll"], ref["k"], ref["n"]) if ref else None
+    delta_bic = (bic_cand - bic_ref) if (bic_cand is not None and bic_ref is not None) else None
+    if delta_bic is not None:
+        success = delta_bic <= scenario.bic_threshold
+    else:  # no reference / no data points — can't apply the gate
+        success = False
+    # χ² goodness-of-fit vs the known noise (reported, not gating).
+    dof = max(0, n - k)
+    p_gof = chi2_gof_pvalue(chi2, dof)
+
+    ctx = JudgeContext(call=call, baseline=baseline, final_nll=final_nll, structure=structure,
+                       new_species=new_species, delta=delta, n=n, k=k, chi2=chi2)
+    diag_lines: list[str] = []
+    diag_fields: dict = {}
+    if scenario.diagnostics is not None:
+        try:
+            diag_lines, diag_fields = await scenario.diagnostics(ctx)
+        except Exception as exc:  # diagnostics are report-only; never fail the run on them
+            diag_lines = [f"(diagnostics error: {type(exc).__name__}: {exc})"]
 
     print("\n" + "=" * 70)
     print(f"RESULT — {scenario.name}")
     print("=" * 70)
     print(f"  reactions now:        {[r.get('id') for r in reactions]}")
-    for line in verdict.lines:
+    for line in diag_lines:
         print(f"  {line}")
     print(f"  new species:          {new_species or 'none'}")
-    print(f"  baseline nll:         {baseline.nll:.6g}")
-    print(f"  final nll:            {final_nll:.6g}")
-    strong = delta >= scenario.min_delta
-    print(f"  improvement (delta):  {delta:.6g}  (need >= {scenario.min_delta:g}"
-          + ("; clear)" if strong else "; NOT enough)"))
+    print(f"  fit: nll={final_nll:.6g}  chi2={chi2:.6g}  k={k}  n={n}  (baseline nll {baseline.nll:.6g}, Δnll {delta:.6g})"
+          if chi2 is not None else
+          f"  fit: nll={final_nll:.6g}  k={k}  n={n}  (baseline nll {baseline.nll:.6g}, Δnll {delta:.6g})")
+    if delta_bic is not None:
+        print(f"  BIC:  candidate {bic_cand:.6g} | true-model {bic_ref:.6g} | "
+              f"ΔBIC {delta_bic:+.6g}  (accept if <= {scenario.bic_threshold:g})")
+    else:
+        print(f"  BIC:  unavailable (reference {'missing' if ref is None else 'ok'}, n={n})")
+    if p_gof is not None:
+        print(f"  chi2 GoF:             p={p_gof:.3g} (dof={dof}) "
+              f"— {'consistent with noise' if p_gof >= 0.05 else 'worse than noise'}")
+    # Wall-clock split: server/compute (AMICI compile + pyPESTO fits + SQL, all inside MCP
+    # tool calls) vs LLM+overhead (the remainder — inference/network + orchestration).
+    wall = time.monotonic() - t0
+    compute_s = clock.seconds
+    llm_s = max(0.0, wall - compute_s)
+    if clock.calls:
+        print(f"  time:                 total {wall:.0f}s | compute(server) {compute_s:.0f}s "
+              f"({clock.calls} tool calls) | LLM+overhead {llm_s:.0f}s")
     if errors:
         print(f"  rejected tool calls:  {len(errors)} (see get_errors)")
     ant_diff = diff.get("model_diff") if isinstance(diff, dict) else None
@@ -127,7 +209,15 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         print("  model diff (v0 -> HEAD):")
         for line in str(ant_diff).splitlines():
             print("    " + line)
-    print(f"\n  {'SUCCESS' if verdict.success else 'NOT FIXED'}: {verdict.verdict}")
+    if success:
+        verdict = (f"not rejectable vs the true model (ΔBIC {delta_bic:+.3g} <= "
+                   f"{scenario.bic_threshold:g}); the repair explains the data as well as the truth.")
+    elif delta_bic is None:
+        verdict = "could not evaluate BIC (missing reference.json or no data points)."
+    else:
+        verdict = (f"rejectable: ΔBIC {delta_bic:+.3g} > {scenario.bic_threshold:g} — the fit is "
+                   "decisively worse than the true model.")
+    print(f"\n  {'SUCCESS' if success else 'NOT FIXED'}: {verdict}")
     print("=" * 70)
 
     result = {
@@ -136,19 +226,31 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         "baseline_nll": baseline.nll,
         "final_nll": final_nll,
         "delta": delta,
-        "min_delta": scenario.min_delta,
-        "strong": strong,
+        "chi2": chi2,
+        "k": k,
+        "n": n,
+        "bic": bic_cand,
+        "bic_reference": bic_ref,
+        "delta_bic": delta_bic,
+        "bic_threshold": scenario.bic_threshold,
+        "chi2_dof": dof,
+        "chi2_gof_pvalue": p_gof,
+        "reference": ref,
         "reactions": [r.get("id") for r in reactions],
         "species": sorted(current_species),
         "new_species": new_species,
-        "success": verdict.success,
+        "success": success,
         "head_version": head,
         "n_errors": len(errors) if isinstance(errors, list) else 0,
-        **verdict.fields,
+        "wall_seconds": round(wall, 1),
+        "compute_seconds": round(compute_s, 1),
+        "llm_seconds": round(llm_s, 1),
+        "tool_calls": clock.calls,
+        **diag_fields,
     }
     (work / "result.json").write_text(json.dumps(result, indent=2))
     print(f"  (machine-readable result -> {(work / 'result.json').relative_to(scenario.example_dir.parent)})")
-    return 0 if verdict.success else 1
+    return 0 if success else 1
 
 
 # --------------------------------------------------------------------------- server
@@ -192,6 +294,8 @@ def _wait_until_listening(host: str, port: int, proc: subprocess.Popen, log: Pat
 async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                  args: argparse.Namespace) -> int:
     """Preflight, run the chosen driver, and judge — all on one live session."""
+    t0 = time.monotonic()
+    clock = _wrap_tool_clock(session)  # split server/compute time from LLM time
     call = _make_call(session)
 
     desc = await call("describe_problem")
@@ -257,7 +361,7 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
         "model": args.model if args.driver != "scripted" else None,
         "stop_reason": stop_reason,
     }
-    exit_code = await _judge(scenario, call, baseline, work, meta)
+    exit_code = await _judge(scenario, call, baseline, work, meta, clock, t0)
 
     if tracing is not None:
         tracing.flush()  # export any buffered spans before we (maybe) exit

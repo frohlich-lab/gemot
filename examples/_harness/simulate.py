@@ -209,6 +209,39 @@ def fit_broken(
     return fitted, best_f
 
 
+def write_reference(
+    model_ant: str,
+    parameter_df: pd.DataFrame,
+    condition_df: pd.DataFrame,
+    observable_df: pd.DataFrame,
+    measurement_df: pd.DataFrame,
+    *,
+    build_dir: str | Path,
+    model_name: str,
+    path: str | Path,
+    n_starts: int = 12,
+    seed: int = 0,
+) -> dict:
+    """Fit the TRUE structure to the data and write a BIC reference to ``path``.
+
+    The judge accepts a repaired model iff it can't be rejected against the true model by
+    BIC, so each example ships ``problem/reference.json`` = ``{nll, k, n}`` for the true
+    (data-generating) structure fitted with its natural free parameters: ``nll`` the best
+    neg-log-likelihood, ``k`` the number of estimated parameters, ``n`` the number of data
+    points. ``parameter_df`` should mark exactly the true model's free parameters as
+    ``estimate = 1`` (seeded at their true values so the fit lands at the true optimum).
+    """
+    import json
+
+    fitted, nll = fit_broken(
+        model_ant, parameter_df, condition_df, observable_df, measurement_df,
+        build_dir=build_dir, model_name=model_name, n_starts=n_starts, seed=seed,
+    )
+    ref = {"nll": float(nll), "k": int(len(fitted)), "n": int(len(measurement_df))}
+    Path(path).write_text(json.dumps(ref, indent=2) + "\n")
+    return ref
+
+
 def add_noise_and_write(
     sim_df: pd.DataFrame,
     noise: dict[str, float],

@@ -39,11 +39,12 @@ class Baseline:
 
 @dataclass
 class JudgeContext:
-    """Everything a scenario's ``check`` needs to decide success.
+    """Everything a scenario's ``diagnostics`` hook needs to describe the repaired model.
 
     ``call`` is the bound MCP caller; ``baseline`` is the pre-repair snapshot; the rest is
-    the current (post-repair) state the runner has already gathered so every ``check``
-    doesn't re-fetch it.
+    the current (post-repair) state the runner has already gathered (from get_fit_summary +
+    get_model_structure) so a hook doesn't re-fetch it. Success itself is decided
+    generically by the runner's BIC gate, not here — diagnostics is report-only.
     """
 
     call: Call
@@ -52,16 +53,78 @@ class JudgeContext:
     structure: dict[str, Any]
     new_species: list[str]
     delta: float
+    n: int            # number of data points
+    k: int            # number of estimated (fitted) parameters
+    chi2: float | None
 
 
-@dataclass
-class Verdict:
-    """A scenario's success decision, plus material for the report + result.json."""
+# A diagnostics hook: given the post-repair state, return (report_lines, extra_fields)
+# describing the MECHANISM the agent landed on (e.g. the rate-law form). Report-only — it
+# does NOT decide success; the BIC gate does. ``None`` skips it.
+Diagnostics = Callable[[JudgeContext], Awaitable["tuple[list[str], dict[str, Any]]"]]
 
-    success: bool
-    verdict: str
-    fields: dict[str, Any] = field(default_factory=dict)
-    lines: list[str] = field(default_factory=list)
+
+def bic(nll: float, k: int, n: int) -> float:
+    """Bayesian Information Criterion from a neg-log-likelihood: 2·nll + k·ln(n)."""
+    import math
+
+    return 2.0 * float(nll) + int(k) * math.log(max(int(n), 1))
+
+
+def chi2_gof_pvalue(chi2: float | None, dof: int) -> float | None:
+    """Upper-tail p-value of a χ² goodness-of-fit test, or ``None`` if not computable.
+
+    ``chi2`` is the sum of squared noise-weighted residuals (what the server reports). Under
+    a correctly-specified model with the given (known) noise it is χ²-distributed with
+    ``dof = n - k`` degrees of freedom, so a small p-value means the model fits significantly
+    worse than the noise allows (rejectable on goodness-of-fit grounds).
+    """
+    if chi2 is None or dof <= 0:
+        return None
+    try:
+        from scipy.stats import chi2 as _chi2
+
+        return float(_chi2.sf(float(chi2), dof))
+    except Exception:
+        return None
+
+
+# The orchestrator prompt + task are deliberately generic and give NO hints about the
+# nature of the fix (the whole point is that the panel diagnoses it from the data/model).
+# They are the same for every scenario, so they default here and each example just omits
+# them. Only the fixed FACT that the parameters are already fitted is stated — a capable
+# lead infers from that that re-tuning cannot help, without being told the answer.
+DEFAULT_SYSTEM_PROMPT = (
+    "You are the MODELING LEAD working a PEtab v1 parameter-estimation problem through an "
+    "MCP server. The experimental design (measurements, conditions, observables) is "
+    "READ-ONLY and correct; the model's free parameters are ALREADY fitted. You do not "
+    "analyse the model yourself — you have three independent analysts, each reachable via "
+    "the `task` tool (pass `subagent_type`): `mathematician`, `systems_scientist`, "
+    "`signal_engineer`.\n\n"
+    "Work as an explicit model-building LOOP:\n"
+    "1. Orient (get_model_structure, get_fit_summary). On the first round, delegate to all "
+    "three analysts and read their reports.\n"
+    "2. Make at most ONE justified edit (change_rate_law / add_reaction / remove_reaction; "
+    "batch coupled edits with begin_batch/commit_batch). Each edit needs a non-empty "
+    "`justification`. Every commit re-fits and reports neg_log_likelihood (lower is better).\n"
+    "3. Assess the new fit against the previous one (re-consult an analyst if useful), then "
+    "call `make_decision` with exactly one of:\n"
+    "   - `iterate` — the fit can still improve; go back to step 2 for another edit;\n"
+    "   - `rollback` — the last edit did not help; call rollback_to to revert, then continue;\n"
+    "   - `finish` — the fit is as good as it will get; stop.\n"
+    "Repeat until you decide `finish`. Favour parsimony (prefer the smallest change to the "
+    "existing model that removes the misfit). When you finish, report the final "
+    "neg_log_likelihood and exactly what you changed."
+)
+DEFAULT_TASK = (
+    "The model's free parameters are already fitted, yet it still fits the measured data "
+    "poorly. Diagnose the mis-specification and repair the model so it fits. Delegate the "
+    "diagnosis to your three analysts (`mathematician`, `systems_scientist`, "
+    "`signal_engineer`) via the `task` tool, then work the model-building loop: make one "
+    "justified edit at a time (each commit auto-refits), and after each edit call "
+    "`make_decision` — `iterate`, `rollback`, or `finish` — continuing until you choose "
+    "`finish`. Then report the final neg_log_likelihood and exactly what you changed."
+)
 
 
 @dataclass
@@ -70,13 +133,18 @@ class Scenario:
 
     name: str
     problem_dir: Path
-    system_prompt: str
-    task: str
     scripted_fix: Callable[[Call, int], Awaitable[None]]
-    check: Callable[[JudgeContext], Awaitable[Verdict]]
-    # A meaningful fit gain: the baseline ships pre-fitted, so the objective only drops
-    # markedly once the STRUCTURE is right. Tuned per scenario to the known broken↔true gap.
-    min_delta: float = 1.0
+    # Optional report-only hook describing the repaired mechanism (does NOT gate success).
+    diagnostics: Diagnostics | None = None
+    # The orchestrator prompt + task default to the generic, hint-free versions above;
+    # scenarios only override them if they truly need to (they don't).
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    task: str = DEFAULT_TASK
+    # Success gate: a repair is accepted iff it can't be rejected against the true model —
+    # BIC(candidate) - BIC(true) <= bic_threshold. ~10 = "very strong evidence against"
+    # (Kass & Raftery); the verdict is insensitive here (genuine repairs sit at ΔBIC≈0,
+    # broken/near-miss models are hundreds off).
+    bic_threshold: float = 10.0
     # Short human description of the canonical repair (for the scripted driver's log).
     fix_summary: str = ""
     phoenix_project: str | None = None
@@ -85,6 +153,22 @@ class Scenario:
     def example_dir(self) -> Path:
         """The example root (holds ``problem/``; ``work/`` + ``.amici_build/`` go here)."""
         return self.problem_dir.parent
+
+    def reference(self) -> dict[str, Any] | None:
+        """The true-model fit reference {nll, k, n} from ``problem/reference.json``.
+
+        Written by the example's ``generate_data.py`` (it fits the TRUE structure to the
+        data). ``None`` if absent — the runner then can't compute ΔBIC and says so.
+        """
+        import json
+
+        path = self.problem_dir / "reference.json"
+        if path.is_file():
+            try:
+                return json.loads(path.read_text())
+            except Exception:
+                return None
+        return None
 
 
 # --------------------------------------------------------------------------- rate-law tools

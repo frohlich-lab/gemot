@@ -18,9 +18,9 @@ from __future__ import annotations
 from .runner import run_scenario
 from .scenario import (
     Baseline,
+    Diagnostics,
     JudgeContext,
     Scenario,
-    Verdict,
     denominator_has_symbol,
     get_fitted_values,
     is_rational,
@@ -32,7 +32,7 @@ from .scenario import (
 __all__ = [
     "run_scenario",
     "Scenario",
-    "Verdict",
+    "Diagnostics",
     "Baseline",
     "JudgeContext",
     "reaction_rate_law",

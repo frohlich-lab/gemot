@@ -19,18 +19,16 @@ Why three agents instead of one:
   conservation law) or numerical (non-identifiability, a start pinned at a bound).
 * **systems_scientist** — mechanistic plausibility. It reads the mechanism, the measured
   data, and the parameter magnitudes and judges whether a proposed mechanism is how the
-  system actually works (enzyme saturation, cooperative regulation, a saturating predator
-  functional response, degradation, feedback) rather than a curve-fitting artifact.
+  system actually works rather than a curve-fitting artifact.
 * **signal_engineer** — the residuals and trajectories as *signals*. It reads the
   measured-vs-simulated points and the residual breakdown and reports *where* and *how* the
-  fit fails (bias, drift, curvature/timing mismatch, a missed oscillation) without claiming
-  a mechanism.
+  fit fails (bias, drift, shape/timing mismatch) without claiming a mechanism.
 
-The personas are written to teach the analyst HOW to reason about a mis-specified dynamic
-model — they carry a balanced set of archetypes drawn from enzyme kinetics, gene
-regulation, and ecology so the panel generalizes across examples without being handed any
-single problem's answer. The scenario-specific framing lives entirely in the orchestrator
-prompt + task string that ``runner.run_scenario`` passes in.
+The personas teach the analyst HOW to reason about a mis-specified dynamic model — its
+lens, its tools, and the report it must return — but deliberately give NO hints about any
+particular problem's answer (no named rate-law forms, no data fingerprints); the panel has
+to diagnose the mechanism from the model and the data. The orchestrator prompt + task are
+generic too (see ``scenario.DEFAULT_SYSTEM_PROMPT`` / ``DEFAULT_TASK``).
 
 Each analyst is deliberately given only the tools its lens needs (see the ``*_TOOLS`` sets
 below), so its context is not bloated with the full tool surface and its report stays in
@@ -53,75 +51,56 @@ from typing import Any
 # analyst in character: the signal engineer reasons about residuals, not equations; the
 # systems scientist about mechanism, not optimizer internals; and so on.
 
-# Mathematician: equation structure, dynamical-systems theory, numerical stability. It
-# needs the model equations, the parameter search space, and — uniquely — the pyPESTO/Fides
-# fitting log to tell a structural misfit apart from a numerical one.
+# Each analyst's tool set is kept as SMALL as its lens allows: every tool's JSON schema is
+# re-sent to the model on every turn, so a lean set is the biggest lever on the (input-
+# dominated) token cost. A tool the analyst can do without is dropped, not kept "just in
+# case" — the union below is also all the panel ever sees.
+
+# Mathematician: structural capability + estimation numerics. The reaction network (rate
+# laws) + the parameter search space + the fit metrics + — uniquely — the pyPESTO/Fides log.
 MATHEMATICIAN_TOOLS = [
-    "get_model",            # the rate-law equations (Antimony / SBML)
     "get_model_structure",  # species, reactions, rate laws — the reaction network
     "get_parameters",       # scales, bounds — identifiability / conditioning
-    "validate_problem",
     "get_fit_summary",
     "get_fitting_log",      # pyPESTO/Fides log: multistart spread, convergence, bounds
-    "list_versions",
-    "diff_versions",
 ]
 
-# Systems scientist: is the mechanism real? Needs the mechanism as written, what was
-# actually measured (the readout), and whether rate magnitudes are plausible — NOT the
-# optimizer internals.
+# Systems scientist: is the mechanism real? The mechanism as written, what was measured
+# (the readout + data shape), and whether the rate magnitudes are plausible.
 SYSTEMS_SCIENTIST_TOOLS = [
-    "describe_problem",
-    "get_model",            # the mechanism as written
-    "get_model_structure",
+    "get_model_structure",  # the mechanism as written
     "list_observables",     # what quantity is measured
-    "list_conditions",      # the experimental setup
     "get_measurements",     # the actual data / dynamic behaviour
     "get_parameters",       # are the rate magnitudes plausible?
 ]
 
-# Signal-processing engineer: residuals and trajectories as signals. Needs measured-vs-
-# simulated points and the residual breakdown; it localizes the misfit (bias / drift /
-# curvature / a missed oscillation) but leaves the *mechanism* to the other two.
+# Signal-processing engineer: residuals as signals, entirely via SQL over the data.
 SIGNAL_ENGINEER_TOOLS = [
     "list_data_tables",     # the queryable tables (simulations, residuals, ...) + columns
     "query_data",           # SQL over measured-vs-simulated points + residual breakdowns
-    "get_measurements",     # the raw signal
-    "list_observables",     # the noise model
     "get_fit_summary",
 ]
 
 # The orchestrator ("modeling lead") orients, delegates analysis to the three analysts, and
-# is the ONLY agent that edits the model or recovers. It keeps a light read surface for
-# orientation + scoring plus the editing/recovery tools; the deep diagnosis is the
-# analysts' job. Batching (begin_batch/commit_batch/abort_batch) lets it land a
-# multi-reaction fix as ONE fitted version — essential when a single mechanism spans
-# several reactions (a ring of repressions, a functional response that appears in two
-# fluxes).
+# is the ONLY agent that edits the model or recovers. It keeps a MINIMAL surface: read the
+# model + score once, edit, batch (a multi-reaction fix as one fitted version), and recover.
+# Version/parameter bookkeeping is left off — each commit result already reports the version,
+# neg_log_likelihood, and is_new_best, so the lead tracks progress from the tool results.
 ORCHESTRATOR_TOOLS = [
     # orient / score
-    "describe_problem",
-    "get_model",
     "get_model_structure",
     "get_fit_summary",
-    "current_version",
-    "list_versions",
-    "diff_versions",
     "get_errors",
     # edit the model (lead only)
-    "init_model",           # zero-shot a whole model when none exists (refused once one does)
     "add_reaction",
     "change_rate_law",
     "remove_reaction",
-    "change_parameter_bounds",
-    "change_parameter_scale",
     # batch several related edits into one fitted version
     "begin_batch",
     "commit_batch",
     "abort_batch",
-    # recover / audit
+    # recover
     "rollback_to",
-    "reset",
 ]
 
 # The full set handed to create_deep_agent: the union of the lead's tools and every
@@ -133,6 +112,58 @@ ALLOWED_TOOLS = set(
     + SIGNAL_ENGINEER_TOOLS
 )
 
+# Concise, panel-facing tool descriptions. The server's own docstrings are deliberately
+# verbose (they double as the human/agent tool reference and drive the skill docs), but that
+# full text is re-sent to the model on EVERY turn — the single largest fixed slice of the
+# input-token cost. We override the description of each loaded MCP tool with a one-liner for
+# the panel only; the server (and any other client) keeps its canonical docs. Anything not
+# listed keeps (a truncated form of) its original description.
+TOOL_DESCRIPTIONS = {
+    "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law).",
+    "get_parameters": "Parameter table: id, bounds, scale, nominalValue (the fitted value), estimate flag.",
+    "get_fit_summary": "Current fit metrics only (neg_log_likelihood, chi2, n_data_points) — a cheap score check.",
+    "get_fitting_log": "Tail of the pyPESTO/Fides multistart optimizer log (convergence, bound-pinning, ill-conditioning). Arg: tail_lines.",
+    "list_observables": "The observables being fitted: id, formula, and noise model.",
+    "get_measurements": "The measured data points. Optional args: condition_id, observable_id.",
+    "list_data_tables": "List the SQL tables query_data exposes and their columns.",
+    "query_data": ("Run a read-only DuckDB SQL query over the data. Tables: measurements, conditions, "
+                   "observables, parameters, simulations (one row per point: measurement, simulation, "
+                   "residual, residual_weighted, noise), optimization_starts, optimization_trace. "
+                   "Args: sql, max_rows."),
+    "get_errors": "Recent rejected operations / failed tool calls. Arg: limit.",
+    "add_reaction": ("Add a reaction from an Antimony line (e.g. 'J: A -> B; k*A'); new symbols become "
+                     "parameters/species. Args: reaction, justification, references?. Commits + auto-fits."),
+    "change_rate_law": ("Replace a reaction's rate law; new symbols become parameters. Args: reaction_id, "
+                        "rate_law, justification, references?. Commits + auto-fits."),
+    "remove_reaction": "Remove a reaction and prune orphaned entities. Args: reaction_id, justification, references?. Commits + auto-fits.",
+    "begin_batch": "Start a batch: later edits are staged (applied + logged, not fitted) until commit_batch. Arg: label.",
+    "commit_batch": "Fit + simulate the staged edits once and snapshot them as one version. Args: label, n_starts?.",
+    "abort_batch": "Discard the staged edits and restore the pre-batch version.",
+    "rollback_to": "Restore a prior version as a new version. Args: version, justification?.",
+}
+
+
+def _trim_descriptions(tools: list) -> list:
+    """Shorten each panel tool's description (in place) to cut per-turn input tokens.
+
+    Uses the curated one-liner from TOOL_DESCRIPTIONS; for anything unlisted, truncates the
+    server description to its first line. Best-effort — a tool whose description can't be set
+    (e.g. a frozen model) is left as-is.
+    """
+    for t in tools:
+        name = getattr(t, "name", None)
+        short = TOOL_DESCRIPTIONS.get(name)
+        if short is None:
+            desc = getattr(t, "description", None)
+            if isinstance(desc, str):
+                short = desc.strip().split("\n", 1)[0]
+        if short:
+            try:
+                t.description = short
+            except Exception:  # pragma: no cover - frozen/rejected attribute
+                pass
+    return tools
+
 
 # ---------------------------------------------------------------- analyst personas
 # System prompts for the three analysts. Each is a focused expert that INSPECTS (it has no
@@ -140,84 +171,52 @@ ALLOWED_TOOLS = set(
 # the lead can act on. They are independent: none sees the others' reports.
 _REPORT_CONTRACT = (
     "\n\nYou cannot edit the model — you only inspect and advise. Investigate with your "
-    "tools, then return a SHORT written report: (1) what you found, (2) the single most "
-    "likely explanation from your perspective, (3) a concrete recommendation for the "
-    "modeling lead (name the operation and, if you can, the exact reaction / rate law). If "
-    "the fix spans several reactions (e.g. a functional response that appears in two fluxes, "
-    "or a symmetric ring), say so and name every reaction that must change together. Flag "
-    "explicitly if the evidence is ambiguous or outside your expertise."
+    "tools, then return a SHORT report: (1) what you found, (2) the single most likely "
+    "explanation from your perspective, (3) a concrete recommendation for the modeling lead "
+    "(name the operation and, if you can, the exact reaction and rate law). Flag explicitly "
+    "if the evidence is ambiguous or outside your expertise."
 )
 
 MATHEMATICIAN_PROMPT = (
-    "You are a mathematician specializing in ODE models of reaction networks and population "
-    "dynamics: rate-law structure, bifurcations, and the numerics of parameter estimation. "
-    "Given a PEtab problem whose fit is poor, decide whether the cause is STRUCTURAL or "
-    "NUMERICAL.\n"
-    "- Structure: read get_model / get_model_structure. Ask whether the rate-law FORM is "
-    "capable of the observed dynamics AT ALL, for ANY parameter value. Key facts: a "
-    "first-order/linear term (k*X, or a bilinear k*X*Y) is unbounded and non-saturating; a "
-    "rational law that divides by a state (Vmax*S/(Km+S), a Holling type-II response "
-    "a*X/(1+a*h*X)) SATURATES; a Hill term with exponent n>1 (X^n/(K^n+X^n)) is sigmoidal "
-    "and, in a feedback loop, is what makes SUSTAINED oscillations possible where a "
-    "non-cooperative (n=1) loop only DAMPS to a steady state. Check conservation laws and "
-    "whether the network can even reach the observed regime (a stable limit cycle vs a fixed "
-    "point).\n"
-    "- Numerics: read get_parameters (scales, bounds) and especially get_fitting_log — the "
-    "pyPESTO/Fides multistart report. Did the starts converge to one optimum or scatter "
-    "(non-identifiability)? Is a parameter pinned at a bound? Is the objective flat in some "
-    "direction? Distinguish 'the optimizer failed' from 'the best possible fit for this "
-    "structure is genuinely bad'.\n"
-    "Use diff_versions/list_versions to see how the objective moved across edits. Comment on "
-    "whether any proposed new parameters (a Hill exponent, a half-saturation constant, an "
-    "inhibition constant) would be identifiable from the available data."
+    "You are a mathematician: ODE reaction-network and population dynamics, rate-law "
+    "structure, and the numerics of parameter estimation. Given a PEtab problem that fits "
+    "poorly, decide whether the cause is STRUCTURAL or NUMERICAL.\n"
+    "- Structural: read get_model_structure and ask whether the rate-law FORM could produce "
+    "the observed dynamics for ANY parameter values. Check conservation laws and whether the "
+    "network can reach the observed regime.\n"
+    "- Numerical: read get_parameters (scales, bounds) and get_fitting_log (the pyPESTO/Fides "
+    "multistart). Did the starts converge, is a parameter pinned at a bound, is the objective "
+    "flat in some direction (non-identifiability)? Distinguish 'the optimizer failed' from "
+    "'the best fit for this structure is genuinely poor'.\n"
+    "Comment on whether any proposed new parameter would be identifiable from the data."
     + _REPORT_CONTRACT
 )
 
 SYSTEMS_SCIENTIST_PROMPT = (
-    "You are a quantitative systems scientist (biochemistry, gene regulation, and "
-    "population ecology). You judge whether a model's mechanism is how the system ACTUALLY "
-    "works, not merely whether it fits. Read the mechanism (get_model / "
-    "get_model_structure), what is measured (list_observables, get_measurements, "
-    "list_conditions), and the parameter magnitudes (get_parameters).\n"
-    "Ask mechanistic questions. What kind of process is each reaction — catalysis, binding, "
-    "transcription/translation, degradation, predation, growth? Real mechanisms are almost "
-    "always FINITE and therefore SATURATE: an enzyme has finite catalytic capacity "
-    "(Michaelis-Menten v=Vmax*S/(Km+S); at high substrate it may even be inhibited); a "
-    "predator has a finite handling time so its intake saturates with prey (a Holling "
-    "type-II functional response, not the unbounded mass-action a*X*Y of textbook "
-    "Lotka-Volterra); a transcription factor binds its operator COOPERATIVELY (a Hill "
-    "response with exponent >1), which is what lets a repression loop oscillate rather than "
-    "settle. Every species is produced AND removed (degradation/dilution). Read the DATA "
-    "shape for fingerprints: a near-linear accumulation that later bends over is saturation; "
-    "a rate that falls at high substrate is substrate inhibition; a sustained, "
-    "roughly-constant-amplitude oscillation implies a limit cycle that a merely damped "
-    "(non-cooperative / non-saturating) mechanism cannot sustain.\n"
-    "Crucially, REJECT implausible fixes even if they would reduce residuals: inventing an "
-    "unobserved species to absorb mass, or an autocatalytic term with no mechanism, is "
-    "curve-fitting, not science. Prefer the parsimonious mechanism a domain expert would "
-    "actually write down, reusing the model's existing species."
+    "You are a quantitative systems scientist (biochemistry, gene regulation, population "
+    "ecology). You judge whether the model's mechanism reflects how the system actually "
+    "works, not merely whether it fits. Read the mechanism (get_model_structure), what is "
+    "measured (list_observables, get_measurements), and the "
+    "parameter magnitudes (get_parameters). For each reaction, ask what real process it "
+    "represents and whether its rate law is a faithful description of that process. Reject "
+    "fixes that reduce residuals but are not real mechanism (e.g. inventing an unobserved "
+    "species, or an ad-hoc term with no interpretation); prefer the most parsimonious "
+    "mechanism a domain expert would actually write, reusing the model's existing species."
     + _REPORT_CONTRACT
 )
 
 SIGNAL_ENGINEER_PROMPT = (
-    "You are a signal-processing engineer. You treat the measured and simulated time courses "
-    "as signals and characterize the RESIDUALS — you do not hypothesize mechanisms. Use "
-    "query_data (call list_data_tables first for the columns): the `simulations` table has "
-    "one row per point with `measurement`, `simulation`, `residual`, `residual_weighted`, "
-    "and `noise`. Compute your own residual breakdowns in SQL — overall and grouped by "
-    "observable_id / condition_id / time, the worst-fit points "
-    "(`ORDER BY abs(residual_weighted) DESC`), per-group bias (`avg(residual_weighted)`), "
-    "and time-drift (`corr(time, residual_weighted)`).\n"
-    "Report the STRUCTURE of the error. Is there a systematic bias (the model consistently "
-    "over- or under-predicts)? Do residuals DRIFT with time (the model gets the "
-    "dynamics/asymptote wrong, not just the level)? Is the mismatch in the CURVATURE or "
-    "TIMING of the trajectory — data rises almost linearly early while the simulation is "
-    "concave from t=0; a simulated peak shifted in time; the DATA keep oscillating with "
-    "roughly constant amplitude while the SIMULATION's oscillation decays to a flat line "
-    "(or vice versa); the response at a high-dose condition is lower than at a mid-dose one? "
-    "Quantify where the fit is worst and whether the pattern is random (noise-level, fit is "
-    "fine) or systematic (model-structure error). Localize the misfit precisely — which "
-    "observable, which condition, which phase of the trajectory — and leave the WHY to the "
+    "You are a signal-processing engineer. Treat the measured and simulated time courses as "
+    "signals and characterize the RESIDUALS — do not hypothesize mechanisms. Use query_data "
+    "(call list_data_tables first for the columns): the `simulations` table has one row per "
+    "point with `measurement`, `simulation`, `residual`, `residual_weighted`, and `noise`. "
+    "Compute your own breakdowns in SQL — overall and grouped by observable_id / "
+    "condition_id / time, the worst-fit points (`ORDER BY abs(residual_weighted) DESC`), "
+    "per-group bias (`avg(residual_weighted)`), and time-trend "
+    "(`corr(time, residual_weighted)`). Report the STRUCTURE of the error — a systematic "
+    "bias, a drift with time, or a mismatch in the shape/timing of the trajectory — quantify "
+    "where the fit is worst, and say whether the pattern looks like noise (the fit is fine) "
+    "or systematic (a model-structure error). Localize the misfit; leave the WHY to the "
     "mathematician and systems scientist."
     + _REPORT_CONTRACT
 )
@@ -228,10 +227,10 @@ ANALYSTS = [
     {
         "name": "mathematician",
         "description": (
-            "Mathematician: equation structure, dynamical-systems / CRN theory, and fit "
-            "numerics. Ask it whether a misfit is a wrong rate-law FORM / broken conservation "
-            "law / a regime the network cannot reach (structural) or non-identifiability / "
-            "optimizer failure (numerical). Reads the fitting log."
+            "Mathematician: equation structure, dynamical-systems theory, and fit numerics. "
+            "Ask whether a poor fit is structural (the rate-law form cannot produce the "
+            "dynamics) or numerical (non-identifiability, optimizer failure). Reads the "
+            "fitting log."
         ),
         "prompt": MATHEMATICIAN_PROMPT,
         "tools": MATHEMATICIAN_TOOLS,
@@ -240,9 +239,8 @@ ANALYSTS = [
         "name": "systems_scientist",
         "description": (
             "Systems scientist (biochemistry / gene regulation / ecology): mechanistic "
-            "plausibility. Ask it what kind of process a reaction is and whether a proposed "
-            "fix is real mechanism (enzyme saturation, cooperative regulation, a saturating "
-            "predator response, degradation, feedback) or a curve-fitting artifact to reject."
+            "plausibility. Ask what real process a reaction represents and whether a proposed "
+            "fix is a faithful mechanism or a curve-fitting artifact to reject."
         ),
         "prompt": SYSTEMS_SCIENTIST_PROMPT,
         "tools": SYSTEMS_SCIENTIST_TOOLS,
@@ -250,9 +248,9 @@ ANALYSTS = [
     {
         "name": "signal_engineer",
         "description": (
-            "Signal-processing engineer: characterizes the residuals/trajectories. Ask it "
-            "WHERE and HOW the fit fails — bias, time-drift, curvature/timing mismatch, a "
-            "decaying vs sustained oscillation — without a mechanistic claim."
+            "Signal-processing engineer: characterizes the residuals/trajectories — where "
+            "and how the fit fails (bias, drift, shape/timing mismatch) — with no mechanistic "
+            "claim."
         ),
         "prompt": SIGNAL_ENGINEER_PROMPT,
         "tools": SIGNAL_ENGINEER_TOOLS,
@@ -297,6 +295,41 @@ def _subagent_prompt_key() -> str:
     except Exception:  # pragma: no cover - defensive
         pass
     return "system_prompt"
+
+
+def _decision_tool():
+    """A lead-only control tool that forces an explicit iterate / rollback / finish choice.
+
+    The panel otherwise tends to make one edit and stop; requiring the lead to call this
+    after each edit turns the run into an explicit model-building LOOP (and records the
+    decision as a span). It doesn't drive control flow itself — the lead continues or stops
+    by its own subsequent actions — it just makes the choice deliberate and auditable.
+    """
+    from langchain_core.tools import StructuredTool
+
+    def make_decision(action: str, rationale: str = "") -> str:
+        act = (action or "").strip().lower()
+        print(f"[lead decision] {act or '?'} — {rationale}")
+        guidance = {
+            "iterate": "Recorded: iterate. Make the next single justified edit, then re-assess.",
+            "rollback": "Recorded: rollback. Call rollback_to(version) to revert to a better "
+                        "version, then decide again.",
+            "finish": "Recorded: finish. Report the final neg_log_likelihood and exactly what "
+                      "you changed, then stop.",
+        }
+        return guidance.get(act, "Unknown action — use one of: iterate, rollback, finish.")
+
+    return StructuredTool.from_function(
+        func=make_decision,
+        name="make_decision",
+        description=(
+            "Record your control decision after assessing the current fit. `action` is one "
+            "of: 'iterate' (the fit can still improve — do another edit), 'rollback' (the "
+            "last edit did not help — revert it), or 'finish' (the fit is as good as it will "
+            "get — stop). Give a one-line `rationale`. Call this once per round, after each "
+            "edit, until you choose 'finish'."
+        ),
+    )
 
 
 def _build_subagents(tools_by_name: dict[str, Any]) -> list[dict[str, Any]]:
@@ -348,9 +381,12 @@ async def run_deepagents(
 
     # Adapt the MCP tools bound to this already-initialized session, then curate to the
     # union of the lead's + analysts' tools.
-    tools = _select_tools(await load_mcp_tools(session))
+    tools = _trim_descriptions(_select_tools(await load_mcp_tools(session)))
     tools_by_name = {n: t for t in tools if (n := getattr(t, "name", None))}
     subagents = _build_subagents(tools_by_name)
+    # The lead-only decision tool: appended AFTER the subagent map is built so it goes to the
+    # orchestrator (the full `tools` list) but not to any analyst.
+    tools = [*tools, _decision_tool()]
 
     llm = ChatOpenAI(
         model=model,
