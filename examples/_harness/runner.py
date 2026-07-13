@@ -73,13 +73,41 @@ def _make_call(session: ClientSession):
 
 
 class _ToolClock:
-    """Accumulates wall-time spent inside MCP tool calls (the server-side compute)."""
+    """Client-observed wall-time during which at least one MCP tool call is in flight.
 
-    __slots__ = ("seconds", "calls")
+    This is time *as the runner sees it* — it includes the HTTP round-trip and any
+    server-side queueing, not purely server execution — but for these demos it is
+    dominated by the work inside the tool calls (AMICI compile + pyPESTO fits + SQL),
+    so subtracting it from the wall clock is a good proxy for isolating LLM time.
+
+
+    Tracks the UNION of busy intervals, not the sum of per-call durations: the LangGraph
+    agent (deepagents' ToolNode) dispatches the tool calls in a single turn concurrently, so
+    several ``session.call_tool`` coroutines overlap. Summing each one's duration double-counts the
+    overlap and can exceed the wall clock (a fit + a SQL query running at once counts twice).
+    A busy-interval measure instead answers "how much wall time was the server working," which
+    is what we subtract from the wall clock to isolate LLM/inference time, and it can never
+    exceed the wall clock.
+    """
+
+    __slots__ = ("seconds", "calls", "_active", "_since")
 
     def __init__(self) -> None:
         self.seconds = 0.0
         self.calls = 0
+        self._active = 0  # in-flight call count
+        self._since = 0.0  # monotonic time the busy window (0 -> 1) opened
+
+    def enter(self) -> None:
+        if self._active == 0:
+            self._since = time.monotonic()
+        self._active += 1
+        self.calls += 1
+
+    def leave(self) -> None:
+        self._active -= 1
+        if self._active == 0:
+            self.seconds += time.monotonic() - self._since
 
 
 def _wrap_tool_clock(session: ClientSession) -> _ToolClock:
@@ -91,17 +119,20 @@ def _wrap_tool_clock(session: ClientSession) -> _ToolClock:
     AMICI compile + every pyPESTO fit + the SQL queries. Subtracting it from the wall clock
     isolates the LLM/inference time. If the method can't be shadowed the clock simply stays
     at zero (timing is reported as unavailable) rather than breaking the run.
+
+    asyncio is single-threaded and cooperative, so the ``enter``/``leave`` counter updates
+    (no ``await`` between reading and mutating ``_active``) are atomic w.r.t. each other; the
+    overlap is only ever inside the awaited ``original(...)``.
     """
     clock = _ToolClock()
     original = session.call_tool
 
     async def timed(*args, **kwargs):
-        start = time.monotonic()
+        clock.enter()
         try:
             return await original(*args, **kwargs)
         finally:
-            clock.seconds += time.monotonic() - start
-            clock.calls += 1
+            clock.leave()
 
     with contextlib.suppress(Exception):
         session.call_tool = timed  # type: ignore[method-assign]
@@ -194,14 +225,14 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     if p_gof is not None:
         print(f"  chi2 GoF:             p={p_gof:.3g} (dof={dof}) "
               f"— {'consistent with noise' if p_gof >= 0.05 else 'worse than noise'}")
-    # Wall-clock split: server/compute (AMICI compile + pyPESTO fits + SQL, all inside MCP
-    # tool calls) vs LLM+overhead (the remainder — inference/network + orchestration).
+    # Wall-clock split: time inside MCP tool calls (dominated by the AMICI compile +
+    # pyPESTO fits + SQL) vs LLM+overhead (the remainder — inference + orchestration).
     wall = time.monotonic() - t0
     compute_s = clock.seconds
     llm_s = max(0.0, wall - compute_s)
     if clock.calls:
-        print(f"  time:                 total {wall:.0f}s | compute(server) {compute_s:.0f}s "
-              f"({clock.calls} tool calls) | LLM+overhead {llm_s:.0f}s")
+        print(f"  time:                 total {wall:.0f}s | tool calls {compute_s:.0f}s "
+              f"({clock.calls} calls) | LLM+overhead {llm_s:.0f}s")
     if errors:
         print(f"  rejected tool calls:  {len(errors)} (see get_errors)")
     ant_diff = diff.get("model_diff") if isinstance(diff, dict) else None

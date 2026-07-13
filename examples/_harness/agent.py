@@ -83,13 +83,12 @@ SIGNAL_ENGINEER_TOOLS = [
 
 # The orchestrator ("modeling lead") orients, delegates analysis to the three analysts, and
 # is the ONLY agent that edits the model or recovers. It keeps a MINIMAL surface: read the
-# model + score once, edit, batch (a multi-reaction fix as one fitted version), and recover.
-# Version/parameter bookkeeping is left off — each commit result already reports the version,
-# neg_log_likelihood, and is_new_best, so the lead tracks progress from the tool results.
+# model + score, list versions (so a rollback is informed, not a guess), edit, batch, recover.
 ORCHESTRATOR_TOOLS = [
     # orient / score
     "get_model_structure",
     "get_fit_summary",
+    "list_versions",        # scored version history — so rollback targets the BEST version
     "get_errors",
     # edit the model (lead only)
     "add_reaction",
@@ -120,8 +119,15 @@ ALLOWED_TOOLS = set(
 # listed keeps (a truncated form of) its original description.
 TOOL_DESCRIPTIONS = {
     "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law).",
-    "get_parameters": "Parameter table: id, bounds, scale, nominalValue (the fitted value), estimate flag.",
+    "get_parameters": ("Parameter table: id, bounds, scale, nominalValue (the fitted value), "
+                       "estimate flag. Fixed (estimate=0) rows include the observation-noise "
+                       "parameters (sigma_*) and the parametric initial conditions (*_init) — "
+                       "these belong to the noise / experimental model, NOT the kinetics, and "
+                       "must never appear in a rate law."),
     "get_fit_summary": "Current fit metrics only (neg_log_likelihood, chi2, n_data_points) — a cheap score check.",
+    "list_versions": ("List every model version with its kind, label, and fit metrics "
+                      "(neg_log_likelihood, is_new_best) — use it to find the best-scoring "
+                      "version to roll back to."),
     "get_fitting_log": "Tail of the pyPESTO/Fides multistart optimizer log (convergence, bound-pinning, ill-conditioning). Arg: tail_lines.",
     "list_observables": "The observables being fitted: id, formula, and noise model.",
     "get_measurements": "The measured data points. Optional args: condition_id, observable_id.",
@@ -170,11 +176,13 @@ def _trim_descriptions(tools: list) -> list:
 # editing tools) and returns a concise written report ending in a concrete recommendation
 # the lead can act on. They are independent: none sees the others' reports.
 _REPORT_CONTRACT = (
-    "\n\nYou cannot edit the model — you only inspect and advise. Investigate with your "
-    "tools, then return a SHORT report: (1) what you found, (2) the single most likely "
-    "explanation from your perspective, (3) a concrete recommendation for the modeling lead "
-    "(name the operation and, if you can, the exact reaction and rate law). Flag explicitly "
-    "if the evidence is ambiguous or outside your expertise."
+    "\n\nYou cannot edit the model — you only inspect and advise. ALWAYS call at least one of "
+    "your tools to inspect the actual problem before you conclude — do not answer from the "
+    "task description alone. Then return a SHORT report: (1) what you found, (2) the single "
+    "most likely explanation from your perspective, (3) a concrete recommendation for the "
+    "modeling lead (name the operation and, if you can, the exact reaction and rate law). "
+    "Flag explicitly if the evidence is ambiguous or outside your expertise. NEVER return an "
+    "empty message: if the evidence is thin, still write the little you can conclude."
 )
 
 MATHEMATICIAN_PROMPT = (
@@ -187,7 +195,10 @@ MATHEMATICIAN_PROMPT = (
     "- Numerical: read get_parameters (scales, bounds) and get_fitting_log (the pyPESTO/Fides "
     "multistart). Did the starts converge, is a parameter pinned at a bound, is the objective "
     "flat in some direction (non-identifiability)? Distinguish 'the optimizer failed' from "
-    "'the best fit for this structure is genuinely poor'.\n"
+    "'the best fit for this structure is genuinely poor'. The parameter table also lists "
+    "fixed observation-noise (sigma_*) and initial-condition (*_init) parameters — these are "
+    "part of the noise/experimental model, not kinetic constants; never propose folding one "
+    "into a rate law.\n"
     "Comment on whether any proposed new parameter would be identifiable from the data."
     + _REPORT_CONTRACT
 )
@@ -312,8 +323,9 @@ def _decision_tool():
         print(f"[lead decision] {act or '?'} — {rationale}")
         guidance = {
             "iterate": "Recorded: iterate. Make the next single justified edit, then re-assess.",
-            "rollback": "Recorded: rollback. Call rollback_to(version) to revert to a better "
-                        "version, then decide again.",
+            "rollback": "Recorded: rollback. Check list_versions and call rollback_to on the "
+                        "BEST-scoring prior version (lowest neg_log_likelihood / is_new_best), "
+                        "not just the previous one, then continue.",
             "finish": "Recorded: finish. Report the final neg_log_likelihood and exactly what "
                       "you changed, then stop.",
         }
