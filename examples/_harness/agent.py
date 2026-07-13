@@ -281,16 +281,46 @@ def _select_tools(tools: list) -> list:
     return selected
 
 
-def _build_subagents(available: set[str]) -> list[dict[str, Any]]:
-    """Analyst specs with each persona's tool subset trimmed to what the server exposes."""
+def _subagent_prompt_key() -> str:
+    """The key deepagents' SubAgent spec uses for the persona prompt.
+
+    deepagents renamed the subagent prompt field ``prompt`` -> ``system_prompt`` (mirroring
+    the top-level ``create_deep_agent`` rename). Detect it from the ``SubAgent`` type so the
+    panel works across releases; default to the current ``system_prompt``.
+    """
+    try:
+        from deepagents.middleware.subagents import SubAgent
+
+        keys = set(getattr(SubAgent, "__annotations__", {}) or {})
+        if "system_prompt" not in keys and "prompt" in keys:
+            return "prompt"
+    except Exception:  # pragma: no cover - defensive
+        pass
+    return "system_prompt"
+
+
+def _build_subagents(tools_by_name: dict[str, Any]) -> list[dict[str, Any]]:
+    """Analyst specs with each persona's tool NAMES resolved to the server's tool OBJECTS.
+
+    deepagents' ``SubAgent`` spec takes ``tools`` as a sequence of ``BaseTool``/callable
+    objects (not name strings — older releases resolved names, current ones do not), so we
+    map each analyst's curated name list to the actual loaded MCP tool objects, dropping any
+    the server does not expose.
+    """
+    prompt_key = _subagent_prompt_key()
     subagents: list[dict[str, Any]] = []
     for spec in ANALYSTS:
-        tools = [t for t in spec["tools"] if t in available]
-        dropped = [t for t in spec["tools"] if t not in available]
+        tools = [tools_by_name[n] for n in spec["tools"] if n in tools_by_name]
+        dropped = [n for n in spec["tools"] if n not in tools_by_name]
         if dropped:
             print(f"[agent] WARNING: analyst {spec['name']!r} missing tools {dropped} "
                   "(dropped from its tool set)")
-        subagents.append({**spec, "tools": tools})
+        subagents.append({
+            "name": spec["name"],
+            "description": spec["description"],
+            prompt_key: spec["prompt"],
+            "tools": tools,
+        })
     return subagents
 
 
@@ -319,8 +349,8 @@ async def run_deepagents(
     # Adapt the MCP tools bound to this already-initialized session, then curate to the
     # union of the lead's + analysts' tools.
     tools = _select_tools(await load_mcp_tools(session))
-    available = {getattr(t, "name", None) for t in tools}
-    subagents = _build_subagents(available)
+    tools_by_name = {n: t for t in tools if (n := getattr(t, "name", None))}
+    subagents = _build_subagents(tools_by_name)
 
     llm = ChatOpenAI(
         model=model,
