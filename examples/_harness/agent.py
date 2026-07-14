@@ -427,6 +427,7 @@ async def run_deepagents(
     system_prompt: str,
     task: str,
     recursion_limit: int,
+    temperature: float = 0.0,
 ) -> dict[str, Any]:
     """Drive the orchestrator (+ analyst subagents) against ``session``'s tools.
 
@@ -451,7 +452,7 @@ async def run_deepagents(
 
     llm = ChatOpenAI(
         model=model,
-        temperature=0,
+        temperature=temperature,
         base_url=base_url,
         api_key=api_key,
         # Best-effort prompt-cache hint: asks the provider to route repeat requests to the

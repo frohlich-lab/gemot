@@ -29,6 +29,8 @@ right before handing control to ``deepagents``.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -191,3 +193,96 @@ def setup_phoenix_tracing(
         local_session=local_session,
         tracer_provider=tracer_provider,
     )
+
+
+# --------------------------------------------------------------------------- run span
+# A run-level span that PARENTS the whole agent trace, so each run is one self-describing
+# trace: open it in Phoenix and the root carries the model, the fit metrics (chi2, BIC,
+# ΔBIC), the verdict, and the timings, while Phoenix's own per-trace token rollup (summed
+# from the child LLM spans) shows the usage. The queryable ``petab.*`` attributes make the
+# same numbers available in the spans dataframe for the across-example aggregator
+# (``metrics.py``) to pull without re-deriving them.
+
+# Result keys copied onto the run span as queryable ``attributes.petab.<key>`` values.
+_RESULT_METRIC_KEYS = (
+    "scenario", "example_version", "model", "driver", "stop_reason", "success",
+    "baseline_nll", "final_nll", "delta",
+    "chi2", "chi2_dof", "chi2_gof_pvalue",
+    "k", "n", "bic", "bic_reference", "delta_bic", "bic_threshold",
+    "head_version", "n_errors", "tool_calls",
+    "wall_seconds", "compute_seconds", "llm_seconds",
+    "recursion_limit", "n_starts", "temperature", "git_sha",
+)
+
+
+def _otel_value(value: Any) -> Any:
+    """Coerce a value to something OTel accepts (str/bool/int/float); stringify the rest."""
+    if isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)
+
+
+def _set_attrs(span: Any, attrs: dict[str, Any]) -> None:
+    """Best-effort ``span.set_attribute`` over a dict, skipping ``None`` values."""
+    for key, value in attrs.items():
+        if value is None:
+            continue
+        with contextlib.suppress(Exception):  # never let telemetry break the run
+            span.set_attribute(key, _otel_value(value))
+
+
+@contextlib.contextmanager
+def run_span(handle: TracingHandle | None, *, name: str, attributes: dict[str, Any]):
+    """Open an OpenInference CHAIN span that becomes the trace root for the agent run.
+
+    Every LLM/tool span the agent emits while this is the current span nests under it.
+    Yields the span, or ``None`` when tracing (or ``opentelemetry``) is unavailable so the
+    caller can no-op transparently — ``record_run_result``/``trace_id_hex`` also accept
+    ``None``.
+    """
+    if handle is None:
+        yield None
+        return
+    try:
+        from opentelemetry import trace
+    except Exception:  # pragma: no cover - opentelemetry ships with phoenix.otel
+        yield None
+        return
+    tracer = trace.get_tracer("petab_mcp.harness")
+    with tracer.start_as_current_span(name) as span:
+        _set_attrs(span, {"openinference.span.kind": "CHAIN"})
+        _set_attrs(span, {f"petab.{k}": v for k, v in attributes.items()})
+        _set_attrs(span, {
+            "input.value": json.dumps(attributes, default=str),
+            "input.mime_type": "application/json",
+        })
+        yield span
+
+
+def trace_id_hex(span: Any) -> str | None:
+    """The 32-char hex trace id of ``span`` (to join result.json to its Phoenix trace)."""
+    if span is None:
+        return None
+    try:
+        tid = span.get_span_context().trace_id
+        return format(tid, "032x") if tid else None
+    except Exception:
+        return None
+
+
+def record_run_result(span: Any, result: dict[str, Any]) -> None:
+    """Stamp the judge's outcome onto the run span: queryable ``petab.*`` attributes, a
+    parsed-in-Phoenix ``metadata`` blob, an ``output.value`` panel, and a coarse verdict."""
+    if span is None:
+        return
+    _set_attrs(span, {f"petab.{k}": result.get(k) for k in _RESULT_METRIC_KEYS})
+    _set_attrs(span, {"petab.verdict": "success" if result.get("success") else "not_fixed"})
+    with contextlib.suppress(Exception):
+        span.set_attribute("metadata", json.dumps(result, default=str))
+    outcome = {k: result.get(k) for k in
+               ("success", "chi2", "chi2_gof_pvalue", "delta_bic", "bic",
+                "final_nll", "stop_reason")}
+    _set_attrs(span, {
+        "output.value": json.dumps(outcome, default=str),
+        "output.mime_type": "application/json",
+    })

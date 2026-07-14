@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import datetime
 import json
 import os
 import shutil
@@ -139,6 +140,35 @@ def _wrap_tool_clock(session: ClientSession) -> _ToolClock:
     return clock
 
 
+# --------------------------------------------------------------------------- provenance
+def _now_iso() -> str:
+    """Current UTC time as an ISO-8601 string (for the metrics history + trace join)."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _git_sha(path: Path) -> str | None:
+    """Short HEAD sha (+``+dirty`` if the tree has uncommitted changes), or ``None``.
+
+    Provenance for the metrics history so a run is attributable to a commit; best-effort so
+    a detached/absent git checkout never breaks the run.
+    """
+    try:
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=str(path),
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        return None
+    try:
+        dirty = subprocess.call(
+            ["git", "diff", "--quiet", "--ignore-submodules"], cwd=str(path),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        dirty = 0
+    return f"{sha}+dirty" if dirty else sha
+
+
 # --------------------------------------------------------------------------- steps
 def cleanup(scenario: Scenario) -> Path:
     """Recreate work/ from the pristine broken problem (also drops old provenance)."""
@@ -151,7 +181,7 @@ def cleanup(scenario: Scenario) -> Path:
 
 
 async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta: dict,
-                 clock: "_ToolClock", t0: float) -> int:
+                 clock: "_ToolClock", t0: float) -> "tuple[int, dict]":
     """Judge the repaired model against the true model by BIC (structure-agnostic).
 
     Success ⇔ the repaired model can't be rejected relative to the true (data-generating)
@@ -160,6 +190,10 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     special-case invented species — BIC's ``k·ln(n)`` penalty makes an extra parameter earn
     its keep. A χ² goodness-of-fit p-value (residuals vs the known noise) is reported
     alongside. The scenario's optional ``diagnostics`` hook adds report-only detail.
+
+    Returns ``(exit_code, result)``: the process exit code (0 on success, 1 otherwise) and
+    the machine-readable result dict (also written to ``work/result.json``), so the caller
+    can stamp the outcome onto the run span.
     """
     from .scenario import bic, chi2_gof_pvalue
 
@@ -277,11 +311,12 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         "compute_seconds": round(compute_s, 1),
         "llm_seconds": round(llm_s, 1),
         "tool_calls": clock.calls,
+        "run_ended_at": _now_iso(),
         **diag_fields,
     }
     (work / "result.json").write_text(json.dumps(result, indent=2))
     print(f"  (machine-readable result -> {(work / 'result.json').relative_to(scenario.example_dir.parent)})")
-    return 0 if success else 1
+    return (0 if success else 1), result
 
 
 # --------------------------------------------------------------------------- server
@@ -323,8 +358,11 @@ def _wait_until_listening(host: str, port: int, proc: subprocess.Popen, log: Pat
 
 
 async def _drive(scenario: Scenario, session: ClientSession, work: Path,
-                 args: argparse.Namespace) -> int:
-    """Preflight, run the chosen driver, and judge — all on one live session."""
+                 args: argparse.Namespace) -> "tuple[int, dict]":
+    """Preflight, run the chosen driver, and judge — all on one live session.
+
+    Returns ``(exit_code, result)`` (see :func:`_judge`).
+    """
     t0 = time.monotonic()
     clock = _wrap_tool_clock(session)  # split server/compute time from LLM time
     call = _make_call(session)
@@ -349,69 +387,100 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
     )
     print(f"[preflight] baseline neg_log_likelihood = {baseline.nll:.6g}")
 
-    stop_reason = "completed"
-    tracing = None
+    run_started_at = _now_iso()
+    git_sha = _git_sha(scenario.example_dir)
+
+    # --- scripted driver: deterministic canonical repair, no LLM, no tracing --------------
     if args.driver == "scripted":
         print(f"[scripted] applying canonical fix: {scenario.fix_summary or '(see scenario)'}")
         await scenario.scripted_fix(call, args.n_starts)
-    else:
-        # Arize Phoenix tracing (on by default; disable with --no-phoenix): instrument the
-        # LangChain stack BEFORE the agent runs so every LLM + tool-call span is captured.
-        if args.phoenix:
-            from .tracing import setup_phoenix_tracing
+        meta = {
+            "driver": args.driver, "model": None, "stop_reason": "completed",
+            "git_sha": git_sha, "example_version": scenario.version,
+            "recursion_limit": None, "n_starts": args.n_starts, "temperature": None,
+            "run_started_at": run_started_at,
+            "phoenix_project": None, "phoenix_trace_id": None,
+        }
+        exit_code, result = await _judge(scenario, call, baseline, work, meta, clock, t0)
+        return exit_code, result
 
-            tracing = setup_phoenix_tracing(project_name=args.phoenix_project)
+    # --- deepagents driver: the LLM panel diagnoses + repairs -----------------------------
+    # Arize Phoenix tracing (on by default; disable with --no-phoenix): instrument the
+    # LangChain stack BEFORE the agent runs so every LLM + tool-call span is captured.
+    tracing = None
+    if args.phoenix:
+        from .tracing import setup_phoenix_tracing
 
-        api_key = args.api_key or os.environ.get("OPENROUTER_API_KEY")
-        if not api_key:
-            raise SystemExit(
-                "No OpenRouter API key: set OPENROUTER_API_KEY (or pass --api-key). "
-                "Get one at https://openrouter.ai/keys, or use --driver scripted for a "
-                "no-LLM self-test."
-            )
-        print(f"[agent] driving {args.model} via OpenRouter + deepagents "
-              f"(recursion_limit={args.recursion_limit})")
-        from .agent import run_deepagents
+        tracing = setup_phoenix_tracing(project_name=args.phoenix_project)
 
-        result = await run_deepagents(
-            session,
-            model=args.model,
-            base_url=args.base_url,
-            api_key=api_key,
-            system_prompt=scenario.system_prompt,
-            task=scenario.task,
-            recursion_limit=args.recursion_limit,
+    api_key = args.api_key or os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise SystemExit(
+            "No OpenRouter API key: set OPENROUTER_API_KEY (or pass --api-key). "
+            "Get one at https://openrouter.ai/keys, or use --driver scripted for a "
+            "no-LLM self-test."
         )
-        stop_reason = result.get("stop_reason", "completed")
-        if stop_reason != "completed":
-            print(f"[agent] stopped early: {stop_reason} "
-                  f"(raise --recursion-limit if it ran out of steps)")
+    print(f"[agent] driving {args.model} via OpenRouter + deepagents "
+          f"(recursion_limit={args.recursion_limit})")
+    from .agent import run_deepagents
+    from .tracing import record_run_result, run_span, trace_id_hex
 
-    meta = {
-        "driver": args.driver,
-        "model": args.model if args.driver != "scripted" else None,
-        "stop_reason": stop_reason,
+    # A run-level span parents the whole agent trace, so each run is one self-describing
+    # trace (model + fit metrics + verdict on the root); its trace id is stamped into
+    # result.json so the across-example aggregator can join usage back to it.
+    span_attrs = {
+        "scenario": scenario.name, "example_version": scenario.version,
+        "model": args.model, "driver": args.driver, "temperature": args.temperature,
+        "recursion_limit": args.recursion_limit, "n_starts": args.n_starts,
+        "git_sha": git_sha, "run_started_at": run_started_at,
     }
-    exit_code = await _judge(scenario, call, baseline, work, meta, clock, t0)
+    exit_code, result = 1, {}
+    try:
+        with run_span(tracing, name="model_repair_run", attributes=span_attrs) as span:
+            agent_out = await run_deepagents(
+                session,
+                model=args.model,
+                base_url=args.base_url,
+                api_key=api_key,
+                system_prompt=scenario.system_prompt,
+                task=scenario.task,
+                recursion_limit=args.recursion_limit,
+                temperature=args.temperature,
+            )
+            stop_reason = agent_out.get("stop_reason", "completed")
+            if stop_reason != "completed":
+                print(f"[agent] stopped early: {stop_reason} "
+                      f"(raise --recursion-limit if it ran out of steps)")
+            meta = {
+                "driver": args.driver, "model": args.model, "stop_reason": stop_reason,
+                "git_sha": git_sha, "example_version": scenario.version,
+                "recursion_limit": args.recursion_limit,
+                "n_starts": args.n_starts, "temperature": args.temperature,
+                "run_started_at": run_started_at,
+                "phoenix_project": tracing.project_name if tracing else None,
+                "phoenix_trace_id": trace_id_hex(span),
+            }
+            exit_code, result = await _judge(scenario, call, baseline, work, meta, clock, t0)
+            record_run_result(span, result)
+    finally:
+        if tracing is not None:
+            tracing.flush()  # export any buffered spans before we (maybe) exit
+            print(f"[phoenix] traces recorded under project '{tracing.project_name}' "
+                  f"-> {tracing.ui_url}")
+            if args.phoenix_keep_alive:
+                print("[phoenix] keeping the process alive so the traces stay browsable; "
+                      "press Ctrl-C to exit.")
+                try:
+                    while True:
+                        await asyncio.sleep(3600)
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    print("\n[phoenix] shutting down.")
 
-    if tracing is not None:
-        tracing.flush()  # export any buffered spans before we (maybe) exit
-        print(f"[phoenix] traces recorded under project '{tracing.project_name}' "
-              f"-> {tracing.ui_url}")
-        if args.phoenix_keep_alive:
-            print("[phoenix] keeping the process alive so the traces stay browsable; "
-                  "press Ctrl-C to exit.")
-            try:
-                while True:
-                    await asyncio.sleep(3600)
-            except (KeyboardInterrupt, asyncio.CancelledError):
-                print("\n[phoenix] shutting down.")
-
-    return exit_code
+    return exit_code, result
 
 
 # --------------------------------------------------------------------------- main
-async def _main_async(scenario: Scenario, args: argparse.Namespace) -> int:
+async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[int, dict]":
     work = cleanup(scenario)
 
     work_yaml = work / "problem.yaml"
@@ -474,6 +543,8 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
                    help="OpenAI-compatible base URL for the LLM provider (default: OpenRouter).")
     p.add_argument("--api-key", default=None,
                    help="OpenRouter API key (default: the OPENROUTER_API_KEY environment variable).")
+    p.add_argument("--temperature", type=float, default=0.0,
+                   help="LLM sampling temperature (deepagents driver); recorded per run for sweeps.")
     p.add_argument("--recursion-limit", type=int, default=150, help="deepagents/LangGraph step budget.")
     p.add_argument("--n-starts", type=int, default=20,
                    help="multistart count for the auto-fit on the repair commit.")
@@ -496,6 +567,7 @@ def run_scenario(scenario: Scenario, argv: list[str] | None = None) -> int:
     """Parse args, run the pipeline for ``scenario``, and return a process exit code."""
     args = build_parser(scenario).parse_args(argv)
     try:
-        return asyncio.run(_main_async(scenario, args))
+        exit_code, _result = asyncio.run(_main_async(scenario, args))
+        return exit_code
     except KeyboardInterrupt:
         return 130

@@ -159,6 +159,13 @@ class Scenario:
     # Short human description of the canonical repair (for the scripted driver's log).
     fix_summary: str = ""
     phoenix_project: str | None = None
+    # Example definition version. BUMP THIS whenever you change what the example *is* — its
+    # planted bug, data (generate_data.py / problem/), prompts, canonical fix, or judge — so
+    # runs of different definitions are not silently pooled. It is independent of the repo
+    # git sha (the harness/code version): the git sha moves on ANY commit, while `version`
+    # moves only when THIS example changes, so it groups comparable runs across harness
+    # commits. Recorded on every run (Phoenix span + result.json + metrics history).
+    version: int = 1
 
     @property
     def example_dir(self) -> Path:
