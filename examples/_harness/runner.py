@@ -468,13 +468,13 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
     )
     p.add_argument("--driver", choices=["deepagents", "scripted"], default="deepagents",
                    help="deepagents: drive an OpenRouter model; scripted: deterministic repair, no LLM.")
-    p.add_argument("--model", default="openai/gpt-oss-120b",
+    p.add_argument("--model", default="qwen/qwen3-235b-a22b",
                    help="OpenRouter model id (deepagents driver).")
     p.add_argument("--base-url", default="https://openrouter.ai/api/v1",
                    help="OpenAI-compatible base URL for the LLM provider (default: OpenRouter).")
     p.add_argument("--api-key", default=None,
                    help="OpenRouter API key (default: the OPENROUTER_API_KEY environment variable).")
-    p.add_argument("--recursion-limit", type=int, default=80, help="deepagents/LangGraph step budget.")
+    p.add_argument("--recursion-limit", type=int, default=150, help="deepagents/LangGraph step budget.")
     p.add_argument("--n-starts", type=int, default=20,
                    help="multistart count for the auto-fit on the repair commit.")
     p.add_argument("--reference-validation", choices=["required", "best_effort", "off"], default="off",

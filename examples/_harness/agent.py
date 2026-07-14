@@ -322,11 +322,14 @@ def _decision_tool():
         act = (action or "").strip().lower()
         print(f"[lead decision] {act or '?'} — {rationale}")
         guidance = {
-            "iterate": "Recorded: iterate. Make the next single justified edit, then re-assess.",
+            "iterate": "Recorded: iterate. Make the next single justified edit, then re-assess "
+                       "the CURRENT HEAD's metrics.",
             "rollback": "Recorded: rollback. Check list_versions and call rollback_to on the "
                         "BEST-scoring prior version (lowest neg_log_likelihood / is_new_best), "
-                        "not just the previous one, then continue.",
-            "finish": "Recorded: finish. Report the final neg_log_likelihood and exactly what "
+                        "not just the previous one, then re-check HEAD before continuing.",
+            "finish": "Recorded: finish. Only valid when the fit is statistically ADEQUATE "
+                      "(reduced_chi2 ≈ 1); if it is still ≫ 1 the model is mis-specified — "
+                      "iterate instead. Report the final neg_log_likelihood and exactly what "
                       "you changed, then stop.",
         }
         return guidance.get(act, "Unknown action — use one of: iterate, rollback, finish.")
@@ -335,11 +338,12 @@ def _decision_tool():
         func=make_decision,
         name="make_decision",
         description=(
-            "Record your control decision after assessing the current fit. `action` is one "
-            "of: 'iterate' (the fit can still improve — do another edit), 'rollback' (the "
-            "last edit did not help — revert it), or 'finish' (the fit is as good as it will "
-            "get — stop). Give a one-line `rationale`. Call this once per round, after each "
-            "edit, until you choose 'finish'."
+            "Record your control decision after reading the CURRENT HEAD's fit metrics "
+            "(bic / reduced_chi2 / is_new_best — never an earlier version's). `action` is one "
+            "of: 'iterate' (the fit is still inadequate — reduced_chi2 ≫ 1 — do another edit), "
+            "'rollback' (the last edit did not help — revert it), or 'finish' (the fit is "
+            "statistically adequate — reduced_chi2 ≈ 1 — stop). Give a one-line `rationale`. "
+            "Call this once per round, after each edit, until you choose 'finish'."
         ),
     )
 
@@ -367,6 +371,51 @@ def _build_subagents(tools_by_name: dict[str, Any]) -> list[dict[str, Any]]:
             "tools": tools,
         })
     return subagents
+
+
+# deepagents injects a set of built-in filesystem + todo tools (ls/glob/read_file/write_file/
+# edit_file/grep/execute/write_todos) into every agent, on top of the `tools` we pass. This
+# task has no filesystem — the real tools are the MCP tools — so those built-ins are pure
+# overhead: their JSON schemas are re-sent on every turn (the input-token cost this module
+# works hard to keep lean, see _trim_descriptions/TOOL_DESCRIPTIONS), and each call the model
+# wastes on them also burns a recursion step. `task` (subagent delegation) is NEVER excluded —
+# the panel depends on it. We attach this filter to the LEAD only: neither the per-model
+# `HarnessProfile.excluded_tools` route nor a per-subagent `middleware` list reliably reaches
+# deepagents 0.6.12's declarative analyst subagents (both were verified to still leak FS calls
+# there), so the analysts keep their built-ins for now — the lead is the heavy tool-caller and
+# is the one worth trimming. Filtering the subagents cleanly needs an upstream deepagents fix.
+_BUILTIN_TOOLS_TO_HIDE = frozenset({
+    "write_todos", "ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute",
+})
+
+
+def _builtin_tool_filter():
+    """A fresh middleware instance that strips ``_BUILTIN_TOOLS_TO_HIDE`` from the model call.
+
+    Mirrors deepagents' own (private) ``_ToolExclusionMiddleware``: it removes the named tools
+    from ``request.tools`` before the model sees them, in BOTH the sync and async paths (the
+    deepagents driver runs via ``astream``, so ``awrap_model_call`` is the one that fires).
+    Defined lazily so importing this module doesn't require langchain to be installed — only
+    the deepagents driver, which pulls langchain in, ever calls this.
+    """
+    from langchain.agents.middleware.types import AgentMiddleware
+
+    def _name(tool) -> str | None:
+        name = tool.get("name") if isinstance(tool, dict) else getattr(tool, "name", None)
+        return name if isinstance(name, str) else None
+
+    class _DropBuiltinTools(AgentMiddleware):
+        def wrap_model_call(self, request, handler):
+            request = request.override(
+                tools=[t for t in request.tools if _name(t) not in _BUILTIN_TOOLS_TO_HIDE])
+            return handler(request)
+
+        async def awrap_model_call(self, request, handler):
+            request = request.override(
+                tools=[t for t in request.tools if _name(t) not in _BUILTIN_TOOLS_TO_HIDE])
+            return await handler(request)
+
+    return _DropBuiltinTools()
 
 
 async def run_deepagents(
@@ -405,6 +454,11 @@ async def run_deepagents(
         temperature=0,
         base_url=base_url,
         api_key=api_key,
+        # Best-effort prompt-cache hint: asks the provider to route repeat requests to the
+        # same backend so its prefix cache can hit (prompt tokens dominate this workload).
+        # Whether it takes effect is provider-dependent (OpenRouter -> the served model) and
+        # not guaranteed; it is harmless when ignored.
+        model_kwargs={"prompt_cache_key": "petab-mcp-agent"},
     )
 
     # deepagents renamed the prompt kwarg between releases (instructions -> system_prompt).
@@ -417,6 +471,13 @@ async def run_deepagents(
     else:  # pragma: no cover - guards against a deepagents API drift
         print("[agent] WARNING: installed deepagents has no `subagents` parameter; "
               "running a single agent without the analyst panel.")
+    # Drop deepagents' built-in FS/todo tools from the LEAD (the analysts can't be reliably
+    # filtered in this deepagents version — see _builtin_tool_filter). `task` is untouched.
+    if "middleware" in params:
+        kwargs["middleware"] = [_builtin_tool_filter()]
+    else:  # pragma: no cover - guards against a deepagents API drift
+        print("[agent] WARNING: installed deepagents has no `middleware` parameter; "
+              "the lead's built-in FS/todo tools will remain visible.")
     agent = create_deep_agent(**kwargs)
 
     stop_reason = "completed"
