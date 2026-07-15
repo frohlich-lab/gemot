@@ -311,42 +311,108 @@ def _subagent_prompt_key() -> str:
     return "system_prompt"
 
 
-def _decision_tool():
-    """A lead-only control tool that forces an explicit iterate / rollback / finish choice.
+_GOF_MIN_P = 0.05          # a fit with chi2 GoF p below this is statistically rejected
+_REDUCED_CHI2_MAX = 2.0    # fallback gate when the GoF p-value is unavailable
+_MAX_FINISH_REFUSALS = 2   # push back on finishing a rejected fit this many times, then relent
 
-    The panel otherwise tends to make one edit and stop; requiring the lead to call this
-    after each edit turns the run into an explicit model-building LOOP (and records the
-    decision as a span). It doesn't drive control flow itself — the lead continues or stops
-    by its own subsequent actions — it just makes the choice deliberate and auditable.
+
+async def _current_gof(session) -> dict[str, Any]:
+    """Fetch the CURRENT HEAD's goodness-of-fit from the server (ground truth, not the
+    agent's self-report). Returns {} if unavailable so the gate fails open."""
+    try:
+        res = await session.call_tool("get_fit_summary", {})
+        sc = getattr(res, "structuredContent", None)
+        if isinstance(sc, dict):
+            return sc.get("result", sc) if set(sc.keys()) == {"result"} else sc
+    except Exception:  # pragma: no cover - never let the gate break the run
+        pass
+    return {}
+
+
+def _decision_tool(session):
+    """A lead-only control tool that forces an explicit iterate / rollback / finish choice
+    AND hard-gates ``finish`` on the server's real goodness-of-fit.
+
+    The panel otherwise tends to make one edit and stop, and — the dominant sweep failure —
+    to call ``finish`` while misreading the fit (declaring a chi2 GoF p of 1e-8 "noise").
+    So ``finish`` is PUSHED BACK when the current HEAD is statistically rejected
+    (chi2_gof_pvalue < 0.05, or reduced_chi2 ≫ 1 as a fallback): the decision is checked
+    against the server's metrics, not the model's claim about them. The push-back is bounded
+    — after ``_MAX_FINISH_REFUSALS`` rejected attempts the gate RELENTS and lets the run
+    finish (recording that it never reached the noise floor), so a genuinely-stuck run ends
+    cleanly instead of looping to the recursion limit. This kills the premature/misread
+    finishes without trapping a run that truly cannot improve.
     """
     from langchain_core.tools import StructuredTool
 
-    def make_decision(action: str, rationale: str = "") -> str:
+    _guidance = {
+        "iterate": "Recorded: iterate. Make the next single justified edit, then re-assess "
+                   "the CURRENT HEAD's metrics.",
+        "rollback": "Recorded: rollback. Check list_versions and call rollback_to on the "
+                    "BEST-scoring prior version (lowest bic / is_new_best), not just the "
+                    "previous one, then re-check HEAD before continuing.",
+        "finish": "Recorded: finish — the fit is statistically adequate (chi2_gof_pvalue >= "
+                  "0.05, reduced_chi2 ≈ 1). Report the final neg_log_likelihood, bic, and "
+                  "exactly what you changed, then stop.",
+    }
+    state = {"finish_refusals": 0}  # bounded push-back on finishing a rejected fit
+
+    async def make_decision(action: str, rationale: str = "") -> str:
         act = (action or "").strip().lower()
         print(f"[lead decision] {act or '?'} — {rationale}")
-        guidance = {
-            "iterate": "Recorded: iterate. Make the next single justified edit, then re-assess "
-                       "the CURRENT HEAD's metrics.",
-            "rollback": "Recorded: rollback. Check list_versions and call rollback_to on the "
-                        "BEST-scoring prior version (lowest neg_log_likelihood / is_new_best), "
-                        "not just the previous one, then re-check HEAD before continuing.",
-            "finish": "Recorded: finish. Only valid when the fit is statistically ADEQUATE "
-                      "(reduced_chi2 ≈ 1); if it is still ≫ 1 the model is mis-specified — "
-                      "iterate instead. Report the final neg_log_likelihood and exactly what "
-                      "you changed, then stop.",
-        }
-        return guidance.get(act, "Unknown action — use one of: iterate, rollback, finish.")
+        if act == "finish":
+            gof = await _current_gof(session)
+            p = gof.get("chi2_gof_pvalue")
+            rchi2 = gof.get("reduced_chi2")
+            # Fail CLOSED: if adequacy can't be verified (no GoF metrics — the fit summary
+            # errored or a fit hasn't run), do not silently allow finish; treat it as
+            # not-yet-adequate and push back (still bounded by _MAX_FINISH_REFUSALS below).
+            if p is not None:
+                rejected = p < _GOF_MIN_P
+                detail = f"chi2_gof_pvalue={p:.3g} < {_GOF_MIN_P}"
+            elif rchi2 is not None:
+                rejected = rchi2 > _REDUCED_CHI2_MAX
+                detail = f"reduced_chi2={rchi2:.3g} ≫ 1"
+            else:
+                rejected = True
+                detail = "goodness-of-fit could not be verified (no fit metrics available)"
+            if rejected:
+                if state["finish_refusals"] < _MAX_FINISH_REFUSALS:
+                    state["finish_refusals"] += 1
+                    print(f"[finish BLOCKED {state['finish_refusals']}/{_MAX_FINISH_REFUSALS}] "
+                          f"HEAD statistically rejected ({detail})")
+                    return (
+                        f"FINISH REFUSED ({state['finish_refusals']}/{_MAX_FINISH_REFUSALS}) — "
+                        f"the current HEAD is statistically REJECTED ({detail}): its weighted "
+                        "residuals are far larger than the known measurement noise, so the model "
+                        "is still MIS-SPECIFIED regardless of how much nll improved. A tiny "
+                        "chi2_gof_pvalue is NOT 'noise'. Keep iterating on the rate-law STRUCTURE "
+                        "(or rollback to the best version) to try to reach chi2_gof_pvalue >= 0.05. "
+                        "If, after genuinely trying, the fit truly cannot improve, you may finish."
+                    )
+                # exhausted the push-back: relent so the run ends cleanly, not at the step limit
+                print(f"[finish ALLOWED] after {state['finish_refusals']} refusals; fit still "
+                      f"rejected ({detail})")
+                return (
+                    f"Recorded: finish — NOTE the fit is STILL statistically rejected ({detail}) "
+                    f"after {state['finish_refusals']} further attempts. Report the final "
+                    "neg_log_likelihood/bic, state plainly that the model could NOT be brought to "
+                    "the noise floor and what you changed, then stop."
+                )
+        return _guidance.get(act, "Unknown action — use one of: iterate, rollback, finish.")
 
     return StructuredTool.from_function(
-        func=make_decision,
+        coroutine=make_decision,
         name="make_decision",
         description=(
             "Record your control decision after reading the CURRENT HEAD's fit metrics "
-            "(bic / reduced_chi2 / is_new_best — never an earlier version's). `action` is one "
-            "of: 'iterate' (the fit is still inadequate — reduced_chi2 ≫ 1 — do another edit), "
-            "'rollback' (the last edit did not help — revert it), or 'finish' (the fit is "
-            "statistically adequate — reduced_chi2 ≈ 1 — stop). Give a one-line `rationale`. "
-            "Call this once per round, after each edit, until you choose 'finish'."
+            "(bic / reduced_chi2 / chi2_gof_pvalue / is_new_best — never an earlier version's). "
+            "`action`: 'iterate' (fit still inadequate — reduced_chi2 ≫ 1 or chi2_gof_pvalue < "
+            "0.05 — do another edit), 'rollback' (last edit didn't help — revert to the best-bic "
+            "version), or 'finish' (statistically adequate — chi2_gof_pvalue >= 0.05 AND "
+            "reduced_chi2 ≈ 1). NOTE: 'finish' is programmatically REFUSED while the fit is "
+            "rejected, so do not try to finish a poor fit. Prefer the FEWEST free parameters that "
+            "pass (lower bic wins). Give a one-line `rationale`; call once per round after each edit."
         ),
     )
 
@@ -451,7 +517,7 @@ async def run_deepagents(
     subagents = _build_subagents(tools_by_name)
     # The lead-only decision tool: appended AFTER the subagent map is built so it goes to the
     # orchestrator (the full `tools` list) but not to any analyst.
-    tools = [*tools, _decision_tool()]
+    tools = [*tools, _decision_tool(session)]
 
     llm = ChatOpenAI(
         model=model,
