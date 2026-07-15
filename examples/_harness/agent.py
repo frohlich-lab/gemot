@@ -130,12 +130,15 @@ TOOL_DESCRIPTIONS = {
                       "version to roll back to."),
     "get_fitting_log": "Tail of the pyPESTO/Fides multistart optimizer log (convergence, bound-pinning, ill-conditioning). Arg: tail_lines.",
     "list_observables": "The observables being fitted: id, formula, and noise model.",
-    "get_measurements": "The measured data points. Optional args: condition_id, observable_id.",
+    "get_measurements": ("Measurement data. Default returns a COMPACT SUMMARY (per observable×"
+                         "condition: n, time span, value min/max/mean, preview points); pass "
+                         "summarize=False for all raw points. Optional: condition_id, observable_id."),
     "list_data_tables": "List the SQL tables query_data exposes and their columns.",
     "query_data": ("Run a read-only DuckDB SQL query over the data. Tables: measurements, conditions, "
                    "observables, parameters, simulations (one row per point: measurement, simulation, "
                    "residual, residual_weighted, noise), optimization_starts, optimization_trace. "
-                   "Args: sql, max_rows."),
+                   "Prefer aggregations; rows capped at max_rows (default 50 — raise it only if you "
+                   "truly need many rows). Args: sql, max_rows."),
     "get_errors": "Recent rejected operations / failed tool calls. Arg: limit.",
     "add_reaction": ("Add a reaction from an Antimony line (e.g. 'J: A -> B; k*A'); new symbols become "
                      "parameters/species. Args: reaction, justification, references?. Commits + auto-fits."),
