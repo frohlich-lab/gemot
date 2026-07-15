@@ -272,3 +272,134 @@ def _phoenix_base_url(url: str) -> str:
         if out.endswith(suffix):
             return out[: -len(suffix)]
     return out
+
+
+# --------------------------------------------------------------------------- sweep report
+# Read the logged experiments back out for a sweep summary (success rate + ΔBIC across
+# model × temperature × example). One row per experiment task-run; each experiment is a
+# single (model, temperature, repeat) for one example, so a cell's repeats are just the
+# runs that share (example, model, temperature).
+_ROW_FIELDS = ("example", "model", "temperature", "success", "delta_bic",
+               "chi2_gof_pvalue", "stop_reason", "prompt_version", "git_sha")
+
+
+def fetch_experiment_rows(base_url: str = "http://localhost:6006") -> list[dict[str, Any]]:
+    """One flat row per experiment task-run across every ``petab-mcp-repair-*`` dataset."""
+    from phoenix.client import Client
+
+    client = Client(base_url=_phoenix_base_url(base_url))
+    rows: list[dict[str, Any]] = []
+    for ds_meta in client.datasets.list():
+        name = ds_meta.get("name", "") if isinstance(ds_meta, dict) else getattr(ds_meta, "name", "")
+        prefix = f"{DATASET_PREFIX}-"
+        if not name.startswith(prefix):
+            continue
+        example = name[len(prefix):]
+        dataset = client.datasets.get_dataset(dataset=name)
+        for exp in client.experiments.list(dataset_id=dataset.id):
+            exp_id = exp.get("id") if isinstance(exp, dict) else getattr(exp, "id", None)
+            if exp_id is None:
+                continue
+            ran = client.experiments.get_experiment(experiment_id=exp_id)
+            md = ran.get("experiment_metadata") or {}
+            for tr in ran.get("task_runs") or []:
+                out = tr.get("output")
+                if not isinstance(out, dict):
+                    continue
+                rows.append({
+                    "example": example,
+                    "model": md.get("model") or out.get("model"),
+                    "temperature": md.get("temperature"),
+                    "success": out.get("success"),
+                    "delta_bic": out.get("delta_bic"),
+                    "chi2_gof_pvalue": out.get("chi2_gof_pvalue"),
+                    "stop_reason": out.get("stop_reason"),
+                    "prompt_version": md.get("prompt_version"),
+                    "git_sha": md.get("git_sha"),
+                })
+    return rows
+
+
+def summarize_sweep(rows: list[dict[str, Any]], *, completed_only: bool = True) -> str:
+    """Success rate + ΔBIC per (example × model × temperature), plus a model×temp pivot.
+
+    ``completed_only`` (default): drop runs whose ``stop_reason != "completed"`` — i.e. the
+    agent loop crashed or ran out of steps (APIConnectionError, GraphRecursionError) and the
+    judge scored an incomplete model. Those are harness/infra outcomes, not the model
+    finishing with a verdict, so they'd otherwise inflate the failure rate.
+    """
+    import statistics
+
+    if not rows:
+        return "(no experiments found — has the sweep produced any runs yet?)"
+
+    crashed = [r for r in rows if (r.get("stop_reason") or "completed") != "completed"]
+    note = ""
+    if completed_only and crashed:
+        rows = [r for r in rows if (r.get("stop_reason") or "completed") == "completed"]
+        from collections import Counter
+        by = Counter((r.get("stop_reason") or "?").split(":")[0] for r in crashed)
+        note = (f"(excluded {len(crashed)} crashed/incomplete run(s) — "
+                f"{dict(by)}; pass --include-crashed to keep them)\n")
+        if not rows:
+            return note + "(no completed runs yet)"
+
+    def _key(r):
+        return (r.get("example"), r.get("model"), r.get("temperature"))
+
+    cells: dict[tuple, list[dict]] = {}
+    for r in rows:
+        cells.setdefault(_key(r), []).append(r)
+
+    def _med(vals):
+        vals = [v for v in vals if isinstance(v, (int, float))]
+        return statistics.median(vals) if vals else None
+
+    def _fmt(v, spec=""):
+        if v is None:
+            return "-"
+        try:
+            return format(v, spec) if spec else str(v)
+        except (TypeError, ValueError):
+            return str(v)
+
+    lines = [note] if note else []
+    lines += ["Per-cell (example × model × temperature):", ""]
+    hdr = f"{'example':<16} {'model':<26} {'temp':>4} {'n':>3} {'pass':>5} " \
+          f"{'ΔBIC med':>9} {'ΔBIC min':>9} {'ΔBIC max':>9} {'chi2p med':>9}"
+    lines += [hdr, "-" * len(hdr)]
+    for key in sorted(cells, key=lambda k: (str(k[0]), str(k[1]), k[2] is None, str(k[2]))):
+        ex, model, temp = key
+        group = cells[key]
+        n = len(group)
+        passes = sum(1 for g in group if g.get("success"))
+        dbs = [g.get("delta_bic") for g in group]
+        lines.append(
+            f"{_fmt(ex):<16} {_fmt(model):<26} {_fmt(temp, 'g'):>4} {n:>3} "
+            f"{passes}/{n:<3} {_fmt(_med(dbs), '+.3g'):>9} "
+            f"{_fmt(min([d for d in dbs if isinstance(d, (int, float))], default=None), '+.3g'):>9} "
+            f"{_fmt(max([d for d in dbs if isinstance(d, (int, float))], default=None), '+.3g'):>9} "
+            f"{_fmt(_med([g.get('chi2_gof_pvalue') for g in group]), '.2g'):>9}"
+        )
+
+    # model × temperature pivot (pooled over examples): pass rate
+    lines += ["", "Pass rate by model × temperature (pooled over examples):", ""]
+    models = sorted({r.get("model") for r in rows}, key=str)
+    temps = sorted({r.get("temperature") for r in rows}, key=lambda t: (t is None, str(t)))
+    head = f"{'model':<26}" + "".join(f"{('t='+_fmt(t,'g')):>10}" for t in temps)
+    lines += [head, "-" * len(head)]
+    for model in models:
+        cell_strs = []
+        for t in temps:
+            grp = [r for r in rows if r.get("model") == model and r.get("temperature") == t]
+            if grp:
+                p = sum(1 for g in grp if g.get("success"))
+                cell_strs.append(f"{p}/{len(grp)}")
+            else:
+                cell_strs.append("-")
+        lines.append(f"{_fmt(model):<26}" + "".join(f"{c:>10}" for c in cell_strs))
+
+    total_pass = sum(1 for r in rows if r.get("success"))
+    lines += ["", f"overall: {total_pass}/{len(rows)} runs passed "
+                  f"({len(cells)} cells, prompt_version={rows[0].get('prompt_version')})"]
+    return "\n".join(lines)
