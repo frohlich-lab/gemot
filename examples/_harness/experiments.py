@@ -155,7 +155,8 @@ EVALUATORS = [bic_pass, delta_bic, chi2_gof_pvalue, reduced_chi2]
 
 # --------------------------------------------------------------------------- run
 def _run_one_via_subprocess(scenario, *, driver, model, temperature, n_starts,
-                            recursion_limit, base_url) -> dict:
+                            recursion_limit, base_url, wandb=False,
+                            wandb_project=None) -> dict:
     """Run one scenario as a subprocess of its ``run.py`` and return its ``result.json``.
 
     Reuses the fully-exercised ``run.py`` path so the agent's complete ``model_repair_run``
@@ -164,6 +165,9 @@ def _run_one_via_subprocess(scenario, *, driver, model, temperature, n_starts,
     the experiment. Process isolation also avoids fighting ``run_experiment`` over the global
     OTel tracer provider (in-process this client dispatches sync tasks to a worker thread and
     does not await coroutines, so neither in-process approach captures the agent spans).
+
+    With ``wandb=True`` the subprocess also logs the run to Weights & Biases, so one sweep
+    populates the Phoenix experiment AND W&B in parallel (both kept, not either/or).
     """
     import json
     import os
@@ -173,6 +177,10 @@ def _run_one_via_subprocess(scenario, *, driver, model, temperature, n_starts,
     cmd = [sys.executable, str(scenario.example_dir / "run.py"), "--driver", driver,
            "--model", model, "--temperature", str(temperature),
            "--recursion-limit", str(recursion_limit), "--n-starts", str(n_starts)]
+    if wandb:
+        cmd.append("--wandb")
+        if wandb_project:
+            cmd += ["--wandb-project", wandb_project]
     env = dict(os.environ)
     env["PHOENIX_COLLECTOR_ENDPOINT"] = base_url  # agent trace -> petab-mcp-<example>
     subprocess.run(cmd, env=env, check=False)
@@ -214,11 +222,16 @@ def run_experiments(
     recursion_limit: int = 150,
     experiment_name: str | None = None,
     dry_run: bool = False,
+    wandb: bool = False,
+    wandb_project: str | None = None,
 ) -> list:
     """Run ONE Phoenix Experiment PER example (each over its own single-row dataset), so
     different examples are never pooled into one experiment. Registers the prompts once and
     tags every experiment with model/temperature/git_sha/prompt_version. Returns the list of
     ``RanExperiment``.
+
+    With ``wandb=True`` each run is ALSO logged to Weights & Biases (Phoenix experiment
+    logging is kept, not replaced — one sweep populates both).
 
     The ``scripted`` driver is a no-LLM self-test and is NOT logged to Phoenix — it runs
     :func:`run_scripted_selftest` and returns its result dicts instead.
@@ -247,6 +260,7 @@ def run_experiments(
             return _run_one_via_subprocess(
                 _scenario, driver=driver, model=model, temperature=temperature,
                 n_starts=n_starts, recursion_limit=recursion_limit, base_url=base_url,
+                wandb=wandb, wandb_project=wandb_project,
             )
 
         name = experiment_name or (

@@ -27,3 +27,6 @@ examples/*/.gen_build/
 # Per-run metrics log appended by collect_metrics.py (generated; grows every run —
 # the durable history belongs to a CI/nightly job, not to dev commits)
 examples/_harness/metrics_history.csv
+
+# Local Weights & Biases run artifacts (run.py --wandb writes ./wandb/; synced to the cloud)
+wandb/

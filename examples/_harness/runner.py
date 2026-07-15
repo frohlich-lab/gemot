@@ -560,6 +560,13 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
                    help="After the run, keep the process (and any locally launched Phoenix app) "
                         "alive until Ctrl-C so the traces stay browsable.")
     p.set_defaults(phoenix=True)
+    # --- Weights & Biases metrics logging (off by default; the sweep's analysis UI) ---
+    p.add_argument("--wandb", action="store_true",
+                   help="Log this run's outcome (pass / ΔBIC / χ² / timings + config) to "
+                        "Weights & Biases. Orthogonal to Phoenix tracing — use both: W&B for "
+                        "the sweep metrics UI, Phoenix for the agent trace.")
+    p.add_argument("--wandb-project", default=os.environ.get("WANDB_PROJECT", "petab-mcp-sweep"),
+                   help="W&B project to log runs under (default: $WANDB_PROJECT or petab-mcp-sweep).")
     return p
 
 
@@ -567,7 +574,15 @@ def run_scenario(scenario: Scenario, argv: list[str] | None = None) -> int:
     """Parse args, run the pipeline for ``scenario``, and return a process exit code."""
     args = build_parser(scenario).parse_args(argv)
     try:
-        exit_code, _result = asyncio.run(_main_async(scenario, args))
-        return exit_code
+        exit_code, result = asyncio.run(_main_async(scenario, args))
     except KeyboardInterrupt:
         return 130
+    # W&B logging is a post-run, best-effort step (covers run.py direct AND the sweep's
+    # run.py subprocesses) — never let it change the exit code.
+    if getattr(args, "wandb", False):
+        try:
+            from .wandb_logging import log_result
+            log_result(result, project=args.wandb_project)
+        except Exception as exc:  # pragma: no cover - telemetry must not break the run
+            print(f"[wandb] skipped ({type(exc).__name__}: {exc})")
+    return exit_code

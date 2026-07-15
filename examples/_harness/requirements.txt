@@ -27,3 +27,10 @@ langchain-openai>=1.3,<2
 arize-phoenix>=18
 arize-phoenix-otel>=0.6
 openinference-instrumentation-langchain>=0.1
+
+# Weights & Biases metrics logging for the model×temperature sweep (opt-in via run.py
+# --wandb). Cluster-friendly alternative analysis UI to Phoenix Experiments: logs one
+# small W&B run per (example × model × temperature × repeat) with the judge outcome; the
+# free tier meters run storage (tiny here), and `WANDB_MODE=offline` + `wandb sync`
+# survives an egress-restricted cluster. Credentials via `wandb login` (~/.netrc).
+wandb>=0.18
