@@ -35,6 +35,7 @@ _RESULT_FIELDS = (
     "k", "n", "bic", "bic_reference", "delta_bic", "bic_threshold",
     "head_version", "n_errors", "tool_calls",
     "wall_seconds", "compute_seconds", "llm_seconds",
+    "compile_seconds", "fit_seconds", "n_compiles", "n_fits",
     "git_sha", "recursion_limit", "n_starts", "temperature",
     "run_started_at", "run_ended_at",
     "phoenix_project", "phoenix_trace_id",

@@ -13,22 +13,26 @@ only agent that edits the model.
 Why three agents instead of one:
 
 * **mathematician** — equation structure, dynamical-systems / chemical-reaction-network
-  theory, and the numerics of parameter estimation. It reads the model equations, the
-  parameter search space, and the pyPESTO/Fides *fitting log* to judge whether a misfit is
-  structural (a rate-law FORM that cannot produce the observed dynamics, a broken
+  theory, and the numerics of parameter estimation. From the measured dynamics it reasons
+  about what reaction-network FORM could generate them; once a model exists it reads the
+  equations, the parameter search space, and the pyPESTO/Fides *fitting log* to judge whether
+  a misfit is structural (a rate-law FORM that cannot produce the observed dynamics, a broken
   conservation law) or numerical (non-identifiability, a start pinned at a bound).
-* **systems_scientist** — mechanistic plausibility. It reads the mechanism, the measured
-  data, and the parameter magnitudes and judges whether a proposed mechanism is how the
-  system actually works rather than a curve-fitting artifact.
-* **signal_engineer** — the residuals and trajectories as *signals*. It reads the
-  measured-vs-simulated points and the residual breakdown and reports *where* and *how* the
-  fit fails (bias, drift, shape/timing mismatch) without claiming a mechanism.
+* **systems_scientist** — mechanistic plausibility. From what is measured and how the data
+  behaves it proposes the mechanism a domain expert would write (the species and their
+  interactions); once a model exists it judges whether that mechanism is how the system
+  actually works rather than a curve-fitting artifact.
+* **signal_engineer** — the trajectories as *signals*. Before a model exists it characterizes
+  the measured signal itself (shape, periodicity, timescales — the fingerprint the mechanism
+  must reproduce); once a model is fitted it reads the measured-vs-simulated residual
+  breakdown and reports *where* and *how* the fit fails (bias, drift, shape/timing mismatch)
+  without claiming a mechanism.
 
-The personas teach the analyst HOW to reason about a mis-specified dynamic model — its
-lens, its tools, and the report it must return — but deliberately give NO hints about any
+The personas teach the analyst HOW to reason about building and refining a dynamic model —
+its lens, its tools, and the report it must return — but deliberately give NO hints about any
 particular problem's answer (no named rate-law forms, no data fingerprints); the panel has
-to diagnose the mechanism from the model and the data. The orchestrator prompt + task are
-generic too (see ``scenario.DEFAULT_SYSTEM_PROMPT`` / ``DEFAULT_TASK``).
+to discover the mechanism from the data. The orchestrator prompt + task are generic too
+(see ``scenario.DEFAULT_SYSTEM_PROMPT`` / ``DEFAULT_TASK``).
 
 Each analyst is deliberately given only the tools its lens needs (see the ``*_TOOLS`` sets
 below), so its context is not bloated with the full tool surface and its report stays in
@@ -42,6 +46,8 @@ runner turns on before the agent starts.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import inspect
 from typing import Any
 
@@ -59,7 +65,9 @@ from typing import Any
 # Mathematician: structural capability + estimation numerics. The reaction network (rate
 # laws) + the parameter search space + the fit metrics + — uniquely — the pyPESTO/Fides log.
 MATHEMATICIAN_TOOLS = [
-    "get_model_structure",  # species, reactions, rate laws — the reaction network
+    "get_model_structure",  # species, reactions, rate laws (empty until a model is built)
+    "get_measurements",     # the DATA — dynamics/shape to reason about candidate structure
+    "list_observables",     # what is measured
     "get_parameters",       # scales, bounds — identifiability / conditioning
     "get_fit_summary",
     "get_fitting_log",      # pyPESTO/Fides log: multistart spread, convergence, bounds
@@ -82,24 +90,23 @@ SIGNAL_ENGINEER_TOOLS = [
 ]
 
 # The orchestrator ("modeling lead") orients, delegates analysis to the three analysts, and
-# is the ONLY agent that edits the model or recovers. It keeps a MINIMAL surface: read the
-# model + score, list versions (so a rollback is informed, not a guess), edit, batch, recover.
+# is the ONLY agent that authors the model. It keeps a MINIMAL surface: read the model + score,
+# list/inspect versions, author the whole model.
 ORCHESTRATOR_TOOLS = [
     # orient / score
     "get_model_structure",
     "get_fit_summary",
-    "list_versions",        # scored version history — so rollback targets the BEST version
+    "list_versions",        # scored version history — pick the BEST version to go back to
+    "get_version",          # read a prior version's Antimony + params (to re-author it)
     "get_errors",
-    # edit the model (lead only)
-    "add_reaction",
-    "change_rate_law",
-    "remove_reaction",
-    # batch several related edits into one fitted version
-    "begin_batch",
-    "commit_batch",
-    "abort_batch",
-    # recover
-    "rollback_to",
+    # author the whole model in one step. The lead works exclusively by whole-model re-author:
+    # across every traced run it never once used the incremental editors (add_reaction /
+    # change_rate_law / remove_reaction) or batching, so those are omitted here to keep the
+    # tool schema (re-sent every turn — the largest fixed input-token slice) lean. The server
+    # still exposes them for other clients / scripted use. rollback_to is likewise omitted:
+    # since set_model re-authors wholesale, "going back" = read the old model (get_version) and
+    # set_model it again — no dedicated revert tool needed.
+    "set_model",            # build the first model AND re-author it wholesale in one step
 ]
 
 # The full set handed to create_deep_agent: the union of the lead's tools and every
@@ -118,7 +125,14 @@ ALLOWED_TOOLS = set(
 # the panel only; the server (and any other client) keeps its canonical docs. Anything not
 # listed keeps (a truncated form of) its original description.
 TOOL_DESCRIPTIONS = {
-    "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law).",
+    "set_model": ("Author the WHOLE model from ONE Antimony string (compartments, species with "
+                  "initial conditions, parameters, reactions). BUILDS the first model when none "
+                  "exists (model_initialized: false) AND re-authors/replaces an existing one — never "
+                  "refused. Use for the initial build and for any coupled/symmetric or multi-reaction "
+                  "STRUCTURAL change in one coherent step; reconciles + fits on commit, reverts on "
+                  "failure. Warns if a previously-estimated parameter is dropped. Args: antimony, "
+                  "justification, references?."),
+    "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law) — empty until a model is built.",
     "get_parameters": ("Parameter table: id, bounds, scale, nominalValue (the fitted value), "
                        "estimate flag. Fixed (estimate=0) rows include the observation-noise "
                        "parameters (sigma_*) and the parametric initial conditions (*_init) — "
@@ -126,8 +140,10 @@ TOOL_DESCRIPTIONS = {
                        "must never appear in a rate law."),
     "get_fit_summary": "Current fit metrics only (neg_log_likelihood, chi2, n_data_points) — a cheap score check.",
     "list_versions": ("List every model version with its kind, label, and fit metrics "
-                      "(neg_log_likelihood, is_new_best) — use it to find the best-scoring "
-                      "version to roll back to."),
+                      "(neg_log_likelihood, bic, is_new_best) — use it to find the best-scoring "
+                      "version, then get_version to read its model and re-author with set_model."),
+    "get_version": ("Read a prior version's Antimony model + parameter table. Use it to go back "
+                    "to an earlier model: get_version(v) then re-author it with set_model. Arg: version."),
     "get_fitting_log": "Tail of the pyPESTO/Fides multistart optimizer log (convergence, bound-pinning, ill-conditioning). Arg: tail_lines.",
     "list_observables": "The observables being fitted: id, formula, and noise model.",
     "get_measurements": ("Measurement data. Default returns a COMPACT SUMMARY (per observable×"
@@ -140,15 +156,6 @@ TOOL_DESCRIPTIONS = {
                    "Prefer aggregations; rows capped at max_rows (default 50 — raise it only if you "
                    "truly need many rows). Args: sql, max_rows."),
     "get_errors": "Recent rejected operations / failed tool calls. Arg: limit.",
-    "add_reaction": ("Add a reaction from an Antimony line (e.g. 'J: A -> B; k*A'); new symbols become "
-                     "parameters/species. Args: reaction, justification, references?. Commits + auto-fits."),
-    "change_rate_law": ("Replace a reaction's rate law; new symbols become parameters. Args: reaction_id, "
-                        "rate_law, justification, references?. Commits + auto-fits."),
-    "remove_reaction": "Remove a reaction and prune orphaned entities. Args: reaction_id, justification, references?. Commits + auto-fits.",
-    "begin_batch": "Start a batch: later edits are staged (applied + logged, not fitted) until commit_batch. Arg: label.",
-    "commit_batch": "Fit + simulate the staged edits once and snapshot them as one version. Args: label, n_starts?.",
-    "abort_batch": "Discard the staged edits and restore the pre-batch version.",
-    "rollback_to": "Restore a prior version as a new version. Args: version, justification?.",
 }
 
 
@@ -190,48 +197,50 @@ _REPORT_CONTRACT = (
 
 MATHEMATICIAN_PROMPT = (
     "You are a mathematician: ODE reaction-network and population dynamics, rate-law "
-    "structure, and the numerics of parameter estimation. Given a PEtab problem that fits "
-    "poorly, decide whether the cause is STRUCTURAL or NUMERICAL.\n"
-    "- Structural: read get_model_structure and ask whether the rate-law FORM could produce "
-    "the observed dynamics for ANY parameter values. Check conservation laws and whether the "
-    "network can reach the observed regime.\n"
-    "- Numerical: read get_parameters (scales, bounds) and get_fitting_log (the pyPESTO/Fides "
-    "multistart). Did the starts converge, is a parameter pinned at a bound, is the objective "
-    "flat in some direction (non-identifiability)? Distinguish 'the optimizer failed' from "
-    "'the best fit for this structure is genuinely poor'. The parameter table also lists "
-    "fixed observation-noise (sigma_*) and initial-condition (*_init) parameters — these are "
-    "part of the noise/experimental model, not kinetic constants; never propose folding one "
-    "into a rate law.\n"
-    "Comment on whether any proposed new parameter would be identifiable from the data."
+    "structure, and the numerics of parameter estimation. The problem may ship WITHOUT a "
+    "model yet — help BUILD the right structure, then judge it.\n"
+    "- Structure: from the measured dynamics (get_measurements, list_observables) reason about "
+    "what reaction-network FORM could GENERATE them — the state dimension, which rate laws are "
+    "linear vs saturating vs cooperative, the conservation laws implied. Once a model exists "
+    "(get_model_structure), ask whether its rate-law FORM can produce the observed dynamics "
+    "for ANY parameter values.\n"
+    "- Numerics: read get_parameters (scales, bounds) and, once a fit exists, get_fit_summary "
+    "and get_fitting_log (the pyPESTO/Fides multistart). Did the starts converge, is a "
+    "parameter pinned at a bound, is the objective flat in some direction "
+    "(non-identifiability)? Distinguish 'the optimizer failed' from 'this structure genuinely "
+    "cannot fit'. The parameter table also lists fixed observation-noise (sigma_*) and "
+    "initial-condition (*_init) parameters — part of the noise/experimental model, not kinetic "
+    "constants; never fold one into a rate law.\n"
+    "Comment on whether the free parameters (proposed or present) are identifiable from the data."
     + _REPORT_CONTRACT
 )
 
 SYSTEMS_SCIENTIST_PROMPT = (
     "You are a quantitative systems scientist (biochemistry, gene regulation, population "
-    "ecology). You judge whether the model's mechanism reflects how the system actually "
-    "works, not merely whether it fits. Read the mechanism (get_model_structure), what is "
-    "measured (list_observables, get_measurements), and the "
-    "parameter magnitudes (get_parameters). For each reaction, ask what real process it "
-    "represents and whether its rate law is a faithful description of that process. Reject "
-    "fixes that reduce residuals but are not real mechanism (e.g. inventing an unobserved "
-    "species, or an ad-hoc term with no interpretation); prefer the most parsimonious "
-    "mechanism a domain expert would actually write, reusing the model's existing species."
+    "ecology). From what is measured (list_observables, get_measurements) and the data's "
+    "qualitative behaviour, propose the mechanism a domain expert would actually write for "
+    "this system: the species, the interactions between them, and the rate-law FORM of each "
+    "process. If a model already exists (get_model_structure), judge instead whether each "
+    "reaction faithfully describes a real process rather than a curve-fitting artifact (an "
+    "invented unobserved species, an ad-hoc term with no interpretation), and check the rate "
+    "magnitudes (get_parameters) are physically plausible. Prefer the most parsimonious "
+    "mechanism that explains the data, reusing the measured species."
     + _REPORT_CONTRACT
 )
 
 SIGNAL_ENGINEER_PROMPT = (
-    "You are a signal-processing engineer. Treat the measured and simulated time courses as "
-    "signals and characterize the RESIDUALS — do not hypothesize mechanisms. Use query_data "
-    "(call list_data_tables first for the columns): the `simulations` table has one row per "
-    "point with `measurement`, `simulation`, `residual`, `residual_weighted`, and `noise`. "
-    "Compute your own breakdowns in SQL — overall and grouped by observable_id / "
-    "condition_id / time, the worst-fit points (`ORDER BY abs(residual_weighted) DESC`), "
-    "per-group bias (`avg(residual_weighted)`), and time-trend "
-    "(`corr(time, residual_weighted)`). Report the STRUCTURE of the error — a systematic "
-    "bias, a drift with time, or a mismatch in the shape/timing of the trajectory — quantify "
-    "where the fit is worst, and say whether the pattern looks like noise (the fit is fine) "
-    "or systematic (a model-structure error). Localize the misfit; leave the WHY to the "
-    "mathematician and systems scientist."
+    "You are a signal-processing engineer. Treat the time courses as signals — do not "
+    "hypothesize mechanisms. Call list_data_tables FIRST for the available tables/columns, "
+    "then use query_data. Before a model is fitted, characterize the MEASURED signal itself, "
+    "per observable_id / condition_id: its shape (monotonic rise, saturation, decay, sustained "
+    "oscillation — with its period — or damping), timescales, and amplitudes — the qualitative "
+    "fingerprint the mechanism must reproduce. Once a model is fitted, the `simulations` table "
+    "has one row per point with `measurement`, `simulation`, `residual`, `residual_weighted`, "
+    "and `noise`: compute breakdowns in SQL — grouped by observable_id / condition_id / time, "
+    "the worst-fit points (`ORDER BY abs(residual_weighted) DESC`), per-group bias "
+    "(`avg(residual_weighted)`), and time-trend (`corr(time, residual_weighted)`) — and say "
+    "whether the residuals look like noise (the fit is adequate) or systematic (the structure "
+    "is still wrong). Localize; leave the WHY to the mathematician and systems scientist."
     + _REPORT_CONTRACT
 )
 
@@ -242,8 +251,9 @@ ANALYSTS = [
         "name": "mathematician",
         "description": (
             "Mathematician: equation structure, dynamical-systems theory, and fit numerics. "
-            "Ask whether a poor fit is structural (the rate-law form cannot produce the "
-            "dynamics) or numerical (non-identifiability, optimizer failure). Reads the "
+            "Ask what reaction-network structure the measured dynamics imply, and — once a "
+            "model exists — whether a poor fit is structural (the rate-law form cannot produce "
+            "the dynamics) or numerical (non-identifiability, optimizer failure). Reads the "
             "fitting log."
         ),
         "prompt": MATHEMATICIAN_PROMPT,
@@ -253,8 +263,9 @@ ANALYSTS = [
         "name": "systems_scientist",
         "description": (
             "Systems scientist (biochemistry / gene regulation / ecology): mechanistic "
-            "plausibility. Ask what real process a reaction represents and whether a proposed "
-            "fix is a faithful mechanism or a curve-fitting artifact to reject."
+            "plausibility. Ask what mechanism the measured system has — the species and their "
+            "interactions — and whether a reaction is a faithful process or a curve-fitting "
+            "artifact to reject."
         ),
         "prompt": SYSTEMS_SCIENTIST_PROMPT,
         "tools": SYSTEMS_SCIENTIST_TOOLS,
@@ -262,9 +273,9 @@ ANALYSTS = [
     {
         "name": "signal_engineer",
         "description": (
-            "Signal-processing engineer: characterizes the residuals/trajectories — where "
-            "and how the fit fails (bias, drift, shape/timing mismatch) — with no mechanistic "
-            "claim."
+            "Signal-processing engineer: characterizes the measured signal (shape, "
+            "periodicity, timescales) and — once a model is fitted — the residuals (bias, "
+            "drift, shape/timing mismatch), with no mechanistic claim."
         ),
         "prompt": SIGNAL_ENGINEER_PROMPT,
         "tools": SIGNAL_ENGINEER_TOOLS,
@@ -348,9 +359,9 @@ def _decision_tool(session):
     _guidance = {
         "iterate": "Recorded: iterate. Make the next single justified edit, then re-assess "
                    "the CURRENT HEAD's metrics.",
-        "rollback": "Recorded: rollback. Check list_versions and call rollback_to on the "
-                    "BEST-scoring prior version (lowest bic / is_new_best), not just the "
-                    "previous one, then re-check HEAD before continuing.",
+        "rollback": "Recorded: rollback. Find the BEST-scoring prior version with list_versions "
+                    "(lowest bic / is_new_best, not just the previous one), read it with "
+                    "get_version, and re-author it with set_model — then continue from there.",
         "finish": "Recorded: finish — the fit is statistically adequate (chi2_gof_pvalue >= "
                   "0.05, reduced_chi2 ≈ 1). Report the final neg_log_likelihood, bic, and "
                   "exactly what you changed, then stop.",
@@ -387,7 +398,8 @@ def _decision_tool(session):
                         "residuals are far larger than the known measurement noise, so the model "
                         "is still MIS-SPECIFIED regardless of how much nll improved. A tiny "
                         "chi2_gof_pvalue is NOT 'noise'. Keep iterating on the rate-law STRUCTURE "
-                        "(or rollback to the best version) to try to reach chi2_gof_pvalue >= 0.05. "
+                        "(or re-author the best prior version via get_version + set_model) to try "
+                        "to reach chi2_gof_pvalue >= 0.05. "
                         "If, after genuinely trying, the fit truly cannot improve, you may finish."
                     )
                 # exhausted the push-back: relent so the run ends cleanly, not at the step limit
@@ -408,8 +420,9 @@ def _decision_tool(session):
             "Record your control decision after reading the CURRENT HEAD's fit metrics "
             "(bic / reduced_chi2 / chi2_gof_pvalue / is_new_best — never an earlier version's). "
             "`action`: 'iterate' (fit still inadequate — reduced_chi2 ≫ 1 or chi2_gof_pvalue < "
-            "0.05 — do another edit), 'rollback' (last edit didn't help — revert to the best-bic "
-            "version), or 'finish' (statistically adequate — chi2_gof_pvalue >= 0.05 AND "
+            "0.05 — re-author an improved model), 'rollback' (last change didn't help — re-author "
+            "the best-bic prior version via get_version + set_model), or 'finish' (statistically "
+            "adequate — chi2_gof_pvalue >= 0.05 AND "
             "reduced_chi2 ≈ 1). NOTE: 'finish' is programmatically REFUSED while the fit is "
             "rejected, so do not try to finish a poor fit. Prefer the FEWEST free parameters that "
             "pass (lower bic wins). Give a one-line `rationale`; call once per round after each edit."
@@ -487,6 +500,48 @@ def _builtin_tool_filter():
     return _DropBuiltinTools()
 
 
+# --- guards on the (input-dominated, occasionally-hanging) LLM loop -----------------------
+# Per-request timeout + retries on the OpenRouter call. Without a timeout a hung request
+# stalls the whole run indefinitely (observed: a 24-minute no-progress stall on a bloated
+# context); with one, a stuck call fails fast and the run ends gracefully with whatever model
+# was built (the astream loop below turns the exception into a stop_reason for the judge).
+_LLM_TIMEOUT_S = 120.0
+_LLM_MAX_RETRIES = 1
+# Harness-level stall watchdog on the agent loop. The client `timeout` above does NOT reliably
+# catch a mid-stream provider stall (observed: a 24-min no-progress hang that the 120s timeout
+# never fired on). astream emits once per graph super-step (a lead LLM call, a tool, or a whole
+# analyst sub-agent), so if NO step completes within this window the loop is wedged — we cancel
+# it and end the run gracefully. Generous enough for a legitimate analyst sub-agent step.
+_STEP_STALL_TIMEOUT_S = 600.0
+
+# History trimming for the LEAD. This workload is ~90% input tokens, dominated by tool RESULTS
+# (analyst reports, set_model/commit payloads, get_measurements/query_data dumps) re-sent on
+# every turn — which ballooned a run to ~1.1M tokens and slow/hanging calls. The panel re-reads
+# live state each round (get_fit_summary / get_model_structure), so stale tool outputs in the
+# history are pure overhead: once the lead's context exceeds the trigger we CLEAR the oldest
+# tool results (keeping the most-recent few verbatim + all tool CALLS, so tool-call/result
+# pairing stays valid), replacing them with a small placeholder. No extra LLM calls.
+# Relaxed from an aggressive 45k/keep-3: at that setting the lead lost the record of what its
+# earlier attempts fit to and flip-flopped between structures instead of converging. Keep much
+# more history (higher trigger + more recent tool results retained) so it can learn from its
+# own attempt log; still bounded well under the model's context window, and the per-request
+# timeout guard backstops any slow call so relaxing this can't reinstate the old ~1M-token hang.
+_CONTEXT_CLEAR_TRIGGER = 90_000     # tokens; clear old tool results once the context exceeds this
+_CONTEXT_KEEP_TOOL_RESULTS = 8      # keep this many most-recent tool results verbatim
+
+
+def _history_trimmer():
+    """Context-editing middleware (lead-only) that clears stale tool results — see above."""
+    from langchain.agents.middleware import ContextEditingMiddleware
+    from langchain.agents.middleware.context_editing import ClearToolUsesEdit
+
+    return ContextEditingMiddleware(
+        edits=[ClearToolUsesEdit(trigger=_CONTEXT_CLEAR_TRIGGER,
+                                 keep=_CONTEXT_KEEP_TOOL_RESULTS)],
+        token_count_method="approximate",
+    )
+
+
 async def run_deepagents(
     session,
     *,
@@ -524,6 +579,8 @@ async def run_deepagents(
         temperature=temperature,
         base_url=base_url,
         api_key=api_key,
+        timeout=_LLM_TIMEOUT_S,          # fail a hung provider call fast (was unbounded)
+        max_retries=_LLM_MAX_RETRIES,
         # Best-effort prompt-cache hint: asks the provider to route repeat requests to the
         # same backend so its prefix cache can hit (prompt tokens dominate this workload).
         # Whether it takes effect is provider-dependent (OpenRouter -> the served model) and
@@ -541,29 +598,45 @@ async def run_deepagents(
     else:  # pragma: no cover - guards against a deepagents API drift
         print("[agent] WARNING: installed deepagents has no `subagents` parameter; "
               "running a single agent without the analyst panel.")
-    # Drop deepagents' built-in FS/todo tools from the LEAD (the analysts can't be reliably
-    # filtered in this deepagents version — see _builtin_tool_filter). `task` is untouched.
+    # Lead middleware: drop deepagents' built-in FS/todo tools (the analysts can't be reliably
+    # filtered in this deepagents version — see _builtin_tool_filter; `task` is untouched), and
+    # trim the lead's re-sent tool-result history so the (input-dominated) context stays bounded
+    # instead of ballooning to ~1M tokens and hanging.
     if "middleware" in params:
-        kwargs["middleware"] = [_builtin_tool_filter()]
+        kwargs["middleware"] = [_builtin_tool_filter(), _history_trimmer()]
     else:  # pragma: no cover - guards against a deepagents API drift
         print("[agent] WARNING: installed deepagents has no `middleware` parameter; "
-              "the lead's built-in FS/todo tools will remain visible.")
+              "the lead's built-in FS/todo tools + full history will remain.")
     agent = create_deep_agent(**kwargs)
 
     stop_reason = "completed"
-    # Drive the agent to completion. We consume the stream only to run the loop; the spans
-    # Phoenix emits are the record of what happened.
+    # Drive the agent to completion, iterating manually so a per-step STALL WATCHDOG can fire:
+    # astream emits once per graph super-step, so if `__anext__` doesn't return within the stall
+    # window the current step (an LLM call or an analyst sub-agent) is wedged — cancel it and end
+    # the run gracefully. We consume the stream only to run the loop; the spans Phoenix emits are
+    # the record of what happened.
+    agen = agent.astream(
+        {"messages": [{"role": "user", "content": task}]},
+        config={"recursion_limit": recursion_limit},
+        stream_mode="values",
+    ).__aiter__()
     try:
-        async for _state in agent.astream(
-            {"messages": [{"role": "user", "content": task}]},
-            config={"recursion_limit": recursion_limit},
-            stream_mode="values",
-        ):
-            pass
+        while True:
+            try:
+                await asyncio.wait_for(agen.__anext__(), timeout=_STEP_STALL_TIMEOUT_S)
+            except StopAsyncIteration:
+                break
+    except asyncio.TimeoutError:
+        stop_reason = (f"stalled: no step completed in {_STEP_STALL_TIMEOUT_S:.0f}s "
+                       "(hung provider call)")
     except Exception as exc:
         # e.g. GraphRecursionError (step budget exhausted) or an OpenRouter error. Keep
         # whatever progress was made and let the judge assess the model as it stands,
         # rather than crashing the whole run.
         stop_reason = f"{type(exc).__name__}: {exc}"
+    finally:
+        # Best-effort close; bound it so a truly wedged stream can't hang teardown too.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(agen.aclose(), timeout=10)
 
     return {"stop_reason": stop_reason}

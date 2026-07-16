@@ -1,4 +1,4 @@
-"""Phoenix-native Experiments + Prompt-registry integration for the repair demos.
+"""Phoenix-native Experiments + Prompt-registry integration for the model-building demos.
 
 Drives the examples as a Phoenix **Dataset** through ``client.experiments.run_experiment``:
 the experiment task reuses the existing cleanup → server → panel → judge pipeline
@@ -19,6 +19,10 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+# Stable dataset-name prefix. Kept as "...-repair" (the examples' original framing; they are
+# now zero-shot BUILDS) on purpose: it is a Phoenix dataset *identifier*, so renaming it would
+# orphan every existing dataset/experiment rather than describe them better. User-visible
+# descriptions have been updated to "model build"; only this lineage key stays put.
 DATASET_PREFIX = "petab-mcp-repair"
 
 
@@ -82,7 +86,7 @@ def register_prompts(client, *, model_name: str) -> dict[str, Any]:
         try:
             client.prompts.create(
                 name=name,
-                prompt_description=f"petab-mcp repair harness prompt ({name}); "
+                prompt_description=f"petab-mcp model-building harness prompt ({name}); "
                                    f"source of truth is the repo. prompt_version={version}.",
                 version=PromptVersion(
                     [{"role": _PROMPT_ROLES.get(name, "user"), "content": text}],
@@ -115,7 +119,7 @@ def get_or_create_dataset(client, scenario) -> Any:
     ref = scenario.reference() or {}
     return client.datasets.create_dataset(
         name=name,
-        dataset_description=f"petab-mcp model-repair example: {scenario.name}.",
+        dataset_description=f"petab-mcp zero-shot model-building example: {scenario.name}.",
         inputs=[{"scenario": scenario.name, "task": scenario.task}],
         outputs=[{"reference_nll": ref.get("nll"), "reference_k": ref.get("k"),
                   "reference_n": ref.get("n"), "canonical_fix": scenario.fix_summary}],
@@ -128,7 +132,7 @@ def get_or_create_dataset(client, scenario) -> Any:
 # Plain callables over the task output (the judge's result dict). Phoenix uses the function
 # name as the evaluator name; a bool -> pass/fail label, a float -> a recorded score.
 def bic_pass(output: dict) -> bool:
-    """The gate: did the repair beat the ΔBIC threshold vs the true model?"""
+    """The gate: did the built model beat the ΔBIC threshold vs the true model?"""
     return bool(output.get("success"))
 
 
@@ -159,7 +163,7 @@ def _run_one_via_subprocess(scenario, *, driver, model, temperature, n_starts,
                             wandb_project=None) -> dict:
     """Run one scenario as a subprocess of its ``run.py`` and return its ``result.json``.
 
-    Reuses the fully-exercised ``run.py`` path so the agent's complete ``model_repair_run``
+    Reuses the fully-exercised ``run.py`` path so the agent's complete ``model_build_run``
     trace (every LLM + tool span) is captured in the ``petab-mcp-<example>`` project as a
     normal run, with the ``phoenix_trace_id`` coming back in ``result.json`` to link it to
     the experiment. Process isolation also avoids fighting ``run_experiment`` over the global
@@ -188,8 +192,8 @@ def _run_one_via_subprocess(scenario, *, driver, model, temperature, n_starts,
     return json.loads(result_path.read_text()) if result_path.is_file() else {"success": False}
 
 
-def run_scripted_selftest(scenarios: list, *, n_starts: int = 20) -> list:
-    """No-LLM self-test of the pipeline — runs each scenario's canonical scripted repair.
+def run_scripted_selftest(scenarios: list, *, n_starts: int = 50) -> list:
+    """No-LLM self-test of the pipeline — runs each scenario's canonical scripted build.
 
     Deliberately does NOT touch Phoenix (no dataset/experiment/prompt registration): the
     scripted driver is a harness self-test, not an evaluation to record.
@@ -216,10 +220,10 @@ def run_experiments(
     *,
     base_url: str = "http://localhost:6006",
     driver: str = "deepagents",
-    model: str = "qwen/qwen3-235b-a22b",
+    model: str = "deepseek/deepseek-v4-pro",
     temperature: float = 0.0,
-    n_starts: int = 20,
-    recursion_limit: int = 150,
+    n_starts: int = 50,
+    recursion_limit: int = 200,
     experiment_name: str | None = None,
     dry_run: bool = False,
     wandb: bool = False,
@@ -263,15 +267,17 @@ def run_experiments(
                 wandb=wandb, wandb_project=wandb_project,
             )
 
-        name = experiment_name or (
-            f"{driver}·{model.split('/')[-1]}·t{temperature:g}·{git_sha or 'nogit'}"
-        )
+        # Default the experiment name to the MODEL only; temperature, driver, git_sha, and
+        # prompt_version all ride in experiment_metadata (below), so Phoenix groups every run
+        # of a model — across temperatures and repeats — under one experiment identity instead
+        # of splitting them into a separate experiment per (temp, sha) cell.
+        name = experiment_name or model.split("/")[-1]
         ran.append(client.experiments.run_experiment(
             dataset=dataset,
             task=task,
             evaluators=EVALUATORS,
             experiment_name=name,
-            experiment_description=f"petab-mcp {scenario.name} repair "
+            experiment_description=f"petab-mcp {scenario.name} zero-shot model build "
                                    f"(prompt_version={prompts_info['prompt_version']})",
             experiment_metadata=metadata,
             dry_run=dry_run,

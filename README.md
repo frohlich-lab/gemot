@@ -43,24 +43,26 @@ petab-mcp --petab-yaml path/to/problem.yaml
 The canonical model is Antimony: if a `model.ant` sits next to the YAML it is the
 source of truth. A problem may also ship **without** a model (an empty SBML skeleton and
 no `model.ant`); the agent then zero-shots the whole model once from Antimony with
-`init_model` (see below). Provenance is written to `<problem_dir>/.petab_mcp/` by default
+`set_model` (see below). Provenance is written to `<problem_dir>/.petab_mcp/` by default
 and is **durable** — restarting resumes the latest version. A ready toy problem (reversible
 conversion reaction A⇌B) lives at `tests/data/toy_v1/`.
 
 ## Examples
 
-[`examples/`](examples/) holds end-to-end **model-repair demos**: an OpenRouter-hosted LLM,
-driving a panel of three specialist analyst subagents (via
-[`deepagents`](https://github.com/langchain-ai/deepagents)) through these tools, has to
-diagnose and repair a **deliberately mis-specified** PEtab problem. Each ships pre-fitted to
-the best its wrong structure can do, so only a *structural* fix helps; an independent judge
-checks the repaired **mechanism**, not just the fit. Every example also has a no-LLM
-`--driver scripted` self-test.
+[`examples/`](examples/) holds end-to-end **zero-shot model-building demos**: an
+OpenRouter-hosted LLM, driving a panel of three specialist analyst subagents (via
+[`deepagents`](https://github.com/langchain-ai/deepagents)) through these tools, is handed a
+PEtab problem that **ships without a model** (an empty SBML) and has to **build** the
+mechanism from the data — one `set_model` call, then refinement. Each has an obvious
+**trap** (a linear/bilinear/first-order rate law that can't reproduce the dynamics for any
+parameters), so fitting the numbers isn't enough; an independent judge checks the built
+**mechanism** by BIC against the true model, not just the fit. Every example also has a
+no-LLM `--driver scripted` self-test.
 
-| Example | System | Planted bug → structural fix |
+| Example | System | The trap → the true mechanism |
 |---|---|---|
 | [`enzyme_kinetics/`](examples/enzyme_kinetics/) | Two-reaction enzymatic network, two doses | Michaelis–Menten → **substrate inhibition** (`…/(Km+S+S²/Ki)`) |
-| [`predator_prey/`](examples/predator_prey/) | Rosenzweig–MacArthur limit cycle | Lotka–Volterra bilinear → **Holling type-II** saturating response (2 coupled reactions) |
+| [`predator_prey/`](examples/predator_prey/) | Rosenzweig–MacArthur limit cycle | Lotka–Volterra bilinear → **Holling type-II** saturating response (2 coupled fluxes) |
 | [`repressilator/`](examples/repressilator/) | Three-gene ring oscillator | Non-cooperative Hill `n=1` → **cooperative** `n≥2` (3 symmetric reactions) |
 
 See [`examples/README.md`](examples/README.md) for the shared harness (the analyst panel,
@@ -72,9 +74,10 @@ Arize Phoenix tracing, judging, and how to run).
 `list_conditions`, `get_measurements(condition_id?, observable_id?)`.
 
 **Model operations** (each requires a `justification`; `references` are optional) —
-- `init_model(antimony, justification, references?)` — zero-shot the whole model from an
-  Antimony string when none is initialized yet (`describe_problem` → `model_initialized:
-  false`). **Refused once a model exists**; thereafter use the incremental edits below.
+- `set_model(antimony, justification, references?)` — set the whole model from an
+  Antimony string: builds the first model when none is initialized yet (`describe_problem` →
+  `model_initialized: false`) and re-authors/replaces an existing model. Use the incremental
+  edits below for smaller changes.
 - `add_reaction(reaction, justification, references)` — `reaction` is an Antimony line,
   e.g. `"J: A + B -> C; k_f*A*B"`; new species/parameters + parametric ICs are added
   automatically.

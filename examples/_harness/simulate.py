@@ -140,7 +140,7 @@ def _import_and_problem(model_ant, parameter_df, condition_df, observable_df,
     return problem, amici_model
 
 
-def fit_broken(
+def fit_reference(
     model_ant: str,
     parameter_df: pd.DataFrame,
     condition_df: pd.DataFrame,
@@ -148,65 +148,70 @@ def fit_broken(
     measurement_df: pd.DataFrame,
     *,
     build_dir: str | Path,
-    model_name: str = "broken",
+    model_name: str = "reference",
     n_starts: int = 24,
     seed: int = 0,
 ) -> tuple[dict[str, float], float]:
-    """Best-fit the (broken) model to the measurements; return (fitted values, best nll).
+    """Best-fit the TRUE structure with pyPESTO + **Fides** — the SAME optimizer the server
+    runs on candidate models — and return (fitted values, best nll).
 
-    A lightweight multistart of scipy L-BFGS-B over the estimated parameters (on their PEtab
-    scale), scored by AMICI's PEtab log-likelihood — the same objective the server's
-    pyPESTO fit uses. The returned values become the broken model's ``nominalValue`` so it
-    ships ALREADY fitted: the baseline the agent sees is the best its (wrong) structure can
-    do, which is the whole point — re-tuning parameters then cannot help, only fixing the
-    STRUCTURE can. ``parameter_df`` must carry ``estimate``, ``parameterScale``,
-    ``lowerBound``, ``upperBound``, ``nominalValue`` columns.
+    The BIC reference must be fit at least as well as any candidate, or ΔBIC measures the
+    optimizer, not the structure. This project fits candidates with Fides everywhere; scipy
+    L-BFGS-B is materially weaker on stiff/degenerate ODE likelihoods (it under-converged every
+    reference by 2.5–5.7 nll, so the true structure "beat" its own reference by ΔBIC −5 to −11),
+    so it is not used at all. Seeds a start at ``nominalValue`` (the true values) via pyPESTO's
+    PetabImporter, so start-0 lands in the true basin.
     """
-    from amici.sim.sundials.petab.v1 import LLH, simulate_petab
-    from petab.v1 import scale, unscale
-    from petab.v1.C import (
-        ESTIMATE, LOWER_BOUND, NOMINAL_VALUE, PARAMETER_ID, PARAMETER_SCALE, UPPER_BOUND,
-    )
-    from scipy.optimize import minimize
+    import logging as _logging
+
+    import numpy as np
+    import pypesto.optimize
+    import pypesto.petab
+    from petab.v1 import Problem, unscale
+    from petab.v1.C import ESTIMATE
+    from petab.v1.C import OBSERVABLE_ID as OID
+    from petab.v1.C import PARAMETER_ID, PARAMETER_SCALE
+    from petab.v1.models.sbml_model import SbmlModel
+
+    _ensure_swig_on_path()
+    np.random.seed(seed)  # best-effort determinism for start-point sampling
 
     pdf = parameter_df
     if pdf.index.name != PARAMETER_ID and PARAMETER_ID in pdf.columns:
         pdf = pdf.set_index(PARAMETER_ID)
-    problem, amici_model = _import_and_problem(
-        model_ant, pdf, condition_df, observable_df, measurement_df, build_dir, model_name)
+    odf = observable_df
+    if odf.index.name != OID and OID in odf.columns:
+        odf = odf.set_index(OID)
+    cdf = condition_df
+    if cdf.index.name != "conditionId" and "conditionId" in cdf.columns:
+        cdf = cdf.set_index("conditionId")
 
-    free = [pid for pid in pdf.index if int(float(pdf.loc[pid, ESTIMATE])) == 1]
-    scales = {pid: pdf.loc[pid, PARAMETER_SCALE] for pid in free}
-    fixed = {pid: float(pdf.loc[pid, NOMINAL_VALUE]) for pid in pdf.index if pid not in free}
-    lb = np.array([scale(float(pdf.loc[pid, LOWER_BOUND]), scales[pid]) for pid in free])
-    ub = np.array([scale(float(pdf.loc[pid, UPPER_BOUND]), scales[pid]) for pid in free])
-
-    import warnings
-
-    def negllh(x_scaled: np.ndarray) -> float:
-        params = dict(fixed)
-        for pid, xs in zip(free, x_scaled):
-            params[pid] = unscale(float(xs), scales[pid])
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
-            try:
-                res = simulate_petab(problem, amici_model=amici_model,
-                                     problem_parameters=params, scaled_parameters=False)
-            except Exception:
-                return 1e12
-        val = -float(res[LLH])
-        return val if np.isfinite(val) else 1e12
-
-    rng = np.random.default_rng(seed)
-    x0_nominal = np.array([scale(float(pdf.loc[pid, NOMINAL_VALUE]), scales[pid]) for pid in free])
-    best_x, best_f = None, np.inf
-    for i in range(n_starts):
-        x0 = x0_nominal if i == 0 else lb + rng.random(len(free)) * (ub - lb)
-        r = minimize(negllh, x0, method="L-BFGS-B", bounds=list(zip(lb, ub)))
-        if r.fun < best_f:
-            best_f, best_x = r.fun, r.x
-    fitted = {pid: unscale(float(x), scales[pid]) for pid, x in zip(free, best_x)}
-    return fitted, best_f
+    problem = Problem(
+        model=SbmlModel.from_antimony(model_ant),
+        condition_df=cdf, observable_df=odf,
+        measurement_df=measurement_df.copy(), parameter_df=pdf,
+    )
+    build_dir = Path(build_dir)
+    build_dir.mkdir(parents=True, exist_ok=True)
+    importer = pypesto.petab.PetabImporter(
+        problem, output_folder=str(build_dir), model_name=model_name)
+    pp = importer.create_problem()
+    optimizer = pypesto.optimize.FidesOptimizer(verbose=_logging.ERROR)
+    result = pypesto.optimize.minimize(
+        pp, optimizer=optimizer, n_starts=n_starts, progress_bar=False)
+    best = result.optimize_result.list[0]
+    nll = float(best["fval"])
+    # ``best["x"]`` / ``pp.x_names`` span ALL parameters (free + fixed, with fixed ones filled
+    # back in), so key ``fitted`` to the ESTIMATED (free) params only — k = len(fitted) must be
+    # the number of estimated parameters, not the full table size (else fixed sigmas/beta inflate k).
+    free_names = [pid for pid in pdf.index if int(float(pdf.loc[pid, ESTIMATE])) == 1]
+    xmap = dict(zip(pp.x_names, [float(z) for z in best["x"]]))
+    fitted = {
+        pid: float(unscale(xmap[pid], pdf.loc[pid, PARAMETER_SCALE]))
+        for pid in free_names
+        if pid in xmap
+    }
+    return fitted, nll
 
 
 def write_reference(
@@ -233,7 +238,7 @@ def write_reference(
     """
     import json
 
-    fitted, nll = fit_broken(
+    fitted, nll = fit_reference(
         model_ant, parameter_df, condition_df, observable_df, measurement_df,
         build_dir=build_dir, model_name=model_name, n_starts=n_starts, seed=seed,
     )

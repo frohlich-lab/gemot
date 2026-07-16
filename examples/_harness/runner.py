@@ -216,7 +216,8 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     head = int((await call("current_version")).get("version", 0))
     diff = await call("diff_versions", from_version=0, to_version=head) if head else {}
     errors = await call("get_errors", limit=20)
-    delta = baseline.nll - final_nll
+    # baseline.nll is None for a zero-shot build (no model shipped → nothing to score).
+    delta = (baseline.nll - final_nll) if baseline.nll is not None else None
 
     # BIC gate against the true-model reference.
     ref = scenario.reference()
@@ -248,9 +249,11 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     for line in diag_lines:
         print(f"  {line}")
     print(f"  new species:          {new_species or 'none'}")
-    print(f"  fit: nll={final_nll:.6g}  chi2={chi2:.6g}  k={k}  n={n}  (baseline nll {baseline.nll:.6g}, Δnll {delta:.6g})"
+    _bl = f"{baseline.nll:.6g}" if baseline.nll is not None else "n/a (zero-shot)"
+    _dl = f"{delta:.6g}" if delta is not None else "n/a"
+    print(f"  fit: nll={final_nll:.6g}  chi2={chi2:.6g}  k={k}  n={n}  (baseline nll {_bl}, Δnll {_dl})"
           if chi2 is not None else
-          f"  fit: nll={final_nll:.6g}  k={k}  n={n}  (baseline nll {baseline.nll:.6g}, Δnll {delta:.6g})")
+          f"  fit: nll={final_nll:.6g}  k={k}  n={n}  (baseline nll {_bl}, Δnll {_dl})")
     if delta_bic is not None:
         print(f"  BIC:  candidate {bic_cand:.6g} | true-model {bic_ref:.6g} | "
               f"ΔBIC {delta_bic:+.6g}  (accept if <= {scenario.bic_threshold:g})")
@@ -259,14 +262,33 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     if p_gof is not None:
         print(f"  chi2 GoF:             p={p_gof:.3g} (dof={dof}) "
               f"— {'consistent with noise' if p_gof >= 0.05 else 'worse than noise'}")
+    # Server-side breakdown of the heavy compute: how much of the tool time was the one-time
+    # AMICI compile vs the recurring pyPESTO fit (best-effort — a server without the tool, or
+    # a failed call, just leaves these None). Fetched BEFORE the clock snapshot below so this
+    # probe is counted consistently in BOTH compute_seconds and tool_calls (not one but not
+    # the other), keeping the two metrics comparable.
+    compile_s = fit_s = n_compiles = n_fits = None
+    try:
+        timing = await call("get_run_timing")
+        if isinstance(timing, dict):
+            compile_s = timing.get("compile_seconds")
+            fit_s = timing.get("fit_seconds")
+            n_compiles = timing.get("n_compiles")
+            n_fits = timing.get("n_fits")
+    except Exception:
+        pass
     # Wall-clock split: time inside MCP tool calls (dominated by the AMICI compile +
     # pyPESTO fits + SQL) vs LLM+overhead (the remainder — inference + orchestration).
     wall = time.monotonic() - t0
     compute_s = clock.seconds
     llm_s = max(0.0, wall - compute_s)
     if clock.calls:
+        breakdown = ""
+        if compile_s is not None and fit_s is not None:
+            breakdown = (f" [compile {compile_s:.0f}s ×{n_compiles} + fit {fit_s:.0f}s ×{n_fits}"
+                         f" + other {max(0.0, compute_s - compile_s - fit_s):.0f}s]")
         print(f"  time:                 total {wall:.0f}s | tool calls {compute_s:.0f}s "
-              f"({clock.calls} calls) | LLM+overhead {llm_s:.0f}s")
+              f"({clock.calls} calls){breakdown} | LLM+overhead {llm_s:.0f}s")
     if errors:
         print(f"  rejected tool calls:  {len(errors)} (see get_errors)")
     ant_diff = diff.get("model_diff") if isinstance(diff, dict) else None
@@ -310,6 +332,11 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         "wall_seconds": round(wall, 1),
         "compute_seconds": round(compute_s, 1),
         "llm_seconds": round(llm_s, 1),
+        # Server-side split of the heavy compute (None if the server didn't report it).
+        "compile_seconds": compile_s,
+        "fit_seconds": fit_s,
+        "n_compiles": n_compiles,
+        "n_fits": n_fits,
         "tool_calls": clock.calls,
         "run_ended_at": _now_iso(),
         **diag_fields,
@@ -320,17 +347,32 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
 
 
 # --------------------------------------------------------------------------- server
-# Launched with: python -c <bootstrap> <yaml> <build_root> <ref_mode> <host> <port>
+# Launched with: python -c <bootstrap> <yaml> <build_root> <ref_mode> <host> <port> <n_starts>
 _SERVER_BOOTSTRAP = (
-    "import sys\n"
+    "import sys, os, threading, time\n"
+    # Parent-death watchdog: if run.py dies (incl. SIGKILL by the batch watchdog, which skips
+    # run.py's own `finally` teardown), we'd otherwise leak this uvicorn server forever. Exit
+    # within ~5s of being orphaned (getppid changes when the parent dies -> reparented). Portable
+    # (macOS/Linux), unlike PR_SET_PDEATHSIG.
+    "_ppid = os.getppid()\n"
+    "def _exit_if_orphaned():\n"
+    "    while True:\n"
+    "        time.sleep(5)\n"
+    "        if os.getppid() != _ppid:\n"
+    "            os._exit(0)\n"
+    "threading.Thread(target=_exit_if_orphaned, daemon=True).start()\n"
     "import uvicorn\n"
     "_Config = uvicorn.Config\n"
     # Silence uvicorn's per-request access log so the server's stdout carries only
     # AMICI's C++ build-toolchain output (captured to work/amici_build.log).
     "uvicorn.Config = lambda *a, **k: _Config(*a, **{**k, 'access_log': False})\n"
     "from petab_mcp.server import create_server\n"
-    "yaml_path, build_root, ref_mode, host, port = sys.argv[1:6]\n"
-    "srv = create_server(yaml_path, build_root=build_root, reference_mode=ref_mode)\n"
+    "yaml_path, build_root, ref_mode, host, port, n_starts = sys.argv[1:7]\n"
+    # The agent's own commits (set_model etc.) don't pass n_starts, so make the server's
+    # default multistart count match --n-starts — otherwise agent fits use the low library
+    # default (5), too few for the harder several-parameter oscillator fits.
+    "srv = create_server(yaml_path, build_root=build_root, reference_mode=ref_mode,\n"
+    "                    auto_fit_starts=int(n_starts))\n"
     "srv.settings.host = host\n"
     "srv.settings.port = int(port)\n"
     "srv.run(transport='streamable-http')\n"
@@ -378,14 +420,21 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
     baseline_structure = await call("get_model_structure")
     baseline_species = set(baseline_structure.get("species", []) or [])
 
-    print("[preflight] scoring baseline (first AMICI compile is slow)...")
-    baseline_fit = await call("get_fit_summary")
-    baseline = Baseline(
-        nll=float(baseline_fit["neg_log_likelihood"]),
-        species=baseline_species,
-        structure=baseline_structure,
-    )
-    print(f"[preflight] baseline neg_log_likelihood = {baseline.nll:.6g}")
+    if desc.get("model_initialized", True):
+        print("[preflight] scoring baseline (first AMICI compile is slow)...")
+        baseline_fit = await call("get_fit_summary")
+        baseline = Baseline(
+            nll=float(baseline_fit["neg_log_likelihood"]),
+            species=baseline_species,
+            structure=baseline_structure,
+        )
+        print(f"[preflight] baseline neg_log_likelihood = {baseline.nll:.6g}")
+    else:
+        # Zero-shot: the problem ships without a model — nothing to score until the agent
+        # builds one via set_model. The judge compares to the true-model reference, not a
+        # baseline, so a None baseline is fine.
+        print("[preflight] no model shipped — zero-shot build (no baseline to score)")
+        baseline = Baseline(nll=None, species=baseline_species, structure=baseline_structure)
 
     run_started_at = _now_iso()
     git_sha = _git_sha(scenario.example_dir)
@@ -436,7 +485,7 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
     }
     exit_code, result = 1, {}
     try:
-        with run_span(tracing, name="model_repair_run", attributes=span_attrs) as span:
+        with run_span(tracing, name="model_build_run", attributes=span_attrs) as span:
             agent_out = await run_deepagents(
                 session,
                 model=args.model,
@@ -491,6 +540,7 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
     server_cmd = [
         sys.executable, "-c", _SERVER_BOOTSTRAP,
         str(work_yaml), str(build_root), args.reference_validation, host, str(port),
+        str(args.n_starts),
     ]
     server_log_path = work / "server.log"
     amici_log_path = work / "amici_build.log"
@@ -537,17 +587,20 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
     )
     p.add_argument("--driver", choices=["deepagents", "scripted"], default="deepagents",
                    help="deepagents: drive an OpenRouter model; scripted: deterministic repair, no LLM.")
-    p.add_argument("--model", default="qwen/qwen3-235b-a22b",
-                   help="OpenRouter model id (deepagents driver).")
+    p.add_argument("--model", default="deepseek/deepseek-v4-pro",
+                   help="OpenRouter model id (deepagents driver). Default v4-pro: on the "
+                        "repressilator it passes 2/3 near-parsimoniously vs v4-flash's lucky "
+                        "1/5, at ~$0.58/run (it thrashes less).")
     p.add_argument("--base-url", default="https://openrouter.ai/api/v1",
                    help="OpenAI-compatible base URL for the LLM provider (default: OpenRouter).")
     p.add_argument("--api-key", default=None,
                    help="OpenRouter API key (default: the OPENROUTER_API_KEY environment variable).")
     p.add_argument("--temperature", type=float, default=0.0,
                    help="LLM sampling temperature (deepagents driver); recorded per run for sweeps.")
-    p.add_argument("--recursion-limit", type=int, default=150, help="deepagents/LangGraph step budget.")
-    p.add_argument("--n-starts", type=int, default=20,
-                   help="multistart count for the auto-fit on the repair commit.")
+    p.add_argument("--recursion-limit", type=int, default=200, help="deepagents/LangGraph step budget.")
+    p.add_argument("--n-starts", type=int, default=50,
+                   help="pyPESTO multistart count for the auto-fit on every commit (also the "
+                        "server's default, so the agent's own commits use it too).")
     p.add_argument("--reference-validation", choices=["required", "best_effort", "off"], default="off",
                    help="Server reference-validation mode (off = no network; default for a hermetic demo).")
     # --- Arize Phoenix agent tracing (on by default; deepagents driver only) ---
