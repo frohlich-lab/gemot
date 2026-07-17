@@ -399,26 +399,14 @@ def _wait_until_listening(host: str, port: int, proc: subprocess.Popen, log: Pat
     raise TimeoutError(f"server did not start listening on {host}:{port} within {timeout}s")
 
 
-# ``BaseExceptionGroup`` is a builtin only on Python >= 3.11; the project floor is 3.10
-# (pyproject requires-python), where it comes from the ``exceptiongroup`` backport that anyio
-# already depends on. Resolve it once — builtin, then backport, then an empty tuple (which
-# ``isinstance`` treats as "matches nothing") — so _summarize_exc can never raise NameError and
-# defeat the degraded-result path it exists to serve.
-try:
-    _BASE_EXC_GROUP: "type | tuple" = BaseExceptionGroup
-except NameError:  # pragma: no cover - only on Python < 3.11
-    try:
-        from exceptiongroup import BaseExceptionGroup as _BASE_EXC_GROUP  # type: ignore
-    except ImportError:
-        _BASE_EXC_GROUP = ()
-
-
 def _summarize_exc(exc: BaseException) -> str:
     """A short, readable one-liner for an exception — unwrapping an ExceptionGroup (anyio's
     TaskGroup wraps a background provider/connection failure in one) down to its first leaf,
-    so 'ExceptionGroup: unhandled errors in a TaskGroup' becomes e.g. 'ReadTimeout: ...'."""
+    so 'ExceptionGroup: unhandled errors in a TaskGroup' becomes e.g. 'ReadTimeout: ...'.
+
+    ``BaseExceptionGroup`` is a builtin (Python >= 3.11, well under the project's 3.12 floor)."""
     seen: BaseException = exc
-    while isinstance(seen, _BASE_EXC_GROUP) and getattr(seen, "exceptions", None):
+    while isinstance(seen, BaseExceptionGroup) and seen.exceptions:
         seen = seen.exceptions[0]
     return f"{type(seen).__name__}: {seen}"[:200]
 
@@ -431,10 +419,9 @@ def _should_reraise(exc: BaseException) -> bool:
     BaseException`` so a ``BaseExceptionGroup`` from anyio's TaskGroup teardown — whose leaf
     is a *background* ``asyncio.CancelledError`` raised while the
     streamablehttp_client/ClientSession task group unwinds after a provider stall — is
-    caught. On Python 3.11+ such a group is a ``BaseException`` but NOT an ``Exception`` (an
-    ``ExceptionGroup`` of all-``Exception`` leaves *is* an ``Exception`` and was already
-    caught), so the original guards let it escape and vanish the run with no result.json. On
-    the 3.10 floor it comes from the ``exceptiongroup`` backport via ``_BASE_EXC_GROUP``.
+    caught. Such a group is a ``BaseException`` but NOT an ``Exception`` (an ``ExceptionGroup``
+    of all-``Exception`` leaves *is* an ``Exception`` and was already caught), so the original
+    guards let it escape and vanish the run with no result.json.
 
     Three things must still propagate untouched:
 
@@ -447,9 +434,7 @@ def _should_reraise(exc: BaseException) -> bool:
     """
     if isinstance(exc, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
         return True
-    # ``_BASE_EXC_GROUP`` is the builtin on 3.11+, the exceptiongroup backport on 3.10, or an
-    # empty tuple if neither is available (then no group can exist, so this never matches).
-    if isinstance(exc, _BASE_EXC_GROUP):
+    if isinstance(exc, BaseExceptionGroup):
         return exc.subgroup((KeyboardInterrupt, SystemExit)) is not None
     return False
 
