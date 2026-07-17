@@ -423,6 +423,61 @@ def _summarize_exc(exc: BaseException) -> str:
     return f"{type(seen).__name__}: {seen}"[:200]
 
 
+def _should_reraise(exc: BaseException) -> bool:
+    """Whether a broadened ``except BaseException`` guard must let ``exc`` propagate rather
+    than turn it into a degraded result.
+
+    The degraded-result guards are widened from ``except Exception`` to ``except
+    BaseException`` so a ``BaseExceptionGroup`` from anyio's TaskGroup teardown — whose leaf
+    is a *background* ``asyncio.CancelledError`` raised while the
+    streamablehttp_client/ClientSession task group unwinds after a provider stall — is
+    caught. On Python 3.11+ such a group is a ``BaseException`` but NOT an ``Exception`` (an
+    ``ExceptionGroup`` of all-``Exception`` leaves *is* an ``Exception`` and was already
+    caught), so the original guards let it escape and vanish the run with no result.json. On
+    the 3.10 floor it comes from the ``exceptiongroup`` backport via ``_BASE_EXC_GROUP``.
+
+    Three things must still propagate untouched:
+
+    * ``KeyboardInterrupt`` / ``SystemExit`` — user interrupt and interpreter exit (the
+      latter is how a missing API key hard-stops the run), including a group that carries one
+      as a leaf.
+    * a *bare* ``asyncio.CancelledError`` — a genuine top-level cancellation of THIS
+      coroutine; swallowing it would break cooperative cancellation. (A ``CancelledError``
+      *wrapped in a group* is the anyio-teardown case above and is NOT re-raised.)
+    """
+    if isinstance(exc, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
+        return True
+    # ``_BASE_EXC_GROUP`` is the builtin on 3.11+, the exceptiongroup backport on 3.10, or an
+    # empty tuple if neither is available (then no group can exist, so this never matches).
+    if isinstance(exc, _BASE_EXC_GROUP):
+        return exc.subgroup((KeyboardInterrupt, SystemExit)) is not None
+    return False
+
+
+def _write_degraded_result(work: Path, base_meta: dict, scenario: Scenario,
+                           reason: str) -> dict:
+    """Persist (and return) the degraded ``result.json`` written when a run aborts before a
+    verdict, so the batch and the cross-run aggregator find a well-formed row instead of a
+    missing file.
+
+    Keeps the contract ``collect_metrics.py`` buckets on: ``scenario``, ``stop_reason``,
+    ``success`` (False), ``delta_bic`` (None), ``run_ended_at``, plus everything in
+    ``base_meta`` (driver/model/version/git_sha/run_started_at/phoenix ids/...)."""
+    print(f"[run] aborted by an unrecoverable error ({reason}); "
+          "writing a degraded result.json and exiting.")
+    result = {
+        **base_meta,
+        "scenario": scenario.name,
+        "stop_reason": f"aborted: {reason}",
+        "success": False,
+        "delta_bic": None,
+        "run_ended_at": _now_iso(),
+        "error": "run aborted before a verdict (provider/connection failure)",
+    }
+    (work / "result.json").write_text(json.dumps(result, indent=2))
+    return result
+
+
 async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                  args: argparse.Namespace) -> "tuple[int, dict]":
     """Preflight, run the chosen driver, and judge — all on one live session.
@@ -433,92 +488,95 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
     clock = _wrap_tool_clock(session)  # split server/compute time from LLM time
     call = _make_call(session)
 
-    desc = await call("describe_problem")
-    print(f"[preflight] model '{desc.get('model_id')}' | "
-          f"reactions={desc.get('n_reactions_detail')} | "
-          f"observables={desc.get('observables')} | "
-          f"free params={desc.get('free_parameters')}")
-
-    # Record the initial species set so the judge can reject "repairs" that invent a new,
-    # unobserved species to bend the curve rather than fixing the mechanism.
-    baseline_structure = await call("get_model_structure")
-    baseline_species = set(baseline_structure.get("species", []) or [])
-
-    if desc.get("model_initialized", True):
-        print("[preflight] scoring baseline (first AMICI compile is slow)...")
-        baseline_fit = await call("get_fit_summary")
-        baseline = Baseline(
-            nll=float(baseline_fit["neg_log_likelihood"]),
-            species=baseline_species,
-            structure=baseline_structure,
-        )
-        print(f"[preflight] baseline neg_log_likelihood = {baseline.nll:.6g}")
-    else:
-        # Zero-shot: the problem ships without a model — nothing to score until the agent
-        # builds one via set_model. The judge compares to the true-model reference, not a
-        # baseline, so a None baseline is fine.
-        print("[preflight] no model shipped — zero-shot build (no baseline to score)")
-        baseline = Baseline(nll=None, species=baseline_species, structure=baseline_structure)
-
+    # Stamp the run's start + provenance up front (before the slow baseline compile) so a
+    # degraded result.json is still well-formed if preflight/baseline itself blows up.
     run_started_at = _now_iso()
     git_sha = _git_sha(scenario.example_dir)
-
-    # --- scripted driver: deterministic canonical repair, no LLM, no tracing --------------
-    if args.driver == "scripted":
-        print(f"[scripted] applying canonical fix: {scenario.fix_summary or '(see scenario)'}")
-        await scenario.scripted_fix(call, args.n_starts)
-        meta = {
-            "driver": args.driver, "model": None, "stop_reason": "completed",
-            "git_sha": git_sha, "example_version": scenario.version,
-            "recursion_limit": None, "n_starts": args.n_starts, "temperature": None,
-            "run_started_at": run_started_at,
-            "phoenix_project": None, "phoenix_trace_id": None,
-        }
-        exit_code, result = await _judge(scenario, call, baseline, work, meta, clock, t0)
-        return exit_code, result
-
-    # --- deepagents driver: the LLM panel diagnoses + repairs -----------------------------
-    # Arize Phoenix tracing (on by default; disable with --no-phoenix): instrument the
-    # LangChain stack BEFORE the agent runs so every LLM + tool-call span is captured.
-    tracing = None
-    if args.phoenix:
-        from .tracing import setup_phoenix_tracing
-
-        tracing = setup_phoenix_tracing(project_name=args.phoenix_project)
-
-    api_key = args.api_key or os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
-        raise SystemExit(
-            "No OpenRouter API key: set OPENROUTER_API_KEY (or pass --api-key). "
-            "Get one at https://openrouter.ai/keys, or use --driver scripted for a "
-            "no-LLM self-test."
-        )
-    print(f"[agent] driving {args.model} via OpenRouter + deepagents "
-          f"(recursion_limit={args.recursion_limit})")
-    from .agent import run_deepagents
-    from .tracing import record_run_result, run_span, trace_id_hex
-
-    # A run-level span parents the whole agent trace, so each run is one self-describing
-    # trace (model + fit metrics + verdict on the root); its trace id is stamped into
-    # result.json so the across-example aggregator can join usage back to it.
-    span_attrs = {
-        "scenario": scenario.name, "example_version": scenario.version,
-        "model": args.model, "driver": args.driver, "temperature": args.temperature,
-        "recursion_limit": args.recursion_limit, "n_starts": args.n_starts,
-        "git_sha": git_sha, "run_started_at": run_started_at,
+    scripted = args.driver == "scripted"
+    # The fields known before we touch the server — enough to write a well-formed degraded
+    # result.json from ANY failure below (preflight, baseline scoring, the agent, or the
+    # judge). Phoenix fields start None and are filled in once the run span is open.
+    base_meta = {
+        "driver": args.driver,
+        "model": None if scripted else args.model,
+        "git_sha": git_sha, "example_version": scenario.version,
+        "recursion_limit": None if scripted else args.recursion_limit,
+        "n_starts": args.n_starts,
+        "temperature": None if scripted else args.temperature,
+        "run_started_at": run_started_at,
+        "phoenix_project": None, "phoenix_trace_id": None,
     }
-    exit_code, result = 1, {}
+
+    tracing = None
     try:
+        desc = await call("describe_problem")
+        print(f"[preflight] model '{desc.get('model_id')}' | "
+              f"reactions={desc.get('n_reactions_detail')} | "
+              f"observables={desc.get('observables')} | "
+              f"free params={desc.get('free_parameters')}")
+
+        # Record the initial species set so the judge can reject "repairs" that invent a new,
+        # unobserved species to bend the curve rather than fixing the mechanism.
+        baseline_structure = await call("get_model_structure")
+        baseline_species = set(baseline_structure.get("species", []) or [])
+
+        if desc.get("model_initialized", True):
+            print("[preflight] scoring baseline (first AMICI compile is slow)...")
+            baseline_fit = await call("get_fit_summary")
+            baseline = Baseline(
+                nll=float(baseline_fit["neg_log_likelihood"]),
+                species=baseline_species,
+                structure=baseline_structure,
+            )
+            print(f"[preflight] baseline neg_log_likelihood = {baseline.nll:.6g}")
+        else:
+            # Zero-shot: the problem ships without a model — nothing to score until the agent
+            # builds one via set_model. The judge compares to the true-model reference, not a
+            # baseline, so a None baseline is fine.
+            print("[preflight] no model shipped — zero-shot build (no baseline to score)")
+            baseline = Baseline(nll=None, species=baseline_species, structure=baseline_structure)
+
+        # --- scripted driver: deterministic canonical repair, no LLM, no tracing ----------
+        if scripted:
+            print(f"[scripted] applying canonical fix: {scenario.fix_summary or '(see scenario)'}")
+            await scenario.scripted_fix(call, args.n_starts)
+            meta = {**base_meta, "stop_reason": "completed"}
+            return await _judge(scenario, call, baseline, work, meta, clock, t0)
+
+        # --- deepagents driver: the LLM panel diagnoses + repairs --------------------------
+        # Arize Phoenix tracing (on by default; disable with --no-phoenix): instrument the
+        # LangChain stack BEFORE the agent runs so every LLM + tool-call span is captured.
+        if args.phoenix:
+            from .tracing import setup_phoenix_tracing
+
+            tracing = setup_phoenix_tracing(project_name=args.phoenix_project)
+
+        api_key = args.api_key or os.environ.get("OPENROUTER_API_KEY")
+        if not api_key:
+            raise SystemExit(
+                "No OpenRouter API key: set OPENROUTER_API_KEY (or pass --api-key). "
+                "Get one at https://openrouter.ai/keys, or use --driver scripted for a "
+                "no-LLM self-test."
+            )
+        print(f"[agent] driving {args.model} via OpenRouter + deepagents "
+              f"(recursion_limit={args.recursion_limit})")
+        from .agent import run_deepagents
+        from .tracing import record_run_result, run_span, trace_id_hex
+
+        # A run-level span parents the whole agent trace, so each run is one self-describing
+        # trace (model + fit metrics + verdict on the root); its trace id is stamped into
+        # result.json so the across-example aggregator can join usage back to it.
+        span_attrs = {
+            "scenario": scenario.name, "example_version": scenario.version,
+            "model": args.model, "driver": args.driver, "temperature": args.temperature,
+            "recursion_limit": args.recursion_limit, "n_starts": args.n_starts,
+            "git_sha": git_sha, "run_started_at": run_started_at,
+        }
+        exit_code, result = 1, {}
         with run_span(tracing, name="model_build_run", attributes=span_attrs) as span:
-            base_meta = {
-                "driver": args.driver, "model": args.model,
-                "git_sha": git_sha, "example_version": scenario.version,
-                "recursion_limit": args.recursion_limit,
-                "n_starts": args.n_starts, "temperature": args.temperature,
-                "run_started_at": run_started_at,
-                "phoenix_project": tracing.project_name if tracing else None,
-                "phoenix_trace_id": trace_id_hex(span),
-            }
+            base_meta = {**base_meta,
+                         "phoenix_project": tracing.project_name if tracing else None,
+                         "phoenix_trace_id": trace_id_hex(span)}
             try:
                 agent_out = await run_deepagents(
                     session,
@@ -537,24 +595,29 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                 meta = {**base_meta, "stop_reason": stop_reason}
                 exit_code, result = await _judge(scenario, call, baseline, work, meta, clock, t0)
                 record_run_result(span, result)
-            except Exception as exc:
+            except BaseException as exc:
                 # A provider or MCP-connection stall (httpx ReadTimeout/ConnectError, often
-                # wrapped in an anyio TaskGroup ExceptionGroup) can escape the agent loop's own
-                # guard via a background task, OR kill the session mid-judge. Don't let it
-                # vanish the run with rc=1 and NO result.json — which strands the batch and the
-                # cross-run aggregator. Write a degraded result and exit cleanly.
-                reason = _summarize_exc(exc)
-                print(f"[run] aborted by an unrecoverable error ({reason}); "
-                      "writing a degraded result.json and exiting.")
-                result = {**base_meta, "scenario": scenario.name,
-                          "stop_reason": f"aborted: {reason}",
-                          "success": False, "delta_bic": None,
-                          "run_ended_at": _now_iso(),
-                          "error": "run aborted before a verdict (provider/connection failure)"}
-                (work / "result.json").write_text(json.dumps(result, indent=2))
+                # wrapped in an anyio TaskGroup BaseExceptionGroup whose leaf is a background
+                # CancelledError) can escape the agent loop's own guard, OR kill the session
+                # mid-judge. Don't let it vanish the run with rc=1 and NO result.json — which
+                # strands the batch and the cross-run aggregator. Write a degraded result and
+                # exit cleanly. (_should_reraise lets a real interrupt / top-level cancellation
+                # through untouched.)
+                if _should_reraise(exc):
+                    raise
+                result = _write_degraded_result(work, base_meta, scenario, _summarize_exc(exc))
                 exit_code = 1
                 with contextlib.suppress(Exception):
-                    record_run_result(span, result)
+                    record_run_result(span, result)  # span still live inside the `with`
+        return exit_code, result
+    except BaseException as exc:
+        # Same guarantee for the window the inner guard can't see: preflight, baseline
+        # scoring, the scripted judge, and the deepagents setup before the run span opens.
+        # There is no live span here (the failure is before/outside it), so just persist
+        # result.json. A missing API key raises SystemExit and is re-raised, not degraded.
+        if _should_reraise(exc):
+            raise
+        return 1, _write_degraded_result(work, base_meta, scenario, _summarize_exc(exc))
     finally:
         if tracing is not None:
             tracing.flush()  # export any buffered spans before we (maybe) exit
@@ -568,8 +631,6 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                         await asyncio.sleep(3600)
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     print("\n[phoenix] shutting down.")
-
-    return exit_code, result
 
 
 # --------------------------------------------------------------------------- main
@@ -675,11 +736,16 @@ def run_scenario(scenario: Scenario, argv: list[str] | None = None) -> int:
         exit_code, result = asyncio.run(_main_async(scenario, args))
     except KeyboardInterrupt:
         return 130
-    except Exception as exc:
-        # A teardown-time failure (e.g. an anyio TaskGroup ExceptionGroup from the MCP client
-        # after a provider stall) can escape _main_async AFTER _drive already wrote result.json.
-        # Exit cleanly (nonzero) instead of crash-tracebacking — the on-disk result.json, if
-        # written, is the source of truth the batch/aggregator reads.
+    except BaseException as exc:
+        # A teardown-time failure (e.g. an anyio TaskGroup BaseExceptionGroup from the MCP
+        # client after a provider stall — a BaseException, not an Exception, so it slipped the
+        # old `except Exception`) can escape _main_async AFTER _drive already wrote
+        # result.json. Exit cleanly (nonzero) instead of crash-tracebacking — the on-disk
+        # result.json, if written, is the source of truth the batch/aggregator reads.
+        # _should_reraise still lets a genuine interrupt / SystemExit / top-level cancellation
+        # propagate untouched.
+        if _should_reraise(exc):
+            raise
         print(f"[run] exited with an unrecovered teardown error ({_summarize_exc(exc)}).")
         return 1
     # W&B logging is a post-run, best-effort step (covers run.py direct AND the sweep's
