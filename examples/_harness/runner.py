@@ -39,6 +39,7 @@ from pathlib import Path
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
+from .explorer.archive import archive_run
 from .scenario import Baseline, JudgeContext, Scenario
 
 
@@ -655,7 +656,14 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
         async with streamablehttp_client(url) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                return await _drive(scenario, session, work, args)
+                exit_code, result = await _drive(scenario, session, work, args)
+                # Snapshot the run's on-disk half (result.json + version store) into the runs
+                # archive while work/ still exists — the next run of this example wipes it. The
+                # run explorer (examples/explore_ui.py) stitches this with the persisted Phoenix
+                # trace. Best-effort: archive_run never raises.
+                if result:
+                    archive_run(work, result)
+                return exit_code, result
     finally:
         # Tear down without masking any in-flight exception.
         with contextlib.suppress(Exception):

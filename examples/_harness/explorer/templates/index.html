@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>petab-mcp · runs</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>petab-mcp <span class="muted">run explorer</span></h1>
+    <div class="meta-line muted">archive: <code>{{ archive_root }}</code> · phoenix: <code>{{ phoenix }}</code></div>
+  </header>
+  <main class="index">
+    {% if not runs %}
+      <p class="empty">No archived runs yet. Runs auto-archive at completion into
+      <code>{{ archive_root }}</code>. Run a scenario (e.g.
+      <code>examples/repressilator/run.py</code>) and refresh.</p>
+    {% else %}
+      {% for scenario, group in runs|groupby('scenario') %}
+        {% set glist = group|list %}
+        {% set npass = glist|selectattr('success')|list|length %}
+        <details class="scenario-group" open>
+          <summary>
+            <span class="grp-name">{{ scenario or 'unknown' }}</span>
+            <span class="grp-meta muted">{{ glist|length }} run{{ 's' if glist|length != 1 }}
+              · {{ npass }}/{{ glist|length }} passed</span>
+          </summary>
+          <table class="runs">
+            <thead><tr>
+              <th>model</th><th>verdict</th><th>ΔBIC</th>
+              <th>versions</th><th>trace</th><th>started</th>
+            </tr></thead>
+            <tbody>
+            {% for r in glist %}
+              <tr onclick="location.href='/run/{{ r.run_id }}'">
+                <td class="mono">{{ r.model or '—' }}</td>
+                <td>
+                  {% if r.success %}<span class="pill ok">success</span>
+                  {% elif r.stop_reason and 'aborted' in (r.stop_reason|string) %}<span class="pill warn">aborted</span>
+                  {% else %}<span class="pill bad">not&nbsp;fixed</span>{% endif %}
+                </td>
+                <td class="mono">{% if r.delta_bic is not none %}{{ '%+.2f'|format(r.delta_bic) }}{% else %}—{% endif %}</td>
+                <td class="mono">{{ r.n_versions }}</td>
+                <td>{% if r.has_trace %}✓{% else %}<span class="muted">—</span>{% endif %}</td>
+                <td class="muted mono">{{ (r.run_started_at or '')[:19].replace('T',' ') }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </details>
+      {% endfor %}
+    {% endif %}
+  </main>
+</body>
+</html>

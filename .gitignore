@@ -30,3 +30,7 @@ examples/_harness/metrics_history.csv
 
 # Local Weights & Biases run artifacts (run.py --wandb writes ./wandb/; synced to the cloud)
 wandb/
+
+# Run-explorer per-run archive: bundles the web UI (examples/explore_ui.py) reads; written
+# by each harness run's archive_run(). Generated — grows every run, not for dev commits.
+examples/_runs_archive/
