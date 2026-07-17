@@ -399,6 +399,30 @@ def _wait_until_listening(host: str, port: int, proc: subprocess.Popen, log: Pat
     raise TimeoutError(f"server did not start listening on {host}:{port} within {timeout}s")
 
 
+# ``BaseExceptionGroup`` is a builtin only on Python >= 3.11; the project floor is 3.10
+# (pyproject requires-python), where it comes from the ``exceptiongroup`` backport that anyio
+# already depends on. Resolve it once — builtin, then backport, then an empty tuple (which
+# ``isinstance`` treats as "matches nothing") — so _summarize_exc can never raise NameError and
+# defeat the degraded-result path it exists to serve.
+try:
+    _BASE_EXC_GROUP: "type | tuple" = BaseExceptionGroup
+except NameError:  # pragma: no cover - only on Python < 3.11
+    try:
+        from exceptiongroup import BaseExceptionGroup as _BASE_EXC_GROUP  # type: ignore
+    except ImportError:
+        _BASE_EXC_GROUP = ()
+
+
+def _summarize_exc(exc: BaseException) -> str:
+    """A short, readable one-liner for an exception — unwrapping an ExceptionGroup (anyio's
+    TaskGroup wraps a background provider/connection failure in one) down to its first leaf,
+    so 'ExceptionGroup: unhandled errors in a TaskGroup' becomes e.g. 'ReadTimeout: ...'."""
+    seen: BaseException = exc
+    while isinstance(seen, _BASE_EXC_GROUP) and getattr(seen, "exceptions", None):
+        seen = seen.exceptions[0]
+    return f"{type(seen).__name__}: {seen}"[:200]
+
+
 async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                  args: argparse.Namespace) -> "tuple[int, dict]":
     """Preflight, run the chosen driver, and judge — all on one live session.
@@ -486,22 +510,8 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
     exit_code, result = 1, {}
     try:
         with run_span(tracing, name="model_build_run", attributes=span_attrs) as span:
-            agent_out = await run_deepagents(
-                session,
-                model=args.model,
-                base_url=args.base_url,
-                api_key=api_key,
-                system_prompt=scenario.system_prompt,
-                task=scenario.task,
-                recursion_limit=args.recursion_limit,
-                temperature=args.temperature,
-            )
-            stop_reason = agent_out.get("stop_reason", "completed")
-            if stop_reason != "completed":
-                print(f"[agent] stopped early: {stop_reason} "
-                      f"(raise --recursion-limit if it ran out of steps)")
-            meta = {
-                "driver": args.driver, "model": args.model, "stop_reason": stop_reason,
+            base_meta = {
+                "driver": args.driver, "model": args.model,
                 "git_sha": git_sha, "example_version": scenario.version,
                 "recursion_limit": args.recursion_limit,
                 "n_starts": args.n_starts, "temperature": args.temperature,
@@ -509,8 +519,42 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                 "phoenix_project": tracing.project_name if tracing else None,
                 "phoenix_trace_id": trace_id_hex(span),
             }
-            exit_code, result = await _judge(scenario, call, baseline, work, meta, clock, t0)
-            record_run_result(span, result)
+            try:
+                agent_out = await run_deepagents(
+                    session,
+                    model=args.model,
+                    base_url=args.base_url,
+                    api_key=api_key,
+                    system_prompt=scenario.system_prompt,
+                    task=scenario.task,
+                    recursion_limit=args.recursion_limit,
+                    temperature=args.temperature,
+                )
+                stop_reason = agent_out.get("stop_reason", "completed")
+                if stop_reason != "completed":
+                    print(f"[agent] stopped early: {stop_reason} "
+                          f"(raise --recursion-limit if it ran out of steps)")
+                meta = {**base_meta, "stop_reason": stop_reason}
+                exit_code, result = await _judge(scenario, call, baseline, work, meta, clock, t0)
+                record_run_result(span, result)
+            except Exception as exc:
+                # A provider or MCP-connection stall (httpx ReadTimeout/ConnectError, often
+                # wrapped in an anyio TaskGroup ExceptionGroup) can escape the agent loop's own
+                # guard via a background task, OR kill the session mid-judge. Don't let it
+                # vanish the run with rc=1 and NO result.json — which strands the batch and the
+                # cross-run aggregator. Write a degraded result and exit cleanly.
+                reason = _summarize_exc(exc)
+                print(f"[run] aborted by an unrecoverable error ({reason}); "
+                      "writing a degraded result.json and exiting.")
+                result = {**base_meta, "scenario": scenario.name,
+                          "stop_reason": f"aborted: {reason}",
+                          "success": False, "delta_bic": None,
+                          "run_ended_at": _now_iso(),
+                          "error": "run aborted before a verdict (provider/connection failure)"}
+                (work / "result.json").write_text(json.dumps(result, indent=2))
+                exit_code = 1
+                with contextlib.suppress(Exception):
+                    record_run_result(span, result)
     finally:
         if tracing is not None:
             tracing.flush()  # export any buffered spans before we (maybe) exit
@@ -626,10 +670,18 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
 def run_scenario(scenario: Scenario, argv: list[str] | None = None) -> int:
     """Parse args, run the pipeline for ``scenario``, and return a process exit code."""
     args = build_parser(scenario).parse_args(argv)
+    result: dict = {}
     try:
         exit_code, result = asyncio.run(_main_async(scenario, args))
     except KeyboardInterrupt:
         return 130
+    except Exception as exc:
+        # A teardown-time failure (e.g. an anyio TaskGroup ExceptionGroup from the MCP client
+        # after a provider stall) can escape _main_async AFTER _drive already wrote result.json.
+        # Exit cleanly (nonzero) instead of crash-tracebacking — the on-disk result.json, if
+        # written, is the source of truth the batch/aggregator reads.
+        print(f"[run] exited with an unrecovered teardown error ({_summarize_exc(exc)}).")
+        return 1
     # W&B logging is a post-run, best-effort step (covers run.py direct AND the sweep's
     # run.py subprocesses) — never let it change the exit code.
     if getattr(args, "wandb", False):
