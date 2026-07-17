@@ -93,9 +93,16 @@ SIGNAL_ENGINEER_TOOLS = [
 # is the ONLY agent that authors the model. It keeps a MINIMAL surface: read the model + score,
 # list/inspect versions, author the whole model.
 ORCHESTRATOR_TOOLS = [
-    # orient / score
-    "get_model_structure",
+    # orient — SMALL reads only. The measured DATA itself is never read into the lead's
+    # context; the analysts characterize it and hand back summaries (see run_deepagents:
+    # the lead's tool list is restricted to exactly this set).
+    "describe_problem",     # model_initialized flag, sizes, current version — cheap orientation
+    "get_model_structure",  # the current model (empty until built)
+    "list_observables",     # what is measured (observable -> species) — needed to name species
+    # score / diagnose (both COMPACT + bounded) / history
     "get_fit_summary",
+    "get_fit_diagnosis",    # per-observable bias/chi2 + worst-N points — bounded residual read
+    "get_identifiability",  # FIM SE/correlations + multistart spread — WHICH params to cut/merge
     "list_versions",        # scored version history — pick the BEST version to go back to
     "get_version",          # read a prior version's Antimony + params (to re-author it)
     "get_errors",
@@ -107,6 +114,12 @@ ORCHESTRATOR_TOOLS = [
     # since set_model re-authors wholesale, "going back" = read the old model (get_version) and
     # set_model it again — no dedicated revert tool needed.
     "set_model",            # build the first model AND re-author it wholesale in one step
+    # NOTE: the UNBOUNDED data/diagnostic tools (get_measurements, query_data, get_fitting_log,
+    # get_parameters, list_data_tables) are deliberately NOT here — they belong to the analyst
+    # subagents, since their large results would pile up in the lead's re-sent history (the
+    # input-token cost). The lead instead has get_fit_diagnosis (a COMPACT, size-bounded residual
+    # read) for cheap self-diagnosis, and DELEGATES the deep dives — full residual SQL, the
+    # optimizer log, raw data characterization — to the analysts via `task`.
 ]
 
 # The full set handed to create_deep_agent: the union of the lead's tools and every
@@ -132,6 +145,7 @@ TOOL_DESCRIPTIONS = {
                   "STRUCTURAL change in one coherent step; reconciles + fits on commit, reverts on "
                   "failure. Warns if a previously-estimated parameter is dropped. Args: antimony, "
                   "justification, references?."),
+    "describe_problem": "Orientation: whether a model exists (model_initialized), table/entity counts, current version, batch state. Cheap.",
     "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law) — empty until a model is built.",
     "get_parameters": ("Parameter table: id, bounds, scale, nominalValue (the fitted value), "
                        "estimate flag. Fixed (estimate=0) rows include the observation-noise "
@@ -139,6 +153,17 @@ TOOL_DESCRIPTIONS = {
                        "these belong to the noise / experimental model, NOT the kinetics, and "
                        "must never appear in a rate law."),
     "get_fit_summary": "Current fit metrics only (neg_log_likelihood, chi2, n_data_points) — a cheap score check.",
+    "get_fit_diagnosis": ("COMPACT residual diagnosis (bounded): per-observable weighted chi2 + "
+                          "mean_weighted_residual (bias) + worst-N points (measurement vs "
+                          "simulation). Shows WHERE/HOW the fit is off cheaply. Arg: worst_n. For a "
+                          "full custom breakdown or the optimizer log, delegate to an analyst."),
+    "get_identifiability": ("COMPACT identifiability diagnosis (bounded): per-parameter standard "
+                            "error + fold_uncertainty, marginal & partial correlations, near-flat "
+                            "FIM eigen-directions (non-identifiable parameter COMBINATIONS), and "
+                            "multistart spread — with a ranked `candidates` list. Tells you WHICH "
+                            "estimated parameters are superfluous when the model is too complex "
+                            "(high bic / many params): fix, drop, or MERGE a collinear pair. Use it "
+                            "BEFORE adding parameters and to prune toward parsimony. Arg: top_n."),
     "list_versions": ("List every model version with its kind, label, and fit metrics "
                       "(neg_log_likelihood, bic, is_new_best) — use it to find the best-scoring "
                       "version, then get_version to read its model and re-author with set_model."),
@@ -566,13 +591,21 @@ async def run_deepagents(
     from langchain_openai import ChatOpenAI
 
     # Adapt the MCP tools bound to this already-initialized session, then curate to the
-    # union of the lead's + analysts' tools.
-    tools = _trim_descriptions(_select_tools(await load_mcp_tools(session)))
-    tools_by_name = {n: t for t in tools if (n := getattr(t, "name", None))}
-    subagents = _build_subagents(tools_by_name)
-    # The lead-only decision tool: appended AFTER the subagent map is built so it goes to the
-    # orchestrator (the full `tools` list) but not to any analyst.
-    tools = [*tools, _decision_tool(session)]
+    # union of the lead's + analysts' tools. This pool is only used to resolve each analyst's
+    # tool objects; it is NOT what the lead gets (see lead_tools below).
+    all_tools = _trim_descriptions(_select_tools(await load_mcp_tools(session)))
+    tools_by_name = {n: t for t in all_tools if (n := getattr(t, "name", None))}
+    subagents = _build_subagents(tools_by_name)  # each analyst carries its own tool OBJECTS
+    # The LEAD gets ONLY the orchestrator tools (+ its decision tool) — NOT the analysts'
+    # data/diagnostic tools (query_data, get_fitting_log, get_measurements, ...). Those heavy
+    # reads run INSIDE analyst subagents, whose verbose results live in their own transient
+    # contexts and never enter the lead's every-turn re-sent history — which is where this
+    # input-dominated workload's token cost accumulates (the lead re-sends its whole history on
+    # each of its 60-115 turns). The lead diagnoses by DELEGATING to the analysts, not by
+    # querying data itself. deepagents' subagents hold their own resolved tool objects, so a
+    # restricted top-level tool list does not starve them.
+    lead_tools = [tools_by_name[n] for n in ORCHESTRATOR_TOOLS if n in tools_by_name]
+    lead_tools = [*lead_tools, _decision_tool(session)]
 
     llm = ChatOpenAI(
         model=model,
@@ -592,7 +625,7 @@ async def run_deepagents(
     # Pass whichever the installed version accepts, plus the analyst subagents.
     params = inspect.signature(create_deep_agent).parameters
     prompt_kw = "system_prompt" if "system_prompt" in params else "instructions"
-    kwargs: dict[str, Any] = {"model": llm, "tools": tools, prompt_kw: system_prompt}
+    kwargs: dict[str, Any] = {"model": llm, "tools": lead_tools, prompt_kw: system_prompt}
     if "subagents" in params:
         kwargs["subagents"] = subagents
     else:  # pragma: no cover - guards against a deepagents API drift
