@@ -12,6 +12,28 @@
     <div class="meta-line muted">archive: <code>{{ archive_root }}</code> · phoenix: <code>{{ phoenix }}</code></div>
   </header>
   <main class="index">
+    {% if live_runs %}
+      <section class="live-section">
+        <h2 class="live-h"><span class="live-dot"></span>live <span class="grp-meta muted">{{ live_runs|length }} run{{ 's' if live_runs|length != 1 }} in progress</span></h2>
+        <table class="runs live-runs">
+          <thead><tr>
+            <th>scenario</th><th>model</th><th>status</th><th>versions</th><th>trace</th><th>started</th>
+          </tr></thead>
+          <tbody>
+          {% for r in live_runs %}
+            <tr class="live-row" onclick="location.href='/run/{{ r.run_id }}'">
+              <td>{{ r.scenario or '—' }}</td>
+              <td class="mono">{{ r.model or '—' }}</td>
+              <td><span class="pill live">running</span></td>
+              <td class="mono">{{ r.n_versions }}</td>
+              <td>{% if r.has_trace %}✓{% else %}<span class="muted">—</span>{% endif %}</td>
+              <td class="muted mono">{{ (r.run_started_at or '')[:19].replace('T',' ') }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    {% endif %}
     {% if not runs %}
       <p class="empty">No archived runs yet. Runs auto-archive at completion into
       <code>{{ archive_root }}</code>. Run a scenario (e.g.
@@ -52,5 +74,24 @@
       {% endfor %}
     {% endif %}
   </main>
+  <script>
+    // Keep the index fresh during a sweep: poll the live set and reload only when a run
+    // starts or finishes (the run_id set changes). Version bumps within a run are handled on
+    // the run page, so they don't reload the list here.
+    (function () {
+      let last = {{ live_runs | map(attribute='run_id') | list | tojson }}.sort().join("|");
+      async function poll() {
+        try {
+          const r = await fetch("/api/live");
+          if (r.ok) {
+            const sig = (await r.json()).map(x => x.run_id).sort().join("|");
+            if (sig !== last) { location.reload(); return; }
+          }
+        } catch (e) { /* transient — try again next tick */ }
+        setTimeout(poll, 8000);
+      }
+      setTimeout(poll, 8000);
+    })();
+  </script>
 </body>
 </html>

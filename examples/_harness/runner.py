@@ -170,6 +170,37 @@ def _git_sha(path: Path) -> str | None:
     return f"{sha}+dirty" if dirty else sha
 
 
+def _write_live_marker(work: Path, meta: dict, scenario: Scenario) -> None:
+    """Write ``work/run_live.json`` so the run explorer can watch this run WHILE it is still
+    in flight — before ``result.json`` (written only at run end) exists.
+
+    ``result.json`` carries the ``phoenix_trace_id`` that joins a run to its conversation, but
+    it isn't written until the verdict; mid-run the explorer would have no way to find the
+    in-progress trace. This marker publishes that join key (trace id + project) the moment the
+    run span opens, plus the BIC reference, so the live view's ΔBIC panel works exactly like the
+    archived one. Its presence-without-a-sibling-``result.json`` is also how the explorer tells
+    "in progress" from "finished". Best-effort — telemetry must never break a run; the next
+    run's ``cleanup()`` wipes ``work/`` and with it any stale marker.
+    """
+    try:
+        from .scenario import bic
+
+        ref = scenario.reference()
+        bic_ref = bic(ref["nll"], ref["k"], ref["n"]) if ref else None
+        marker = {
+            **meta,
+            "run_id": meta.get("phoenix_trace_id") or f"live-{scenario.name}",
+            "scenario": scenario.name,
+            "example_version": scenario.version,
+            "reference": ref,
+            "bic_reference": bic_ref,
+            "bic_threshold": scenario.bic_threshold,
+        }
+        (work / "run_live.json").write_text(json.dumps(marker, indent=2, default=str))
+    except Exception:
+        pass
+
+
 # --------------------------------------------------------------------------- steps
 def cleanup(scenario: Scenario) -> Path:
     """Recreate work/ from the pristine broken problem (also drops old provenance)."""
@@ -368,12 +399,13 @@ _SERVER_BOOTSTRAP = (
     # AMICI's C++ build-toolchain output (captured to work/amici_build.log).
     "uvicorn.Config = lambda *a, **k: _Config(*a, **{**k, 'access_log': False})\n"
     "from petab_mcp.server import create_server\n"
-    "yaml_path, build_root, ref_mode, host, port, n_starts = sys.argv[1:7]\n"
+    "yaml_path, build_root, ref_mode, host, port, n_starts, estimate_ics = sys.argv[1:8]\n"
     # The agent's own commits (set_model etc.) don't pass n_starts, so make the server's
     # default multistart count match --n-starts — otherwise agent fits use the low library
     # default (5), too few for the harder several-parameter oscillator fits.
     "srv = create_server(yaml_path, build_root=build_root, reference_mode=ref_mode,\n"
-    "                    auto_fit_starts=int(n_starts))\n"
+    "                    auto_fit_starts=int(n_starts),\n"
+    "                    estimate_initial_conditions=(estimate_ics == '1'))\n"
     "srv.settings.host = host\n"
     "srv.settings.port = int(port)\n"
     "srv.run(transport='streamable-http')\n"
@@ -563,6 +595,9 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
             base_meta = {**base_meta,
                          "phoenix_project": tracing.project_name if tracing else None,
                          "phoenix_trace_id": trace_id_hex(span)}
+            # Publish the live marker now that the trace id is known, so the explorer can
+            # watch this run's turns + model variants stream in before it finishes.
+            _write_live_marker(work, base_meta, scenario)
             try:
                 agent_out = await run_deepagents(
                     session,
@@ -632,6 +667,7 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
         sys.executable, "-c", _SERVER_BOOTSTRAP,
         str(work_yaml), str(build_root), args.reference_validation, host, str(port),
         str(args.n_starts),
+        "1" if getattr(scenario, "estimate_initial_conditions", False) else "0",
     ]
     server_log_path = work / "server.log"
     amici_log_path = work / "amici_build.log"

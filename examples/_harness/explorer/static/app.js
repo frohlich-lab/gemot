@@ -104,10 +104,15 @@ function renderChart(container, turns, variants, metric, bicRef, activeTurn, onP
   const score = turns.map(t => scoreOf(byIdx[t.active_variant]));
   let run = 0; const toks = turns.map(t => (run += turnTokens(t)));
   const setmodelTurns = turns.filter(t => t.variant_index != null).map(t => t.i);
+  // committed variants that no turn produced (a dropped set_model span) — shown as gap markers
+  // rather than silently dropped. Prefer the server's `no_turn` flag; fall back to deriving it.
+  const mappedIdx = new Set(turns.filter(t => t.variant_index != null).map(t => t.variant_index));
+  const orphans = variants.filter(v => v.nll != null
+    && (v.no_turn ?? !mappedIdx.has(v.index)) && scoreOf(v) != null);
 
   const W = 372, H = 158, PL = 40, PR = 42, PT = 12, PB = 24;
   const xs = (i) => PL + (N <= 1 ? (W - PL - PR) / 2 : (i / (N - 1)) * (W - PL - PR));
-  const sVals = score.filter(v => v != null);
+  const sVals = score.filter(v => v != null).concat(orphans.map(scoreOf));
   const svg = mk("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
 
   // right axis: cumulative tokens (0..max)
@@ -146,6 +151,27 @@ function renderChart(container, turns, variants, metric, bicRef, activeTurn, onP
       const tl = mk("title", {});
       tl.textContent = `turn ${ti} · v${v.version}: ${useRef ? "ΔBIC" : "nll"}=${fmt(sv)}`; dot.append(tl);
       svg.append(dot);
+    }
+    // orphan commits (no turn): hollow diamonds at an x interpolated between the version's
+    // neighbours, so a dropped span reads as "a commit happened here" rather than vanishing.
+    if (orphans.length) {
+      const mapped = turns.filter(t => t.variant_index != null)
+        .map(t => ({ ver: byIdx[t.variant_index].version, ti: t.i }))
+        .sort((a, b) => a.ver - b.ver);
+      for (const v of orphans) {
+        let prev = null, next = null;
+        for (const m of mapped) { if (m.ver < v.version) prev = m; else if (m.ver > v.version && !next) next = m; }
+        let ox = (PL + W - PR) / 2;
+        if (prev && next) ox = (xs(prev.ti) + xs(next.ti)) / 2;
+        else if (prev) ox = Math.min(W - PR, xs(prev.ti) + 14);
+        else if (next) ox = Math.max(PL, xs(next.ti) - 14);
+        const oy = ly(scoreOf(v));
+        const dm = mk("path", { d: `M${ox} ${oy - 4.5} L${ox + 4.5} ${oy} L${ox} ${oy + 4.5} L${ox - 4.5} ${oy} Z`,
+          fill: "var(--bg)", stroke: "var(--warn)", "stroke-width": "1.5", "stroke-dasharray": "2 1.4" });
+        const tl = mk("title", {});
+        tl.textContent = `v${v.version}: ${useRef ? "ΔBIC" : "nll"}=${fmt(scoreOf(v))} — commit has no conversation turn (span missing from trace)`;
+        dm.append(tl); svg.append(dm);
+      }
     }
     for (const v of [lo + pad, hi - pad]) {
       const tx = mk("text", { x: PL - 4, y: ly(v) + 3, "text-anchor": "end", fill: "var(--muted)", "font-size": "9" });
@@ -195,11 +221,12 @@ function toolCallEl(tc) {
   if (tc.delegation) {
     const d = tc.delegation;
     const nsub = d.items.filter(x => x.type === "assistant").length;
-    const det = el("details", { class: "delegation" },
+    const det = el("details", { class: "delegation" + (d.in_progress ? " running" : ""), open: d.in_progress || false },
       el("summary", {},
         el("span", { class: "deleg-badge", text: (d.subagent_type || "analyst") }),
         el("span", { class: "deleg-desc", text: d.description || "" }),
-        el("span", { class: "deleg-meta", text: `${nsub} turn${nsub === 1 ? "" : "s"}` })));
+        d.in_progress ? el("span", { class: "deleg-live", html: `<span class="live-dot"></span>running` }) : null,
+        el("span", { class: "deleg-meta", text: `${nsub} turn${nsub === 1 ? "" : "s"}${d.in_progress ? " so far" : ""}` })));
     const box = el("div", { class: "subturns" });
     let cur = null;
     for (const it of d.items) {
@@ -248,55 +275,80 @@ function turnEl(t) {
 }
 
 // ---------------------------------------------------------------- main
-(async function main() {
-  let data;
-  try {
-    const resp = await fetch(`/api/run/${encodeURIComponent(window.RUN_ID)}`);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    data = await resp.json();
-  } catch (e) {
-    $("#run-title").textContent = "failed to load run";
-    $("#phoenix-note").hidden = false; $("#phoenix-note").textContent = String(e);
-    return;
-  }
-  const meta = data.meta || {}, variants = data.variants || [], turns = data.turns || [];
-  const tot = data.totals || {};
+// The viewer renders once for an archived run, and re-renders on a poll loop for a LIVE run
+// (data.live === true): each poll re-reads the on-disk variant store + re-queries Phoenix, so
+// new turns and model variants appear as the agent produces them. Only the growing tail of the
+// stream is rebuilt, so earlier turns — and the reader's scroll position — stay put; when the
+// run finishes, the server serves the archived bundle (live:false) and polling stops.
+(function main() {
+  const stream = $("#stream"), chart = $("#chart"), card = $("#variant-card"), legend = $("#chart-legend");
+  const badges = $("#run-badges"), note = $("#phoenix-note");
 
-  // header
-  $("#run-title").textContent = `${meta.scenario || "run"} · ${meta.model || ""}`;
-  const verdict = meta.success ? ["ok", "success"]
-    : (String(meta.stop_reason || "").includes("aborted") ? ["warn", "aborted"] : ["bad", "not fixed"]);
-  const badges = $("#run-badges");
-  const addB = (h) => badges.append(el("span", { class: "badge", html: h }));
-  badges.append(el("span", { class: `pill ${verdict[0]}`, text: verdict[1] }));
-  addB(`<b>ΔBIC</b> ${meta.delta_bic == null ? "—" : (meta.delta_bic >= 0 ? "+" : "") + fmt(meta.delta_bic)}`
-    + (meta.bic_threshold != null ? ` <span class="muted">/ ${fmt(meta.bic_threshold, 0)}</span>` : ""));
-  addB(`<b>k</b> ${meta.k ?? "—"}<span class="muted"> vs ${meta.reference?.k ?? "—"}</span>`);
-  const T = tot.total || {};
-  addB(`<b>${int(T.total)}</b> tok <span class="muted">(${int(T.prompt)}↓ ${int(T.completion)}↑${T.cache_read ? " · " + int(T.cache_read) + " cached" : ""})</span>`);
-  addB(`lead <b>${int((tot.lead || {}).total)}</b> · analyst <b>${int((tot.analyst || {}).total)}</b>`);
-  addB(`<b>${tot.lead_turns ?? "—"}</b> lead · <b>${tot.analyst_turns ?? "—"}</b> analyst turns`);
-  if (meta.wall_seconds != null) addB(`<b>${fmt(meta.wall_seconds, 0)}s</b> wall`);
-  addB(`stop: ${esc(meta.stop_reason || "?")}`);
+  // mutable view state, refreshed by applyData()
+  let nodes = [], turns = [], variants = [], variantByIndex = {}, meta = {}, bicRef = null;
+  let metric = "bic", activeTurn = null, live = false, placeholder = null, pollTimer = null;
+  const atBottom = () => (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - 8);
 
-  if (data.phoenix && !data.phoenix.ok) {
-    const n = $("#phoenix-note"); n.hidden = false;
-    n.textContent = "Conversation unavailable — " + (data.phoenix.note || "no Phoenix trace") +
-      ". Model-variant and score panels below are from the on-disk archive.";
+  function clearPlaceholder() { if (placeholder) { placeholder.remove(); placeholder = null; } }
+  function showPlaceholder() {
+    clearPlaceholder();
+    placeholder = el("div", { class: "muted", text: live ? "waiting for the first turn…" : "no conversation turns (see note above)." });
+    stream.append(placeholder);
   }
 
-  // stream
-  const stream = $("#stream");
-  if (turns.length === 0) stream.append(el("div", { class: "muted", text: "no conversation turns (see note above)." }));
-  const nodes = turns.map(turnEl);
-  nodes.forEach(n => stream.append(n));
+  // header badges (rebuilt each render): live → a pulsing "live" pill and no wall/stop badges;
+  // finished → the verdict pill. ΔBIC/k fall back to the best/last variant while live (the
+  // run-level values only exist once result.json is written).
+  function renderHeader(data) {
+    const m = data.meta || {}, tot = data.totals || {}, vs = data.variants || [];
+    $("#run-title").textContent = `${m.scenario || "run"} · ${m.model || ""}`;
+    badges.innerHTML = "";
+    const addB = (h) => badges.append(el("span", { class: "badge", html: h }));
+    if (data.live) badges.append(el("span", { class: "pill live", html: `<span class="live-dot"></span>live` }));
+    else {
+      const verdict = m.success ? ["ok", "success"]
+        : (String(m.stop_reason || "").includes("aborted") ? ["warn", "aborted"] : ["bad", "not fixed"]);
+      badges.append(el("span", { class: `pill ${verdict[0]}`, text: verdict[1] }));
+    }
+    let dbic = m.delta_bic;
+    if (dbic == null && m.bic_reference != null) {
+      const fb = vs.filter(v => v.bic != null).map(v => v.bic);
+      if (fb.length) dbic = Math.min(...fb) - m.bic_reference;  // best-so-far while live
+    }
+    let kv = m.k;
+    if (kv == null) { const fv = vs.filter(v => v.nll != null); if (fv.length) kv = fv[fv.length - 1].k; }
+    addB(`<b>ΔBIC</b> ${dbic == null ? "—" : (dbic >= 0 ? "+" : "") + fmt(dbic)}`
+      + (m.bic_threshold != null ? ` <span class="muted">/ ${fmt(m.bic_threshold, 0)}</span>` : ""));
+    addB(`<b>k</b> ${kv ?? "—"}<span class="muted"> vs ${m.reference?.k ?? "—"}</span>`);
+    const T = tot.total || {};
+    addB(`<b>${int(T.total)}</b> tok <span class="muted">(${int(T.prompt)}↓ ${int(T.completion)}↑${T.cache_read ? " · " + int(T.cache_read) + " cached" : ""})</span>`);
+    addB(`lead <b>${int((tot.lead || {}).total)}</b> · analyst <b>${int((tot.analyst || {}).total)}</b>`);
+    addB(`<b>${tot.lead_turns ?? "—"}</b> lead · <b>${tot.analyst_turns ?? "—"}</b> analyst turns`);
+    if (!data.live && m.wall_seconds != null) addB(`<b>${fmt(m.wall_seconds, 0)}s</b> wall`);
+    if (!data.live) addB(`stop: ${esc(m.stop_reason || "?")}`);
 
-  // chart + variant card, synced to scroll
-  let metric = "bic";
-  const bicRef = meta.bic_reference ?? null;
-  const chart = $("#chart"), card = $("#variant-card"), legend = $("#chart-legend");
-  const variantByIndex = Object.fromEntries(variants.map(v => [v.index, v]));
-  let activeTurn = turns.length ? 0 : null;
+    const px = data.phoenix || {};
+    if (!data.live && !px.ok) {
+      note.hidden = false; note.classList.remove("live-note");
+      note.textContent = "Conversation unavailable — " + (px.note || "no Phoenix trace") +
+        ". Model-variant and score panels below are from the on-disk archive.";
+    } else if (data.live && !px.ok && (data.turns || []).length === 0) {
+      note.hidden = false; note.classList.add("live-note");
+      note.textContent = "Live — waiting for the first turns to stream in from Phoenix; the model-variant panel updates from disk in the meantime.";
+    } else { note.hidden = true; note.classList.remove("live-note"); }
+  }
+
+  // rebuild only the growing tail: the previously-last turn may have been partial (its tool
+  // results still arriving), so refresh from there and append the rest. A shrink/reorder (rare;
+  // e.g. the finished archive bundle differs) triggers a full rebuild.
+  function syncStream(newTurns) {
+    clearPlaceholder();
+    if (newTurns.length < nodes.length) { stream.innerHTML = ""; nodes = []; }
+    const start = Math.max(0, nodes.length - 1);
+    while (nodes.length > start) nodes.pop().remove();
+    for (let i = start; i < newTurns.length; i++) { const n = turnEl(newTurns[i]); nodes.push(n); stream.append(n); }
+    if (newTurns.length === 0) showPlaceholder();
+  }
 
   function draw() {
     renderChart(chart, turns, variants, metric, bicRef, activeTurn,
@@ -308,33 +360,89 @@ function turnEl(t) {
     }
     renderVariantCard(card, variantByIndex[av], meta, metric);
     const nfit = variants.filter(v => v.nll != null).length;
-    legend.textContent = `— ${metric === "bic" ? "ΔBIC" : "nll"} (left) · ⋯ cumulative tokens (right) · ${nfit} variant(s), green = new best`;
+    const norph = variants.filter(v => v.nll != null && (v.no_turn ?? false)).length;
+    legend.textContent = `— ${metric === "bic" ? "ΔBIC" : "nll"} (left) · ⋯ cumulative tokens (right) · ${nfit} variant(s), green = new best`
+      + (norph ? ` · ◇ ${norph} commit(s) with no turn` : "");
   }
-  draw();
 
-  // metric toggle
-  $("#metric-toggle").addEventListener("click", (e) => {
-    const b = e.target.closest("button"); if (!b) return;
-    metric = b.dataset.metric;
-    [...$("#metric-toggle").children].forEach(x => x.classList.toggle("on", x === b));
-    draw();
-  });
-
-  // scroll-spy: the turn nearest the top of the viewport is the cursor position
+  // scroll-spy: the turn nearest the top of the viewport is the cursor position — EXCEPT at
+  // the bottom of the page, where the selection pins to the last (newest) turn, so while
+  // following a live run the chart cursor + variant card track the turn being produced.
   function syncScroll() {
+    if (!nodes.length) return;
     let top = null, best = Infinity;
     for (const n of nodes) {
       const r = n.getBoundingClientRect();
       if (r.bottom > 150 && r.top < best) { best = r.top; top = n; }
     }
-    if (!top) return;
-    nodes.forEach(n => n.classList.toggle("active", n === top));
-    if (top._turn.i !== activeTurn) { activeTurn = top._turn.i; draw(); }
+    const idx = atBottom() ? nodes.length - 1 : (top ? top._turn.i : null);
+    if (idx == null) return;
+    nodes.forEach((n, i) => n.classList.toggle("active", i === idx));
+    if (idx !== activeTurn) { activeTurn = idx; draw(); }
   }
-  let ticking = false;
-  window.addEventListener("scroll", () => {
-    if (ticking) return; ticking = true;
-    requestAnimationFrame(() => { ticking = false; syncScroll(); });
-  }, { passive: true });
-  syncScroll();
+
+  function applyData(data, initial) {
+    live = !!data.live;
+    meta = data.meta || {}; variants = data.variants || [];
+    variantByIndex = Object.fromEntries(variants.map(v => [v.index, v]));
+    bicRef = meta.bic_reference ?? null;
+    const newTurns = data.turns || [];
+    renderHeader(data);
+    // Follow the tail like `tail -f`: a live run opens at its newest turn, and each poll keeps
+    // the view (and the selected turn) on the last turn while the reader is at the bottom. Once
+    // they scroll up to read history, their position is preserved across the tail rebuild.
+    const y = window.scrollY;
+    const nearBottom = (window.innerHeight + y) >= (document.body.scrollHeight - 220);
+    const following = live && (initial || nearBottom);
+    syncStream(newTurns);
+    turns = newTurns;
+    if (initial) activeTurn = turns.length ? (following ? turns.length - 1 : 0) : null;
+    else if (activeTurn != null && activeTurn >= turns.length) activeTurn = turns.length ? turns.length - 1 : null;
+    draw();
+    if (following && turns.length) window.scrollTo(0, document.body.scrollHeight);
+    else if (!initial) window.scrollTo(0, y);
+    syncScroll();
+  }
+
+  async function fetchData(refresh) {
+    const url = `/api/run/${encodeURIComponent(window.RUN_ID)}` + (refresh ? "?refresh=true" : "");
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return resp.json();
+  }
+  // Poll cadence: the server caches a live bundle for ~15s (a Phoenix trace fetch is heavy), so
+  // polling much faster only burns requests; 8s keeps the view responsive without piling on.
+  function schedulePoll() { clearTimeout(pollTimer); pollTimer = setTimeout(poll, 8000); }
+  async function poll() {
+    let data;
+    try { data = await fetchData(true); }
+    catch (e) { schedulePoll(); return; }   // transient (trace not ingested / hiccup) — retry
+    applyData(data, false);
+    if (data.live) schedulePoll();           // finished → archived bundle applied, stop polling
+  }
+
+  (async () => {
+    let data;
+    try { data = await fetchData(false); }
+    catch (e) {
+      $("#run-title").textContent = "failed to load run";
+      note.hidden = false; note.textContent = String(e);
+      return;
+    }
+    applyData(data, true);
+
+    $("#metric-toggle").addEventListener("click", (e) => {
+      const b = e.target.closest("button"); if (!b) return;
+      metric = b.dataset.metric;
+      [...$("#metric-toggle").children].forEach(x => x.classList.toggle("on", x === b));
+      draw();
+    });
+    let ticking = false;
+    window.addEventListener("scroll", () => {
+      if (ticking) return; ticking = true;
+      requestAnimationFrame(() => { ticking = false; syncScroll(); });
+    }, { passive: true });
+
+    if (data.live) schedulePoll();
+  })();
 })();

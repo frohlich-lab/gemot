@@ -69,6 +69,37 @@ def _assistant_from_output(output_messages: Any) -> dict:
     return {"text": text, "tool_calls": calls}
 
 
+def _system_prompt(msg_list) -> str:
+    """The first system message's text from an LLM span's ``llm.input_messages`` (the persona:
+    the lead and each analyst subagent run under a distinct, stable system prompt)."""
+    for m in (msg_list if msg_list is not None else []):
+        if isinstance(m, dict) and m.get("message.role") == "system":
+            return _msg_text(m).strip()
+    return ""
+
+
+def _emits_task(out_msgs) -> bool:
+    """Whether an LLM span's output contains a ``task`` tool call — only the lead delegates,
+    so this identifies lead spans even when the trace tree is incomplete (a live run)."""
+    return any(tc.get("name") == "task" for tc in _assistant_from_output(out_msgs)["tool_calls"])
+
+
+def _match_pending_subagent(system_prompt: str, emitted: list[dict]) -> tuple[str | None, str | None]:
+    """Best-effort (subagent_type, description) for an in-progress analyst, by matching the
+    lead's emitted ``task`` calls against the analyst's persona prompt (e.g. subagent_type
+    ``mathematician`` ↔ a prompt beginning "You are a mathematician…").
+
+    Only the persona intro (the "You are a …" clause) is matched, not the whole prompt: the
+    shared report contract mentions every analyst, so a full-text search would mislabel."""
+    intro = (system_prompt or "").lower()[:80]
+    for a in emitted:
+        st = a.get("subagent_type")
+        toks = str(st or "").lower().replace("_", " ").replace("-", " ").split()
+        if toks and toks[0] in intro:
+            return st, a.get("description")
+    return None, None
+
+
 def _num(v) -> float | None:
     try:
         if v is None or (isinstance(v, float) and math.isnan(v)):
@@ -190,14 +221,33 @@ def load_turns(trace_id: str, base_url: str, project: str, df=None) -> tuple[lis
     analyst_subtrees = {tid: tr.subtree_ids(tid) for tid in task_ids}
     all_analyst_ids = set().union(*analyst_subtrees.values()) if analyst_subtrees else set()
 
-    # Lead timeline = every span EXCEPT those inside a task subtree (task spans themselves stay,
-    # to render the delegation), minus plumbing.
-    exclude = {sid for sid in all_analyst_ids} | {
+    # In-progress delegations (LIVE): while an analyst subagent is still running, its `task`
+    # TOOL span hasn't ended, so it isn't in the trace yet and its analyst LLM spans have no
+    # task ancestor — the tree alone would drop them into the lead timeline. The lead is the
+    # only agent that emits `task` tool calls, so its system prompt is a reliable signature:
+    # any LLM span NOT under a completed task whose system prompt isn't the lead's is an
+    # in-progress analyst. (Empty lead-prompt set ⇒ no delegation has started ⇒ no orphans.)
+    lead_prompts = {_system_prompt(s["in_msgs"]) for sid, s in tr.by_id.items()
+                    if s["kind"] == "LLM" and _emits_task(s["out_msgs"])}
+    orphan_analyst_ids = []
+    if lead_prompts:
+        for sid, s in tr.by_id.items():
+            if s["kind"] == "LLM" and sid not in all_analyst_ids:
+                sp = _system_prompt(s["in_msgs"])
+                if sp and sp not in lead_prompts:
+                    orphan_analyst_ids.append(sid)
+
+    # Lead timeline = every span EXCEPT those inside a completed task subtree, the in-progress
+    # analyst spans just identified (task spans themselves stay, to render the delegation),
+    # minus plumbing.
+    exclude = all_analyst_ids | set(orphan_analyst_ids) | {
         sid for sid, s in tr.by_id.items()
         if s["kind"] == "CHAIN" or (s["name"] in _PLUMBING) or
         (s["kind"] == "AGENT")  # middleware "*.before_agent" etc.
     }
     lead_items = tr.timeline(list(tr.by_id.keys()), exclude)
+    inner_ex = {s for s, sp in tr.by_id.items()
+                if sp["kind"] in ("CHAIN", "AGENT") or sp["name"] in _PLUMBING}
 
     analyst_turn_count = 0
     analyst_tokens = _zero()
@@ -206,8 +256,6 @@ def load_turns(trace_id: str, base_url: str, project: str, df=None) -> tuple[lis
             tid = _match_task_span(tr, task_ids, it)
             if tid is not None:
                 sub = analyst_subtrees[tid]
-                inner_ex = {s for s, sp in tr.by_id.items()
-                            if sp["kind"] in ("CHAIN", "AGENT") or sp["name"] in _PLUMBING}
                 sub_items = tr.timeline(list(sub), inner_ex)
                 args = it.get("args") or {}
                 it["delegation"] = {
@@ -217,6 +265,33 @@ def load_turns(trace_id: str, base_url: str, project: str, df=None) -> tuple[lis
                 }
                 analyst_turn_count += sum(1 for x in sub_items if x["type"] == "assistant")
                 _accumulate(analyst_tokens, sub_items)
+
+    # Render each in-progress analyst as its own delegation block (grouped by persona, since
+    # the panel spawns the three analysts concurrently) attached to the lead's spawning turn,
+    # rather than letting its turns show up as lead turns.
+    if orphan_analyst_ids:
+        emitted = [tc.get("args") for it in lead_items if it["type"] == "assistant"
+                   for tc in (it.get("tool_calls") or [])
+                   if tc.get("name") == "task" and isinstance(tc.get("args"), dict)]
+        by_prompt: dict[str, list[str]] = {}
+        for sid in orphan_analyst_ids:
+            by_prompt.setdefault(_system_prompt(tr.by_id[sid]["in_msgs"]), []).append(sid)
+        for sp, ids in by_prompt.items():
+            sub_items = tr.timeline(ids, inner_ex)
+            st, desc = _match_pending_subagent(sp, emitted)
+            lead_items.append({
+                "type": "tool", "name": "task", "_id": None, "result": None,
+                "args": {"subagent_type": st, "description": desc},
+                "start": min((tr.by_id[i]["start"] for i in ids), default=None),
+                "delegation": {"subagent_type": st, "description": desc,
+                               "items": sub_items, "in_progress": True},
+            })
+            analyst_turn_count += sum(1 for x in sub_items if x["type"] == "assistant")
+            _accumulate(analyst_tokens, sub_items)
+        # Re-sort by start so each in-progress delegation lands right after the lead turn that
+        # spawned it, not merely at the end: _group_turns attaches a tool to the PRECEDING
+        # assistant, so chronological order decides which turn owns the delegation.
+        lead_items.sort(key=lambda it: (it.get("start") is None, str(it.get("start"))))
 
     turns = _group_turns(lead_items)
     totals = _tally(lead_items, analyst_tokens, analyst_turn_count)
@@ -442,22 +517,56 @@ def _safe_read(p: Path) -> str | None:
 
 # ---------------------------------------------------------------- assembly + variant<->turn
 
+def _vnum_of(x) -> int | None:
+    try:
+        return int(x)
+    except (TypeError, ValueError):
+        return None
+
+
 def _map_variants_to_turns(turns: list[dict], variants: list[dict]) -> None:
-    """Tag each turn with the variant active *after* it, by aligning ``set_model`` tool calls
-    (in order) with the ordered variants that carry a fit (skip the initial empty v0)."""
-    fit_variants = [v for v in variants if v["nll"] is not None]
-    setmodel_turns = [t["i"] for t in turns
-                      if any(tc.get("name") == "set_model" for tc in t.get("tools", []))]
-    # pair the j-th set_model turn with the j-th fitted variant
-    pairs = list(zip(setmodel_turns, fit_variants))
-    for ti, v in pairs:
-        turns[ti]["variant_index"] = v["index"]
-    # forward-fill: the active variant while viewing each turn
-    active = 0 if variants else None
-    pair_map = {ti: v["index"] for ti, v in pairs}
+    """Tag each turn with the model variant it produced, matched by the **committed version
+    number** in that turn's ``set_model`` result — not by position.
+
+    Positional pairing (j-th set_model turn ↔ j-th fitted variant) silently mis-labels every
+    variant whenever the counts diverge, which they routinely do: *rejected* ``set_model`` calls
+    (syntax errors) carry no committed version, and a committed variant's span can be dropped
+    from the trace. Matching on the version number is immune to both. Turns whose commit was
+    rejected get no variant; a fitted variant that no turn produced (dropped span) is flagged
+    ``no_turn`` so the chart can show the gap instead of shifting later labels onto it. Also
+    forward-fills ``active_variant`` (the variant in effect while viewing each turn)."""
+    by_version = {vn: v for v in variants if (vn := _vnum_of(v.get("version"))) is not None}
+
+    produced_by_turn: dict[int, dict] = {}   # turn index -> the variant that turn committed
+    matched: set[int] = set()                # variant indices reached by some turn
     for t in turns:
-        if t["i"] in pair_map:
-            active = pair_map[t["i"]]
+        last_v = None
+        for tc in t.get("tools", []):
+            if tc.get("name") != "set_model":
+                continue
+            res = _setmodel_result(tc.get("result"))
+            if not (isinstance(res, dict) and res.get("committed")):
+                continue  # rejected commit — it produced no version
+            v = by_version.get(_vnum_of(res.get("version")))
+            if v is not None:
+                last_v = v
+                matched.add(v["index"])
+        if last_v is not None:
+            produced_by_turn[t["i"]] = last_v
+            t["variant_index"] = last_v["index"]
+
+    # A fitted variant no turn produced (e.g. its set_model span was dropped from the trace):
+    # flag it so the chart marks the gap rather than pretending it never happened.
+    for v in variants:
+        if v.get("nll") is not None:
+            v["no_turn"] = v["index"] not in matched
+
+    # forward-fill the active variant while viewing each turn, starting at the initial v0.
+    v0 = by_version.get(0)
+    active = v0["index"] if v0 else None
+    for t in turns:
+        if t["i"] in produced_by_turn:
+            active = produced_by_turn[t["i"]]["index"]
         t["active_variant"] = active
 
 

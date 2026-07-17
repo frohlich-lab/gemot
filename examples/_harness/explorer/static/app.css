@@ -36,9 +36,24 @@ a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:under
 .pill.ok{ background:color-mix(in srgb,var(--ok) 18%,transparent); color:var(--ok);}
 .pill.bad{ background:color-mix(in srgb,var(--bad) 18%,transparent); color:var(--bad);}
 .pill.warn{ background:color-mix(in srgb,var(--warn) 20%,transparent); color:var(--warn);}
+.pill.live{ background:color-mix(in srgb,var(--accent) 18%,transparent); color:var(--accent);
+  display:inline-flex; align-items:center; gap:6px; }
+.live-dot{ display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--accent);
+  animation:live-pulse 1.4s ease-in-out infinite; }
+@keyframes live-pulse{ 0%,100%{ opacity:1; transform:scale(1);} 50%{ opacity:.35; transform:scale(.72);} }
 
 .banner { margin:0; padding:8px 18px; background:color-mix(in srgb,var(--warn) 15%,transparent);
   color:var(--warn); font-size:13px; border-bottom:1px solid var(--line); }
+.banner.live-note { background:color-mix(in srgb,var(--accent) 12%,transparent); color:var(--accent); }
+
+/* ---------- live runs (in progress) ---------- */
+.live-section { margin:0 0 18px; }
+.live-h { font-size:14px; font-weight:650; margin:0 0 8px; display:flex; align-items:center; gap:8px; }
+.live-h .grp-meta { font-weight:400; }
+table.runs.live-runs { border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line));
+  border-radius:10px; overflow:hidden; background:color-mix(in srgb,var(--accent) 5%,var(--panel)); }
+.live-runs th:first-child, .live-runs td:first-child { padding-left:16px; }
+.live-runs tbody tr:hover { background:color-mix(in srgb,var(--accent) 9%,var(--panel)); }
 
 /* ---------- run list ---------- */
 .index { padding:18px; }
@@ -98,6 +113,11 @@ table.runs tbody tr:hover { background:var(--panel); }
 .delegation[open] > summary .deleg-badge::before { content:"▾ "; }
 .deleg-desc { color:var(--muted); flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .deleg-meta { flex:0 0 auto; margin-left:auto; padding-left:8px; color:var(--muted); font-size:11px; font-family:var(--mono); }
+.deleg-live { flex:0 0 auto; margin-left:auto; display:inline-flex; align-items:center; gap:5px;
+  color:var(--accent); font-size:11px; font-weight:600; }
+.deleg-live + .deleg-meta { margin-left:8px; }
+.delegation.running { border-color:color-mix(in srgb,var(--accent) 45%,var(--line));
+  background:color-mix(in srgb,var(--accent) 6%,var(--bg)); }
 .subturns { padding:6px 10px 10px 14px; border-left:2px solid color-mix(in srgb,var(--analyst) 40%,transparent);
   margin:0 10px 10px; display:flex; flex-direction:column; gap:8px; }
 .subturn { border:1px solid var(--line); border-radius:7px; background:var(--bg); padding:7px 9px; }

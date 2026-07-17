@@ -25,6 +25,66 @@ def default_archive_root() -> Path:
     return Path(__file__).resolve().parents[2] / "_runs_archive"
 
 
+def default_examples_root() -> Path:
+    # examples/_harness/explorer/archive.py -> examples/  (holds each example's live work/)
+    return Path(__file__).resolve().parents[2]
+
+
+# Marker file the runner writes into ``work/`` while a run is in flight (see
+# runner._write_live_marker). Its presence WITHOUT a sibling ``result.json`` means "running".
+LIVE_MARKER = "run_live.json"
+
+
+def _live_markers(examples_root: Path) -> list[Path]:
+    """Paths of live markers for runs still in flight (``examples/<ex>/work/run_live.json``
+    with no sibling ``result.json`` yet). A finished run has a ``result.json`` and is served
+    from the archive instead, so it drops out of the live set here."""
+    if not examples_root.is_dir():
+        return []
+    out = []
+    for mp in sorted(examples_root.glob(f"*/work/{LIVE_MARKER}")):
+        if not (mp.parent / "result.json").is_file():
+            out.append(mp)
+    return out
+
+
+def list_live_runs(examples_root: Path | None = None) -> list[dict]:
+    """Summarize in-progress runs (newest first) for the run-list page's live section."""
+    root = examples_root or default_examples_root()
+    runs = []
+    for mp in _live_markers(root):
+        try:
+            m = json.loads(mp.read_text())
+        except Exception:
+            continue
+        runs.append({
+            "run_id": m.get("run_id") or m.get("phoenix_trace_id"),
+            "scenario": m.get("scenario"),
+            "model": m.get("model"),
+            "driver": m.get("driver"),
+            "run_started_at": m.get("run_started_at"),
+            "has_trace": bool(m.get("phoenix_trace_id")),
+            "n_versions": _count_versions(mp.parent),  # mp.parent is the live work/ dir
+            "live": True,
+        })
+    runs.sort(key=lambda x: (x.get("run_started_at") or ""), reverse=True)
+    return runs
+
+
+def load_live_run(run_id: str, examples_root: Path | None = None) -> tuple[Path, dict] | None:
+    """Return ``(work_dir, marker_meta)`` for an in-progress run, or None if it isn't live
+    (never started, or already finished → served from the archive)."""
+    root = examples_root or default_examples_root()
+    for mp in _live_markers(root):
+        try:
+            m = json.loads(mp.read_text())
+        except Exception:
+            continue
+        if (m.get("run_id") or m.get("phoenix_trace_id")) == run_id:
+            return mp.parent, m
+    return None
+
+
 def run_id_for(result: dict) -> str:
     tid = result.get("phoenix_trace_id")
     if tid:
