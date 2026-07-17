@@ -108,7 +108,23 @@ def simulate_true(
         )
     simdf = rdatas_to_simulation_df(result[RDATAS], amici_model, problem.measurement_df)
     keys = [OBSERVABLE_ID, SIMULATION_CONDITION_ID, TIME]
-    merged = measurement_df.merge(simdf[keys + [SIMULATION]], on=keys, how="left")
+    # ``simdf`` carries exactly one simulation row per measurement row (see amici's
+    # ``rdatas_to_measurement_df``), but replicate measurements share the same
+    # (observableId, simulationConditionId, time) key. Merging on ``keys`` alone would
+    # cross-join each size-r replicate group into r*r rows, inflating the returned
+    # per-point frame. Tag each row with its within-group replicate index so the merge
+    # stays one-to-one with the measurements: ``len(merged) == len(measurement_df)``. The
+    # simulated value is identical across a replicate group, so pairing by index is exact
+    # regardless of the (possibly reordered) row order in ``simdf``. Mirrors the fix in
+    # ``petab_mcp.engine.AmiciEngine._simulation_records``.
+    rep = "_petab_mcp_replicate"
+    while rep in measurement_df.columns or rep in simdf.columns:  # avoid clobbering columns
+        rep += "_"
+    measurement_df = measurement_df.assign(
+        **{rep: measurement_df.groupby(keys, sort=False).cumcount()})
+    simdf = simdf.assign(**{rep: simdf.groupby(keys, sort=False).cumcount()})
+    merged = measurement_df.merge(
+        simdf[keys + [rep, SIMULATION]], on=keys + [rep], how="left")
     return merged
 
 
