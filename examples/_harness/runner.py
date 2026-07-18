@@ -40,6 +40,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 from .explorer.archive import archive_run
+from .fit_budget import FIT_N_WORKERS, FIT_PER_START_TIMEOUT_S, fit_time_budget
 from .scenario import Baseline, JudgeContext, Scenario
 
 
@@ -608,6 +609,7 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                     task=scenario.task,
                     recursion_limit=args.recursion_limit,
                     temperature=args.temperature,
+                    n_starts=args.n_starts,
                 )
                 stop_reason = agent_out.get("stop_reason", "completed")
                 if stop_reason != "completed":
@@ -679,8 +681,14 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
     # Split the streams: fd1 (stdout) carries the C++ build toolchain output that would
     # otherwise corrupt a stdio channel -> amici_build.log; fd2 (stderr) carries uvicorn
     # request logs + Python/AMICI logging -> server.log.
+    # Export the harness's resolved Fides per-start cap + worker count onto the server so its
+    # candidate fits use the SAME cap AND parallelism the harness sized its sse_read_timeout +
+    # stall watchdog to (fit_budget.py) — otherwise the budget would not match the real wall-clock.
+    server_env = {**os.environ,
+                  "PETAB_MCP_FIT_PER_START_TIMEOUT": str(FIT_PER_START_TIMEOUT_S),
+                  "PETAB_MCP_FIT_N_WORKERS": str(FIT_N_WORKERS)}
     try:
-        proc = subprocess.Popen(server_cmd, stdout=amici_log, stderr=server_log)
+        proc = subprocess.Popen(server_cmd, stdout=amici_log, stderr=server_log, env=server_env)
     except Exception:
         for handle in (server_log, amici_log):
             with contextlib.suppress(Exception):
@@ -689,7 +697,14 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
     try:
         _wait_until_listening(host, port, proc, server_log_path)
         url = f"http://{host}:{port}/mcp"
-        async with streamablehttp_client(url) as (read, write, _):
+        # A single set_model commit fits the model with an n_starts multistart that streams nothing
+        # back for its whole duration; the client's default sse_read_timeout (300s) would drop that
+        # response and hang the call. Size it to the worst-case fit (n_starts * Fides per-start cap
+        # + compile margin), the SAME budget the stall watchdog uses, so a slow-but-healthy fit
+        # always returns instead of being mistaken for a hang (see _harness/fit_budget.py).
+        async with streamablehttp_client(
+            url, sse_read_timeout=fit_time_budget(args.n_starts)
+        ) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 exit_code, result = await _drive(scenario, session, work, args)

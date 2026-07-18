@@ -548,6 +548,9 @@ _RUN_RESUME_ATTEMPTS = 3       # resume the graph from the last checkpoint after
 # never fired on). astream emits once per graph super-step (a lead LLM call, a tool, or a whole
 # analyst sub-agent), so if NO step completes within this window the loop is wedged — we cancel
 # it and RESUME from the last checkpoint (or, once resume attempts run out, end gracefully).
+# This is only the FLOOR for the non-fit steps: run_deepagents raises the effective window to the
+# full multistart fit budget (fit_budget.py) for the run, since a lead commit's fit is one long
+# super-step that legitimately streams nothing back for minutes.
 _STEP_STALL_TIMEOUT_S = 600.0
 
 # History trimming for the LEAD. This workload is ~90% input tokens, dominated by tool RESULTS
@@ -588,6 +591,7 @@ async def run_deepagents(
     task: str,
     recursion_limit: int,
     temperature: float = 0.0,
+    n_starts: int = 1,
 ) -> dict[str, Any]:
     """Drive the orchestrator (+ analyst subagents) against ``session``'s tools.
 
@@ -682,6 +686,14 @@ async def run_deepagents(
     # abandoning the run, up to _RUN_RESUME_ATTEMPTS times. A non-transient error (e.g.
     # GraphRecursionError = step budget exhausted) is NOT retried; the judge assesses the model as
     # it stands. We consume the stream only to drive the loop; Phoenix spans are the record.
+    # The longest single super-step is a lead commit whose set_model runs an n_starts multistart
+    # fit (astream emits nothing until it returns), so the stall window must exceed one whole fit
+    # or a slow-but-healthy fit trips the watchdog. Size it to the same fit budget the transport's
+    # sse_read_timeout uses (fit_budget.py), floored at _STEP_STALL_TIMEOUT_S for the non-fit steps
+    # (a lead LLM call, an analyst sub-agent). A hung provider CALL is still caught fast by the
+    # 120s client timeout; this watchdog only backstops a wedged step.
+    from .fit_budget import fit_time_budget
+    stall_timeout = max(_STEP_STALL_TIMEOUT_S, fit_time_budget(n_starts))
     config: dict[str, Any] = {"recursion_limit": recursion_limit}
     if checkpointer is not None:
         config["configurable"] = {"thread_id": "petab-mcp-run"}
@@ -696,13 +708,13 @@ async def run_deepagents(
             agen = agent.astream(stream_input, config=config, stream_mode="values").__aiter__()
             while True:
                 try:
-                    await asyncio.wait_for(agen.__anext__(), timeout=_STEP_STALL_TIMEOUT_S)
+                    await asyncio.wait_for(agen.__anext__(), timeout=stall_timeout)
                 except StopAsyncIteration:
                     break
             stop_reason = "completed"
         except asyncio.TimeoutError:
-            retriable = (f"stalled: no step completed in {_STEP_STALL_TIMEOUT_S:.0f}s "
-                         "(hung provider call)")
+            retriable = (f"stalled: no step completed in {stall_timeout:.0f}s "
+                         "(hung provider call or wedged fit)")
         except _TRANSIENT_ERRORS as exc:  # call-level retries exhausted -> resume the run
             retriable = f"{type(exc).__name__}: {exc}"
         except Exception as exc:

@@ -212,9 +212,15 @@ def fit_reference(
     importer = pypesto.petab.PetabImporter(
         problem, output_folder=str(build_dir), model_name=model_name)
     pp = importer.create_problem()
-    optimizer = pypesto.optimize.FidesOptimizer(verbose=_logging.ERROR)
+    # Cap each start's wall time exactly as the server's candidate fit does, so the reference and
+    # candidate optimizers agree and ΔBIC parity holds, and parallelise the multistart the same way
+    # (a one-time offline fit — MultiProcessEngine just makes it faster; see _harness/fit_budget.py).
+    from .fit_budget import fides_maxtime_options, fit_engine
+    optimizer = pypesto.optimize.FidesOptimizer(
+        verbose=_logging.ERROR, options=fides_maxtime_options())
     result = pypesto.optimize.minimize(
-        pp, optimizer=optimizer, n_starts=n_starts, progress_bar=False)
+        pp, optimizer=optimizer, n_starts=n_starts, engine=fit_engine(n_starts),
+        progress_bar=False)
     best = result.optimize_result.list[0]
     nll = float(best["fval"])
     # ``best["x"]`` / ``pp.x_names`` span ALL parameters (free + fixed, with fixed ones filled
