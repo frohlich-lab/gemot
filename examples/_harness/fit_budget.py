@@ -64,7 +64,19 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _default_workers() -> int:
-    """Leave one core free for the OS / the server's own event loop."""
+    """Default worker count: the CPUs a batch scheduler granted (``SLURM_CPUS_PER_TASK``) when
+    set, else the box minus one core (leaving one free for the OS / the server's event loop).
+
+    ``os.cpu_count()`` reports the whole node and ignores a cgroup/cpuset limit, so under Slurm —
+    which pins the process to N cores but leaves ``os.cpu_count()`` reporting the node's full
+    count — the box-minus-one default would oversubscribe the allocation *and* desync the wave
+    math here from the server's real parallelism. Kept identical to
+    ``petab_mcp.fitting._default_fit_workers`` so this budget matches the server's actual worker
+    count on and off a scheduler.
+    """
+    slurm = _env_int("SLURM_CPUS_PER_TASK", 0)
+    if slurm >= 1:
+        return slurm
     return max(1, (os.cpu_count() or 1) - 1)
 
 
