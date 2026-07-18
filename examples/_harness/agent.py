@@ -99,6 +99,7 @@ ORCHESTRATOR_TOOLS = [
     "describe_problem",     # model_initialized flag, sizes, current version — cheap orientation
     "get_model_structure",  # the current model (empty until built)
     "list_observables",     # what is measured (observable -> species) — needed to name species
+    "list_conditions",      # per-condition inputs/doses set in the condition table (match by name)
     # score / diagnose (both COMPACT + bounded) / history
     "get_fit_summary",
     "get_fit_diagnosis",    # per-observable bias/chi2 + worst-N points — bounded residual read
@@ -114,6 +115,10 @@ ORCHESTRATOR_TOOLS = [
     # since set_model re-authors wholesale, "going back" = read the old model (get_version) and
     # set_model it again — no dedicated revert tool needed.
     "set_model",            # build the first model AND re-author it wholesale in one step
+    # change a parameter's ESTIMATION in place — the prompt tells the lead to WIDEN a binding
+    # bound (or switch scale) rather than re-typing a value the multistart fit ignores:
+    "change_parameter_bounds",
+    "change_parameter_scale",
     # NOTE: the UNBOUNDED data/diagnostic tools (get_measurements, query_data, get_fitting_log,
     # get_parameters, list_data_tables) are deliberately NOT here — they belong to the analyst
     # subagents, since their large results would pile up in the lead's re-sent history (the
