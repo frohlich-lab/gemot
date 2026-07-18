@@ -24,6 +24,43 @@ function el(tag, attrs = {}, ...kids) {
 const esc = (s) => String(s ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 const pretty = (v) => typeof v === "string" ? v : JSON.stringify(v, null, 2);
 
+// Minimal, SAFE markdown -> HTML for the agent's assistant text (the lead + analysts write
+// markdown: headers, **bold**, *italic*, `code`, fenced blocks, -/1. lists, > quotes, links).
+// Everything is HTML-escaped FIRST, so only the tags this emits are ever HTML — the model's
+// text can't inject markup. Underscores are left alone on purpose (snake_case ids like `S_init`
+// are everywhere in this domain and must not become italics).
+function mdToHtml(src) {
+  if (!src) return "";
+  const blocks = [];
+  src = String(src).replace(/```[^\n]*\n?([\s\S]*?)```/g, (_m, code) => {
+    blocks.push(`<pre class="md-pre"><code>${esc(code.replace(/\n$/, ""))}</code></pre>`);
+    return `@@${blocks.length - 1}@@`;
+  });
+  const inline = (s) => esc(s)
+    .replace(/`([^`]+)`/g, (_m, c) => `<code>${c}</code>`)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+      (_m, t, u) => `<a href="${u.replace(/"/g, "&quot;")}" target="_blank" rel="noopener">${t}</a>`);
+  const out = [];
+  let list = null, para = [];
+  const flushPara = () => { if (para.length) { out.push(`<p>${inline(para.join(" "))}</p>`); para = []; } };
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  for (const line of src.split("\n")) {
+    const t = line.trim(); let m;
+    if ((m = /^@@(\d+)@@$/.exec(line))) { flushPara(); closeList(); out.push(blocks[+m[1]]); continue; }
+    if (t === "") { flushPara(); closeList(); continue; }
+    if ((m = /^(#{1,6})\s+(.*)$/.exec(t))) { flushPara(); closeList(); const n = m[1].length; out.push(`<h${n} class="md-h">${inline(m[2])}</h${n}>`); continue; }
+    if (/^(---+|\*\*\*+|___+)$/.test(t)) { flushPara(); closeList(); out.push("<hr>"); continue; }
+    if ((m = /^[-*+]\s+(.*)$/.exec(t))) { flushPara(); if (list !== "ul") { closeList(); out.push("<ul>"); list = "ul"; } out.push(`<li>${inline(m[1])}</li>`); continue; }
+    if ((m = /^\d+[.)]\s+(.*)$/.exec(t))) { flushPara(); if (list !== "ol") { closeList(); out.push("<ol>"); list = "ol"; } out.push(`<li>${inline(m[1])}</li>`); continue; }
+    if ((m = /^>\s?(.*)$/.exec(t))) { flushPara(); closeList(); out.push(`<blockquote>${inline(m[1])}</blockquote>`); continue; }
+    para.push(t);
+  }
+  flushPara(); closeList();
+  return out.join("\n");
+}
+
 // ---------------------------------------------------------------- Antimony highlighting
 const ANT_KEYWORDS = new Set(("model end function const var species compartment formula substanceOnly " +
   "unit import is has at after delete ext in encodes convert reaction default").split(" "));
@@ -233,7 +270,8 @@ function toolCallEl(tc) {
       if (it.type === "assistant") {
         cur = el("div", { class: "subturn" },
           el("div", { class: "turn-role", text: d.subagent_type || "analyst" }),
-          el("div", { class: "assistant-text" + (it.text ? "" : " empty"), text: it.text || "(tool calls only)" }));
+          el("div", { class: "assistant-text md" + (it.text ? "" : " empty"),
+            ...(it.text ? { html: mdToHtml(it.text) } : { text: "(tool calls only)" }) }));
         box.append(cur);
       } else {
         (cur || box).append(kvTool(it));
@@ -267,7 +305,8 @@ function turnEl(t) {
     (t.active_variant != null ? el("span", { class: "vtag", text: `v${t.active_variant}` }) : null),
     badge);
   const body = el("div", { class: "turn-body" },
-    el("div", { class: "assistant-text" + (t.text ? "" : " empty"), text: t.text || "(tool calls only)" }));
+    el("div", { class: "assistant-text md" + (t.text ? "" : " empty"),
+      ...(t.text ? { html: mdToHtml(t.text) } : { text: "(tool calls only)" }) }));
   for (const tc of (t.tools || [])) body.append(toolCallEl(tc));
   const node = el("div", { class: "turn", "data-i": t.i }, head, body);
   node._turn = t;
