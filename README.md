@@ -103,8 +103,12 @@ versions can be ranked by objective), and the simulation dataframe. Pass `n_star
 commit to fit harder (`0` = simulate without fitting); batching fits once on `commit_batch`.
 
 **Fit inspection** — `get_fit_summary()` returns just the metrics (no records; a cheap
-score check). Everything else is **SQL over the data** via DuckDB — the fit is not
-pre-digested into a fixed set of statistics; you compute the breakdown you want:
+score check). Three compact, size-bounded helpers give a quick read without pulling the raw
+data: `get_fit_diagnosis()` (per-observable χ²/bias + the worst-fit points),
+`get_identifiability()` (which estimated parameters are unconstrained or trade off — the basis
+for simplifying an over-parameterised model), and `get_run_timing()` (cumulative server-side
+compile/fit wall times). For anything else the fit is **not** pre-digested into a fixed menu —
+it is **SQL over the data** via DuckDB, so you compute the breakdown you want:
 - `list_data_tables()` lists the queryable tables and their columns; `query_data(sql,
   max_rows?)` runs a DuckDB query against a **disposable copy** of the tables — any SQL is
   allowed and cannot affect the session (host file/network access is disabled) — and returns
@@ -177,10 +181,11 @@ your own skills; drop another skill directory into `_skills/` to extend the bund
 - **Parametric initial conditions.** `reconcile` guarantees every species `S` has an
   `initialAssignment(S := S_init)` with `S_init` in the parameter table (linear scale),
   so initial conditions are first-class, estimatable parameters.
-- **PubMed validation.** References are resolved via NCBI E-utilities (no extra
-  dependency). `required` rejects unresolvable references; `best_effort` (default) records
-  a `verified` flag and never blocks on the network; `off` skips validation. References
-  are always required.
+- **PubMed validation.** References are **optional** on every operation (only a non-empty
+  `justification` is required); when given, they are resolved via NCBI E-utilities (no extra
+  dependency). The mode governs how strictly a *supplied* reference is validated: `required`
+  rejects one that cannot be resolved; `best_effort` (default) records a `verified` flag and
+  never blocks on the network; `off` skips validation.
 - **Provenance, versioning & error logging.** `.petab_mcp/provenance.jsonl` is an
   append-only event log; `.petab_mcp/versions/vN/` snapshots the Antimony model +
   parameter table (as a PEtab `parameters.tsv`, not JSON), and for a fitted version its
