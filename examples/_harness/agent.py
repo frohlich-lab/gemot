@@ -526,17 +526,23 @@ def _builtin_tool_filter():
 
 
 # --- guards on the (input-dominated, occasionally-hanging) LLM loop -----------------------
-# Per-request timeout + retries on the OpenRouter call. Without a timeout a hung request
-# stalls the whole run indefinitely (observed: a 24-minute no-progress stall on a bloated
-# context); with one, a stuck call fails fast and the run ends gracefully with whatever model
-# was built (the astream loop below turns the exception into a stop_reason for the judge).
+# Transient provider failures (connection drops, malformed/non-JSON bodies, 5xx/429, hung
+# calls) are common on OpenRouter and used to abandon the whole run. Now they RETRY instead of
+# throwing the run away, in two layers:
+#   * per-CALL: the OpenAI client's own ``max_retries`` retries connection errors, request
+#     timeouts, and 5xx/429 (honouring Retry-After) transparently, so those never reach the loop.
+#   * per-RUN resume: the agent is compiled with a LangGraph checkpointer, so anything that still
+#     escapes — a malformed non-JSON body the client won't retry, exhausted call-retries, or a
+#     STALL the client timeout can't catch — RESUMES ``astream`` from the last checkpoint instead
+#     of aborting, so every committed model version and the conversation state are preserved.
 _LLM_TIMEOUT_S = 120.0
-_LLM_MAX_RETRIES = 1
+_LLM_MAX_RETRIES = 4           # OpenAI-client retries for connection / timeout / 5xx / 429
+_RUN_RESUME_ATTEMPTS = 3       # resume the graph from the last checkpoint after a stall/transient
 # Harness-level stall watchdog on the agent loop. The client `timeout` above does NOT reliably
 # catch a mid-stream provider stall (observed: a 24-min no-progress hang that the 120s timeout
 # never fired on). astream emits once per graph super-step (a lead LLM call, a tool, or a whole
 # analyst sub-agent), so if NO step completes within this window the loop is wedged — we cancel
-# it and end the run gracefully. Generous enough for a legitimate analyst sub-agent step.
+# it and RESUME from the last checkpoint (or, once resume attempts run out, end gracefully).
 _STEP_STALL_TIMEOUT_S = 600.0
 
 # History trimming for the LEAD. This workload is ~90% input tokens, dominated by tool RESULTS
@@ -620,6 +626,15 @@ async def run_deepagents(
         # not guaranteed; it is harmless when ignored.
         model_kwargs={"prompt_cache_key": "petab-mcp-agent"},
     )
+    # Transient provider errors that should RESUME the run (below) rather than end it, when they
+    # escape the OpenAI client's own retries — e.g. a malformed non-JSON body the client won't
+    # retry. Non-transient errors (bad request, recursion-limit) are deliberately excluded.
+    from json import JSONDecodeError
+
+    from openai import (APIConnectionError, APITimeoutError, InternalServerError,
+                        RateLimitError)
+    _TRANSIENT_ERRORS = (APIConnectionError, APITimeoutError, InternalServerError,
+                         RateLimitError, JSONDecodeError)
 
     # deepagents renamed the prompt kwarg between releases (instructions -> system_prompt).
     # Pass whichever the installed version accepts, plus the analyst subagents.
@@ -640,36 +655,68 @@ async def run_deepagents(
     else:  # pragma: no cover - guards against a deepagents API drift
         print("[agent] WARNING: installed deepagents has no `middleware` parameter; "
               "the lead's built-in FS/todo tools + full history will remain.")
+    # A checkpointer lets us RESUME the graph from its last completed super-step after a stall or
+    # exhausted call-retry (below), instead of discarding the run. In-process MemorySaver is
+    # enough (one run per process). Degrade gracefully if the graph can't take one.
+    checkpointer = None
+    if "checkpointer" in params:
+        try:
+            from langgraph.checkpoint.memory import MemorySaver
+            checkpointer = MemorySaver()
+            kwargs["checkpointer"] = checkpointer
+        except Exception as exc:  # pragma: no cover - resume is a best-effort enhancement
+            print(f"[agent] no checkpointer ({type(exc).__name__}); a stall will end the run "
+                  "instead of resuming.")
     agent = create_deep_agent(**kwargs)
 
     stop_reason = "completed"
     # Drive the agent to completion, iterating manually so a per-step STALL WATCHDOG can fire:
     # astream emits once per graph super-step, so if `__anext__` doesn't return within the stall
-    # window the current step (an LLM call or an analyst sub-agent) is wedged — cancel it and end
-    # the run gracefully. We consume the stream only to run the loop; the spans Phoenix emits are
-    # the record of what happened.
-    agen = agent.astream(
-        {"messages": [{"role": "user", "content": task}]},
-        config={"recursion_limit": recursion_limit},
-        stream_mode="values",
-    ).__aiter__()
-    try:
-        while True:
-            try:
-                await asyncio.wait_for(agen.__anext__(), timeout=_STEP_STALL_TIMEOUT_S)
-            except StopAsyncIteration:
-                break
-    except asyncio.TimeoutError:
-        stop_reason = (f"stalled: no step completed in {_STEP_STALL_TIMEOUT_S:.0f}s "
-                       "(hung provider call)")
-    except Exception as exc:
-        # e.g. GraphRecursionError (step budget exhausted) or an OpenRouter error. Keep
-        # whatever progress was made and let the judge assess the model as it stands,
-        # rather than crashing the whole run.
-        stop_reason = f"{type(exc).__name__}: {exc}"
-    finally:
-        # Best-effort close; bound it so a truly wedged stream can't hang teardown too.
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(agen.aclose(), timeout=10)
+    # window the current step is wedged. On a stall — or a call-retry that ran out (below) — we
+    # RESUME from the last checkpoint (astream with input=None continues pending work) rather than
+    # abandoning the run, up to _RUN_RESUME_ATTEMPTS times. A non-transient error (e.g.
+    # GraphRecursionError = step budget exhausted) is NOT retried; the judge assesses the model as
+    # it stands. We consume the stream only to drive the loop; Phoenix spans are the record.
+    config: dict[str, Any] = {"recursion_limit": recursion_limit}
+    if checkpointer is not None:
+        config["configurable"] = {"thread_id": "petab-mcp-run"}
+    stream_input: Any = {"messages": [{"role": "user", "content": task}]}
+    resume_left = _RUN_RESUME_ATTEMPTS if checkpointer is not None else 0
+    while True:
+        retriable: str | None = None
+        agen = None
+        try:
+            # Open the stream INSIDE the try so a synchronous raise from astream (e.g. on the
+            # input=None resume path) is handled/degraded here, not left to abort the whole run.
+            agen = agent.astream(stream_input, config=config, stream_mode="values").__aiter__()
+            while True:
+                try:
+                    await asyncio.wait_for(agen.__anext__(), timeout=_STEP_STALL_TIMEOUT_S)
+                except StopAsyncIteration:
+                    break
+            stop_reason = "completed"
+        except asyncio.TimeoutError:
+            retriable = (f"stalled: no step completed in {_STEP_STALL_TIMEOUT_S:.0f}s "
+                         "(hung provider call)")
+        except _TRANSIENT_ERRORS as exc:  # call-level retries exhausted -> resume the run
+            retriable = f"{type(exc).__name__}: {exc}"
+        except Exception as exc:
+            stop_reason = f"{type(exc).__name__}: {exc}"  # not retriable (recursion limit, etc.)
+        finally:
+            # Best-effort close; bound it so a truly wedged stream can't hang teardown too.
+            if agen is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(agen.aclose(), timeout=10)
+        if retriable is None:
+            break
+        if resume_left <= 0:
+            stop_reason = retriable  # out of resume attempts — end with whatever was built
+            break
+        resume_left -= 1
+        backoff = min(5.0 * (_RUN_RESUME_ATTEMPTS - resume_left), 30.0)
+        print(f"[agent] {retriable} — resuming from last checkpoint in {backoff:.0f}s "
+              f"({resume_left} resume(s) left)")
+        await asyncio.sleep(backoff)
+        stream_input = None  # resume pending work from the checkpoint
 
     return {"stop_reason": stop_reason}
