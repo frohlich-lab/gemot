@@ -49,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import time
 from typing import Any
 
 # ---------------------------------------------------------------- tool exposure
@@ -592,8 +593,18 @@ async def run_deepagents(
     recursion_limit: int,
     temperature: float = 0.0,
     n_starts: int = 1,
+    max_wall_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Drive the orchestrator (+ analyst subagents) against ``session``'s tools.
+
+    ``max_wall_seconds`` (optional) is a self-imposed total-runtime budget, checked between
+    graph super-steps: once exceeded, the loop stops gracefully (like running out of resume
+    attempts) so ``_judge`` can score whatever is currently committed, INSTEAD of racing an
+    outer resource limit (e.g. a Slurm ``--time`` allocation) that would hard-kill the process
+    with no chance to write a result at all. A sweep should size this comfortably BELOW its
+    Slurm time limit (see ``slurm/make_sweep.py``'s ``--max-wall-seconds`` / ``--time``) so this
+    fires first. ``None`` (the default) means no self-imposed limit — only the per-step stall
+    watchdog and the outer scheduler's own limit apply, as before.
 
     The model is served by OpenRouter via its OpenAI-compatible API (``base_url`` +
     ``api_key``). Returns ``{"stop_reason": ...}``. The orchestrator's messages, its
@@ -694,6 +705,9 @@ async def run_deepagents(
     # 120s client timeout; this watchdog only backstops a wedged step.
     from .fit_budget import fit_time_budget
     stall_timeout = max(_STEP_STALL_TIMEOUT_S, fit_time_budget(n_starts))
+    # Self-imposed total-runtime budget (see the docstring): checked between super-steps, never
+    # mid-step, so we always stop at a clean boundary rather than interrupting a live commit/fit.
+    deadline = (time.monotonic() + max_wall_seconds) if max_wall_seconds is not None else None
     config: dict[str, Any] = {"recursion_limit": recursion_limit}
     if checkpointer is not None:
         config["configurable"] = {"thread_id": "petab-mcp-run"}
@@ -702,6 +716,7 @@ async def run_deepagents(
     while True:
         retriable: str | None = None
         agen = None
+        wall_budget_exceeded = False
         try:
             # Open the stream INSIDE the try so a synchronous raise from astream (e.g. on the
             # input=None resume path) is handled/degraded here, not left to abort the whole run.
@@ -711,7 +726,10 @@ async def run_deepagents(
                     await asyncio.wait_for(agen.__anext__(), timeout=stall_timeout)
                 except StopAsyncIteration:
                     break
-            stop_reason = "completed"
+                if deadline is not None and time.monotonic() >= deadline:
+                    wall_budget_exceeded = True
+                    break
+            stop_reason = "wall_time_budget_exceeded" if wall_budget_exceeded else "completed"
         except asyncio.TimeoutError:
             retriable = (f"stalled: no step completed in {stall_timeout:.0f}s "
                          "(hung provider call or wedged fit)")
@@ -724,7 +742,18 @@ async def run_deepagents(
             if agen is not None:
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(agen.aclose(), timeout=10)
+        if wall_budget_exceeded:
+            print(f"[agent] wall-time budget ({max_wall_seconds:.0f}s) exceeded — stopping "
+                  "at this step boundary; the judge scores whatever is currently committed.")
+            break
         if retriable is None:
+            break
+        if deadline is not None and time.monotonic() >= deadline:
+            # Out of time even before a resume would start — don't burn a backoff on a retry
+            # the deadline will just cut off anyway.
+            stop_reason = f"wall_time_budget_exceeded (during retry: {retriable})"
+            print(f"[agent] wall-time budget ({max_wall_seconds:.0f}s) exceeded while handling "
+                  f"'{retriable}' — stopping instead of resuming.")
             break
         if resume_left <= 0:
             stop_reason = retriable  # out of resume attempts — end with whatever was built

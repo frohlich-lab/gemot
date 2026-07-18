@@ -93,6 +93,13 @@ FIT_COMPILE_MARGIN_S = _env_float("PETAB_MCP_FIT_COMPILE_MARGIN", 600.0)
 # force the old sequential behaviour, or lower it when running several example runs concurrently so
 # the machine is not oversubscribed. Override with PETAB_MCP_FIT_N_WORKERS.
 FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_workers())
+# Multiplier applied on top of the raw compile+waves budget below, so the stall watchdog / sse
+# transport timeout have real slack over a fit's NOMINAL duration — not size to it exactly. A
+# schwen sweep run once stalled at precisely fit_time_budget's value (a healthy 50-start fit that
+# used its full per-start allowance on every wave, plus normal MCP/network/serialization
+# overhead on top), got misclassified as hung, and cascaded into an unrecovered teardown error.
+# Override with PETAB_MCP_FIT_BUDGET_MARGIN.
+FIT_BUDGET_MARGIN = _env_float("PETAB_MCP_FIT_BUDGET_MARGIN", 1.4)
 
 
 def fit_workers(n_starts: int) -> int:
@@ -102,13 +109,15 @@ def fit_workers(n_starts: int) -> int:
 
 
 def fit_time_budget(n_starts: int) -> float:
-    """Worst-case wall-clock (seconds) for one full ``n_starts`` multistart fit, incl. the one-time
-    compile: the number of sequential worker WAVES times the per-start cap, plus compile slack.
-    Callers size their I/O / stall timeouts to this so a within-budget fit never gets dropped or
-    flagged as a hang."""
+    """Wall-clock (seconds) the stall watchdog / transport timeout size themselves to for one
+    full ``n_starts`` multistart fit: the number of sequential worker WAVES times the per-start
+    cap, plus compile slack, times ``FIT_BUDGET_MARGIN`` so a fit that legitimately uses its
+    entire nominal budget (every wave hitting its per-start cap) still has headroom over normal
+    MCP/network/serialization overhead before being mistaken for a hang. Callers size their I/O /
+    stall timeouts to this so a within-budget fit never gets dropped or flagged as a hang."""
     n = max(1, int(n_starts))
     waves = math.ceil(n / fit_workers(n))
-    return FIT_COMPILE_MARGIN_S + waves * FIT_PER_START_TIMEOUT_S
+    return (FIT_COMPILE_MARGIN_S + waves * FIT_PER_START_TIMEOUT_S) * FIT_BUDGET_MARGIN
 
 
 def fides_maxtime_options() -> dict:

@@ -34,3 +34,15 @@ wandb/
 # Run-explorer per-run archive: bundles the web UI (examples/explore_ui.py) reads; written
 # by each harness run's archive_run(). Generated — grows every run, not for dev commits.
 examples/_runs_archive/
+
+# Slurm runner (slurm/): the conda env, per-task scratch copies, job logs, collected
+# per-sweep results, and the shared Phoenix collector's on-disk data. All generated.
+envs/
+.slurm_scratch/
+slurm/logs/
+slurm/runs/
+slurm/phoenix_data/
+
+# Local Phoenix working dir for the example harness (examples/_harness/__init__.py) --
+# ephemeral trace data for locally-launched Phoenix apps / clients. Generated.
+.phoenix/

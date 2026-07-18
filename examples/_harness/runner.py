@@ -497,6 +497,26 @@ def _write_degraded_result(work: Path, base_meta: dict, scenario: Scenario,
     return result
 
 
+def _base_meta(scenario: Scenario, args: argparse.Namespace) -> dict:
+    """The result-json fields known before ever touching the server — enough to write a
+    well-formed degraded result from ANY failure: preflight, baseline scoring, the agent, the
+    judge (see ``_drive``, which enriches its own copy with Phoenix ids once its span is open),
+    or a teardown-time failure after the agent already finished (see ``_main_async``'s own
+    guard). Kept as one function so both call sites can never drift out of sync on the shape
+    ``collect_metrics.py`` expects."""
+    scripted = args.driver == "scripted"
+    return {
+        "driver": args.driver,
+        "model": None if scripted else args.model,
+        "git_sha": _git_sha(scenario.example_dir), "example_version": scenario.version,
+        "recursion_limit": None if scripted else args.recursion_limit,
+        "n_starts": args.n_starts,
+        "temperature": None if scripted else args.temperature,
+        "run_started_at": _now_iso(),
+        "phoenix_project": None, "phoenix_trace_id": None,
+    }
+
+
 async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                  args: argparse.Namespace) -> "tuple[int, dict]":
     """Preflight, run the chosen driver, and judge — all on one live session.
@@ -509,22 +529,10 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
 
     # Stamp the run's start + provenance up front (before the slow baseline compile) so a
     # degraded result.json is still well-formed if preflight/baseline itself blows up.
-    run_started_at = _now_iso()
-    git_sha = _git_sha(scenario.example_dir)
     scripted = args.driver == "scripted"
-    # The fields known before we touch the server — enough to write a well-formed degraded
-    # result.json from ANY failure below (preflight, baseline scoring, the agent, or the
-    # judge). Phoenix fields start None and are filled in once the run span is open.
-    base_meta = {
-        "driver": args.driver,
-        "model": None if scripted else args.model,
-        "git_sha": git_sha, "example_version": scenario.version,
-        "recursion_limit": None if scripted else args.recursion_limit,
-        "n_starts": args.n_starts,
-        "temperature": None if scripted else args.temperature,
-        "run_started_at": run_started_at,
-        "phoenix_project": None, "phoenix_trace_id": None,
-    }
+    base_meta = _base_meta(scenario, args)
+    run_started_at = base_meta["run_started_at"]
+    git_sha = base_meta["git_sha"]
 
     tracing = None
     try:
@@ -610,6 +618,7 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                     recursion_limit=args.recursion_limit,
                     temperature=args.temperature,
                     n_starts=args.n_starts,
+                    max_wall_seconds=args.max_wall_seconds,
                 )
                 stop_reason = agent_out.get("stop_reason", "completed")
                 if stop_reason != "completed":
@@ -715,6 +724,21 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
                 if result:
                     archive_run(work, result)
                 return exit_code, result
+    except BaseException as exc:
+        # `_drive`'s own guard covers a stall/provider failure inside the agent loop or the
+        # judge. This one covers the SAME class of failure (an anyio BaseExceptionGroup whose
+        # leaf is e.g. httpx.ReadTimeout) escaping from OUTSIDE that scope instead — closing the
+        # streamablehttp_client/ClientSession connection to an already-wedged server after
+        # `_drive` already returned, or `_wait_until_listening` itself. Without this, such a
+        # failure sails past `_drive`'s guard untouched (this call site is the one place between
+        # `_drive` returning and `run_scenario`'s outermost catch), and the outermost catch does
+        # NOT write a degraded result (it assumes an inner layer already did) — so the run
+        # vanishes with exit code 1 and no result.json, stranding the batch/aggregator. Mirrors
+        # `_drive`'s guard exactly; `_should_reraise` still lets a real interrupt through.
+        if _should_reraise(exc):
+            raise
+        result = _write_degraded_result(work, _base_meta(scenario, args), scenario, _summarize_exc(exc))
+        return 1, result
     finally:
         # Tear down without masking any in-flight exception.
         with contextlib.suppress(Exception):
@@ -750,6 +774,14 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
     p.add_argument("--n-starts", type=int, default=50,
                    help="pyPESTO multistart count for the auto-fit on every commit (also the "
                         "server's default, so the agent's own commits use it too).")
+    p.add_argument("--max-wall-seconds", type=float, default=None,
+                   help="Self-imposed total-runtime budget (seconds): once exceeded, the agent "
+                        "stops at the next clean step boundary and the judge scores whatever is "
+                        "currently committed, instead of racing an outer resource limit (e.g. a "
+                        "Slurm --time allocation) that would hard-kill the process with no "
+                        "result at all. Default: unlimited (only the stall watchdog + outer "
+                        "scheduler limit apply). A sweep should set this comfortably below its "
+                        "Slurm --time (see make_sweep.py).")
     p.add_argument("--reference-validation", choices=["required", "best_effort", "off"], default="off",
                    help="Server reference-validation mode (off = no network; default for a hermetic demo).")
     # --- Arize Phoenix agent tracing (on by default; deepagents driver only) ---

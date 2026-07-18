@@ -15,6 +15,18 @@ Because ``examples/`` is not an installed package, each ``run.py`` puts this dir
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+# Several submodules here (tracing.py, experiments.py, metrics.py, explorer/bundle.py) import
+# from the `phoenix` package. Merely importing it runs `phoenix/config.py`'s module-level
+# `ensure_working_dir_if_needed()`, which creates PHOENIX_WORKING_DIR -- defaulting to
+# ~/.phoenix -- even when tracing only exports to a remote/self-hosted collector and never
+# touches local storage. Default it to a repo-local dir (mirroring slurm/phoenix_data for
+# the persistent collector) before any of that can happen, so nothing lands in the home dir.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+os.environ.setdefault("PHOENIX_WORKING_DIR", str(_REPO_ROOT / ".phoenix"))
+
 from .runner import run_scenario
 from .scenario import (
     Baseline,
