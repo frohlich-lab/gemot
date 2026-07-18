@@ -223,6 +223,11 @@ class Scenario:
     # scenarios only override them if they truly need to (they don't).
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     task: str = DEFAULT_TASK
+    # A scenario-specific note appended to the task. For benchmark problems that SHIP known,
+    # fixed constants (a measured baseline, a burst size, an observable scaling), it explains
+    # what each is and asks the agent to include it BY NAME (fixed, not estimated) — the same
+    # information a modeller would be handed. Empty for the synthetic examples, which hide it.
+    known_constants: str = ""
     # Success gate: a repair is accepted iff it can't be rejected against the true model —
     # BIC(candidate) - BIC(true) <= bic_threshold. ~10 = "very strong evidence against"
     # (Kass & Raftery); the verdict is insensitive here (genuine repairs sit at ΔBIC≈0,
@@ -248,6 +253,12 @@ class Scenario:
     def example_dir(self) -> Path:
         """The example root (holds ``problem/``; ``work/`` + ``.amici_build/`` go here)."""
         return self.problem_dir.parent
+
+    @property
+    def agent_task(self) -> str:
+        """The task handed to the deepagents driver: the base task plus any scenario-specific
+        ``known_constants`` note (so the agent is told about shipped fixed constants)."""
+        return f"{self.task}\n\n{self.known_constants}" if self.known_constants else self.task
 
     def reference(self) -> dict[str, Any] | None:
         """The true-model fit reference {nll, k, n} from ``problem/reference.json``.

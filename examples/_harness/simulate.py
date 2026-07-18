@@ -167,6 +167,7 @@ def fit_reference(
     model_name: str = "reference",
     n_starts: int = 24,
     seed: int = 0,
+    seed_at_nominal: bool = False,
 ) -> tuple[dict[str, float], float]:
     """Best-fit the TRUE structure with pyPESTO + **Fides** — the SAME optimizer the server
     runs on candidate models — and return (fitted values, best nll).
@@ -175,16 +176,22 @@ def fit_reference(
     optimizer, not the structure. This project fits candidates with Fides everywhere; scipy
     L-BFGS-B is materially weaker on stiff/degenerate ODE likelihoods (it under-converged every
     reference by 2.5–5.7 nll, so the true structure "beat" its own reference by ΔBIC −5 to −11),
-    so it is not used at all. Seeds a start at ``nominalValue`` (the true values) via pyPESTO's
-    PetabImporter, so start-0 lands in the true basin.
+    so it is not used at all.
+
+    ``seed_at_nominal`` (opt-in): pyPESTO's ``create_problem`` does NOT actually seed a start at
+    ``nominalValue`` (its ``x_guesses`` is empty), so on a MULTIMODAL likelihood the random
+    multistart can miss the basin the candidate settles in. When the caller has set the table's
+    nominals to the intended (global) optimum, this includes that point in the reported best nll
+    — so start-0 effectively lands in the true basin and ΔBIC is not at the mercy of which basin a
+    random seed found. Off by default, so the well-behaved examples are unaffected.
     """
     import logging as _logging
 
     import numpy as np
     import pypesto.optimize
     import pypesto.petab
-    from petab.v1 import Problem, unscale
-    from petab.v1.C import ESTIMATE
+    from petab.v1 import Problem, scale, unscale
+    from petab.v1.C import ESTIMATE, NOMINAL_VALUE
     from petab.v1.C import OBSERVABLE_ID as OID
     from petab.v1.C import PARAMETER_ID, PARAMETER_SCALE
     from petab.v1.models.sbml_model import SbmlModel
@@ -233,6 +240,20 @@ def fit_reference(
         for pid in free_names
         if pid in xmap
     }
+
+    if seed_at_nominal:
+        # Evaluate the objective at the (scaled) nominal point and adopt it if it beats the random
+        # multistart. ``create_problem`` leaves ``x_guesses`` empty, so this is how the caller's
+        # intended optimum actually enters the reference. pp.objective takes FREE-space coords, so
+        # reduce the full nominal vector with pp.get_reduced_vector (the API that matches the
+        # objective's expected ordering — see identifiability._compute_fim) rather than raw slicing.
+        x_full = np.array([scale(float(pdf.loc[name, NOMINAL_VALUE]),
+                                 pdf.loc[name, PARAMETER_SCALE]) for name in pp.x_names])
+        fval_nom = float(pp.objective(pp.get_reduced_vector(x_full)))
+        if np.isfinite(fval_nom) and fval_nom < nll:
+            nll = fval_nom
+            fitted = {pid: float(pdf.loc[pid, NOMINAL_VALUE]) for pid in free_names}
+
     return fitted, nll
 
 
