@@ -28,6 +28,7 @@ import asyncio
 import contextlib
 import datetime
 import json
+import math
 import os
 import shutil
 import socket
@@ -236,25 +237,35 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     new_species = sorted(current_species - baseline.species)
 
     final = await call("get_fit_summary")
-    final_nll = float(final["neg_log_likelihood"])
-    n = int(final.get("n_data_points") or 0)
+    # A degenerate or never-built model (e.g. the agent authored nothing, or a fit that produced
+    # a nan/inf objective) has no usable neg_log_likelihood — get_fit_summary returns None, or a
+    # non-finite value. Treat any of those as "no valid fit" (final_nll = None) and score the run
+    # as a clean failure below, rather than crashing the judge on float(None) / a non-finite BIC.
+    raw_nll = final.get("neg_log_likelihood") if isinstance(final, dict) else None
+    try:
+        final_nll = float(raw_nll)
+    except (TypeError, ValueError):
+        final_nll = None
+    if final_nll is not None and not math.isfinite(final_nll):
+        final_nll = None
+    n = int(final.get("n_data_points") or 0) if isinstance(final, dict) else 0
     # k = number of ESTIMATED parameters (estimate=1), NOT len(fitted_parameters): the latter
     # also counts fixed params (noise σ, and the reconcile-added parametric initial
     # conditions), which would inflate the penalty and diverge from how reference.json counts
     # k. Both sides must count free parameters the same way.
     params = await call("get_parameters")
     k = sum(1 for p in params if p.get("estimate")) if isinstance(params, list) else 0
-    chi2 = final.get("chi2")
+    chi2 = final.get("chi2") if isinstance(final, dict) else None
     chi2 = float(chi2) if chi2 is not None else None
     head = int((await call("current_version")).get("version", 0))
     diff = await call("diff_versions", from_version=0, to_version=head) if head else {}
     errors = await call("get_errors", limit=20)
     # baseline.nll is None for a zero-shot build (no model shipped → nothing to score).
-    delta = (baseline.nll - final_nll) if baseline.nll is not None else None
+    delta = (baseline.nll - final_nll) if (baseline.nll is not None and final_nll is not None) else None
 
     # BIC gate against the true-model reference.
     ref = scenario.reference()
-    bic_cand = bic(final_nll, k, n) if n else None
+    bic_cand = bic(final_nll, k, n) if (n and final_nll is not None) else None
     bic_ref = bic(ref["nll"], ref["k"], ref["n"]) if ref else None
     delta_bic = (bic_cand - bic_ref) if (bic_cand is not None and bic_ref is not None) else None
     if delta_bic is not None:
@@ -284,9 +295,10 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     print(f"  new species:          {new_species or 'none'}")
     _bl = f"{baseline.nll:.6g}" if baseline.nll is not None else "n/a (zero-shot)"
     _dl = f"{delta:.6g}" if delta is not None else "n/a"
-    print(f"  fit: nll={final_nll:.6g}  chi2={chi2:.6g}  k={k}  n={n}  (baseline nll {_bl}, Δnll {_dl})"
+    _nll = f"{final_nll:.6g}" if final_nll is not None else "n/a (no valid fit)"
+    print(f"  fit: nll={_nll}  chi2={chi2:.6g}  k={k}  n={n}  (baseline nll {_bl}, Δnll {_dl})"
           if chi2 is not None else
-          f"  fit: nll={final_nll:.6g}  k={k}  n={n}  (baseline nll {_bl}, Δnll {_dl})")
+          f"  fit: nll={_nll}  k={k}  n={n}  (baseline nll {_bl}, Δnll {_dl})")
     if delta_bic is not None:
         print(f"  BIC:  candidate {bic_cand:.6g} | true-model {bic_ref:.6g} | "
               f"ΔBIC {delta_bic:+.6g}  (accept if <= {scenario.bic_threshold:g})")
@@ -332,6 +344,8 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     if success:
         verdict = (f"not rejectable vs the true model (ΔBIC {delta_bic:+.3g} <= "
                    f"{scenario.bic_threshold:g}); the repair explains the data as well as the truth.")
+    elif final_nll is None:
+        verdict = "no valid fit (the model was never built or produced a non-finite objective)."
     elif delta_bic is None:
         verdict = "could not evaluate BIC (missing reference.json or no data points)."
     else:
@@ -474,15 +488,29 @@ def _should_reraise(exc: BaseException) -> bool:
 
 
 def _write_degraded_result(work: Path, base_meta: dict, scenario: Scenario,
-                           reason: str) -> dict:
+                           reason: str, server_returncode: int | None = None) -> dict:
     """Persist (and return) the degraded ``result.json`` written when a run aborts before a
     verdict, so the batch and the cross-run aggregator find a well-formed row instead of a
     missing file.
 
     Keeps the contract ``collect_metrics.py`` buckets on: ``scenario``, ``stop_reason``,
     ``success`` (False), ``delta_bic`` (None), ``run_ended_at``, plus everything in
-    ``base_meta`` (driver/model/version/git_sha/run_started_at/phoenix ids/...)."""
-    print(f"[run] aborted by an unrecoverable error ({reason}); "
+    ``base_meta`` (driver/model/version/git_sha/run_started_at/phoenix ids/...).
+
+    ``server_returncode`` (when known) records whether the MCP server subprocess had already
+    exited when the run aborted — the single most useful signal for diagnosing a transport
+    ``ReadError``: a negative value is a fatal SIGNAL (e.g. ``-11`` = SIGSEGV, a hard crash
+    during a tool call such as an AMICI import), distinguishing "the server died" from a mere
+    network blip (server still alive, ``None``)."""
+    server_note = ""
+    if server_returncode is not None:
+        if server_returncode < 0:
+            server_note = f" [MCP server was killed by signal {-server_returncode}]"
+        elif server_returncode > 0:
+            server_note = f" [MCP server had exited with code {server_returncode}]"
+        else:
+            server_note = " [MCP server had exited cleanly]"
+    print(f"[run] aborted by an unrecoverable error ({reason}){server_note}; "
           "writing a degraded result.json and exiting.")
     result = {
         **base_meta,
@@ -491,19 +519,26 @@ def _write_degraded_result(work: Path, base_meta: dict, scenario: Scenario,
         "success": False,
         "delta_bic": None,
         "run_ended_at": _now_iso(),
+        "server_returncode": server_returncode,
         "error": "run aborted before a verdict (provider/connection failure)",
     }
     (work / "result.json").write_text(json.dumps(result, indent=2))
     return result
 
 
-def _base_meta(scenario: Scenario, args: argparse.Namespace) -> dict:
+def _base_meta(scenario: Scenario, args: argparse.Namespace,
+               run_started_at: str | None = None) -> dict:
     """The result-json fields known before ever touching the server — enough to write a
     well-formed degraded result from ANY failure: preflight, baseline scoring, the agent, the
     judge (see ``_drive``, which enriches its own copy with Phoenix ids once its span is open),
     or a teardown-time failure after the agent already finished (see ``_main_async``'s own
     guard). Kept as one function so both call sites can never drift out of sync on the shape
-    ``collect_metrics.py`` expects."""
+    ``collect_metrics.py`` expects.
+
+    ``run_started_at`` is stamped fresh when not given; ``_main_async`` passes the REAL start
+    time it captured before launching the server, so a teardown-time degraded result preserves
+    the true start instead of re-stamping it at abort time (which made aborted runs show a
+    zero-length duration)."""
     scripted = args.driver == "scripted"
     return {
         "driver": args.driver,
@@ -512,14 +547,19 @@ def _base_meta(scenario: Scenario, args: argparse.Namespace) -> dict:
         "recursion_limit": None if scripted else args.recursion_limit,
         "n_starts": args.n_starts,
         "temperature": None if scripted else args.temperature,
-        "run_started_at": _now_iso(),
+        "run_started_at": run_started_at or _now_iso(),
         "phoenix_project": None, "phoenix_trace_id": None,
     }
 
 
 async def _drive(scenario: Scenario, session: ClientSession, work: Path,
-                 args: argparse.Namespace) -> "tuple[int, dict]":
+                 args: argparse.Namespace, run_started_at: str | None = None,
+                 server_proc: "subprocess.Popen | None" = None) -> "tuple[int, dict]":
     """Preflight, run the chosen driver, and judge — all on one live session.
+
+    ``run_started_at`` (the real start captured by ``_main_async`` before the server launched)
+    keeps a degraded result's start time truthful; ``server_proc`` lets an abort record whether
+    the MCP server had crashed (see :func:`_write_degraded_result`).
 
     Returns ``(exit_code, result)`` (see :func:`_judge`).
     """
@@ -530,7 +570,7 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
     # Stamp the run's start + provenance up front (before the slow baseline compile) so a
     # degraded result.json is still well-formed if preflight/baseline itself blows up.
     scripted = args.driver == "scripted"
-    base_meta = _base_meta(scenario, args)
+    base_meta = _base_meta(scenario, args, run_started_at)
     run_started_at = base_meta["run_started_at"]
     git_sha = base_meta["git_sha"]
 
@@ -637,7 +677,9 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                 # through untouched.)
                 if _should_reraise(exc):
                     raise
-                result = _write_degraded_result(work, base_meta, scenario, _summarize_exc(exc))
+                rc = server_proc.poll() if server_proc is not None else None
+                result = _write_degraded_result(work, base_meta, scenario, _summarize_exc(exc),
+                                                server_returncode=rc)
                 exit_code = 1
                 with contextlib.suppress(Exception):
                     record_run_result(span, result)  # span still live inside the `with`
@@ -649,7 +691,9 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
         # result.json. A missing API key raises SystemExit and is re-raised, not degraded.
         if _should_reraise(exc):
             raise
-        return 1, _write_degraded_result(work, base_meta, scenario, _summarize_exc(exc))
+        rc = server_proc.poll() if server_proc is not None else None
+        return 1, _write_degraded_result(work, base_meta, scenario, _summarize_exc(exc),
+                                         server_returncode=rc)
     finally:
         if tracing is not None:
             tracing.flush()  # export any buffered spans before we (maybe) exit
@@ -668,6 +712,11 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
 # --------------------------------------------------------------------------- main
 async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[int, dict]":
     work = cleanup(scenario)
+
+    # Capture the true run start once, before the server launch, so every degraded-result path
+    # (including a teardown-time abort in this function) reports the real start instead of
+    # re-stamping it at abort time.
+    started_at = _now_iso()
 
     work_yaml = work / "problem.yaml"
     # AMICI builds are keyed by SBML hash and never go stale, so keep them OUTSIDE work/
@@ -716,7 +765,8 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
         ) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                exit_code, result = await _drive(scenario, session, work, args)
+                exit_code, result = await _drive(scenario, session, work, args,
+                                                 run_started_at=started_at, server_proc=proc)
                 # Snapshot the run's on-disk half (result.json + version store) into the runs
                 # archive while work/ still exists — the next run of this example wipes it. The
                 # run explorer (examples/explore_ui.py) stitches this with the persisted Phoenix
@@ -737,7 +787,11 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
         # `_drive`'s guard exactly; `_should_reraise` still lets a real interrupt through.
         if _should_reraise(exc):
             raise
-        result = _write_degraded_result(work, _base_meta(scenario, args), scenario, _summarize_exc(exc))
+        # ``proc`` is always bound here: this guard's try-block starts only after the server
+        # subprocess was launched (its own launch failure re-raises separately above).
+        rc = proc.poll()
+        result = _write_degraded_result(work, _base_meta(scenario, args, started_at),
+                                        scenario, _summarize_exc(exc), server_returncode=rc)
         return 1, result
     finally:
         # Tear down without masking any in-flight exception.
