@@ -93,7 +93,9 @@ versioned) → `commit_batch(label)` snapshots them as **one** version (fitted o
 
 **Parameters** — `get_parameters` (read-only; values are set by the fit), `sync_parameters`.
 Parameter *values* are set only by the automatic fit; adjust the search space with the
-versioned `change_parameter_bounds` / `change_parameter_scale` operations.
+versioned `change_parameter_bounds` / `change_parameter_scale` operations. Every commit returns
+an `initial_conditions` block reporting, per species, whether its declared t=0 is used (fixed),
+fitted (estimated), or set per-condition.
 
 **Fit + simulation (automatic on commit)** — every commit fits the free parameters
 (pyPESTO multistart) and simulates, then snapshots a single version carrying the fitted
