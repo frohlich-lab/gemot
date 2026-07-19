@@ -166,19 +166,28 @@ def setup_phoenix_tracing(
     traces_endpoint = f"{base_endpoint}/v1/traces"
 
     # `register` wires up the OTel tracer provider + OTLP exporter and sets it as global.
-    # Different arize-phoenix-otel releases expose slightly different kwargs, so fall back
-    # to a minimal call if the richer one is rejected. The fallback preserves the target by
-    # exporting the base endpoint through the env var `register` reads, so we never silently
-    # export to localhost when the user configured a remote collector.
+    # `batch=True` installs a BatchSpanProcessor instead of the default SimpleSpanProcessor:
+    # SimpleSpanProcessor exports one HTTP request PER SPAN synchronously, which — across a
+    # sweep of many concurrent runs all pointed at one shared collector — floods the collector
+    # (its query API times out) and adds per-call latency to the agent. Batching buffers spans
+    # and exports them in far fewer requests; `TracingHandle.flush` forces the buffer out before
+    # the process exits so nothing is lost. Different arize-phoenix-otel releases expose slightly
+    # different kwargs, so fall back progressively if a kwarg is rejected — the fallback preserves
+    # the target by exporting the base endpoint through the env var `register` reads, so we never
+    # silently export to localhost when the user configured a remote collector.
     try:
         tracer_provider = register(
             project_name=project_name,
             endpoint=traces_endpoint,
+            batch=True,
             set_global_tracer_provider=True,
         )
     except TypeError:
         os.environ.setdefault("PHOENIX_COLLECTOR_ENDPOINT", base_endpoint)
-        tracer_provider = register(project_name=project_name)
+        try:
+            tracer_provider = register(project_name=project_name, batch=True)
+        except TypeError:  # very old release without `batch` — accept SimpleSpanProcessor
+            tracer_provider = register(project_name=project_name)
 
     # Instrument LangChain (deepagents/LangGraph run on it) so LLM calls and tool calls
     # are captured. Passing the provider explicitly avoids relying on global-lookup order.
