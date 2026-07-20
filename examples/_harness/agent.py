@@ -765,6 +765,168 @@ def _history_trimmer():
     )
 
 
+# --- tool-dispatch guard: make sure proposed tool calls actually FIRE -----------------------
+# A whole class of runs (originally seen on the blasi zero-shot build) never executed a single
+# tool: the lead kept emitting text-only assistant turns — narrating what it *would* do — and the
+# ReAct loop, seeing an assistant message with no tool_calls, treated each one as "done" and ended
+# with nothing built (n_tool=0, terminating in a handful of steps, nowhere near the recursion
+# limit). Two things harden the loop against that here (orthogonal to the repeated-error circuit
+# breaker above, which handles tools that keep FAILING — this handles tools that never fire AT ALL):
+#   1. de-duplicate identical tool calls WITHIN a batch: some providers emit the same (name, args)
+#      twice — occasionally with a repeated id — in one assistant turn, which wastes a fit and can
+#      break the tool-call/result pairing on the follow-up request. We collapse exact duplicates to
+#      the first occurrence before they dispatch, so results feed back cleanly.
+#   2. don't let an idle (no-tool) turn silently END the run while NOTHING has fired yet: push back
+#      with a corrective message and loop back to the model, up to K times, so the model gets a real
+#      chance to emit an actual tool call. If it still hasn't after K nudges we stop cleanly and the
+#      run is labelled ``no_tools_executed`` (see run_deepagents) — a degenerate run that is
+#      EXCLUDED as such rather than left as an ambiguous, silent early "completion".
+# The nudge fires ONLY while zero tools have executed, so it can never interfere with a genuine
+# finish (which always comes AFTER set_model + fits have run).
+_MAX_IDLE_MODEL_STEPS = 3   # consecutive no-tool turns to push back on before giving up
+
+_IDLE_NUDGE = (
+    "Your last message proposed NO tool call, so nothing happened. You cannot make progress by "
+    "reasoning in prose — you must ACT through the tools. Emit a tool call now: start by orienting "
+    "with describe_problem / get_model_structure, delegate data characterisation with the `task` "
+    "tool, or author the model with set_model. Do not reply with text alone."
+)
+
+
+def _tool_call_key(tc: dict) -> str:
+    """A stable identity for a proposed tool call: its name + canonicalised arguments.
+
+    Two calls with the same name and the same arguments are the same request regardless of the
+    id the provider stamped on them, so they compare equal here.
+    """
+    import json
+
+    args = tc.get("args")
+    try:
+        args_norm = json.dumps(args, sort_keys=True, default=str)
+    except Exception:  # pragma: no cover - non-serialisable args fall back to repr
+        args_norm = repr(args)
+    return f"{tc.get('name')}\x00{args_norm}"
+
+
+def _dedupe_tool_calls(tool_calls: "list[dict] | None") -> "tuple[list[dict], int]":
+    """Drop exact-duplicate (same name+args) tool calls, keeping the FIRST of each.
+
+    Accepts ``None`` (treated as empty). Returns ``(kept, n_dropped)``. Pure — no langchain
+    types — so it is unit-testable without the agent stack.
+    """
+    seen: set[str] = set()
+    kept: list[dict] = []
+    for tc in tool_calls or []:
+        key = _tool_call_key(tc)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(tc)
+    return kept, len(tool_calls or []) - len(kept)
+
+
+def _dedupe_raw_tool_calls(raw: "list[dict] | None") -> list[dict]:
+    """De-dupe the OpenAI-format raw tool-call list from ``additional_kwargs``.
+
+    Mirrors :func:`_dedupe_tool_calls` but on the provider's raw shape
+    (``{"id", "type", "function": {"name", "arguments"}}``), keying on name + the raw arguments
+    STRING and keeping the first of each — so it collapses a repeated call regardless of whether
+    the provider reused its ``id`` (matching by id membership alone would keep both copies of a
+    repeated-id duplicate).
+    """
+    seen: set[tuple] = set()
+    kept: list[dict] = []
+    for c in raw or []:
+        fn = c.get("function") or {}
+        key = (fn.get("name"), fn.get("arguments"))
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(c)
+    return kept
+
+
+def _tool_dispatch_guard(stats: dict[str, Any], *, max_idle_steps: int = _MAX_IDLE_MODEL_STEPS):
+    """Lead-only middleware implementing the two hardening steps described above.
+
+    ``stats`` is a caller-owned dict the middleware mutates so run_deepagents can inspect the
+    outcome after the run: ``tools_executed`` (real tool dispatches, incl. ``task`` delegations),
+    ``dropped_dup_tool_calls`` (batch duplicates collapsed), ``idle_nudges`` (no-tool turns pushed
+    back on), and ``gave_up_no_tools`` (True once the push-back budget was exhausted). Defined
+    lazily so importing this module doesn't require langchain — only the deepagents driver does.
+    """
+    from langchain.agents.middleware.types import AgentMiddleware, hook_config
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    def _dedupe_response(response):
+        # response is a ModelResponse (has .result: list[BaseMessage]) or a bare AIMessage.
+        msgs = getattr(response, "result", None)
+        target = msgs[-1] if msgs else (response if isinstance(response, AIMessage) else None)
+        if isinstance(target, AIMessage) and getattr(target, "tool_calls", None):
+            kept, dropped = _dedupe_tool_calls(target.tool_calls)
+            if dropped:
+                stats["dropped_dup_tool_calls"] += dropped
+                # Keep additional_kwargs["tool_calls"] (the raw provider copy) consistent with the
+                # trimmed .tool_calls — langchain-openai serialises from .tool_calls when it is
+                # non-empty, but collapse the raw copy the same way so nothing can resurrect a
+                # duplicate (de-duping by name+args, not id, since a repeated call may reuse its id).
+                ak = dict(getattr(target, "additional_kwargs", None) or {})
+                if isinstance(ak.get("tool_calls"), list):
+                    ak["tool_calls"] = _dedupe_raw_tool_calls(ak["tool_calls"])
+                new = target.model_copy(update={"tool_calls": kept, "additional_kwargs": ak})
+                if msgs:
+                    msgs[-1] = new
+                else:
+                    return new
+        return response
+
+    def _guard(state):
+        msgs = state.get("messages") or []
+        last = msgs[-1] if msgs else None
+        if not isinstance(last, AIMessage) or getattr(last, "tool_calls", None):
+            return None  # a tool call was proposed (or not an AI turn) — let it dispatch/route
+        if stats["tools_executed"] > 0:
+            return None  # a no-tool turn AFTER tools have run is a genuine finish — allow it
+        # Degenerate: nothing has fired yet and the model answered with text only.
+        if stats["idle_nudges"] < max_idle_steps:
+            stats["idle_nudges"] += 1
+            print(f"[tool-dispatch guard] no tool has fired yet and the model replied with text "
+                  f"only — pushing back ({stats['idle_nudges']}/{max_idle_steps})")
+            return {"messages": [HumanMessage(content=_IDLE_NUDGE)], "jump_to": "model"}
+        stats["gave_up_no_tools"] = True
+        print("[tool-dispatch guard] the model never dispatched a tool after "
+              f"{max_idle_steps} push-backs — ending the run (no_tools_executed)")
+        return {"jump_to": "end"}
+
+    class _ToolDispatchGuard(AgentMiddleware):
+        def wrap_model_call(self, request, handler):
+            return _dedupe_response(handler(request))
+
+        async def awrap_model_call(self, request, handler):
+            return _dedupe_response(await handler(request))
+
+        def wrap_tool_call(self, request, handler):
+            out = handler(request)
+            stats["tools_executed"] += 1
+            return out
+
+        async def awrap_tool_call(self, request, handler):
+            out = await handler(request)
+            stats["tools_executed"] += 1
+            return out
+
+        @hook_config(can_jump_to=["model", "end"])
+        def after_model(self, state, runtime):
+            return _guard(state)
+
+        @hook_config(can_jump_to=["model", "end"])
+        async def aafter_model(self, state, runtime):
+            return _guard(state)
+
+    return _ToolDispatchGuard()
+
+
 async def run_deepagents(
     session,
     *,
@@ -798,10 +960,13 @@ async def run_deepagents(
     ``tool_calls`` metric. ``None`` disables the check (the loop runs as before).
 
     The model is served by OpenRouter via its OpenAI-compatible API (``base_url`` +
-    ``api_key``). Returns ``{"stop_reason": ...}``. The orchestrator's messages, its
-    ``task`` delegations, the analysts' private tool calls, and token usage are recorded by
-    Phoenix tracing (set up by the runner), so this function just drives the loop to
-    completion.
+    ``api_key``). Returns ``{"stop_reason": ..., "n_tool_errors": ..., "disabled_tools": ...,
+    **guard_stats}`` — the stop reason, the circuit breaker's error tallies, and the
+    tool-dispatch guard's counters (``tools_executed``, ``dropped_dup_tool_calls``,
+    ``idle_nudges``, ``gave_up_no_tools``); the caller reads ``stop_reason`` and may ignore the
+    rest. The orchestrator's messages, its ``task`` delegations, the analysts' private tool
+    calls, and token usage are recorded by Phoenix tracing (set up by the runner), so this
+    function just drives the loop to completion.
     """
     from deepagents import create_deep_agent
     from langchain_mcp_adapters.tools import load_mcp_tools
@@ -863,16 +1028,23 @@ async def run_deepagents(
         print("[agent] WARNING: installed deepagents has no `subagents` parameter; "
               "running a single agent without the analyst panel.")
     # Lead middleware: drop deepagents' built-in FS/todo tools (the analysts can't be reliably
-    # filtered in this deepagents version — see _builtin_tool_filter; `task` is untouched), and
-    # trim the lead's re-sent tool-result history so the (input-dominated) context stays bounded
-    # instead of ballooning to ~1M tokens and hanging.
-    if "middleware" in params:
+    # filtered in this deepagents version — see _builtin_tool_filter; `task` is untouched), hide a
+    # circuit-broken tool so it stops being re-proposed, trim the lead's re-sent tool-result history
+    # so the (input-dominated) context stays bounded instead of ballooning to ~1M tokens and
+    # hanging, and guard tool dispatch (dedupe duplicate calls in a batch; push back on idle no-tool
+    # turns and label a run that never fires a tool as no_tools_executed — see _tool_dispatch_guard).
+    guard_stats: dict[str, Any] = {"tools_executed": 0, "dropped_dup_tool_calls": 0,
+                                   "idle_nudges": 0, "gave_up_no_tools": False}
+    guard_installed = "middleware" in params
+    if guard_installed:
         kwargs["middleware"] = [
             _builtin_tool_filter(), _disabled_tool_filter(breaker_state), _history_trimmer(),
+            _tool_dispatch_guard(guard_stats),
         ]
     else:  # pragma: no cover - guards against a deepagents API drift
         print("[agent] WARNING: installed deepagents has no `middleware` parameter; "
-              "the lead's built-in FS/todo tools + full history will remain.")
+              "the lead's built-in FS/todo tools + full history will remain, and proposed "
+              "tool calls are not guarded.")
     # A checkpointer lets us RESUME the graph from its last completed super-step after a stall or
     # exhausted call-retry (below), instead of discarding the run. In-process MemorySaver is
     # enough (one run per process). Degrade gracefully if the graph can't take one.
@@ -994,6 +1166,16 @@ async def run_deepagents(
         await asyncio.sleep(backoff)
         stream_input = None  # resume pending work from the checkpoint
 
+    # A run that ended cleanly but never dispatched a single tool built nothing (the degenerate
+    # "proposes tool calls but none fire" case the guard pushes back on). Relabel it so these runs
+    # are EXCLUDED as no_tools_executed rather than counted as an ambiguous silent "completion".
+    # Gate on the guard actually being installed: without the `middleware` hook (a deepagents API
+    # drift) `tools_executed` stays 0 even when tools ran, so the count is not trustworthy.
+    if guard_installed and stop_reason == "completed" and guard_stats["tools_executed"] == 0:
+        stop_reason = "no_tools_executed"
+    if guard_stats["dropped_dup_tool_calls"]:
+        print(f"[agent] de-duplicated {guard_stats['dropped_dup_tool_calls']} identical tool "
+              "call(s) within a batch over the run")
     if breaker_state["n_tool_errors"]:
         disabled = sorted(breaker_state["disabled"])
         print(f"[agent] tool errors this run: {breaker_state['n_tool_errors']}"
@@ -1002,4 +1184,5 @@ async def run_deepagents(
         "stop_reason": stop_reason,
         "n_tool_errors": breaker_state["n_tool_errors"],
         "disabled_tools": sorted(breaker_state["disabled"]),
+        **guard_stats,
     }
