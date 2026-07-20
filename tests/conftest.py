@@ -34,6 +34,38 @@ def yaml_path() -> str:
     return str(YAML_PATH)
 
 
+# The shipped toy model (tests/data/toy_v1/model.ant). Structural edits in tests are made by
+# re-authoring this base (via ``set_model``) with extra reaction lines spliced in.
+_TOY_BASE_MODEL = """model conversion_reaction
+  compartment compartment_ = 1;
+  species A in compartment_;
+  species B in compartment_;
+  A = A_init;
+  B = B_init;
+  A_init = 1.0;
+  B_init = 0.0;
+  k1 = 0.5;
+  k2 = 0.1;
+  r1: A => B; k1 * A;
+  r2: B => A; k2 * B;
+{extra}end
+"""
+
+
+@pytest.fixture
+def reauthor_toy():
+    """Return a helper that re-authors the toy model with ``extra_reactions`` (Antimony lines)
+    spliced in, via ``set_model``, for tests that just need a committed structural change."""
+    from petab_mcp import operations as O
+
+    def _reauthor(session, extra_reactions=(), *, justification="test", **kwargs):
+        body = "".join(f"  {line}\n" for line in extra_reactions)
+        antimony = _TOY_BASE_MODEL.format(extra=body)
+        return O.set_model(session, antimony, justification=justification, **kwargs)
+
+    return _reauthor
+
+
 @pytest.fixture
 def session(yaml_path, tmp_path):
     from petab_mcp.references import StubReferenceResolver

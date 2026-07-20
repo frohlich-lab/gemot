@@ -114,11 +114,7 @@ ORCHESTRATOR_TOOLS = [
     # dominant sweep waste of re-encoding already-visited structures (see issue #59).
     "restore_version",      # restore a prior version's model + fit as the working state (no refit)
     "get_errors",
-    # author the whole model in one step. The lead works exclusively by whole-model re-author:
-    # across every traced run it never once used the incremental editors (add_reaction /
-    # change_rate_law / remove_reaction) or batching, so those are omitted here to keep the
-    # tool schema (re-sent every turn — the largest fixed input-token slice) lean. The server
-    # still exposes them for other clients / scripted use. `restore_version` (above) IS included:
+    # author the whole model in one step. `restore_version` (above) IS included:
     # "going back" via re-authoring the old model wastes a recompile+refit and appends a
     # duplicate (the top sweep waste — issue #59), so the lead is given the cheap restore instead.
     "set_model",            # build the first model AND re-author it wholesale in one step

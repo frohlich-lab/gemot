@@ -76,14 +76,9 @@ Arize Phoenix tracing, judging, and how to run).
 
 **Model operations** (each requires a `justification`; `references` are optional) —
 - `set_model(antimony, justification, references?)` — set the whole model from an
-  Antimony string: builds the first model when none is initialized yet (`describe_problem` →
-  `model_initialized: false`) and re-authors/replaces an existing model. Use the incremental
-  edits below for smaller changes.
-- `add_reaction(reaction, justification, references)` — `reaction` is an Antimony line,
-  e.g. `"J: A + B -> C; k_f*A*B"`; new species/parameters + parametric ICs are added
-  automatically.
-- `change_rate_law(reaction_id, rate_law, justification, references)`
-- `remove_reaction(reaction_id, justification, references)` — prunes orphaned entities.
+  Antimony string. Builds the first model when none is initialized yet
+  (`describe_problem` → `model_initialized: false`) and re-authors/replaces an existing model.
+  New species/parameters + parametric ICs are reconciled automatically.
 - `change_parameter_scale(parameter_id, scale, justification, references?)` — references optional.
 - `change_parameter_bounds(parameter_id, lower_bound, upper_bound, justification, references?)`.
 - read-only: `get_model(format)`, `get_model_structure`, `validate_problem`.

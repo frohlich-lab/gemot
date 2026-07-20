@@ -23,8 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-# A bound MCP caller: ``await call("get_fit_summary")`` / ``await call("change_rate_law",
-# reaction_id=..., rate_law=..., justification=..., references=[...])``.
+# A bound MCP caller: ``await call("get_fit_summary")`` / ``await call("set_model",
+# antimony=..., justification=..., references=[...])``.
 Call = Callable[..., Awaitable[Any]]
 
 
