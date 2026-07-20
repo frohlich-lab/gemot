@@ -55,13 +55,20 @@ _TOY_BASE_MODEL = """model conversion_reaction
 @pytest.fixture
 def reauthor_toy():
     """Return a helper that re-authors the toy model with ``extra_reactions`` (Antimony lines)
-    spliced in, via ``set_model``, for tests that just need a committed structural change."""
+    spliced in via ``set_model`` and then ``fit``s it, for tests that just need a committed,
+    versioned structural change.
+
+    Since issue #81 an edit is fit-free (it snapshots no version); ``fit`` is what commits the
+    version. This helper does both so a caller gets a committed version in one call. Engine-free
+    (the plain ``session`` fixture wires no engine), ``fit`` still snapshots a ``kind="fit"``
+    version recording the edited model — the fit itself is skipped. Returns the ``fit`` result."""
     from petab_mcp import operations as O
 
     def _reauthor(session, extra_reactions=(), *, justification="test", **kwargs):
         body = "".join(f"  {line}\n" for line in extra_reactions)
         antimony = _TOY_BASE_MODEL.format(extra=body)
-        return O.set_model(session, antimony, justification=justification, **kwargs)
+        O.set_model(session, antimony, justification=justification, **kwargs)
+        return session.fit()
 
     return _reauthor
 
@@ -89,7 +96,7 @@ def engine(session, tmp_path):
 def fit_session(session, tmp_path):
     """A session with the AMICI engine wired and auto-fit on (small n_starts).
 
-    Use for tests that exercise the fit-on-commit path; the engine is reachable as
+    Use for tests that exercise the ``fit`` path; the engine is reachable as
     ``fit_session.engine``.
     """
     from petab_mcp.engine import AmiciEngine
@@ -98,3 +105,38 @@ def fit_session(session, tmp_path):
     session.auto_fit = True
     session.auto_fit_starts = 2
     return session
+
+
+def _write_empty_sbml(path: Path, model_id: str = "conversion_reaction") -> None:
+    import libsbml
+
+    doc = libsbml.SBMLDocument(3, 2)
+    model = doc.createModel()
+    model.setId(model_id)
+    model.setMetaId(model_id)
+    libsbml.writeSBMLToFile(doc, str(path))
+
+
+@pytest.fixture
+def empty_yaml(tmp_path) -> str:
+    """A PEtab problem that ships WITHOUT a model (empty SBML, no model.ant)."""
+    work = tmp_path / "empty"
+    work.mkdir()
+    for name in ("problem.yaml", "conditions.tsv", "measurements.tsv",
+                 "observables.tsv", "parameters.tsv"):
+        shutil.copy(DATA_DIR / name, work / name)
+    _write_empty_sbml(work / "conversion_reaction.xml")
+    return str(work / "problem.yaml")
+
+
+@pytest.fixture
+def empty_session(empty_yaml, tmp_path):
+    """A session whose problem ships model-less — ``has_model()`` is False until ``set_model``."""
+    from petab_mcp.references import StubReferenceResolver
+    from petab_mcp.session import PetabSession
+
+    return PetabSession(
+        empty_yaml,
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+    )

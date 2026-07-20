@@ -109,17 +109,24 @@ ORCHESTRATOR_TOOLS = [
     "list_versions",        # scored version history — pick the BEST version to go back to
     "get_version",          # read a prior version's Antimony + params (to inspect it)
     # go BACK to an earlier model the cheap way: restore its stored fit instead of re-authoring
-    # it (a re-author recompiles/refits to the same result and appends a duplicate — set_model
-    # now warns on, then refuses, a structure it has already seen). This is the fix for the
+    # it (a re-author recompiles/refits to the same result and appends a duplicate — `fit` now
+    # warns on, then refuses, a structure it has already seen). This is the fix for the
     # dominant sweep waste of re-encoding already-visited structures (see issue #59).
     "restore_version",      # restore a prior version's model + fit as the working state (no refit)
     "get_errors",
-    # author the whole model in one step. `restore_version` (above) IS included:
-    # "going back" via re-authoring the old model wastes a recompile+refit and appends a
-    # duplicate (the top sweep waste — issue #59), so the lead is given the cheap restore instead.
-    "set_model",            # build the first model AND re-author it wholesale in one step
+    # author the whole model in one step. `set_model` is the SINGLE model editor (issue #82): every
+    # structural change is a whole-model re-author — the incremental editors (add_reaction /
+    # change_rate_law / remove_reaction) were removed. `restore_version` (above) IS included:
+    # "going back" via re-authoring the old model wastes a recompile+refit and appends a duplicate
+    # (the top sweep waste — issue #59), so the lead is given the cheap restore instead.
+    "set_model",            # build the first model AND re-author it wholesale in one step (fit-free)
+    # score the assembled model. Edits are fit-free (issue #81): set_model / change_parameter_*
+    # mutate the working model but do NOT fit — `fit` is the single tool that fits + snapshots a
+    # version, so the lead MUST call it to score any edit. Assemble a coherent change, then fit once.
+    "fit",
     # change a parameter's ESTIMATION in place — the prompt tells the lead to WIDEN a binding
-    # bound (or switch scale) rather than re-typing a value the multistart fit ignores:
+    # bound (or switch scale) rather than re-typing a value the multistart fit ignores (fit-free —
+    # call fit after):
     "change_parameter_bounds",
     "change_parameter_scale",
     # NOTE: the UNBOUNDED data/diagnostic tools (get_measurements, query_data, get_fitting_log,
@@ -150,13 +157,19 @@ TOOL_DESCRIPTIONS = {
                   "initial conditions, parameters, reactions). BUILDS the first model when none "
                   "exists (model_initialized: false) AND re-authors/replaces an existing one. Use "
                   "for the initial build and for any coupled/symmetric or multi-reaction STRUCTURAL "
-                  "change in one coherent step; reconciles + fits on commit, reverts on failure. "
-                  "Warns if a previously-estimated parameter is dropped. Re-authoring a structure "
-                  "already seen is de-duplicated: re-authoring the current model is a no-op, an "
-                  "earlier model warns you to use restore_version(n), and an identical structure "
-                  "re-authored repeatedly is refused — to go BACK to a model use restore_version, "
-                  "not set_model. Args: antimony, justification, references?."),
-    "describe_problem": "Orientation: whether a model exists (model_initialized), table/entity counts, current version, batch state. Cheap.",
+                  "change in one coherent step; reconciles + lints, reverts on failure. This is an "
+                  "EDIT: it does NOT fit and does NOT create a version — call fit() to score the "
+                  "assembled model. Warns if a previously-estimated parameter is dropped. To go "
+                  "BACK to a model use restore_version(n), not set_model. Args: antimony, "
+                  "justification, references?."),
+    "fit": ("Fit the current working model and snapshot a version — the ONLY tool that fits. Edits "
+            "(set_model, change_parameter_bounds/scale) leave the model UNFIT (describe_problem -> "
+            "has_unfit_edits: true); assemble a coherent change, then call fit ONCE to score it. "
+            "Fits the free parameters (pyPESTO multistart), simulates, and returns the fit block "
+            "(neg_log_likelihood, chi2, bic, improvement, is_new_best) + a progress block + the new "
+            "version. Skips the refit and returns stored metrics if the model is identical to the "
+            "current version (no_change: true). Args: n_starts? (0 = simulate only), justification?."),
+    "describe_problem": "Orientation: whether a model exists (model_initialized), table/entity counts, current version, and whether the working model has unfit edits (has_unfit_edits). Cheap.",
     "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law) — empty until a model is built.",
     "get_parameters": ("Parameter table: id, bounds, scale, nominalValue (the fitted value), "
                        "estimate flag. Fixed (estimate=0) rows include the observation-noise "
@@ -175,9 +188,9 @@ TOOL_DESCRIPTIONS = {
                             "estimated parameters are superfluous when the model is too complex "
                             "(high bic / many params): fix, drop, or MERGE a collinear pair. Use it "
                             "BEFORE adding parameters and to prune toward parsimony. Arg: top_n."),
-    "list_versions": ("List every model version with its kind, label, and fit metrics "
-                      "(neg_log_likelihood, bic, is_new_best) — use it to find the best-scoring "
-                      "version, then get_version to read its model and re-author with set_model."),
+    "list_versions": ("List every model version (each a fit snapshot) with its kind, label, and fit "
+                      "metrics (neg_log_likelihood, bic, is_new_best) — use it to find the "
+                      "best-scoring version, then restore_version(v) to go back to it."),
     "get_version": ("Read a prior version's Antimony model + parameter table (to inspect it). To "
                     "GO BACK to an earlier model, call restore_version(v) — do NOT re-author it "
                     "with set_model. Arg: version."),

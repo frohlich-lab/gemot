@@ -14,7 +14,7 @@
 The conversation (turns/tokens/analyst sub-agents) comes from Phoenix — queried by the indexed
 ``trace_id`` (fast; unfiltered pulls time out). The model-variant + score trajectory comes from the
 run's ``.petab_mcp/`` version store. BIC-per-variant is recomputed (``2·nll + k·ln(n)``) since only
-the final BIC is persisted. The two are stitched by aligning each ``set_model`` tool span with the
+the final BIC is persisted. The two are stitched by aligning each ``fit`` tool span with the
 version ``timestamp`` it produced.
 """
 
@@ -448,9 +448,9 @@ def load_variants(run_dir: Path, n_data_points: int | None) -> list[dict]:
     return variants
 
 
-def _setmodel_result(output_value) -> dict | None:
-    """Unwrap a set_model TOOL span's output (``{type,data:{content:[{text:<json>}]}}``) to the
-    committed fit-result dict, or None."""
+def _tool_result(output_value) -> dict | None:
+    """Unwrap a TOOL span's output (``{type,data:{content:[{text:<json>}]}}``) to the
+    result dict, or None."""
     try:
         outer = output_value if isinstance(output_value, dict) else json.loads(output_value)
         txt = outer["data"]["content"][0]["text"]
@@ -460,27 +460,32 @@ def _setmodel_result(output_value) -> dict | None:
 
 
 def load_variants_from_spans(df, n_default: int | None) -> list[dict]:
-    """Reconstruct the model-variant trajectory from the trace's committed ``set_model`` tool
-    spans — the fallback when the on-disk version store has been wiped. Each span carries the
-    Antimony (input) and the full fit block incl. BIC (output)."""
+    """Reconstruct the model-variant trajectory from the trace's ``fit`` tool spans — the
+    fallback when the on-disk version store has been wiped. Since issue #81 the fit block + version
+    live on the ``fit`` span (edits are fit-free), so a variant is a committed ``fit``; its Antimony
+    is taken from the most recent preceding ``set_model`` input."""
     tool_c = "attributes.tool.name"
     if tool_c not in df.columns:
         return []
-    sm = df[df[tool_c] == "set_model"].sort_values("start_time")
+    spans = df[df[tool_c].isin(("set_model", "fit"))].sort_values("start_time")
     variants: list[dict] = []
-    for _, r in sm.iterrows():
-        res = _setmodel_result(r.get("attributes.output.value"))
-        if not res or not res.get("committed"):
+    last_ant: str | None = None
+    for _, r in spans.iterrows():
+        name = r.get(tool_c)
+        if name == "set_model":
+            try:
+                last_ant = (json.loads(r.get("attributes.input.value")) or {}).get("antimony")
+            except Exception:
+                pass
             continue
-        try:
-            ant = (json.loads(r.get("attributes.input.value")) or {}).get("antimony")
-        except Exception:
-            ant = None
+        res = _tool_result(r.get("attributes.output.value"))
+        if not res or not res.get("committed"):  # skipped/rejected fit -> no version
+            continue
         improvement = res.get("improvement") or {}
         variants.append({
             "index": len(variants),
             "version": res.get("version"),
-            "label": "set_model", "kind": "alteration",
+            "label": "fit", "kind": "fit",
             "nll": res.get("neg_log_likelihood"),
             "chi2": res.get("chi2"),
             "bic": res.get("bic"),
@@ -488,7 +493,7 @@ def load_variants_from_spans(df, n_default: int | None) -> list[dict]:
             "n": res.get("n_data_points") or n_default,
             "is_new_best": improvement.get("is_new_best"),
             "timestamp": res.get("event_timestamp"),
-            "antimony": ant,
+            "antimony": last_ant,
             "params": [],
             "justification": res.get("justification"),
         })
@@ -527,15 +532,15 @@ def _vnum_of(x) -> int | None:
 
 def _map_variants_to_turns(turns: list[dict], variants: list[dict]) -> None:
     """Tag each turn with the model variant it produced, matched by the **committed version
-    number** in that turn's ``set_model`` result — not by position.
+    number** in that turn's ``fit`` result — not by position.
 
-    Positional pairing (j-th set_model turn ↔ j-th fitted variant) silently mis-labels every
-    variant whenever the counts diverge, which they routinely do: *rejected* ``set_model`` calls
-    (syntax errors) carry no committed version, and a committed variant's span can be dropped
-    from the trace. Matching on the version number is immune to both. Turns whose commit was
-    rejected get no variant; a fitted variant that no turn produced (dropped span) is flagged
-    ``no_turn`` so the chart can show the gap instead of shifting later labels onto it. Also
-    forward-fills ``active_variant`` (the variant in effect while viewing each turn)."""
+    Positional pairing (j-th fit turn ↔ j-th fitted variant) silently mis-labels every
+    variant whenever the counts diverge, which they routinely do: *rejected* / no-op ``fit`` calls
+    carry no new version, and a committed variant's span can be dropped from the trace. Matching on
+    the version number is immune to both. Turns whose fit was rejected get no variant; a fitted
+    variant that no turn produced (dropped span) is flagged ``no_turn`` so the chart can show the
+    gap instead of shifting later labels onto it. Also forward-fills ``active_variant`` (the variant
+    in effect while viewing each turn)."""
     by_version = {vn: v for v in variants if (vn := _vnum_of(v.get("version"))) is not None}
 
     produced_by_turn: dict[int, dict] = {}   # turn index -> the variant that turn committed
@@ -543,11 +548,11 @@ def _map_variants_to_turns(turns: list[dict], variants: list[dict]) -> None:
     for t in turns:
         last_v = None
         for tc in t.get("tools", []):
-            if tc.get("name") != "set_model":
+            if tc.get("name") != "fit":
                 continue
-            res = _setmodel_result(tc.get("result"))
+            res = _tool_result(tc.get("result"))
             if not (isinstance(res, dict) and res.get("committed")):
-                continue  # rejected commit — it produced no version
+                continue  # rejected / no-op fit — it produced no new version
             v = by_version.get(_vnum_of(res.get("version")))
             if v is not None:
                 last_v = v
@@ -619,7 +624,7 @@ def build_bundle(run_id: str, *, run_dir: Path, meta: dict,
         if df is not None:
             turns, totals, phoenix = load_turns(trace_id, phoenix_base_url, project, df=df)
             # If the on-disk store was wiped, rebuild the variant trajectory from the trace's
-            # set_model spans so the score panel still works.
+            # fit spans so the score panel still works.
             if not variants:
                 variants = load_variants_from_spans(df, meta.get("n"))
                 for v in variants:
