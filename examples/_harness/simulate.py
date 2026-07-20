@@ -308,8 +308,20 @@ def add_noise_and_write(
     """
     rng = np.random.default_rng(seed)
     out = sim_df.copy()
+    # Every simulated observable must have a sigma. Series.map(dict) SILENTLY yields NaN for a
+    # missing key, which would propagate through the noise draw (and clip/round) and write NaN
+    # measurements to the TSV unnoticed — also poisoning the reference fit built from this data.
+    # Fail loudly; the usual cause is adding an observable but not its NOISE entry.
+    missing = sorted(set(map(str, out[OBSERVABLE_ID])) - set(map(str, noise)))
+    if missing:
+        raise ValueError(
+            f"add_noise_and_write: no noise sigma for observable(s) {missing}; "
+            f"add them to the noise map (have: {sorted(map(str, noise))})."
+        )
     values = out[SIMULATION].to_numpy(dtype=float)
     sigmas = out[OBSERVABLE_ID].map(noise).to_numpy(dtype=float)
+    if not np.all(np.isfinite(sigmas)):
+        raise ValueError("add_noise_and_write: noise map has a non-finite sigma value.")
     noised = values + rng.normal(0.0, 1.0, size=values.shape) * sigmas
     if nonneg:
         noised = np.clip(noised, 0.0, None)

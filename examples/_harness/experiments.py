@@ -286,12 +286,10 @@ def run_experiments(
 
 
 def _phoenix_base_url(url: str) -> str:
-    """Normalize to the Phoenix base (strip a trailing OTLP path) for ``Client``."""
-    out = url.rstrip("/")
-    for suffix in ("/v1/traces", "/v1/otlp"):
-        if out.endswith(suffix):
-            return out[: -len(suffix)]
-    return out
+    """Normalize to the Phoenix base (strip a trailing OTLP path) for ``Client`` — see
+    :func:`tracing.phoenix_base_url` (the shared implementation)."""
+    from .tracing import phoenix_base_url
+    return phoenix_base_url(url)
 
 
 # --------------------------------------------------------------------------- sweep report

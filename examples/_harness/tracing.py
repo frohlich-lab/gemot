@@ -94,6 +94,14 @@ def _base_endpoint(endpoint: str) -> str:
     return url
 
 
+def phoenix_base_url(url: str) -> str:
+    """Normalize a Phoenix endpoint to its base URL for ``Client(base_url=...)`` — strip a
+    trailing OTLP path (``/v1/traces``, ``/v1/otlp``). The single home for this rule; the
+    metrics / experiments / explorer helpers delegate here so it can't drift across copies.
+    """
+    return _base_endpoint(url)
+
+
 def setup_phoenix_tracing(
     project_name: str = "petab-mcp-agent",
     *,

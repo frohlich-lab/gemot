@@ -3,12 +3,13 @@
 A *scenario* is everything that distinguishes one repair demo from another: the pristine
 (broken) PEtab problem, the orchestrator prompt + task string handed to the modeling lead,
 a deterministic ``scripted_fix`` (the canonical repair, used by ``--driver scripted`` as a
-no-LLM self-test), and an independent ``check`` that decides success. Everything else —
-cleanup, the stateful MCP server, the deepagents panel, Phoenix tracing, baseline scoring,
-the RESULT report, and ``result.json`` — lives in :mod:`runner` and is identical across
-examples.
+no-LLM self-test), a ``bic_threshold``, and an optional ``diagnostics`` hook. Success itself is
+decided generically by the runner's BIC gate (``delta_bic <= bic_threshold`` in ``_judge``), not
+by the scenario; ``diagnostics`` is report-only. Everything else — cleanup, the stateful MCP
+server, the deepagents panel, Phoenix tracing, baseline scoring, the RESULT report, and
+``result.json`` — lives in :mod:`runner` and is identical across examples.
 
-The judge helpers below let each ``check`` reason about the *structure* of a fitted rate
+The judge helpers below let a scenario's ``diagnostics`` hook reason about the *structure* of a fitted rate
 law rather than string-matching it, so a repair is credited for the right MECHANISM
 however the agent chose to name or arrange its new parameters. They parse the libsbml
 formula with sympy and ask questions like "is this reaction's rate saturating in species

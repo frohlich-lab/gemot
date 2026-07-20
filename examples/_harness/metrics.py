@@ -61,17 +61,10 @@ def _parse_iso(value: str | None) -> dt.datetime | None:
 
 
 def _phoenix_base_url(url: str) -> str:
-    """Normalize to the Phoenix base for ``Client(base_url=...)``.
-
-    ``PHOENIX_COLLECTOR_ENDPOINT`` may be either the base (``http://host:6006``) or a full
-    OTLP path (``.../v1/traces``); the Phoenix client wants the base, so strip a trailing
-    OTLP suffix (mirrors ``tracing._base_endpoint``).
-    """
-    out = url.rstrip("/")
-    for suffix in ("/v1/traces", "/v1/otlp"):
-        if out.endswith(suffix):
-            return out[: -len(suffix)]
-    return out
+    """Normalize to the Phoenix base for ``Client(base_url=...)`` — see
+    :func:`tracing.phoenix_base_url` (the shared implementation)."""
+    from .tracing import phoenix_base_url
+    return phoenix_base_url(url)
 
 
 def phoenix_trace_metrics(
@@ -129,7 +122,12 @@ def phoenix_trace_metrics(
 
     def _tok(name: str) -> int | None:
         col = f"attributes.llm.token_count.{name}"
-        return int(sub[col].dropna().sum()) if col in sub.columns else None
+        if col not in sub.columns:
+            return None
+        vals = sub[col].dropna()
+        # Empty after dropna = the column exists but no span carried a token count. Report None
+        # (unknown), not 0 — a genuine zero and "never captured" must stay distinguishable.
+        return int(vals.sum()) if len(vals) else None
 
     model = None
     if "attributes.llm.model_name" in sub.columns:

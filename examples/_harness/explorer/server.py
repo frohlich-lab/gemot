@@ -24,9 +24,13 @@ _HERE = Path(__file__).resolve().parent
 
 
 def _phoenix_base_url(explicit: str | None) -> str:
+    # Resolve the endpoint (explicit arg, then the standard env vars, then the local default),
+    # then normalize to the base via the shared helper so a `.../v1/traces` env value is stripped
+    # to the base the Phoenix Client wants — same rule as metrics/experiments/tracing.
+    from ..tracing import phoenix_base_url
     url = (explicit or os.environ.get("PHOENIX_COLLECTOR_ENDPOINT")
            or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or "http://localhost:6006")
-    return url.rstrip("/")
+    return phoenix_base_url(url)
 
 
 def create_app(archive_root: Path | None = None, phoenix_base_url: str | None = None,

@@ -426,7 +426,8 @@ def load_variants(run_dir: Path, n_data_points: int | None) -> list[dict]:
             len(meta.get("fitted_parameters") or {}) or None)
         bic = None
         if nll is not None and k is not None and n:
-            bic = 2.0 * float(nll) + k * math.log(n)
+            from ..scenario import bic as _bic  # one BIC definition (2·nll + k·ln(n))
+            bic = _bic(nll, k, n)
         variants.append({
             "index": len(variants),
             "version": meta.get("version", _vnum(d.name)),

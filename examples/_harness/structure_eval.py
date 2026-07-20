@@ -240,7 +240,10 @@ def _final_model_ant(run_dir: Path) -> str | None:
             reverse=True,
         )
     for vd in vdirs:
-        return (vd / "model.ant").read_text()
+        try:
+            return (vd / "model.ant").read_text()
+        except OSError:  # unreadable/missing despite the is_file() prefilter — try the next
+            continue
     return None
 
 

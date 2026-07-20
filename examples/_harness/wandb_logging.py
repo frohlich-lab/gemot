@@ -47,8 +47,9 @@ def log_result(result: dict[str, Any], *, project: str = "petab-mcp-sweep",
     metrics: dict[str, Any] = {k: result.get(k) for k in _METRIC_KEYS}
     # 0/1 so W&B averages give a success RATE when grouped; reduced χ² is derived.
     metrics["passed"] = 1.0 if result.get("success") else 0.0
-    chi2, dof = result.get("chi2"), result.get("chi2_dof")
-    metrics["reduced_chi2"] = (float(chi2) / dof) if (chi2 is not None and dof) else None
+    # Reuse the one reduced-χ² definition (χ² / dof) instead of re-deriving it here.
+    from .experiments import reduced_chi2
+    metrics["reduced_chi2"] = reduced_chi2(result)
 
     run = None
     try:

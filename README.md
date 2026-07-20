@@ -6,8 +6,9 @@ building into a **disciplined, auditable** workflow — the loop behind model-bu
 assistants such as [petabgpt](https://github.com/frohlich-lab/petabgpt).
 
 - The experimental design (**measurements, conditions, observables**) is read-only.
-- The **model is authored and edited only in Antimony**, and only through three
-  constrained operations: **add a reaction, change a rate law, remove a reaction**.
+- The **model is authored and edited only in Antimony**, through constrained, justified
+  operations: **author/replace the whole model** (`set_model`), **add a reaction, change a
+  rate law, remove a reaction**, and adjust a parameter's **scale/bounds** — never free-form.
 - Every operation **must cite a justification**; references are **optional** (validated
   against **PubMed** when provided).
 - Operations **auto-maintain SBML↔PEtab consistency**: new symbols become model
@@ -188,7 +189,9 @@ your own skills; drop another skill directory into `_skills/` to extend the bund
   edit that breaks a fixed observable/condition is rejected.
 - **Parametric initial conditions.** `reconcile` guarantees every species `S` has an
   `initialAssignment(S := S_init)` with `S_init` in the parameter table (linear scale),
-  so initial conditions are first-class, estimatable parameters.
+  so initial conditions are first-class parameters — **fixed** at the declared t=0 value by
+  default, and estimated only when the scenario opts in (`estimate_initial_conditions`; not an
+  in-loop toggle). Each commit's `initial_conditions` block reports each species' actual mode.
 - **PubMed validation.** References are **optional** on every operation (only a non-empty
   `justification` is required); when given, they are resolved via NCBI E-utilities (no extra
   dependency). The mode governs how strictly a *supplied* reference is validated: `required`
