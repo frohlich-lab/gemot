@@ -110,6 +110,13 @@ def test_dedupe_raw_empty_and_none():
 # langchain is an examples-harness dependency, NOT a dependency of the petab-mcp package, so the
 # integration tests below skip cleanly where it is absent; the pure-helper tests above always run.
 def _langchain_available() -> bool:
+    # Treat only the genuine absence of the top-level ``langchain`` package as
+    # "unavailable" (find_spec returns None for a missing top-level module). If
+    # ``langchain`` is installed, probing the submodule may raise
+    # ModuleNotFoundError from a broken install (e.g. a missing transitive
+    # dependency) — let that surface rather than silently skipping the tests.
+    if importlib.util.find_spec("langchain") is None:
+        return False
     return importlib.util.find_spec("langchain.agents") is not None
 
 
