@@ -214,6 +214,38 @@ def cleanup(scenario: Scenario) -> Path:
     return work
 
 
+async def _restore_best_checkpoint(call) -> None:
+    """Make the early-stop chain's best-BIC model the current HEAD before scoring.
+
+    Agents wander off their best model and finish worse (verified pass→fail flips on a credit
+    abort, e.g. armistead v56 → v66), so the judge must score the BEST fitted version, not the
+    last-committed one. The server tracks that checkpoint (``get_progress`` → ``best_version``);
+    ``rollback_to`` restores it as a new HEAD, which every read in :func:`_judge` then sees. This
+    runs on ANY termination that reaches the judge (early-stop, wall-time, recursion limit,
+    clean finish). Best-effort — a probe/rollback failure just leaves HEAD in place.
+    """
+    try:
+        progress = await call("get_progress")
+    except Exception:  # pragma: no cover - older server without the tool: score HEAD
+        return
+    best = progress.get("best_version") if isinstance(progress, dict) else None
+    if best is None:
+        return
+    try:
+        head = int((await call("current_version")).get("version", 0))
+    except Exception:  # pragma: no cover - defensive
+        head = None
+    if best == head:
+        return  # already on the best model
+    try:
+        await call("rollback_to", version=best,
+                   justification="restore best-BIC checkpoint before scoring")
+        print(f"[judge] restored best-BIC checkpoint v{best} (was HEAD v{head}) before scoring")
+    except Exception as exc:  # pragma: no cover - score HEAD if the restore fails
+        print(f"[judge] could not restore best-BIC checkpoint v{best} "
+              f"({type(exc).__name__}: {exc}); scoring HEAD instead")
+
+
 async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta: dict,
                  clock: "_ToolClock", t0: float) -> "tuple[int, dict]":
     """Judge the repaired model against the true model by BIC (structure-agnostic).
@@ -230,6 +262,9 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     can stamp the outcome onto the run span.
     """
     from .scenario import bic, chi2_gof_pvalue
+
+    # Restore + score the best-BIC checkpoint, not whatever was committed last (see the helper).
+    await _restore_best_checkpoint(call)
 
     structure = await call("get_model_structure")
     reactions = structure.get("reactions", []) or []
@@ -564,6 +599,9 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
     Returns ``(exit_code, result)`` (see :func:`_judge`).
     """
     t0 = time.monotonic()
+    # Capture the un-timed call handle BEFORE wrapping, so the agent's internal early-stop polls
+    # (get_progress, once per super-step) don't inflate the tool clock / tool_calls metric.
+    raw_call_tool = session.call_tool
     clock = _wrap_tool_clock(session)  # split server/compute time from LLM time
     call = _make_call(session)
 
@@ -669,6 +707,7 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                     temperature=args.temperature,
                     n_starts=args.n_starts,
                     max_wall_seconds=args.max_wall_seconds,
+                    progress_probe=raw_call_tool,
                 )
                 stop_reason = agent_out.get("stop_reason", "completed")
                 if stop_reason != "completed":
@@ -838,7 +877,10 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
                    help="OpenRouter API key (default: the OPENROUTER_API_KEY environment variable).")
     p.add_argument("--temperature", type=float, default=0.0,
                    help="LLM sampling temperature (deepagents driver); recorded per run for sweeps.")
-    p.add_argument("--recursion-limit", type=int, default=200, help="deepagents/LangGraph step budget.")
+    p.add_argument("--recursion-limit", type=int, default=250,
+                   help="deepagents/LangGraph super-step budget — a GENEROUS backstop only (above "
+                        "the longest legitimate ~200-step run). The early-stop chain (non-improving"
+                        "-streak cap + plateau) does the real stopping, so this should rarely fire.")
     p.add_argument("--n-starts", type=int, default=50,
                    help="pyPESTO multistart count for the auto-fit on every commit (also the "
                         "server's default, so the agent's own commits use it too).")

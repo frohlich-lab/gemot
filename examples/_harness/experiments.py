@@ -223,7 +223,7 @@ def run_experiments(
     model: str = "deepseek/deepseek-v4-pro",
     temperature: float = 0.0,
     n_starts: int = 50,
-    recursion_limit: int = 200,
+    recursion_limit: int = 250,
     experiment_name: str | None = None,
     dry_run: bool = False,
     wandb: bool = False,

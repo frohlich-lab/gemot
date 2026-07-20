@@ -777,6 +777,7 @@ async def run_deepagents(
     temperature: float = 0.0,
     n_starts: int = 1,
     max_wall_seconds: float | None = None,
+    progress_probe: Any | None = None,
 ) -> dict[str, Any]:
     """Drive the orchestrator (+ analyst subagents) against ``session``'s tools.
 
@@ -788,6 +789,13 @@ async def run_deepagents(
     Slurm time limit (see ``slurm/make_sweep.py``'s ``--max-wall-seconds`` / ``--time``) so this
     fires first. ``None`` (the default) means no self-imposed limit — only the per-step stall
     watchdog and the outer scheduler's own limit apply, as before.
+
+    ``progress_probe`` (optional) is an un-timed ``await probe(tool, args)`` handle used to poll
+    the server's ``get_progress`` between super-steps: when the early-stop chain reports
+    ``should_stop`` (the non-improving-streak cap, or a plateau once the best model is adequate),
+    the loop stops at the next clean boundary — the deterministic replacement for wandering to the
+    recursion limit. It is passed un-timed so these internal polls don't inflate the tool clock /
+    ``tool_calls`` metric. ``None`` disables the check (the loop runs as before).
 
     The model is served by OpenRouter via its OpenAI-compatible API (``base_url`` +
     ``api_key``). Returns ``{"stop_reason": ...}``. The orchestrator's messages, its
@@ -901,12 +909,30 @@ async def run_deepagents(
     config: dict[str, Any] = {"recursion_limit": recursion_limit}
     if checkpointer is not None:
         config["configurable"] = {"thread_id": "petab-mcp-run"}
+
+    async def _early_stop_reason() -> str | None:
+        """The server's early-stop reason if the run should stop now, else ``None`` (fail-open:
+        any probe error just means "keep going")."""
+        if progress_probe is None:
+            return None
+        try:
+            res = await progress_probe("get_progress", {})
+            sc = getattr(res, "structuredContent", None)
+            if isinstance(sc, dict):
+                data = sc.get("result", sc) if set(sc.keys()) == {"result"} else sc
+                if isinstance(data, dict) and data.get("should_stop"):
+                    return data.get("stop_reason") or "early-stop condition met"
+        except Exception:  # pragma: no cover - never let the probe break the run
+            pass
+        return None
+
     stream_input: Any = {"messages": [{"role": "user", "content": task}]}
     resume_left = _RUN_RESUME_ATTEMPTS if checkpointer is not None else 0
     while True:
         retriable: str | None = None
         agen = None
         wall_budget_exceeded = False
+        early_stopped: str | None = None
         try:
             # Open the stream INSIDE the try so a synchronous raise from astream (e.g. on the
             # input=None resume path) is handled/degraded here, not left to abort the whole run.
@@ -919,7 +945,16 @@ async def run_deepagents(
                 if deadline is not None and time.monotonic() >= deadline:
                     wall_budget_exceeded = True
                     break
-            stop_reason = "wall_time_budget_exceeded" if wall_budget_exceeded else "completed"
+                # Deterministic early-stop: poll the server between super-steps and stop at this
+                # clean boundary once the run has stopped improving (streak cap / plateau).
+                early_stopped = await _early_stop_reason()
+                if early_stopped is not None:
+                    break
+            stop_reason = (
+                "wall_time_budget_exceeded" if wall_budget_exceeded
+                else f"early_stop: {early_stopped}" if early_stopped
+                else "completed"
+            )
         except asyncio.TimeoutError:
             retriable = (f"stalled: no step completed in {stall_timeout:.0f}s "
                          "(hung provider call or wedged fit)")
@@ -935,6 +970,10 @@ async def run_deepagents(
         if wall_budget_exceeded:
             print(f"[agent] wall-time budget ({max_wall_seconds:.0f}s) exceeded — stopping "
                   "at this step boundary; the judge scores whatever is currently committed.")
+            break
+        if early_stopped is not None:
+            print(f"[agent] early-stop: {early_stopped} — stopping at this step boundary; "
+                  "the judge restores + scores the best-BIC checkpoint.")
             break
         if retriable is None:
             break

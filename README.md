@@ -99,10 +99,15 @@ fitted (estimated), or set per-condition.
 
 **Fit + simulation (automatic on commit)** — every commit fits the free parameters
 (pyPESTO multistart) and simulates, then snapshots a single version carrying the fitted
-parameters, the fit metrics (`neg_log_likelihood`, `chi2`), improvement metrics
+parameters, the fit metrics (`neg_log_likelihood`, `chi2`, `bic`), improvement metrics
 (`objective_before`, `self_improvement`, `improvement_vs_best_prior`, `is_new_best` — so
-versions can be ranked by objective), and the simulation dataframe. Pass `n_starts` on a
-commit to fit harder (`0` = simulate without fitting); batching fits once on `commit_batch`.
+versions can be ranked; `is_new_best`/`improvement_vs_best_prior` track **BIC** against the
+best model so far, and `is_new_best` is gated on a minimum effect size, ΔBIC ≥ 2, so
+noise-floor wander — or an nll gain that raises BIC — isn't counted as progress), and the
+simulation dataframe. Each commit result also carries a `progress` block (non-improving
+streak, best-BIC `best_version`, best-BIC gain over the last N ops) that backs an early-stop
+once the score stops moving — see `get_progress`. Pass `n_starts` on a commit to fit harder
+(`0` = simulate without fitting); batching fits once on `commit_batch`.
 
 **Fit inspection** — `get_fit_summary()` returns just the metrics (no records; a cheap
 score check). Three compact, size-bounded helpers give a quick read without pulling the raw
