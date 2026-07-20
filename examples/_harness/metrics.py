@@ -33,7 +33,7 @@ _RESULT_FIELDS = (
     "baseline_nll", "final_nll", "delta",
     "chi2", "chi2_dof", "chi2_gof_pvalue",
     "k", "n", "bic", "bic_reference", "delta_bic", "bic_threshold",
-    "head_version", "n_errors", "tool_calls",
+    "head_version", "n_errors", "n_tool_errors", "tool_calls",
     "wall_seconds", "compute_seconds", "llm_seconds",
     "compile_seconds", "fit_seconds", "n_compiles", "n_fits",
     "git_sha", "recursion_limit", "n_starts", "temperature",

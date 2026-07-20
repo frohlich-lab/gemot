@@ -545,6 +545,175 @@ def _builtin_tool_filter():
     return _DropBuiltinTools()
 
 
+# --- repeated-tool-error circuit breaker --------------------------------------------------
+# A broken tool used to be re-proposed cumulatively hundreds of times across a run (a
+# trace-review swarm saw one query_data call re-proposed ~798× — up to ~100 pending copies in
+# a single step) while the agent learned nothing from the identical failures. This breaker
+# counts every tool failure and, after N CONSECUTIVE IDENTICAL errors from the same tool,
+# DISABLES that tool for the rest of the run: further calls are short-circuited with a terminal
+# message pointing at the working alternative, so the agent stops hammering a dead tool and
+# moves on. A SUCCESS resets a tool's streak; DIFFERENT errors reset it too (the agent is still
+# exploring), so only a genuinely-stuck tool is cut off.
+#
+# It works at the TOOL-OBJECT layer (wrapping each loaded tool's coroutine), not as agent
+# middleware, deliberately: the heavy data/diagnostic tools (query_data, get_fitting_log, …)
+# run INSIDE the analyst subagents, and deepagents 0.6.12's declarative subagents don't
+# reliably receive a middleware list (see _builtin_tool_filter). Wrapping the tool object makes
+# the breaker travel WITH the tool into whichever agent (lead or analyst) calls it.
+_TOOL_ERROR_DISABLE_THRESHOLD = 3   # consecutive identical errors from one tool before it is cut
+
+# Where to send the agent when a specific tool is disabled (its result already carries the
+# server's own hint; this is the panel-facing fallback). Anything unlisted gets the generic one.
+_DISABLED_TOOL_HINTS = {
+    "query_data": ("Use `get_measurements` for the raw measurement data, or `list_data_tables` "
+                   "for the available tables and their columns."),
+}
+_DISABLED_TOOL_HINT_DEFAULT = (
+    "Use a different tool (or `get_errors` to review the failure) and continue without it."
+)
+
+
+def _new_breaker_state() -> dict[str, Any]:
+    """Mutable, run-scoped state shared by the wrapped tools and the lead's tool filter."""
+    return {"disabled": set(), "n_tool_errors": 0, "streaks": {}, "events": []}
+
+
+def _breaker_message(name: str, hint: str) -> list[dict[str, str]]:
+    """The terminal content block returned in place of a disabled tool's result."""
+    return [{"type": "text", "text": (
+        f"TOOL DISABLED: `{name}` failed repeatedly with the same error and is disabled for the "
+        f"rest of this run. Do NOT call it again — {hint}"
+    )}]
+
+
+def _result_error(content: Any, artifact: Any) -> str | None:
+    """Return the error string if a (content, artifact) tool result is a FAILURE, else None.
+
+    The petab-mcp server returns a failed read/diagnostic tool as a normal result carrying
+    ``{"ok": false, "error": ...}`` (not an MCP protocol error), which langchain-mcp-adapters
+    exposes in the artifact's ``structured_content`` and in the text content. A rejected
+    *operation* (``{"committed": false}`` — e.g. a lint failure the agent should fix and retry)
+    is deliberately NOT treated as a breaker error: that is the normal edit/retry feedback loop.
+    """
+    if isinstance(artifact, dict):
+        sc = artifact.get("structured_content")
+        if isinstance(sc, dict) and sc.get("ok") is False:
+            return str(sc.get("error") or "tool error")
+        if artifact.get("isError") or artifact.get("is_error"):
+            return "tool error"
+    # Fallback: concatenate any text content blocks and look for the {"ok": false} shape.
+    text = ""
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text += str(block.get("text") or "")
+            elif isinstance(block, str):
+                text += block
+    elif isinstance(content, str):
+        text = content
+    try:
+        import json
+        obj = json.loads(text)
+    except Exception:
+        return None
+    if isinstance(obj, dict) and obj.get("ok") is False:
+        return str(obj.get("error") or "tool error")
+    return None
+
+
+def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
+    """Count a tool error; return True iff it TRIPS the breaker (disables the tool now)."""
+    state["n_tool_errors"] += 1
+    sig = err[:200]
+    streak = state["streaks"].get(name)
+    if streak and streak["sig"] == sig:
+        streak["count"] += 1
+    else:
+        streak = {"sig": sig, "count": 1}
+        state["streaks"][name] = streak
+    if streak["count"] >= _TOOL_ERROR_DISABLE_THRESHOLD and name not in state["disabled"]:
+        state["disabled"].add(name)
+        msg = (f"disabled `{name}` after {streak['count']} consecutive identical errors: "
+               f"{sig}")
+        state["events"].append(msg)
+        print(f"[circuit-breaker] {msg}")
+        return True
+    return False
+
+
+def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any]) -> list:
+    """Wrap each tool's coroutine so repeated identical failures disable it (see above).
+
+    Mutates the tool objects in place (and returns the list) so the breaker rides along into
+    the analyst subagents, which hold these same objects. Best-effort: a tool without a
+    coroutine is left untouched.
+    """
+    import inspect
+    from functools import wraps
+
+    for tool in tools:
+        name = getattr(tool, "name", None)
+        orig = getattr(tool, "coroutine", None)
+        if name is None or orig is None:
+            continue
+        hint = _DISABLED_TOOL_HINTS.get(name, _DISABLED_TOOL_HINT_DEFAULT)
+
+        def _make(name: str, orig, hint: str):
+            @wraps(orig)
+            async def _breaker(runtime=None, **arguments):
+                if name in state["disabled"]:
+                    return (_breaker_message(name, hint), None)  # short-circuit, no server hit
+                try:
+                    result = await orig(runtime=runtime, **arguments)
+                except Exception as exc:  # a raised tool error (e.g. MCP isError -> ToolException)
+                    if _record_error(state, name, f"{type(exc).__name__}: {exc}"):
+                        return (_breaker_message(name, hint), None)
+                    raise
+                content, artifact = result if isinstance(result, tuple) else (result, None)
+                err = _result_error(content, artifact)
+                if err is None:
+                    state["streaks"].pop(name, None)  # a success clears the tool's error streak
+                    return result
+                if _record_error(state, name, err) and isinstance(content, list):
+                    return (content + _breaker_message(name, hint), artifact)
+                return result
+
+            try:  # keep the original signature so langchain still injects `runtime` correctly
+                _breaker.__signature__ = inspect.signature(orig)
+            except (ValueError, TypeError):  # pragma: no cover - defensive
+                pass
+            return _breaker
+
+        tool.coroutine = _make(name, orig, hint)
+    return tools
+
+
+def _disabled_tool_filter(state: dict[str, Any]):
+    """Lead-only middleware: hide a disabled tool from the model so it stops being re-proposed.
+
+    Complements the coroutine wrapper (the wrapper is what actually reaches the analyst
+    subagents): for the LEAD's own tools this also drops the tool's schema from the re-sent
+    request once it is disabled, saving tokens and removing the temptation to call it again.
+    """
+    from langchain.agents.middleware.types import AgentMiddleware
+
+    def _name(tool) -> str | None:
+        name = tool.get("name") if isinstance(tool, dict) else getattr(tool, "name", None)
+        return name if isinstance(name, str) else None
+
+    def _keep(request):
+        return [t for t in request.tools if _name(t) not in state["disabled"]]
+
+    class _DropDisabledTools(AgentMiddleware):
+        def wrap_model_call(self, request, handler):
+            return handler(request.override(tools=_keep(request)))
+
+        async def awrap_model_call(self, request, handler):
+            return await handler(request.override(tools=_keep(request)))
+
+    return _DropDisabledTools()
+
+
 # --- guards on the (input-dominated, occasionally-hanging) LLM loop -----------------------
 # Transient provider failures (connection drops, malformed/non-JSON bodies, 5xx/429, hung
 # calls) are common on OpenRouter and used to abandon the whole run. Now they RETRY instead of
@@ -634,6 +803,11 @@ async def run_deepagents(
     # union of the lead's + analysts' tools. This pool is only used to resolve each analyst's
     # tool objects; it is NOT what the lead gets (see lead_tools below).
     all_tools = _trim_descriptions(_select_tools(await load_mcp_tools(session)))
+    # Wrap the tool objects with the repeated-error circuit breaker BEFORE they are handed to
+    # the lead and the analyst subagents (both reference these same objects), so a tool that
+    # keeps failing identically is disabled for the run instead of being re-proposed endlessly.
+    breaker_state = _new_breaker_state()
+    _wrap_tools_with_circuit_breaker(all_tools, breaker_state)
     tools_by_name = {n: t for t in all_tools if (n := getattr(t, "name", None))}
     subagents = _build_subagents(tools_by_name)  # each analyst carries its own tool OBJECTS
     # The LEAD gets ONLY the orchestrator tools (+ its decision tool) — NOT the analysts'
@@ -685,7 +859,9 @@ async def run_deepagents(
     # trim the lead's re-sent tool-result history so the (input-dominated) context stays bounded
     # instead of ballooning to ~1M tokens and hanging.
     if "middleware" in params:
-        kwargs["middleware"] = [_builtin_tool_filter(), _history_trimmer()]
+        kwargs["middleware"] = [
+            _builtin_tool_filter(), _disabled_tool_filter(breaker_state), _history_trimmer(),
+        ]
     else:  # pragma: no cover - guards against a deepagents API drift
         print("[agent] WARNING: installed deepagents has no `middleware` parameter; "
               "the lead's built-in FS/todo tools + full history will remain.")
@@ -779,4 +955,12 @@ async def run_deepagents(
         await asyncio.sleep(backoff)
         stream_input = None  # resume pending work from the checkpoint
 
-    return {"stop_reason": stop_reason}
+    if breaker_state["n_tool_errors"]:
+        disabled = sorted(breaker_state["disabled"])
+        print(f"[agent] tool errors this run: {breaker_state['n_tool_errors']}"
+              + (f"; disabled: {disabled}" if disabled else ""))
+    return {
+        "stop_reason": stop_reason,
+        "n_tool_errors": breaker_state["n_tool_errors"],
+        "disabled_tools": sorted(breaker_state["disabled"]),
+    }

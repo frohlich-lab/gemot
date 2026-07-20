@@ -674,7 +674,11 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                 if stop_reason != "completed":
                     print(f"[agent] stopped early: {stop_reason} "
                           f"(raise --recursion-limit if it ran out of steps)")
-                meta = {**base_meta, "stop_reason": stop_reason}
+                # Repeated-tool-error circuit breaker (agent.py): the number of failed tool
+                # calls this run, and any tool it disabled after N consecutive identical errors.
+                meta = {**base_meta, "stop_reason": stop_reason,
+                        "n_tool_errors": agent_out.get("n_tool_errors", 0),
+                        "disabled_tools": agent_out.get("disabled_tools", [])}
                 exit_code, result = await _judge(scenario, call, baseline, work, meta, clock, t0)
                 record_run_result(span, result)
             except BaseException as exc:
