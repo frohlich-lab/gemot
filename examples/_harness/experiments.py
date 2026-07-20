@@ -300,7 +300,75 @@ def _phoenix_base_url(url: str) -> str:
 # single (model, temperature, repeat) for one example, so a cell's repeats are just the
 # runs that share (example, model, temperature).
 _ROW_FIELDS = ("example", "model", "temperature", "success", "delta_bic",
-               "chi2_gof_pvalue", "stop_reason", "prompt_version", "git_sha")
+               "chi2_gof_pvalue", "stop_reason", "n_ops", "n_fits",
+               "prompt_version", "git_sha")
+
+
+# --------------------------------------------------------------------------- abort triage
+# A run can stop for two very different reasons, and they must NOT be scored the same way:
+#
+#   (a) an INSTANT infrastructure abort before any modeling work — out-of-credits (HTTP 402),
+#       a dropped/timed-out provider or MCP connection, a wedged step, or a harness-side crash
+#       (e.g. a scoring float() that raised) — while n_ops==0 && n_fits==0. The run never
+#       authored or fit a model, so its "ΔBIC" is just empty-model scoring noise (numbers like
+#       1.55e7). These are EXCLUDED from the success/ΔBIC aggregation.
+#
+#   (b) a LATE abort AFTER real work — e.g. credit exhaustion after 25 fits across 26 committed
+#       versions. Such a run did genuine modeling and its best-achieved ΔBIC is a valid PARTIAL
+#       result, so it is KEPT (not dropped, not blanket-tagged "infrastructure").
+#
+# "completed", the self-imposed wall-time budget, and the agent step/recursion limit are genuine
+# modeling OUTCOMES and are never treated as infrastructure aborts (a recursion-limit run with no
+# commits genuinely failed to build anything — it is a modeling failure, not scoring noise).
+_INFRA_ABORT_MARKERS = (
+    "402",                       # OpenRouter payment-required (out of credits)
+    "apistatuserror", "apiconnectionerror", "apitimeouterror", "apierror",
+    "internalservererror", "ratelimiterror", "permissiondeniederror", "authenticationerror",
+    "readtimeout", "readerror", "writeerror", "connecterror", "connecttimeout",
+    "remoteprotocolerror", "pooltimeout",
+    "stalled",                   # harness stall watchdog: hung provider call / wedged fit
+    "typeerror",                 # e.g. a scoring float() crash before a verdict was reached
+)
+
+
+def _as_count(v: Any) -> int:
+    """A work-count field (n_ops / n_fits) as a non-negative int.
+
+    None / NaN / non-numeric -> 0; a real number is floored at 0. ``bool`` is excluded even
+    though it subclasses ``int`` (a True/False slipping into a count field is bad data, not a
+    count of 1/0), and negatives are clamped so a garbage negative can never read as work done.
+    """
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:  # v != v rejects NaN
+        return 0
+    return max(0, int(v))
+
+
+def _did_modeling_work(row: dict[str, Any]) -> bool:
+    """Whether a run authored or fit ANY model (n_ops>0 or n_fits>0). ``n_ops`` is the committed
+    model-version count (``head_version``); ``n_fits`` the number of fits run."""
+    return _as_count(row.get("n_ops")) > 0 or _as_count(row.get("n_fits")) > 0
+
+
+def _is_infra_abort(stop_reason: Any) -> bool:
+    """Whether ``stop_reason`` marks an infrastructure/transport abort (not a genuine outcome)."""
+    s = str(stop_reason or "").strip().lower()
+    if s in ("", "completed"):
+        return False
+    if "wall_time_budget" in s or "recursion" in s:  # genuine agent outcomes, not infrastructure
+        return False
+    if s.startswith("aborted:"):  # pre-verdict transport abort (runner._write_degraded_result)
+        return True
+    return any(m in s for m in _INFRA_ABORT_MARKERS)
+
+
+def is_noop_infra_abort(row: dict[str, Any]) -> bool:
+    """A run that aborted on infrastructure BEFORE doing any modeling work — pure scoring noise.
+
+    Only these are excluded from the success/ΔBIC aggregation: an infrastructure/transport stop
+    (:func:`_is_infra_abort`) with no modeling work done (:func:`_did_modeling_work` is False).
+    A LATE abort that did work is deliberately NOT one of these — its partial result is kept.
+    """
+    return _is_infra_abort(row.get("stop_reason")) and not _did_modeling_work(row)
 
 
 def fetch_experiment_rows(base_url: str = "http://localhost:6006") -> list[dict[str, Any]]:
@@ -334,35 +402,45 @@ def fetch_experiment_rows(base_url: str = "http://localhost:6006") -> list[dict[
                     "delta_bic": out.get("delta_bic"),
                     "chi2_gof_pvalue": out.get("chi2_gof_pvalue"),
                     "stop_reason": out.get("stop_reason"),
+                    # Modeling-work signals used to tell an instant infrastructure abort from a
+                    # late-abort partial (see summarize_sweep): n_ops = committed model versions
+                    # (head_version); n_fits = number of fits run. Both zero ⇒ no work was done.
+                    "n_ops": out.get("head_version"),
+                    "n_fits": out.get("n_fits"),
                     "prompt_version": md.get("prompt_version"),
                     "git_sha": md.get("git_sha"),
                 })
     return rows
 
 
-def summarize_sweep(rows: list[dict[str, Any]], *, completed_only: bool = True) -> str:
+def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool = True) -> str:
     """Success rate + ΔBIC per (example × model × temperature), plus a model×temp pivot.
 
-    ``completed_only`` (default): drop runs whose ``stop_reason != "completed"`` — i.e. the
-    agent loop crashed or ran out of steps (APIConnectionError, GraphRecursionError) and the
-    judge scored an incomplete model. Those are harness/infra outcomes, not the model
-    finishing with a verdict, so they'd otherwise inflate the failure rate.
+    ``drop_noop_infra_aborts`` (default): exclude only the runs that aborted on infrastructure
+    BEFORE doing any modeling work — an out-of-credits 402, a dropped/timed-out connection, a
+    wedged step, or a harness crash while ``n_ops==0 && n_fits==0`` (:func:`is_noop_infra_abort`).
+    Those never built or fit a model, so their empty-model ΔBIC is scoring noise that would
+    otherwise pollute the aggregation. Runs that DID modeling work before a late abort (credit
+    exhaustion after real fits) are KEPT — their best-achieved ΔBIC is a valid partial result —
+    and genuine outcomes (completed, wall-time budget, recursion limit) are always kept. Pass
+    ``drop_noop_infra_aborts=False`` (``--include-crashed``) to keep the no-work aborts too.
     """
     import statistics
 
     if not rows:
         return "(no experiments found — has the sweep produced any runs yet?)"
 
-    crashed = [r for r in rows if (r.get("stop_reason") or "completed") != "completed"]
+    excluded = [r for r in rows if is_noop_infra_abort(r)]
     note = ""
-    if completed_only and crashed:
-        rows = [r for r in rows if (r.get("stop_reason") or "completed") == "completed"]
+    if drop_noop_infra_aborts and excluded:
+        rows = [r for r in rows if not is_noop_infra_abort(r)]
         from collections import Counter
-        by = Counter((r.get("stop_reason") or "?").split(":")[0] for r in crashed)
-        note = (f"(excluded {len(crashed)} crashed/incomplete run(s) — "
-                f"{dict(by)}; pass --include-crashed to keep them)\n")
+        by = Counter((r.get("stop_reason") or "?").split(":")[0].strip() for r in excluded)
+        note = (f"(excluded {len(excluded)} no-work infrastructure abort(s) "
+                f"[n_ops==0 & n_fits==0] — {dict(by)}; late-abort partials are KEPT; "
+                f"pass --include-crashed to keep these too)\n")
         if not rows:
-            return note + "(no completed runs yet)"
+            return note + "(no scored runs yet — every run was a no-work infrastructure abort)"
 
     def _key(r):
         return (r.get("example"), r.get("model"), r.get("temperature"))

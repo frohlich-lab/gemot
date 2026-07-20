@@ -590,12 +590,22 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
         if desc.get("model_initialized", True):
             print("[preflight] scoring baseline (first AMICI compile is slow)...")
             baseline_fit = await call("get_fit_summary")
-            baseline = Baseline(
-                nll=float(baseline_fit["neg_log_likelihood"]),
-                species=baseline_species,
-                structure=baseline_structure,
-            )
-            print(f"[preflight] baseline neg_log_likelihood = {baseline.nll:.6g}")
+            # Guard the baseline scoring float(): a shipped model whose FIRST fit fails returns
+            # neg_log_likelihood=None (or a non-finite value). Coerce None -> NaN rather than
+            # crashing the whole run on float(None), then treat any non-finite baseline as "no
+            # usable baseline" (scored like a zero-shot build). A single failed first fit is not
+            # an infrastructure failure — the run should still reach the agent + judge, which
+            # score against the true-model reference and don't need a baseline nll.
+            raw_bl = baseline_fit.get("neg_log_likelihood") if isinstance(baseline_fit, dict) else None
+            try:
+                bl_nll = float(raw_bl)
+            except (TypeError, ValueError):
+                bl_nll = float("nan")
+            if not math.isfinite(bl_nll):
+                bl_nll = None
+            baseline = Baseline(nll=bl_nll, species=baseline_species, structure=baseline_structure)
+            _bl_disp = f"{baseline.nll:.6g}" if baseline.nll is not None else "n/a (first fit failed)"
+            print(f"[preflight] baseline neg_log_likelihood = {_bl_disp}")
         else:
             # Zero-shot: the problem ships without a model — nothing to score until the agent
             # builds one via set_model. The judge compares to the true-model reference, not a
