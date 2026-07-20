@@ -202,6 +202,15 @@ def fit_reference(
     pdf = parameter_df
     if pdf.index.name != PARAMETER_ID and PARAMETER_ID in pdf.columns:
         pdf = pdf.set_index(PARAMETER_ID)
+    # BIC is likelihood-based, and the server scores the CANDIDATE on the pure AMICI log-likelihood
+    # (engine.evaluate_objective -> -llh), NOT the MAP objective. So the reference must be a pure-
+    # likelihood fit too: drop any objectivePrior columns here so pyPESTO's fval is the neg-log-
+    # likelihood, not likelihood+prior. Without this the prior's normalization constant (~½·log 2πσ²
+    # per prior) inflates only the reference nll and spuriously handicaps it — schwen (the one example
+    # that ships priors) read ΔBIC ≈ −8 instead of ≈ 0. The priors still ship VERBATIM in the problem
+    # (faithful) and still regularize the candidate's own fit; they just don't enter the BIC bar.
+    pdf = pdf.drop(columns=[c for c in ("objectivePriorType", "objectivePriorParameters")
+                            if c in pdf.columns])
     odf = observable_df
     if odf.index.name != OID and OID in odf.columns:
         odf = odf.set_index(OID)
@@ -269,6 +278,7 @@ def write_reference(
     path: str | Path,
     n_starts: int = 12,
     seed: int = 0,
+    seed_at_nominal: bool = False,
 ) -> dict:
     """Fit the TRUE structure to the data and write a BIC reference to ``path``.
 
@@ -284,6 +294,7 @@ def write_reference(
     fitted, nll = fit_reference(
         model_ant, parameter_df, condition_df, observable_df, measurement_df,
         build_dir=build_dir, model_name=model_name, n_starts=n_starts, seed=seed,
+        seed_at_nominal=seed_at_nominal,
     )
     ref = {"nll": float(nll), "k": int(len(fitted)), "n": int(len(measurement_df))}
     Path(path).write_text(json.dumps(ref, indent=2) + "\n")

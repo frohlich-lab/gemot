@@ -53,3 +53,34 @@ slurm/trace_review/provenance/
 slurm/trace_review/llm/
 slurm/trace_review/*.log
 slurm/trace_review/*.jobid
+
+# Zero-shot benchmark PEtab problems are materialized from the pinned Benchmark-Models-PEtab
+# collection by `python examples/setup.py` — NOT vendored. Only reference.json (the committed
+# BIC answer key) is tracked. Synthetic examples (enzyme_kinetics/predator_prey/repressilator)
+# simulate their own data and stay vendored, so they are not listed here.
+examples/perelson/problem/*
+!examples/perelson/problem/reference.json
+examples/blasi/problem/*
+!examples/blasi/problem/reference.json
+examples/rahman/problem/*
+!examples/rahman/problem/reference.json
+examples/crauste/problem/*
+!examples/crauste/problem/reference.json
+examples/oliveira/problem/*
+!examples/oliveira/problem/reference.json
+examples/armistead/problem/*
+!examples/armistead/problem/reference.json
+examples/fiedler/problem/*
+!examples/fiedler/problem/reference.json
+examples/sneyd/problem/*
+!examples/sneyd/problem/reference.json
+examples/bruno/problem/*
+!examples/bruno/problem/reference.json
+examples/boehm/problem/*
+!examples/boehm/problem/reference.json
+examples/brannmark/problem/*
+!examples/brannmark/problem/reference.json
+examples/schwen/problem/*
+!examples/schwen/problem/reference.json
+examples/fujita/problem/*
+!examples/fujita/problem/reference.json
