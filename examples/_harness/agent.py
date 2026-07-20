@@ -49,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import math
 import time
 from typing import Any
 
@@ -353,110 +354,123 @@ def _subagent_prompt_key() -> str:
     return "system_prompt"
 
 
-_GOF_MIN_P = 0.05          # a fit with chi2 GoF p below this is statistically rejected
-_REDUCED_CHI2_MAX = 2.0    # fallback gate when the GoF p-value is unavailable
-_MAX_FINISH_REFUSALS = 2   # push back on finishing a rejected fit this many times, then relent
+_MAX_FINISH_REFUSALS = 2   # push back on finishing with NO valid fit this many times, then relent
 
 
-async def _current_gof(session) -> dict[str, Any]:
-    """Fetch the CURRENT HEAD's goodness-of-fit from the server (ground truth, not the
-    agent's self-report). Returns {} if unavailable so the gate fails open."""
+async def _current_fit(session) -> dict[str, Any]:
+    """Fetch the CURRENT HEAD's fit metrics from the server (ground truth, not the agent's
+    self-report). Returns {} if the metrics can't be read — the finish check then sees no
+    valid fit and fails CLOSED: it pushes back on ``finish`` (bounded by
+    ``_MAX_FINISH_REFUSALS``) rather than letting the run end with no scored model."""
     try:
         res = await session.call_tool("get_fit_summary", {})
         sc = getattr(res, "structuredContent", None)
         if isinstance(sc, dict):
             return sc.get("result", sc) if set(sc.keys()) == {"result"} else sc
-    except Exception:  # pragma: no cover - never let the gate break the run
+    except Exception:  # pragma: no cover - never let the check break the run
         pass
     return {}
 
 
 def _decision_tool(session):
-    """A lead-only control tool that forces an explicit iterate / rollback / finish choice
-    AND hard-gates ``finish`` on the server's real goodness-of-fit.
+    """A lead-only control tool for the two non-default decisions: ``rollback`` and ``finish``.
 
-    The panel otherwise tends to make one edit and stop, and — the dominant sweep failure —
-    to call ``finish`` while misreading the fit (declaring a chi2 GoF p of 1e-8 "noise").
-    So ``finish`` is PUSHED BACK when the current HEAD is statistically rejected
-    (chi2_gof_pvalue < 0.05, or reduced_chi2 ≫ 1 as a fallback): the decision is checked
-    against the server's metrics, not the model's claim about them. The push-back is bounded
-    — after ``_MAX_FINISH_REFUSALS`` rejected attempts the gate RELENTS and lets the run
-    finish (recording that it never reached the noise floor), so a genuinely-stuck run ends
-    cleanly instead of looping to the recursion limit. This kills the premature/misread
-    finishes without trapping a run that truly cannot improve.
+    Plain iteration needs no call — to keep going the lead simply makes the next ``set_model``
+    edit — so the tool exists only to record a rollback or to gate a finish.
+
+    The panel otherwise tends to make one edit and stop, so ``finish`` is pushed back — but
+    ONLY while there is no valid fit to finish on: no model has been built yet, or the fit's
+    objective is non-finite. BIC is the success target and there is no BIC without a fit, so
+    that (and only that) is a genuine reason to keep going. The push-back is bounded — after
+    ``_MAX_FINISH_REFUSALS`` attempts it RELENTS so a genuinely-stuck run ends cleanly instead
+    of looping to the recursion limit.
+
+    It deliberately does NOT gate on the χ² goodness-of-fit (chi2_gof_pvalue / reduced_chi2).
+    Whenever the observable noise sigmas are estimated (as in the issue-#54 benchmarks — though
+    not every problem frees them), χ² pins near the data-point count by construction and its
+    p-value is uninformative, so gating ``finish`` on p ≥ 0.05 made the panel abandon its
+    best-BIC model to chase an unreachable target (issue #54). Where χ² cannot be computed at
+    all, the tool SAYS so rather than surfacing it as a fit rejection.
     """
     from langchain_core.tools import StructuredTool
 
     _guidance = {
-        "iterate": "Recorded: iterate. Make the next single justified edit, then re-assess "
-                   "the CURRENT HEAD's metrics.",
         "rollback": "Recorded: rollback. Find the BEST-scoring prior version with list_versions "
-                    "(lowest bic / is_new_best, not just the previous one), read it with "
+                    "(LOWEST bic / is_new_best, not just the previous one), read it with "
                     "get_version, and re-author it with set_model — then continue from there.",
-        "finish": "Recorded: finish — the fit is statistically adequate (chi2_gof_pvalue >= "
-                  "0.05, reduced_chi2 ≈ 1). Report the final neg_log_likelihood, bic, and "
-                  "exactly what you changed, then stop.",
+        "finish": "Recorded: finish. Report the final neg_log_likelihood and bic and exactly "
+                  "what you changed, then stop.",
     }
-    state = {"finish_refusals": 0}  # bounded push-back on finishing a rejected fit
+    state = {"finish_refusals": 0}  # bounded push-back on finishing with no valid fit
 
     async def make_decision(action: str, rationale: str = "") -> str:
         act = (action or "").strip().lower()
         print(f"[lead decision] {act or '?'} — {rationale}")
         if act == "finish":
-            gof = await _current_gof(session)
-            p = gof.get("chi2_gof_pvalue")
-            rchi2 = gof.get("reduced_chi2")
-            # Fail CLOSED: if adequacy can't be verified (no GoF metrics — the fit summary
-            # errored or a fit hasn't run), do not silently allow finish; treat it as
-            # not-yet-adequate and push back (still bounded by _MAX_FINISH_REFUSALS below).
-            if p is not None:
-                rejected = p < _GOF_MIN_P
-                detail = f"chi2_gof_pvalue={p:.3g} < {_GOF_MIN_P}"
-            elif rchi2 is not None:
-                rejected = rchi2 > _REDUCED_CHI2_MAX
-                detail = f"reduced_chi2={rchi2:.3g} ≫ 1"
-            else:
-                rejected = True
-                detail = "goodness-of-fit could not be verified (no fit metrics available)"
-            if rejected:
+            fit = await _current_fit(session)
+            nll = fit.get("neg_log_likelihood")
+            bic = fit.get("bic")
+            # Require a finite BIC — the score the harness actually finishes on. A finite nll is
+            # necessary but not sufficient: get_fit_summary reports bic=None when n_data_points/k
+            # are incomplete, and finishing then would report "bic=n/a" while the refusal text
+            # promises "there is no bic to report". Gate on the score that must exist.
+            def _finite(x):
+                return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+            has_fit = _finite(nll) and _finite(bic)
+            # Block finish ONLY when there is no valid fit to finish on (nothing built, a
+            # non-finite objective, or no computable bic) — a genuine failure, not a
+            # goodness-of-fit judgement. We do NOT gate on chi2_gof_pvalue/reduced_chi2 (see the
+            # docstring): they are uninformative when the noise sigmas are estimated, and chasing
+            # p ≥ 0.05 costs the best-BIC model.
+            if not has_fit:
                 if state["finish_refusals"] < _MAX_FINISH_REFUSALS:
                     state["finish_refusals"] += 1
                     print(f"[finish BLOCKED {state['finish_refusals']}/{_MAX_FINISH_REFUSALS}] "
-                          f"HEAD statistically rejected ({detail})")
+                          "no valid fit (no model built, non-finite objective, or no bic)")
                     return (
                         f"FINISH REFUSED ({state['finish_refusals']}/{_MAX_FINISH_REFUSALS}) — "
-                        f"the current HEAD is statistically REJECTED ({detail}): its weighted "
-                        "residuals are far larger than the known measurement noise, so the model "
-                        "is still MIS-SPECIFIED regardless of how much nll improved. A tiny "
-                        "chi2_gof_pvalue is NOT 'noise'. Keep iterating on the rate-law STRUCTURE "
-                        "(or re-author the best prior version via get_version + set_model) to try "
-                        "to reach chi2_gof_pvalue >= 0.05. "
-                        "If, after genuinely trying, the fit truly cannot improve, you may finish."
+                        "there is no valid fit to finish on: no model has been built yet, or the "
+                        "fit has no finite bic to report (a non-finite objective, or an incomplete "
+                        "n/k). Build a model that simulates and fits, then finish on its bic."
                     )
                 # exhausted the push-back: relent so the run ends cleanly, not at the step limit
-                print(f"[finish ALLOWED] after {state['finish_refusals']} refusals; fit still "
-                      f"rejected ({detail})")
+                print(f"[finish ALLOWED] after {state['finish_refusals']} refusals; still no "
+                      "valid fit")
                 return (
-                    f"Recorded: finish — NOTE the fit is STILL statistically rejected ({detail}) "
-                    f"after {state['finish_refusals']} further attempts. Report the final "
-                    "neg_log_likelihood/bic, state plainly that the model could NOT be brought to "
-                    "the noise floor and what you changed, then stop."
+                    f"Recorded: finish — NOTE there is STILL no valid fit after "
+                    f"{state['finish_refusals']} further attempts. State plainly that no fitted "
+                    "model could be built, then stop."
                 )
-        return _guidance.get(act, "Unknown action — use one of: iterate, rollback, finish.")
+            # Valid fit -> finish is allowed. BIC is the target; χ² is NOT a gate. When the χ²
+            # metrics are absent, say so (and why) rather than surfacing it as a fit rejection.
+            # goodness_of_fit leaves them None when the degrees of freedom n - k are <= 0 or chi2
+            # itself is missing — NOT because sigmas are estimated (with estimated sigmas χ² is
+            # still computed, just uninformative, which the prompt/docstrings cover separately).
+            chi2_note = ""
+            if fit.get("chi2_gof_pvalue") is None and fit.get("reduced_chi2") is None:
+                chi2_note = (" (χ² goodness-of-fit is not reported here — n - k <= 0 or chi2 is "
+                             "unavailable, so it could not be computed; this is NOT a fit rejection.)")
+            return (
+                f"Recorded: finish — final bic={bic:.6g}, neg_log_likelihood={nll:.6g}."
+                f"{chi2_note} Report the bic, the neg_log_likelihood, and exactly what you "
+                "changed, then stop."
+            )
+        return _guidance.get(act, "Unknown action — use one of: rollback, finish.")
 
     return StructuredTool.from_function(
         coroutine=make_decision,
         name="make_decision",
         description=(
-            "Record your control decision after reading the CURRENT HEAD's fit metrics "
-            "(bic / reduced_chi2 / chi2_gof_pvalue / is_new_best — never an earlier version's). "
-            "`action`: 'iterate' (fit still inadequate — reduced_chi2 ≫ 1 or chi2_gof_pvalue < "
-            "0.05 — re-author an improved model), 'rollback' (last change didn't help — re-author "
-            "the best-bic prior version via get_version + set_model), or 'finish' (statistically "
-            "adequate — chi2_gof_pvalue >= 0.05 AND "
-            "reduced_chi2 ≈ 1). NOTE: 'finish' is programmatically REFUSED while the fit is "
-            "rejected, so do not try to finish a poor fit. Prefer the FEWEST free parameters that "
-            "pass (lower bic wins). Give a one-line `rationale`; call once per round after each edit."
+            "Record a control decision after reading the CURRENT HEAD's fit metrics "
+            "(bic / neg_log_likelihood / is_new_best — never an earlier version's). You do NOT "
+            "call this to keep iterating — to iterate, just make the next set_model edit. Call it "
+            "only for `action`: 'rollback' (the last change didn't help — re-author the LOWEST-bic "
+            "prior version via get_version + set_model) or 'finish' (residuals show no systematic "
+            "structure AND bic has bottomed out). BIC is the ONLY success target; chi2_gof_pvalue "
+            "/ reduced_chi2 are UNINFORMATIVE when the noise sigmas are estimated — do NOT keep "
+            "iterating just to chase chi2_gof_pvalue ≥ 0.05. 'finish' is refused only when there "
+            "is no valid fit yet (no model built). Prefer the FEWEST free parameters that fit "
+            "(lower bic wins). Give a one-line `rationale`."
         ),
     )
 
