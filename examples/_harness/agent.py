@@ -107,15 +107,20 @@ ORCHESTRATOR_TOOLS = [
     "get_fit_diagnosis",    # per-observable bias/chi2 + worst-N points — bounded residual read
     "get_identifiability",  # FIM SE/correlations + multistart spread — WHICH params to cut/merge
     "list_versions",        # scored version history — pick the BEST version to go back to
-    "get_version",          # read a prior version's Antimony + params (to re-author it)
+    "get_version",          # read a prior version's Antimony + params (to inspect it)
+    # go BACK to an earlier model the cheap way: restore its stored fit instead of re-authoring
+    # it (a re-author recompiles/refits to the same result and appends a duplicate — set_model
+    # now warns on, then refuses, a structure it has already seen). This is the fix for the
+    # dominant sweep waste of re-encoding already-visited structures (see issue #59).
+    "restore_version",      # restore a prior version's model + fit as the working state (no refit)
     "get_errors",
     # author the whole model in one step. The lead works exclusively by whole-model re-author:
     # across every traced run it never once used the incremental editors (add_reaction /
     # change_rate_law / remove_reaction) or batching, so those are omitted here to keep the
     # tool schema (re-sent every turn — the largest fixed input-token slice) lean. The server
-    # still exposes them for other clients / scripted use. rollback_to is likewise omitted:
-    # since set_model re-authors wholesale, "going back" = read the old model (get_version) and
-    # set_model it again — no dedicated revert tool needed.
+    # still exposes them for other clients / scripted use. `restore_version` (above) IS included:
+    # "going back" via re-authoring the old model wastes a recompile+refit and appends a
+    # duplicate (the top sweep waste — issue #59), so the lead is given the cheap restore instead.
     "set_model",            # build the first model AND re-author it wholesale in one step
     # change a parameter's ESTIMATION in place — the prompt tells the lead to WIDEN a binding
     # bound (or switch scale) rather than re-typing a value the multistart fit ignores:
@@ -147,11 +152,14 @@ ALLOWED_TOOLS = set(
 TOOL_DESCRIPTIONS = {
     "set_model": ("Author the WHOLE model from ONE Antimony string (compartments, species with "
                   "initial conditions, parameters, reactions). BUILDS the first model when none "
-                  "exists (model_initialized: false) AND re-authors/replaces an existing one — never "
-                  "refused. Use for the initial build and for any coupled/symmetric or multi-reaction "
-                  "STRUCTURAL change in one coherent step; reconciles + fits on commit, reverts on "
-                  "failure. Warns if a previously-estimated parameter is dropped. Args: antimony, "
-                  "justification, references?."),
+                  "exists (model_initialized: false) AND re-authors/replaces an existing one. Use "
+                  "for the initial build and for any coupled/symmetric or multi-reaction STRUCTURAL "
+                  "change in one coherent step; reconciles + fits on commit, reverts on failure. "
+                  "Warns if a previously-estimated parameter is dropped. Re-authoring a structure "
+                  "already seen is de-duplicated: re-authoring the current model is a no-op, an "
+                  "earlier model warns you to use restore_version(n), and an identical structure "
+                  "re-authored repeatedly is refused — to go BACK to a model use restore_version, "
+                  "not set_model. Args: antimony, justification, references?."),
     "describe_problem": "Orientation: whether a model exists (model_initialized), table/entity counts, current version, batch state. Cheap.",
     "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law) — empty until a model is built.",
     "get_parameters": ("Parameter table: id, bounds, scale, nominalValue (the fitted value), "
@@ -174,8 +182,14 @@ TOOL_DESCRIPTIONS = {
     "list_versions": ("List every model version with its kind, label, and fit metrics "
                       "(neg_log_likelihood, bic, is_new_best) — use it to find the best-scoring "
                       "version, then get_version to read its model and re-author with set_model."),
-    "get_version": ("Read a prior version's Antimony model + parameter table. Use it to go back "
-                    "to an earlier model: get_version(v) then re-author it with set_model. Arg: version."),
+    "get_version": ("Read a prior version's Antimony model + parameter table (to inspect it). To "
+                    "GO BACK to an earlier model, call restore_version(v) — do NOT re-author it "
+                    "with set_model. Arg: version."),
+    "restore_version": ("Go BACK to an earlier model: restores version v's model + its stored fit "
+                        "as the working state WITHOUT recompiling or refitting, and appends a new "
+                        "version. Use this instead of re-authoring an earlier model with set_model "
+                        "(that refits to the same result and makes a duplicate). Pick the target "
+                        "with list_versions (lowest bic). Arg: version."),
     "get_fitting_log": "Tail of the pyPESTO/Fides multistart optimizer log (convergence, bound-pinning, ill-conditioning). Arg: tail_lines.",
     "list_observables": "The observables being fitted: id, formula, and noise model.",
     "get_measurements": ("Measurement data. Default returns a COMPACT SUMMARY (per observable×"
@@ -396,8 +410,9 @@ def _decision_tool(session):
 
     _guidance = {
         "rollback": "Recorded: rollback. Find the BEST-scoring prior version with list_versions "
-                    "(LOWEST bic / is_new_best, not just the previous one), read it with "
-                    "get_version, and re-author it with set_model — then continue from there.",
+                    "(LOWEST bic / is_new_best, not just the previous one) and bring it back with "
+                    "restore_version(v) — do NOT re-author it with set_model (that refits to the "
+                    "same result and makes a duplicate). Then continue from there.",
         "finish": "Recorded: finish. Report the final neg_log_likelihood and bic and exactly "
                   "what you changed, then stop.",
     }
@@ -464,8 +479,8 @@ def _decision_tool(session):
             "Record a control decision after reading the CURRENT HEAD's fit metrics "
             "(bic / neg_log_likelihood / is_new_best — never an earlier version's). You do NOT "
             "call this to keep iterating — to iterate, just make the next set_model edit. Call it "
-            "only for `action`: 'rollback' (the last change didn't help — re-author the LOWEST-bic "
-            "prior version via get_version + set_model) or 'finish' (residuals show no systematic "
+            "only for `action`: 'rollback' (the last change didn't help — go back to the LOWEST-bic "
+            "prior version with restore_version) or 'finish' (residuals show no systematic "
             "structure AND bic has bottomed out). BIC is the ONLY success target; chi2_gof_pvalue "
             "/ reduced_chi2 are UNINFORMATIVE when the noise sigmas are estimated — do NOT keep "
             "iterating just to chase chi2_gof_pvalue ≥ 0.05. 'finish' is refused only when there "
