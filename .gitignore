@@ -45,7 +45,11 @@ slurm/phoenix_data/
 
 # Local Phoenix working dir for the example harness (examples/_harness/__init__.py) --
 # ephemeral trace data for locally-launched Phoenix apps / clients. Generated.
-.phoenix/slurm/trace_review/provenance/
+.phoenix/
+
+# Trace-review generated digests (slurm/trace_review/): reusable scripts + FINDINGS.md are
+# tracked; the per-scenario digests, extraction logs, and job-id files are generated.
+slurm/trace_review/provenance/
 slurm/trace_review/llm/
 slurm/trace_review/*.log
 slurm/trace_review/*.jobid
