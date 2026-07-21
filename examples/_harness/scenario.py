@@ -106,7 +106,10 @@ DEFAULT_SYSTEM_PROMPT = (
     "ls/glob/read to hunt for it, there is nothing on disk to find. Your job is to BUILD, from "
     "scratch, a model that explains the data. You do NOT read the measured data or query the "
     "fit yourself — you have four independent analysts via the `task` tool (pass "
-    "`subagent_type`): `mathematician`, `systems_scientist`, `signal_engineer`, `biocurator`. You "
+    "`subagent_type`): `mathematician`, `systems_scientist`, `signal_engineer`, `biocurator`. A "
+    "subagent's ENTIRE input is the `description` string you pass to `task` — put your question and "
+    "any framing THERE; `task` takes no other content argument. (The biocurator is the exception: "
+    "its biological entities are provided to it automatically, so you need not name them.) You "
     "directly "
     "read only the model, its SCORES, and a COMPACT fit diagnosis (describe_problem, "
     "get_model_structure, list_observables, get_fit_summary, get_fit_diagnosis, list_versions); "
@@ -263,6 +266,21 @@ class Scenario:
     # what each is and asks the agent to include it BY NAME (fixed, not estimated) — the same
     # information a modeller would be handed. Empty for the synthetic examples, which hide it.
     known_constants: str = ""
+    # Hand-curated biological entity names handed to the blinded `biocurator` subagent (issue
+    # #91). The biocurator holds no petab tool and cannot fetch its own input like the analysts,
+    # so the harness injects these DIRECTLY into its prompt. Curate clean, database-lookupable
+    # names (genes/proteins/metabolites/cell types), NOT the technical observable IDs (`obs_P`).
+    #
+    # STRICT BLINDING RULE — include ONLY what a modeller is already handed, never the mechanism to
+    # rediscover: (1) entities that are MEASURED (appear in an observable), and (2) experimental
+    # inputs SET in the condition table (a dose, a stimulus, a drug, a genotype switch). Do NOT list
+    # a LATENT/unobserved model species — an unmeasured intermediate, complex, or driver (e.g.
+    # crauste's Pathogen, an EGF_EGFR complex): that species IS the hidden mechanism, so naming it
+    # both leaks the answer AND pre-empts the biocurator's core job (surfacing those hidden
+    # entities from the measured ones). Leave EMPTY for abstract/synthetic problems with no
+    # lookupable biology (predator–prey, a toy repressilator, generic enzyme kinetics): the
+    # biocurator is then handed no entities (nothing to look up).
+    biocurator_entities: list[str] = field(default_factory=list)
     # Success gate: a repair is accepted iff it can't be rejected against the true model —
     # BIC(candidate) - BIC(true) <= bic_threshold. ~10 = "very strong evidence against"
     # (Kass & Raftery); the verdict is insensitive here (genuine repairs sit at ΔBIC≈0,

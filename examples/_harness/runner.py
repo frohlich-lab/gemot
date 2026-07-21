@@ -751,6 +751,9 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                     bio_sessions=bio_sessions,
                     bio_tools_spec=getattr(args, "bio_tools", ""),
                     bio_literature=getattr(args, "bio_literature", False),
+                    # Hand-curated biological entities for the blinded biocurator (issue #91);
+                    # empty for scenarios with no lookupable biology (the abstract toys).
+                    curated_entities=getattr(scenario, "biocurator_entities", None),
                 )
                 stop_reason = agent_out.get("stop_reason", "completed")
                 if stop_reason != "completed":
@@ -765,6 +768,12 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                         # biocurator ran on the model's own knowledge, no bio tools) — recorded to
                         # result.json so a sweep can see the biocurator's status.
                         "biocurator_tools": agent_out.get("biocurator_tools", []),
+                        # The entity names auto-injected into the biocurator (observables + any
+                        # model species), and any `task(...)` calls bounced for carrying kwargs the
+                        # tool drops (a `prompt=` — issue #91). Recorded so a sweep can confirm the
+                        # biocurator was actually handed its entities and catch a relapse.
+                        "biocurator_entities": agent_out.get("biocurator_entities", []),
+                        "unexpected_task_kwargs": agent_out.get("unexpected_task_kwargs", []),
                         # Provenance of the literature the biocurator READ (per call: query +
                         # returned DOIs/PMIDs; only populated under --bio-literature) — an audit
                         # trail for analysis and for the leakage check on published problems.

@@ -410,15 +410,15 @@ BIOCURATOR_PROMPT = (
 )
 
 BIOCURATOR_DESCRIPTION = (
-    "Biocurator: a BLINDED biology reference desk. Give it ONLY the neutral names of biological "
-    "entities/observables (gene/protein/metabolite symbols) and it reports, from curated "
-    "databases, what each is, how they are known to interact (activation, inhibition, binding, "
-    "pathway membership), AND which OTHER, unmeasured entities and processes are known to "
-    "connect or act on them — intermediates between them and regulators/fluxes (a feedback loop, "
-    "a phosphatase, degradation, translocation) — with citable PMIDs/DOIs. Use it to surface "
-    "candidate hidden species/processes you may be missing. Consult it when proposing or altering "
-    "the model's structure, and cite any PMID/DOI it returns in the `set_model` references. It is "
-    "blind by design: send it ONLY entity names — nothing about what you are doing with them."
+    "Biocurator: a BLINDED biology reference desk. It reports, from curated databases, what the "
+    "problem's biological entities are, how they are known to interact (activation, inhibition, "
+    "binding, pathway membership), AND which OTHER, unmeasured entities and processes are known to "
+    "connect or act on them — intermediates between them and regulators/fluxes (a feedback loop, a "
+    "phosphatase, degradation, translocation) — with citable PMIDs/DOIs. Use it to surface "
+    "candidate hidden species/processes you may be missing. Its biological entities are handed to "
+    "it AUTOMATICALLY — you do NOT supply them, and it is blind by design, so tell it NOTHING about "
+    "what you are doing. Consult it when proposing or altering the model's structure, and cite any "
+    "PMID/DOI it returns in the `set_model` references."
 )
 
 # Curated default tool allowlist for the biocurator. The default bio server (BioContextAI
@@ -484,7 +484,27 @@ LITERATURE_BIO_TOOLS = (
 _BIO_DISCOVERY_TIMEOUT_S = 30.0
 
 
-def _build_biocurator_subagent(bio_tools: list) -> dict[str, Any]:
+def _biocurator_entity_block(names: "list[str]") -> str:
+    """A blind-preserving prompt suffix that hands the biocurator the entity NAMES directly.
+
+    The biocurator holds no petab tool and cannot fetch its own input the way the analysts do
+    (agent.py structural blinding), and the deepagents ``task`` tool delivers only a free-text
+    ``description`` — a channel the lead used to break by stuffing the names into a silently
+    DROPPED ``prompt=`` argument (issue #91). So the harness injects the names directly (the
+    scenario's hand-curated biological entities — see Scenario.biocurator_entities). Kept STRICTLY
+    to bare entity names with NO mention of data/model/measurement/fitting, so the task-blinding
+    persona is preserved (see BIOCURATOR_PROMPT). Empty -> "" (prompt unchanged)."""
+    if not names:
+        return ""
+    return (
+        "\n\nThe biological entities to report on for this request are: "
+        + ", ".join(str(n) for n in names)
+        + ". Report on these entities; if the request names additional entities, include those "
+        "too."
+    )
+
+
+def _build_biocurator_subagent(bio_tools: list, entity_names: "list[str] | None" = None) -> dict[str, Any]:
     """Build the biocurator subagent spec from the RUNTIME-DISCOVERED bio-server tools.
 
     Unlike the three static analysts (whose tool NAMES are hard-coded and resolved from the
@@ -492,12 +512,17 @@ def _build_biocurator_subagent(bio_tools: list) -> dict[str, Any]:
     server exposes — unknown until introspected — so they are passed as tool OBJECTS directly,
     bypassing ALLOWED_TOOLS/_select_tools. Holding ONLY these bio tools (no petab tool) is the
     structural half of the task-blinding. See run_deepagents.
+
+    ``entity_names`` (the hand-curated biological entities — see Scenario.biocurator_entities) is
+    injected into the persona prompt so the biocurator is handed its input DIRECTLY rather than
+    relying on the lead relaying it through the ``task`` ``description`` (issue #91). ``None``/
+    empty leaves the prompt unchanged (no entities to look up — e.g. an abstract problem).
     """
     prompt_key = _subagent_prompt_key()
     return {
         "name": "biocurator",
         "description": BIOCURATOR_DESCRIPTION,
-        prompt_key: BIOCURATOR_PROMPT,
+        prompt_key: BIOCURATOR_PROMPT + _biocurator_entity_block(entity_names or []),
         "tools": list(bio_tools),
     }
 
@@ -1186,6 +1211,85 @@ def _tool_dispatch_guard(stats: dict[str, Any], *, max_idle_steps: int = _MAX_ID
     return _ToolDispatchGuard()
 
 
+# --- task-arg guard: reject a `task` call carrying kwargs the tool silently drops --------------
+# The deepagents `task` tool takes ONLY (description, subagent_type). The lead used to assemble the
+# biocurator's entity names into a `prompt=` argument, which `task` SILENTLY DISCARDS — so the
+# biocurator (which, unlike the analysts, holds no petab tool and cannot self-serve) received only
+# the short `description` and its whole input channel was broken (issue #91). The entity names are
+# now injected into the biocurator directly (hand-curated per scenario; _build_biocurator_subagent);
+# this guard closes the other half: it makes the dropped-kwarg bug LOUD instead of silent by
+# bouncing such a call back to the model with a corrective error, so the model re-issues it with
+# everything in `description` (this protects the analysts' `prompt=` drops too).
+_TASK_ALLOWED_ARGS = frozenset({"description", "subagent_type"})
+_MAX_TASK_ARG_REJECTIONS = 3   # bounded push-back on unexpected task kwargs per run, then relent
+
+
+def _unexpected_task_kwargs(args: "dict | None") -> "list[str]":
+    """The keys a ``task(...)`` call carried BEYOND (description, subagent_type) — e.g. a ``prompt=``
+    the deepagents task tool silently drops. Order-stable. Pure — unit-testable without langchain."""
+    if not isinstance(args, dict):
+        return []
+    return [k for k in args if k not in _TASK_ALLOWED_ARGS]
+
+
+def _task_arg_reject_message(bad_keys: "list[str]") -> str:
+    """The corrective error returned to the model in place of dispatching a mis-called ``task``."""
+    return (
+        "TASK CALL REJECTED — `task` accepts ONLY `description` and `subagent_type`; it received "
+        f"unexpected argument(s): {bad_keys}. Their content was NOT delivered to the subagent. The "
+        "`description` string is the subagent's ENTIRE input — there is no `prompt` or message "
+        "parameter. Re-call `task` with your full request folded into `description`."
+    )
+
+
+def _task_arg_guard(stats: dict[str, Any], *, max_rejections: int = _MAX_TASK_ARG_REJECTIONS):
+    """Lead-only middleware: reject a ``task`` call that carries unexpected kwargs (see above).
+
+    ``stats`` is a caller-owned dict the middleware mutates so run_deepagents can report the
+    outcome: ``unexpected_task_kwargs`` (the offending keys seen across the run) and
+    ``task_arg_rejections`` (how many calls were bounced). It works by returning an error
+    ``ToolMessage`` in place of dispatching (the same short-circuit shape the circuit breaker
+    uses) — it does NOT call ``handler``, so the subagent never runs on truncated input. The
+    push-back is bounded: once ``max_rejections`` is hit it RELENTS and lets the call through (the
+    task tool drops the extras — the original behavior) so a stubborn model still makes progress;
+    the occurrence is still recorded. Defined lazily so importing this module doesn't require
+    langchain — only the deepagents driver does.
+    """
+    from langchain.agents.middleware.types import AgentMiddleware
+    from langchain_core.messages import ToolMessage
+
+    def _reject(request):
+        """Return an error ToolMessage to bounce this call, or None to dispatch normally."""
+        tc = getattr(request, "tool_call", None) or {}
+        if tc.get("name") != "task":
+            return None
+        bad = _unexpected_task_kwargs(tc.get("args"))
+        if not bad:
+            return None
+        stats["unexpected_task_kwargs"] = sorted(
+            set(stats.get("unexpected_task_kwargs") or []) | set(bad))
+        if stats.get("task_arg_rejections", 0) >= max_rejections:
+            print(f"[task-arg guard] unexpected task kwargs {bad} — relenting after "
+                  f"{max_rejections} rejections; dispatching (the extras are dropped).")
+            return None
+        stats["task_arg_rejections"] = stats.get("task_arg_rejections", 0) + 1
+        print(f"[task-arg guard] rejecting task(...) with unexpected kwargs {bad} "
+              f"({stats['task_arg_rejections']}/{max_rejections})")
+        return ToolMessage(content=_task_arg_reject_message(bad),
+                           tool_call_id=tc.get("id") or "", status="error")
+
+    class _TaskArgGuard(AgentMiddleware):
+        def wrap_tool_call(self, request, handler):
+            rejection = _reject(request)
+            return rejection if rejection is not None else handler(request)
+
+        async def awrap_tool_call(self, request, handler):
+            rejection = _reject(request)
+            return rejection if rejection is not None else await handler(request)
+
+    return _TaskArgGuard()
+
+
 async def run_deepagents(
     session,
     *,
@@ -1202,6 +1306,7 @@ async def run_deepagents(
     bio_sessions: Any | None = None,
     bio_tools_spec: str = "",
     bio_literature: bool = False,
+    curated_entities: "list[str] | None" = None,
 ) -> dict[str, Any]:
     """Drive the orchestrator (+ analyst subagents) against ``session``'s tools.
 
@@ -1334,11 +1439,19 @@ async def run_deepagents(
     # biology knowledge (see BIOCURATOR_PROMPT). The lead's roster + biocurator guidance are static
     # in scenario.DEFAULT_SYSTEM_PROMPT — no runtime prompt splice, since the biocurator is
     # unconditional. biocurator_tools records what it actually got (empty = a dumb run) for analysis.
-    subagents.append(_build_biocurator_subagent(bio_tools))
+    # Hand the biocurator the scenario's HAND-CURATED biological entity NAMES DIRECTLY (see
+    # Scenario.biocurator_entities) — it holds no petab tool and cannot self-serve like the
+    # analysts, so this is its reliable input channel rather than a lead `description` /
+    # silently-dropped `prompt=` (issue #91). Empty for a scenario with no lookupable biology (the
+    # abstract toys): the biocurator then simply gets no injected entities (nothing to look up).
+    biocurator_entities = list(curated_entities or [])
+    subagents.append(_build_biocurator_subagent(bio_tools, biocurator_entities))
     biocurator_tools = sorted(n for t in bio_tools if (n := getattr(t, "name", None)))
     print(f"[agent] biocurator on the panel with {len(biocurator_tools)} bio tool(s)"
           + (f": {biocurator_tools}" if biocurator_tools
              else " (none resolved — running on the model's own knowledge)"))
+    print(f"[agent] biocurator handed {len(biocurator_entities)} entity name(s)"
+          + (f": {biocurator_entities}" if biocurator_entities else " (none curated)"))
     # The LEAD gets ONLY the orchestrator tools (+ its decision tool) — NOT the analysts'
     # data/diagnostic tools (query_data, get_fitting_log, get_measurements, ...). Those heavy
     # reads run INSIDE analyst subagents, whose verbose results live in their own transient
@@ -1390,12 +1503,17 @@ async def run_deepagents(
     # hanging, and guard tool dispatch (dedupe duplicate calls in a batch; push back on idle no-tool
     # turns and label a run that never fires a tool as no_tools_executed — see _tool_dispatch_guard).
     guard_stats: dict[str, Any] = {"tools_executed": 0, "dropped_dup_tool_calls": 0,
-                                   "idle_nudges": 0, "gave_up_no_tools": False}
+                                   "idle_nudges": 0, "gave_up_no_tools": False,
+                                   "unexpected_task_kwargs": [], "task_arg_rejections": 0}
     guard_installed = "middleware" in params
     if guard_installed:
         kwargs["middleware"] = [
             _builtin_tool_filter(), _disabled_tool_filter(breaker_state), _history_trimmer(),
-            _tool_dispatch_guard(guard_stats),
+            # _task_arg_guard is placed OUTSIDE _tool_dispatch_guard (earlier in the list = outer
+            # tool-call wrapper) so a REJECTED `task` call short-circuits before the dispatch guard
+            # counts it — a bounced call never dispatched a subagent, so it must not inflate
+            # tools_executed (which gates the no_tools_executed relabel / idle-nudge logic).
+            _task_arg_guard(guard_stats), _tool_dispatch_guard(guard_stats),
         ]
     else:  # pragma: no cover - guards against a deepagents API drift
         print("[agent] WARNING: installed deepagents has no `middleware` parameter; "
@@ -1541,6 +1659,7 @@ async def run_deepagents(
         "n_tool_errors": breaker_state["n_tool_errors"],
         "disabled_tools": sorted(breaker_state["disabled"]),
         "biocurator_tools": biocurator_tools,
+        "biocurator_entities": biocurator_entities,
         "biocurator_literature": literature_log,
         **guard_stats,
     }
