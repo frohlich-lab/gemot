@@ -477,6 +477,12 @@ LITERATURE_BIO_TOOLS = (
     "get_recent_biorxiv_preprints",
 )
 
+# Per-bio-server tool-discovery (tools/list) timeout. A slow/hung bio server (e.g. a slow OmniPath
+# tools/list) must not stall — or, once its session may already be dead, ABORT — run startup: on
+# timeout or error the server's tools are skipped and the biocurator runs with whatever resolved
+# (issue #86). The petab tools/list is deliberately NOT bounded this way (a petab failure is fatal).
+_BIO_DISCOVERY_TIMEOUT_S = 30.0
+
 
 def _build_biocurator_subagent(bio_tools: list) -> dict[str, Any]:
     """Build the biocurator subagent spec from the RUNTIME-DISCOVERED bio-server tools.
@@ -1269,7 +1275,18 @@ async def run_deepagents(
         discovered: list = []
         seen: set = set()
         for bs in bio_sessions:
-            for t in await load_mcp_tools(bs):
+            # Bounded + guarded: a bio server that is slow or whose (isolated) session has already
+            # died must drop only its own tools, never abort the run (issue #86). A discovery
+            # failure here is an ordinary Exception (the session is isolated in its own task, so it
+            # never surfaces as a run-cancelling anyio group) — skip that server and continue.
+            try:
+                bs_tools = await asyncio.wait_for(load_mcp_tools(bs),
+                                                  timeout=_BIO_DISCOVERY_TIMEOUT_S)
+            except Exception as exc:
+                print(f"[bio] WARNING: tool discovery on a bio server failed "
+                      f"({type(exc).__name__}: {exc}); skipping that server's tools.")
+                continue
+            for t in bs_tools:
                 nm = getattr(t, "name", None)
                 if nm in petab_names:
                     print(f"[bio] WARNING: bio tool {nm!r} collides with a petab tool name; "

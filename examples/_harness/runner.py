@@ -43,20 +43,20 @@ from pathlib import Path
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
+from .bio_sessions import open_bio_sessions
 from .explorer.archive import archive_run
 from .fit_budget import FIT_N_WORKERS, FIT_PER_START_TIMEOUT_S, fit_time_budget
 from .scenario import Baseline, JudgeContext, Scenario
 
 
 # Hardcoded bio-knowledge MCP endpoints the biocurator queries (no custom-endpoint config). Each
-# is connected best-effort in _main_async: an unreachable one is logged and skipped and the run
-# continues with whatever bio tools resolved (or none). See the biocurator design in agent.py.
+# is opened best-effort in its OWN supervised task by bio_sessions.open_bio_sessions: an
+# unreachable server is skipped, and a transport failure at ANY point (connect OR live session)
+# degrades the biocurator to "dumb" instead of aborting the run (issue #86). See the biocurator
+# design in agent.py and the isolation rationale in bio_sessions.py.
 _BIOCONTEXT_MCP_URL = "https://biocontext-kb.fastmcp.app/mcp"    # BioContextAI Knowledgebase (hosted; fair-use)
 _OMNIPATH_MCP_URL = "https://explore.omnipathdb.org/api/mcp"     # OmniPath MCP (saezlab/omnipath-next)
 BIO_MCP_URLS = (_BIOCONTEXT_MCP_URL, _OMNIPATH_MCP_URL)
-# Per-endpoint connect+initialize timeout: a slow/hung bio server must not stall run startup (this
-# is BEFORE the agent loop's stall watchdog exists). On timeout the server is skipped best-effort.
-_BIO_CONNECT_TIMEOUT_S = 20.0
 
 
 # --------------------------------------------------------------------------- MCP glue
@@ -870,44 +870,27 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
             )
             session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
-            # SECONDARY MCP sessions: the blinded bio-knowledge server(s) for the biocurator,
-            # on the deepagents panel every run. The endpoints are HARDCODED (BIO_MCP_URLS:
-            # BioContextAI + OmniPath) — no custom-endpoint config. Each is opened on the same exit
-            # stack (torn down with the petab session) and kept separate from the petab session
-            # (which the _ToolClock shadows). BEST-EFFORT and LLM-driver only: a server that is
-            # unreachable OR slow to connect (bounded by _BIO_CONNECT_TIMEOUT_S) is warned and
-            # skipped, never aborting the run. The biocurator is added REGARDLESS — if no bio tools
-            # resolve it runs "dumb" on the model's own knowledge (recorded as biocurator_tools).
-            bio_sessions: list = []
-            if args.driver != "scripted":
-                async def _connect_bio(url):
-                    b_read, b_write, _ = await stack.enter_async_context(streamablehttp_client(url))
-                    bs = await stack.enter_async_context(ClientSession(b_read, b_write))
-                    await bs.initialize()
-                    return bs
-                for bio_url in BIO_MCP_URLS:
-                    try:
-                        bs = await asyncio.wait_for(_connect_bio(bio_url),
-                                                    timeout=_BIO_CONNECT_TIMEOUT_S)
-                        bio_sessions.append(bs)
-                        print(f"[bio] biocurator knowledge server connected: {bio_url}")
-                    except BaseException as exc:
-                        # Let a genuine interrupt/cancellation through; skip a server we can't reach
-                        # or that timed out (asyncio.TimeoutError is not re-raised).
-                        if _should_reraise(exc):
-                            raise
-                        print(f"[bio] WARNING: could not connect to bio-knowledge server "
-                              f"{bio_url} ({_summarize_exc(exc)}); skipping it.")
-            exit_code, result = await _drive(scenario, session, work, args,
-                                             run_started_at=started_at, server_proc=proc,
-                                             bio_sessions=bio_sessions)
-            # Snapshot the run's on-disk half (result.json + version store) into the runs
-            # archive while work/ still exists — the next run of this example wipes it. The
-            # run explorer (examples/explore_ui.py) stitches this with the persisted Phoenix
-            # trace. Best-effort: archive_run never raises.
-            if result:
-                archive_run(work, result)
-            return exit_code, result
+            # SECONDARY MCP sessions: the blinded bio-knowledge server(s) for the biocurator, on
+            # the deepagents panel every run. The endpoints are HARDCODED (BIO_MCP_URLS:
+            # BioContextAI + OmniPath) — no custom-endpoint config. Each is opened in its OWN
+            # SUPERVISED, ISOLATED task by open_bio_sessions, kept separate from the petab session
+            # (which the _ToolClock shadows) and from the run's fatal scope: a transport failure on
+            # a bio session — unreachable, a slow/hung connect, or a mid-run ClosedResourceError —
+            # is contained and degrades the biocurator to "dumb", NEVER aborting the run (issue
+            # #86). LLM-driver only (empty for scripted). The biocurator is added REGARDLESS — if
+            # no bio tools resolve it runs "dumb" on the model's own knowledge (biocurator_tools).
+            bio_urls = BIO_MCP_URLS if args.driver != "scripted" else ()
+            async with open_bio_sessions(bio_urls) as bio_sessions:
+                exit_code, result = await _drive(scenario, session, work, args,
+                                                 run_started_at=started_at, server_proc=proc,
+                                                 bio_sessions=bio_sessions)
+                # Snapshot the run's on-disk half (result.json + version store) into the runs
+                # archive while work/ still exists — the next run of this example wipes it. The
+                # run explorer (examples/explore_ui.py) stitches this with the persisted Phoenix
+                # trace. Best-effort: archive_run never raises.
+                if result:
+                    archive_run(work, result)
+                return exit_code, result
     except BaseException as exc:
         # `_drive`'s own guard covers a stall/provider failure inside the agent loop or the
         # judge. This one covers the SAME class of failure (an anyio BaseExceptionGroup whose
