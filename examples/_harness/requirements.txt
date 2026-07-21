@@ -17,6 +17,15 @@ deepagents==0.6.12
 langchain-mcp-adapters==0.3.0
 langchain-openai>=1.3,<2
 
+# Blinded bio-knowledge analyst (`biocurator`): a fourth subagent (on the deepagents panel every
+# run) that looks up biological entities, interactions, pathways and latent processes from
+# HARDCODED bio-knowledge MCP endpoints (runner.BIO_MCP_URLS: the hosted BioContextAI Knowledgebase
+# + the OmniPath MCP at explore.omnipathdb.org), connected best-effort. Needs NO extra Python
+# dependency here — it connects
+# over streamable-HTTP with the langchain-mcp-adapters / mcp client already pinned above.
+# --bio-tools curates which tools it gets; --bio-literature additionally enables EuropePMC/bioRxiv
+# literature search (off by default).
+
 # Arize Phoenix agent tracing (ON by default; disable at runtime with --no-phoenix).
 # Traces every LLM + MCP tool call the agent makes as OpenTelemetry spans viewable in the
 # Phoenix UI. arize-phoenix-otel + the LangChain instrumentor EXPORT the spans; the full

@@ -50,6 +50,7 @@ import asyncio
 import contextlib
 import inspect
 import math
+import re
 import time
 from typing import Any
 
@@ -336,6 +337,234 @@ ANALYSTS = [
         "tools": SIGNAL_ENGINEER_TOOLS,
     },
 ]
+
+
+# ---------------------------------------------------------------- biocurator (optional)
+# A FOURTH analyst, added for the deepagents driver whenever a bio-knowledge server is reachable. Unlike
+# the three above — which reason over THIS problem's model/data through the petab-mcp tools —
+# the biocurator reaches OUTSIDE the problem, into curated biomedical knowledge bases served by
+# a SEPARATE bio-knowledge MCP server (e.g. BioContextAI: STRING/KEGG/Reactome/OpenTargets +
+# literature). Its tools are runtime-discovered from that server (their names are unknown ahead
+# of time), so it is built dynamically in run_deepagents rather than listed in ANALYSTS.
+#
+# What it reports: what the named entities are, how they interact, and — crucially — which
+# UNMEASURED (latent) intermediates, regulators, and processes are known to connect or act on
+# them (a complex between two observed proteins, a phosphatase, a feedback loop, degradation,
+# translocation). Those latent pieces are exactly what data-only reasoning misses, so surfacing
+# them — as evidence-grounded CANDIDATES the lead still has to justify on bic — is a core reason
+# to consult it.
+#
+# It is deliberately BLINDED to the modeling task. The benchmark examples ship the ORIGINAL
+# published data and withhold only the model (examples/BENCHMARK_NOTES.md), so an analyst that
+# knew it was reconstructing a model could look up the source paper and leak the answer. The
+# blind is enforced two ways: (1) STRUCTURALLY — the biocurator holds ONLY the bio tools, never
+# a petab tool that would reveal the data/task; (2) by PERSONA — it is framed purely as a
+# general biology reference desk (entities, their interactions, and the latent entities/
+# processes around them). Its prompt never mentions a model, data, fitting, or an experiment —
+# not even to forbid them — so there is no frame for a stray hint in the lead's query to latch
+# onto. The lead is told to pass it only neutral entity/observable NAMES (see
+# scenario.DEFAULT_SYSTEM_PROMPT). What it returns is the domain knowledge a modeller brings, not the
+# withheld mechanism.
+_BIOCURATOR_REPORT_CONTRACT = (
+    "\n\nIf you have lookup tools, ALWAYS call at least one before you conclude rather than "
+    "answering from the request alone; if you have none, answer from your own knowledge and flag "
+    "it as such. Then return a SHORT report: (1) what each named entity "
+    "is; (2) the known interactions AMONG the named entities — direction and type of each "
+    "(activates, inhibits, binds, phosphorylates, is a substrate of, …), with a PMID/DOI where "
+    "one grounds the claim; (3) other entities and processes known to connect or act on them "
+    "that are NOT in the list you were given — intermediates between them, and regulators or "
+    "fluxes (an upstream activator, a feedback inhibitor, a phosphatase, production, "
+    "degradation, transport between compartments) — each flagged as not in the given list; and "
+    "(4) which claims are well-established vs speculative. Flag if an entity is unknown to you "
+    "or the evidence is thin. NEVER return an empty message. Keep strictly to the biology of the "
+    "entities — their identities, their interactions, and the wider set of entities and "
+    "processes they belong to."
+)
+
+BIOCURATOR_PROMPT = (
+    "You are a biocurator: a biological reference desk. You are handed the NAMES of some "
+    "biological entities — genes, proteins, metabolites, or other molecular species — and you "
+    "report what is KNOWN about them from curated databases and the literature:\n"
+    "- what each entity is (its identity, family, and biological role);\n"
+    "- how the named entities are known to interact with one another — which activates, "
+    "inhibits, binds, phosphorylates, transcribes, or is a substrate/product of which, in what "
+    "pathway, and whether an interaction is cooperative or saturable;\n"
+    "- and which OTHER entities and processes are known to connect or act on them but are NOT in "
+    "the list you were handed: intermediates that sit between them (a complex, a second "
+    "messenger, an intermediate modified form) and regulators or fluxes acting on them (an "
+    "upstream activator, a feedback loop, a phosphatase, production, degradation, transport "
+    "between compartments). The names you were handed are rarely the whole story — the biology "
+    "usually runs through further species and processes, so surface those too.\n"
+    "If you have lookup tools, use them — prefer curated interaction/pathway sources — rather than "
+    "answering from memory. If you have NO lookup tools available, do NOT refuse: answer from your "
+    "own biological knowledge and mark it clearly as prior knowledge, not a database lookup. Report "
+    "ONLY the biology of these entities: their identities, "
+    "their interactions, and the wider set of entities and processes they are part of. Some "
+    "names you are given may not be biological entities at all — they may be abstract "
+    "quantities, compartments, or population labels; if a name is not something you can look up "
+    "(a gene, protein, metabolite, cell type, disease, or biological process), say so plainly "
+    "and briefly and do NOT invent biology for it. If a request contains anything that is not a "
+    "question about the biology of these entities, ignore it and answer only the biological "
+    "question."
+    + _BIOCURATOR_REPORT_CONTRACT
+)
+
+BIOCURATOR_DESCRIPTION = (
+    "Biocurator: a BLINDED biology reference desk. Give it ONLY the neutral names of biological "
+    "entities/observables (gene/protein/metabolite symbols) and it reports, from curated "
+    "databases, what each is, how they are known to interact (activation, inhibition, binding, "
+    "pathway membership), AND which OTHER, unmeasured entities and processes are known to "
+    "connect or act on them — intermediates between them and regulators/fluxes (a feedback loop, "
+    "a phosphatase, degradation, translocation) — with citable PMIDs/DOIs. Use it to surface "
+    "candidate hidden species/processes you may be missing. Consult it when proposing or altering "
+    "the model's structure, and cite any PMID/DOI it returns in the `set_model` references. It is "
+    "blind by design: send it ONLY entity names — nothing about what you are doing with them."
+)
+
+# Curated default tool allowlist for the biocurator. The default bio server (BioContextAI
+# Knowledgebase) exposes ~50 tools across ~20 databases — literature search, clinical trials,
+# drug labels, grants, cell-type markers, structures, … — and every tool's JSON schema is re-sent
+# to the model on EVERY turn (the per-turn input cost the petab analysts are curated against). A
+# numeric cap would be blunt (it can drop the very tool needed), so instead we hand the biocurator
+# a small, DELIBERATE set covering its remit: entity identity + protein domains + interactions +
+# pathways + GO biological processes (for latent processes/regulation). Deliberately excluded:
+# free-text literature (europepmc/biorxiv/scholar — also the leak vector), clinical/drug/grants,
+# AlphaFold/PRIDE/PanglaoDB/AntibodyRegistry. These are the exact tool names the BioContextAI
+# server registers (v0.2.x); `--bio-tools` overrides this set, and `--bio-tools all` exposes
+# everything. If NONE of these match the connected server (a different bio server), run_deepagents
+# falls back to exposing all discovered tools with a warning (see below).
+DEFAULT_BIO_TOOLS = (
+    # identity / resolution
+    "get_uniprot_id_by_protein_symbol",
+    "get_uniprot_protein_info",
+    "get_ensembl_id_from_gene_symbol",
+    # protein domains / families
+    "get_protein_domains",
+    # protein–protein interactions
+    "get_string_id",
+    "get_string_interactions",
+    # pathways (Reactome only; KEGG dropped — its BioContextAI tools fail on the hosted endpoint,
+    # consistent with KEGG's academic-only / restricted programmatic access. Add the KEGG tools
+    # back via --bio-tools if you point at a server that has valid KEGG access.)
+    "get_reactome_info_by_identifier",
+    # function / biological processes (latent processes & regulation)
+    "get_go_terms_by_gene",
+    # broader (non-gene/protein) biology so the curator also serves CELL-level immunology and
+    # metabolic models — cell types, diseases/phenotypes, and metabolites — via ontology lookups.
+    # (Purely compartmental dynamics — SIR/SEIR epidemiology, predator–prey ecology — have NO
+    # biological database to draw on; there the curator correctly abstains, see BIOCURATOR_PROMPT.)
+    "search_ontology_terms",
+    "get_cell_ontology_terms",
+    "get_chebi_terms_by_chemical",
+    # cross-resource signaling/regulatory PRIOR KNOWLEDGE (OmniPath): directed, signed,
+    # literature-curated interactions and causal links — a strong source for "which species
+    # regulate which, and the latent regulators between them". Exposed when the OmniPath MCP
+    # (explore.omnipathdb.org, in BIO_MCP_URLS) is reachable; this is its single read-only SQL tool.
+    # Harmless (just doesn't match) if that server is unreachable. See saezlab/omnipath-next.
+    "execute_sql_query_on_omnipath_db",
+)
+
+# Literature tools (EuropePMC + bioRxiv), added to the biocurator's set ONLY when the operator
+# opts in with --bio-literature. Kept OUT of the default because free-text literature search over
+# a benchmark problem's distinctive entity panel is the one path that could surface the withheld
+# source paper (see examples/BENCHMARK_NOTES.md); the biocurator's default structured tools
+# (interactions/pathways/ontologies/OmniPath) are general biology and don't carry that risk. On a
+# NOVEL problem (the product path) literature grounding is unambiguously useful, hence the toggle.
+LITERATURE_BIO_TOOLS = (
+    "get_europepmc_articles",
+    "get_europepmc_fulltext",
+    "get_biorxiv_preprint_details",
+    "get_recent_biorxiv_preprints",
+)
+
+
+def _build_biocurator_subagent(bio_tools: list) -> dict[str, Any]:
+    """Build the biocurator subagent spec from the RUNTIME-DISCOVERED bio-server tools.
+
+    Unlike the three static analysts (whose tool NAMES are hard-coded and resolved from the
+    petab server via ALLOWED_TOOLS), the biocurator's tools are whatever the bio-knowledge MCP
+    server exposes — unknown until introspected — so they are passed as tool OBJECTS directly,
+    bypassing ALLOWED_TOOLS/_select_tools. Holding ONLY these bio tools (no petab tool) is the
+    structural half of the task-blinding. See run_deepagents.
+    """
+    prompt_key = _subagent_prompt_key()
+    return {
+        "name": "biocurator",
+        "description": BIOCURATOR_DESCRIPTION,
+        prompt_key: BIOCURATOR_PROMPT,
+        "tools": list(bio_tools),
+    }
+
+
+# ---------------------------------------------------------------- literature access tracking
+# When --bio-literature is on, the biocurator can search EuropePMC/bioRxiv. We record each such
+# call (the query it ran + the DOIs/PMIDs it got back) into a run-scoped log, surfaced as
+# ``biocurator_literature`` in result.json — a provenance/audit trail of what the biocurator
+# actually READ (which also lets a sweep audit whether it pulled a benchmark problem's source
+# paper). The full request/response is also in the Phoenix trace; this is the compact, analysable
+# view. Only the LITERATURE tools are wrapped (they are the only ones present under --bio-literature).
+_DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>)\]]+")
+_PMID_RE = re.compile(r"pmid['\"\s:=>]{1,4}(\d{4,9})", re.IGNORECASE)
+
+
+def _content_to_text(content: Any) -> str:
+    """Flatten an MCP tool result's content (a string, or a list of text blocks) to plain text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text") or ""))
+            elif isinstance(block, str):
+                parts.append(block)
+            else:
+                text = getattr(block, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return str(content or "")
+
+
+def _wrap_literature_recorder(tools: list, log: list) -> list:
+    """Wrap each literature tool's coroutine to append {tool, query, dois, pmids} to ``log`` on
+    every call — the provenance trail of what the biocurator read. Mutates the tool objects in
+    place (like the circuit breaker) so the recorder travels with the tool into the biocurator
+    subagent; layered on top of the breaker wrapper, so it sees the actual returned result.
+    Best-effort — a recording failure never breaks the tool call."""
+    from functools import wraps
+
+    for tool in tools:
+        name = getattr(tool, "name", None)
+        orig = getattr(tool, "coroutine", None)
+        if name is None or orig is None:
+            continue
+
+        def _make(name, orig):
+            @wraps(orig)
+            async def _record(runtime=None, **arguments):
+                result = await orig(runtime=runtime, **arguments)
+                try:
+                    content = result[0] if isinstance(result, tuple) else result
+                    text = _content_to_text(content)
+                    log.append({
+                        "tool": name,
+                        "query": arguments,
+                        "dois": sorted(set(_DOI_RE.findall(text)))[:50],
+                        "pmids": sorted(set(_PMID_RE.findall(text)))[:50],
+                    })
+                except Exception:  # pragma: no cover - provenance must never break a tool call
+                    pass
+                return result
+
+            try:  # keep the original signature so langchain still injects `runtime` correctly
+                _record.__signature__ = inspect.signature(orig)
+            except (ValueError, TypeError):  # pragma: no cover - defensive
+                pass
+            return _record
+
+        tool.coroutine = _make(name, orig)
+    return tools
 
 
 def _select_tools(tools: list) -> list:
@@ -964,6 +1193,9 @@ async def run_deepagents(
     n_starts: int = 1,
     max_wall_seconds: float | None = None,
     progress_probe: Any | None = None,
+    bio_sessions: Any | None = None,
+    bio_tools_spec: str = "",
+    bio_literature: bool = False,
 ) -> dict[str, Any]:
     """Drive the orchestrator (+ analyst subagents) against ``session``'s tools.
 
@@ -999,14 +1231,97 @@ async def run_deepagents(
     # Adapt the MCP tools bound to this already-initialized session, then curate to the
     # union of the lead's + analysts' tools. This pool is only used to resolve each analyst's
     # tool objects; it is NOT what the lead gets (see lead_tools below).
-    all_tools = _trim_descriptions(_select_tools(await load_mcp_tools(session)))
+    petab_tools = _trim_descriptions(_select_tools(await load_mcp_tools(session)))
+    # Blinded bio-knowledge tools from one or more SECONDARY MCP servers (biocurator joins the
+    # panel on every deepagents run; endpoints hardcoded in runner.BIO_MCP_URLS = BioContextAI + OmniPath;
+    # --bio-literature adds EuropePMC/bioRxiv). They are
+    # RUNTIME-DISCOVERED (their names are unknown ahead of time), so they deliberately BYPASS
+    # _select_tools/ALLOWED_TOOLS (which would warn+drop them as "unexpected") and are handed
+    # ONLY to the biocurator subagent below — never to the lead or the other analysts. NOTE: the
+    # runner's _ToolClock shadows only the PETAB session's call_tool, so bio-server latency is
+    # counted as "LLM+overhead" in the metrics split rather than tool time (a known caveat now
+    # that the biocurator runs by default; wrap each bio session's call_tool into the clock too
+    # if that split matters).
+    bio_tools: list = []
+    if bio_sessions:
+        petab_names = {n for t in petab_tools if (n := getattr(t, "name", None))}
+        # Resolve the tool selection from the --bio-tools spec (a CURATED allowlist, not a numeric
+        # cap, so we never drop the one tool the biocurator needs):
+        #   ""/None  -> the curated DEFAULT_BIO_TOOLS (a lean, deliberate set spanning the default
+        #               BioContextAI server + OmniPath: identity/domains/interactions/pathways/GO/
+        #               ontology + OmniPath's SQL tool),
+        #   "all"    -> every tool the connected server(s) expose (escape hatch),
+        #   "a,b,c"  -> exactly those names.
+        spec = (bio_tools_spec or "").strip()
+        if spec.lower() == "all":
+            allow = None
+        elif spec:
+            allow = {s.strip() for s in spec.split(",") if s.strip()}
+        else:
+            # Curated default; add the literature tools only when the operator opted in.
+            allow = set(DEFAULT_BIO_TOOLS)
+            if bio_literature:
+                allow |= set(LITERATURE_BIO_TOOLS)
+        # Discover tools across ALL bio servers, dropping any whose name COLLIDES with a petab tool
+        # (would shadow it in tools_by_name for the lead/analysts) or DUPLICATES one already seen
+        # from another bio server (keep the first). Bio tools keep their FULL server descriptions
+        # (not _trim_descriptions, which is petab-oriented and would truncate usage/arg notes).
+        discovered: list = []
+        seen: set = set()
+        for bs in bio_sessions:
+            for t in await load_mcp_tools(bs):
+                nm = getattr(t, "name", None)
+                if nm in petab_names:
+                    print(f"[bio] WARNING: bio tool {nm!r} collides with a petab tool name; "
+                          "dropping it so it cannot shadow the petab tool.")
+                    continue
+                if nm in seen:
+                    print(f"[bio] duplicate bio tool {nm!r} from another bio server; keeping the "
+                          "first.")
+                    continue
+                seen.add(nm)
+                discovered.append((nm, t))
+        names = [nm for nm, _ in discovered]
+        if not discovered:
+            print("[bio] the bio server(s) exposed no tools; the biocurator will run 'dumb' "
+                  "(the model's own biology knowledge).")
+        elif allow is None:
+            bio_tools = [t for _, t in discovered]
+        else:
+            # No all-tools fallback: hand the biocurator ONLY the curated tools that actually
+            # resolved on the connected server(s). If none match it still runs (below) — just
+            # 'dumb' — and the empty biocurator_tools in result.json flags that for analysis.
+            bio_tools = [t for nm, t in discovered if nm in allow]
+            if not bio_tools:
+                shown = f"{names[:12]}{' …' if len(names) > 12 else ''}"
+                print(f"[bio] none of the curated tool names matched the connected server(s)' "
+                      f"{len(names)} tools ({shown}); the biocurator will run 'dumb'.")
+    all_tools = petab_tools + bio_tools
     # Wrap the tool objects with the repeated-error circuit breaker BEFORE they are handed to
     # the lead and the analyst subagents (both reference these same objects), so a tool that
     # keeps failing identically is disabled for the run instead of being re-proposed endlessly.
     breaker_state = _new_breaker_state()
     _wrap_tools_with_circuit_breaker(all_tools, breaker_state)
+    # Provenance: record the biocurator's LITERATURE accesses (query + returned DOIs/PMIDs) for
+    # audit + analysis (surfaced as biocurator_literature). Only literature tools are wrapped, and
+    # only when --bio-literature made them resolve into bio_tools; empty otherwise.
+    literature_log: list = []
+    _wrap_literature_recorder(
+        [t for t in bio_tools if getattr(t, "name", None) in LITERATURE_BIO_TOOLS], literature_log
+    )
     tools_by_name = {n: t for t in all_tools if (n := getattr(t, "name", None))}
     subagents = _build_subagents(tools_by_name)  # each analyst carries its own tool OBJECTS
+    # The biocurator joins the panel on every deepagents run (its lack of any petab tool is the
+    # structural half of the task-blinding — see _build_biocurator_subagent). It is never dropped:
+    # if bio tools resolved it uses them, otherwise it runs "dumb", answering from the model's own
+    # biology knowledge (see BIOCURATOR_PROMPT). The lead's roster + biocurator guidance are static
+    # in scenario.DEFAULT_SYSTEM_PROMPT — no runtime prompt splice, since the biocurator is
+    # unconditional. biocurator_tools records what it actually got (empty = a dumb run) for analysis.
+    subagents.append(_build_biocurator_subagent(bio_tools))
+    biocurator_tools = sorted(n for t in bio_tools if (n := getattr(t, "name", None)))
+    print(f"[agent] biocurator on the panel with {len(biocurator_tools)} bio tool(s)"
+          + (f": {biocurator_tools}" if biocurator_tools
+             else " (none resolved — running on the model's own knowledge)"))
     # The LEAD gets ONLY the orchestrator tools (+ its decision tool) — NOT the analysts'
     # data/diagnostic tools (query_data, get_fitting_log, get_measurements, ...). Those heavy
     # reads run INSIDE analyst subagents, whose verbose results live in their own transient
@@ -1208,5 +1523,7 @@ async def run_deepagents(
         "stop_reason": stop_reason,
         "n_tool_errors": breaker_state["n_tool_errors"],
         "disabled_tools": sorted(breaker_state["disabled"]),
+        "biocurator_tools": biocurator_tools,
+        "biocurator_literature": literature_log,
         **guard_stats,
     }
