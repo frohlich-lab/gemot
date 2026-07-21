@@ -84,3 +84,5 @@ examples/schwen/problem/*
 !examples/schwen/problem/reference.json
 examples/fujita/problem/*
 !examples/fujita/problem/reference.json
+slurm/trace_review/crauste_deepdive/
+slurm/trace_review/biolit_deepdive/
