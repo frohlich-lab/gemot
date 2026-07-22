@@ -286,11 +286,6 @@ class Scenario:
     # (Kass & Raftery); the verdict is insensitive here (genuine repairs sit at ΔBIC≈0,
     # broken/near-miss models are hundreds off).
     bic_threshold: float = 10.0
-    # Opt-in: estimate initial-condition parameters instead of fixing them at the observed t=0
-    # value. Off by default so published problems keep their standard IC treatment; a scenario
-    # that turns this on MUST regenerate its BIC reference to estimate ICs too (else the
-    # candidate over-counts k against the reference).
-    estimate_initial_conditions: bool = False
     # Short human description of the canonical repair (for the scripted driver's log).
     fix_summary: str = ""
     phoenix_project: str | None = None

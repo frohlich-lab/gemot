@@ -248,38 +248,31 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
             "conditions": len(prob.condition_df)}
 
 
-def write_reference_for(*, name: str, true_ant: str, example_dir: Path,
-                        n_starts: int = 50, seed_at_nominal: bool = False,
-                        estimate_ics: bool = False, collection: Path | None = None) -> dict[str, Any]:
-    """Regenerate the committed ``reference.json`` (the BIC bar): fit the TRUE structure to the real
-    data. Run only via ``setup.py --refit`` — slow, and its output is committed.
+def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
+                        collection: Path | None = None) -> dict[str, Any]:
+    """Regenerate the committed ``reference.json`` (the BIC bar): fit the PRISTINE published PEtab
+    problem EXACTLY as it ships. Run only via ``setup.py --refit`` — slow, and its output is committed.
 
-    The reference parameter table is DERIVED, not hand-written: we load the materialized shipped
-    problem, swap in the TRUE model, and run the server's OWN :func:`reconcile` — the exact step the
-    candidate's ``set_model`` runs. So the reference optimises over the identical parameter space the
-    agent gets (shipped params as shipped; agent-introduced kinetics on the server's default bounds;
-    ICs fixed or estimated per ``estimate_ics``), and a faithful rebuild lands at ΔBIC ≈ 0 by
-    construction. No per-example nominal/bounds table to maintain — the only inputs are the TRUE
-    Antimony, the shipped tables, and the scenario's ``estimate_ics``.
+    The reference is the benchmark's OWN model — the shipped SBML + the published parameter table
+    (the paper's true free/fixed split, bounds and priors; ``nominalValue`` = the published optimum)
+    + the published data — loaded straight from the collection and fit with the server's optimizer.
+    It does NOT go through a hand-authored ``TRUE_ANT`` or the server's :func:`reconcile`: the bar is
+    the genuine ground truth, independent of the IC / parametrisation conventions the CANDIDATE is
+    scored under. ΔBIC then measures how close the agent's rebuild gets to the published fit, rather
+    than whether it reproduces a reconcile-mirrored reference (which cancels shared handicaps and can
+    hide a mis-scaled reference — see issue #90 / crauste).
+
+    The candidate still fits the SAME data (materialize copies the collection's measurements/
+    observables verbatim), so ``n`` matches; ``k`` is the published table's estimated-parameter count.
     """
-    import petab.v1 as petab
-    from petab.v1.models.sbml_model import SbmlModel
-
-    from _harness.simulate import write_reference
-
-    from petab_mcp import reconcile as R
+    from _harness.simulate import write_reference_from_problem
 
     problem_dir = Path(example_dir) / "problem"
-    # The materialized shipped problem (pristine collection tables + shipped parameter subset +
-    # empty SBML) — exactly what the server hands the agent. Swap in the true model and reconcile.
-    prob = petab.Problem.from_yaml(str(problem_dir / "problem.yaml"))
-    prob.model = SbmlModel.from_antimony(true_ant)
-    R.reconcile(prob, estimate_ics=estimate_ics)
-    # Fit the RECONCILED model (its <sid>_init params etc. now match the reconciled parameter table).
-    reconciled_ant = prob.model.to_antimony()
-    return write_reference(
-        reconciled_ant, prob.parameter_df, prob.condition_df, prob.observable_df,
-        prob.measurement_df, build_dir=Path(example_dir) / ".gen_build" / "truthfit",
-        model_name=f"{name}_truthfit", path=problem_dir / "reference.json",
-        n_starts=n_starts, seed_at_nominal=seed_at_nominal,
+    # The pristine published problem (shipped SBML + full published parameter table + data),
+    # flattened if it uses per-measurement output overrides — the same load materialize uses.
+    problem = _load_problem(name, collection)
+    return write_reference_from_problem(
+        problem, build_dir=Path(example_dir) / ".gen_build" / "pristine",
+        model_name=f"{name}_pristine", path=problem_dir / "reference.json",
+        n_starts=n_starts,
     )

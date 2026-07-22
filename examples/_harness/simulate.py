@@ -301,6 +301,78 @@ def write_reference(
     return ref
 
 
+def write_reference_from_problem(
+    problem,
+    *,
+    build_dir: str | Path,
+    model_name: str,
+    path: str | Path,
+    n_starts: int = 50,
+    seed: int = 0,
+    seed_at_nominal: bool = True,
+) -> dict:
+    """Fit a PRISTINE collection PEtab problem EXACTLY as it ships and write ``{nll, k, n}``.
+
+    The BIC bar is the published benchmark's OWN best fit: its shipped SBML model + the published
+    parameter table (the paper's true free/fixed split and bounds; ``nominalValue`` = the published
+    optimum) + the published data — NOT a hand-authored ``TRUE_ANT`` and NOT the server's
+    ``reconcile``. This anchors the reference to the genuine ground truth, independent of the IC /
+    parametrisation conventions the CANDIDATE is scored under (so ΔBIC measures real closeness to
+    the truth, not reproduction of a reconcile-mirrored reference).
+
+    Fit with the same pyPESTO + Fides multistart the server runs on candidates. ``seed_at_nominal``
+    seeds start-0 at the published optimum (adopted only if it beats the random multistart), so the
+    reference reliably lands in the true basin. BIC is likelihood-based and the server scores the
+    candidate on the pure AMICI ``-llh``, so any ``objectivePrior*`` columns are dropped here.
+    """
+    import json
+    import logging as _logging
+
+    import numpy as np
+    import pypesto.optimize
+    import pypesto.petab
+    from petab.v1 import scale
+    from petab.v1.C import ESTIMATE, NOMINAL_VALUE, PARAMETER_ID, PARAMETER_SCALE
+
+    from .fit_budget import fides_maxtime_options, fit_engine
+
+    _ensure_swig_on_path()
+    np.random.seed(seed)
+
+    pdf = problem.parameter_df
+    if pdf.index.name != PARAMETER_ID and PARAMETER_ID in pdf.columns:
+        pdf = pdf.set_index(PARAMETER_ID)
+    pdf = pdf.drop(columns=[c for c in ("objectivePriorType", "objectivePriorParameters")
+                            if c in pdf.columns])
+    problem.parameter_df = pdf
+
+    build_dir = Path(build_dir)
+    build_dir.mkdir(parents=True, exist_ok=True)
+    importer = pypesto.petab.PetabImporter(
+        problem, output_folder=str(build_dir), model_name=model_name)
+    pp = importer.create_problem()
+    optimizer = pypesto.optimize.FidesOptimizer(
+        verbose=_logging.ERROR, options=fides_maxtime_options())
+    result = pypesto.optimize.minimize(
+        pp, optimizer=optimizer, n_starts=n_starts, engine=fit_engine(n_starts),
+        progress_bar=False)
+    nll = float(result.optimize_result.list[0]["fval"])
+
+    if seed_at_nominal:
+        x_full = np.array([scale(float(pdf.loc[name, NOMINAL_VALUE]),
+                                 pdf.loc[name, PARAMETER_SCALE]) for name in pp.x_names])
+        fval_nom = float(pp.objective(pp.get_reduced_vector(x_full)))
+        if np.isfinite(fval_nom) and fval_nom < nll:
+            nll = fval_nom
+
+    # k = the number of ESTIMATED parameters in the PUBLISHED table (fixed known-constants and any
+    # fixed observation params are NOT counted), n = number of measurements.
+    k = sum(int(float(pdf.loc[pid, ESTIMATE])) == 1 for pid in pdf.index)
+    ref = {"nll": float(nll), "k": int(k), "n": int(len(problem.measurement_df))}
+    Path(path).write_text(json.dumps(ref, indent=2) + "\n")
+    return ref
+
+
 def add_noise_and_write(
     sim_df: pd.DataFrame,
     noise: dict[str, float],

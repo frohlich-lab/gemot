@@ -484,13 +484,12 @@ _SERVER_BOOTSTRAP = (
     # AMICI's C++ build-toolchain output (captured to work/amici_build.log).
     "uvicorn.Config = lambda *a, **k: _Config(*a, **{**k, 'access_log': False})\n"
     "from petab_mcp.server import create_server\n"
-    "yaml_path, build_root, ref_mode, host, port, n_starts, estimate_ics = sys.argv[1:8]\n"
+    "yaml_path, build_root, ref_mode, host, port, n_starts = sys.argv[1:7]\n"
     # The agent's own commits (set_model etc.) don't pass n_starts, so make the server's
     # default multistart count match --n-starts — otherwise agent fits use the low library
     # default (5), too few for the harder several-parameter oscillator fits.
     "srv = create_server(yaml_path, build_root=build_root, reference_mode=ref_mode,\n"
-    "                    auto_fit_starts=int(n_starts),\n"
-    "                    estimate_initial_conditions=(estimate_ics == '1'))\n"
+    "                    auto_fit_starts=int(n_starts))\n"
     "srv.settings.host = host\n"
     "srv.settings.port = int(port)\n"
     "srv.run(transport='streamable-http')\n"
@@ -840,7 +839,6 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
         sys.executable, "-c", _SERVER_BOOTSTRAP,
         str(work_yaml), str(build_root), args.reference_validation, host, str(port),
         str(args.n_starts),
-        "1" if getattr(scenario, "estimate_initial_conditions", False) else "0",
     ]
     server_log_path = work / "server.log"
     amici_log_path = work / "amici_build.log"

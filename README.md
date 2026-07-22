@@ -183,10 +183,14 @@ your own skills; drop another skill directory into `_skills/` to extend the bund
   a model copy → reconcile SBML↔PEtab → lint → commit or revert → snapshot + log. An
   edit that breaks a fixed observable/condition is rejected.
 - **Parametric initial conditions.** `reconcile` guarantees every species `S` has an
-  `initialAssignment(S := S_init)` with `S_init` in the parameter table (linear scale),
-  so initial conditions are first-class parameters — **fixed** at the declared t=0 value by
-  default, and estimated only when the scenario opts in (`estimate_initial_conditions`; not an
-  in-loop toggle). Each commit's `initial_conditions` block reports each species' actual mode.
+  `initialAssignment(S := S_init)` with `S_init` in the parameter table, so initial conditions are
+  first-class parameters. They are **estimated by default** — a declared t=0 is only a guess and
+  must never be silently frozen (a fixed guess the optimizer can't correct is the trap behind #90).
+  Two leak-free *value conventions* stay **fixed** instead: an IC of exactly `0` (an empty pool,
+  fixed at 0) and an IC of exactly `1` (a unit normalization — e.g. a conserved-total set to 1 —
+  fixed by value, so it names no species). To keep any other IC fixed, ship it as a fixed parameter
+  row (reconcile never re-touches existing rows). Each commit's `initial_conditions` block reports
+  each species' actual mode.
 - **PubMed validation.** References are **optional** on every operation (only a non-empty
   `justification` is required); when given, they are resolved via NCBI E-utilities (no extra
   dependency). The mode governs how strictly a *supplied* reference is validated: `required`
