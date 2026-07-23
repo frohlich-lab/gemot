@@ -708,6 +708,78 @@ async def _model_committed(probe) -> bool:
     return True
 
 
+def _token_accountant():
+    """A LangChain callback that sums token usage across EVERY LLM call in a run.
+
+    Attached via the run config's ``callbacks``, which LangChain/LangGraph propagate into the
+    analyst + biocurator subgraphs — so this totals the lead AND the subagents, matching
+    Phoenix's per-trace rollup, but in-process so the counts can be written straight to
+    result.json without re-deriving them from the (huge) span database. Records prompt,
+    completion, and cache-read tokens; ``cache_read`` is the provider-reported cached-prompt
+    count (``usage_metadata.input_token_details.cache_read``), which is what makes an offline
+    cost estimate cache-aware. One instance is reused across resume iterations so the totals
+    cover the whole run. Never raises — token accounting must not break a run.
+    """
+    from langchain_core.callbacks import AsyncCallbackHandler
+
+    # AsyncCallbackHandler (not the sync base): the run is driven with astream, so LangChain
+    # awaits the async on_llm_end INLINE on the event loop instead of dispatching a sync handler
+    # to a threadpool. That serialises the counter updates — parallel subagent LLM completions
+    # cannot interleave a non-atomic `+=` and lose an increment.
+    def _as_int(x) -> int:
+        """A token count coerced to a non-negative int, or 0 for anything unparseable — so one
+        malformed field never aborts accounting for the rest of a response's records."""
+        try:
+            return max(0, int(x or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    class _Accountant(AsyncCallbackHandler):
+        def __init__(self):
+            self.prompt = self.completion = self.cache_read = self.n_calls = 0
+
+        async def on_llm_end(self, response, **kwargs):  # noqa: D401 - LangChain hook
+            try:
+                found = False
+                for gens in getattr(response, "generations", None) or []:
+                    for gen in gens or []:
+                        msg = getattr(gen, "message", None)
+                        um = getattr(msg, "usage_metadata", None) if msg is not None else None
+                        if not um:
+                            continue
+                        found = True
+                        # Per-field coercion (not one int() over the whole record): a bad value
+                        # in one field contributes 0 but does not discard the other fields, the
+                        # other generations, or the llm_output fallback below.
+                        self.prompt += _as_int(um.get("input_tokens"))
+                        self.completion += _as_int(um.get("output_tokens"))
+                        self.cache_read += _as_int(
+                            (um.get("input_token_details") or {}).get("cache_read"))
+                        self.n_calls += 1
+                if not found:
+                    # Older/non-usage_metadata responses carry an aggregate in llm_output.
+                    tu = (getattr(response, "llm_output", None) or {}).get("token_usage") or {}
+                    if tu:
+                        self.prompt += _as_int(tu.get("prompt_tokens"))
+                        self.completion += _as_int(tu.get("completion_tokens"))
+                        self.cache_read += _as_int(
+                            (tu.get("prompt_tokens_details") or {}).get("cached_tokens"))
+                        self.n_calls += 1
+            except Exception:  # pragma: no cover - accounting must never break a run
+                pass
+
+        def totals(self):
+            return {
+                "prompt_tokens": self.prompt,
+                "completion_tokens": self.completion,
+                "cache_read_tokens": self.cache_read,   # cached prompt tokens (for cache-aware cost)
+                "total_tokens": self.prompt + self.completion,
+                "n_llm_calls": self.n_calls,
+            }
+
+    return _Accountant()
+
+
 def _decision_tool(session):
     """A lead-only control tool for the two non-default decisions: ``rollback`` and ``finish``.
 
@@ -1583,6 +1655,11 @@ async def run_deepagents(
         api_key=api_key,
         timeout=_LLM_TIMEOUT_S,          # fail a hung provider call fast (was unbounded)
         max_retries=_LLM_MAX_RETRIES,
+        # Ask for token usage even on streamed responses (adds stream_options.include_usage):
+        # OpenAI-compatible providers omit usage from a stream unless requested, which would
+        # leave _token_accountant recording 0 tokens for the whole run. Harmless when a call
+        # isn't streamed.
+        stream_usage=True,
         # Best-effort prompt-cache hint: asks the provider to route repeat requests to the
         # same backend so its prefix cache can hit (prompt tokens dominate this workload).
         # Whether it takes effect is provider-dependent (OpenRouter -> the served model) and
@@ -1668,6 +1745,10 @@ async def run_deepagents(
     config: dict[str, Any] = {"recursion_limit": recursion_limit}
     if checkpointer is not None:
         config["configurable"] = {"thread_id": "petab-mcp-run"}
+    # Sum token usage across the lead + every subagent (config callbacks propagate into the
+    # subgraphs), for result.json. One instance across all resume iterations = whole-run totals.
+    token_accountant = _token_accountant()
+    config["callbacks"] = [token_accountant]
 
     async def _early_stop_reason() -> str | None:
         """The server's early-stop reason if the run should stop now, else ``None`` (fail-open:
@@ -1807,6 +1888,15 @@ async def run_deepagents(
         disabled = sorted(breaker_state["disabled"])
         print(f"[agent] tool errors this run: {breaker_state['n_tool_errors']}"
               + (f"; disabled: {disabled}" if disabled else ""))
+    token_usage = token_accountant.totals()
+    # A run that dispatched tools necessarily made LLM calls; capturing zero of them means the
+    # usage was not reported (a streamed response without usage, or a callback-propagation gap),
+    # so the recorded token_usage understates the run. Make that loud rather than silently
+    # writing zeros that read as a genuinely tiny run in the cost analysis.
+    if token_usage["n_llm_calls"] == 0 and guard_stats.get("tools_executed", 0) > 0:
+        print("[agent] WARNING: token accounting captured 0 LLM calls despite tool activity — "
+              "token_usage in result.json is understated (usage not reported for this run).")
+
     return {
         "stop_reason": stop_reason,
         "n_tool_errors": breaker_state["n_tool_errors"],
@@ -1814,5 +1904,6 @@ async def run_deepagents(
         "biocurator_tools": biocurator_tools,
         "biocurator_entities": biocurator_entities,
         "biocurator_literature": literature_log,
+        "token_usage": token_usage,
         **guard_stats,
     }

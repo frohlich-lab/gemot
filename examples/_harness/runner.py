@@ -822,7 +822,12 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                         # Provenance of the literature the biocurator READ (per call: query +
                         # returned DOIs/PMIDs; only populated under --bio-literature) — an audit
                         # trail for analysis and for the leakage check on published problems.
-                        "biocurator_literature": agent_out.get("biocurator_literature", [])}
+                        "biocurator_literature": agent_out.get("biocurator_literature", []),
+                        # Whole-run token usage (lead + subagents) summed in-process by
+                        # agent._token_accountant: prompt / completion / cache_read / total.
+                        # cache_read is the cached-prompt count, so an offline cost estimate can
+                        # be cache-aware without re-deriving anything from the Phoenix span DB.
+                        "token_usage": agent_out.get("token_usage")}
                 exit_code, result = await _judge(scenario, call, baseline, work, meta, clock, t0)
                 record_run_result(span, result)
             except BaseException as exc:
