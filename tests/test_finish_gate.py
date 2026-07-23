@@ -53,8 +53,8 @@ async def _decide(tool, action):
     return await tool.ainvoke({"action": action, "rationale": "test"})
 
 
-def _tool_for(mod, fit_summary, diagnosis=None):
-    return mod._decision_tool(_FakeSession(fit_summary, diagnosis))
+def _tool_for(mod, fit_summary, diagnosis=None, finish_state=None):
+    return mod._decision_tool(_FakeSession(fit_summary, diagnosis), finish_state)
 
 
 @pytest.mark.asyncio
@@ -63,6 +63,56 @@ async def test_finish_refused_without_valid_fit():
     tool = _tool_for(mod, {"neg_log_likelihood": None, "bic": None, "version": 0})
     out = await _decide(tool, "finish")
     assert "FINISH REFUSED" in out and "no valid fit" in out
+
+
+@pytest.mark.asyncio
+async def test_no_fit_finish_refuses_then_gives_up_never_accepts():
+    """A finish with no valid fit is refused (never accepted as a finish), and after
+    _MAX_NO_FIT_FINISH_ATTEMPTS consecutive tries the gate GIVES UP — flags the run for the
+    driver to end as no-model-built, still NOT recording an accepted finish."""
+    mod = _load_agent_module()
+    fs = {}
+    tool = _tool_for(mod, {"neg_log_likelihood": None, "bic": None, "version": 0}, finish_state=fs)
+    for _ in range(mod._MAX_NO_FIT_FINISH_ATTEMPTS - 1):
+        out = await _decide(tool, "finish")
+        assert "FINISH REFUSED" in out and not out.startswith("Recorded: finish")
+        assert fs.get("gave_up") is not True                 # not yet
+    # The Nth attempt gives up — ends as no-model-built, still not an accepted finish.
+    out = await _decide(tool, "finish")
+    assert not out.startswith("Recorded: finish")
+    assert "no-model-built" in out.lower()
+    assert fs["gave_up"] is True
+
+
+@pytest.mark.asyncio
+async def test_no_fit_counter_is_consecutive_and_resets_on_a_fit():
+    """The give-up counter is for CONSECUTIVE no-fit attempts: a valid fit appearing resets it."""
+    mod = _load_agent_module()
+    session = _FakeSession({"neg_log_likelihood": None, "bic": None, "version": 0})
+    tool = mod._decision_tool(session)
+    for _ in range(mod._MAX_NO_FIT_FINISH_ATTEMPTS - 1):
+        assert "FINISH REFUSED" in await _decide(tool, "finish")
+    # A valid fit appears -> the next finish ARMS (counter reset), it does not give up.
+    session.fit_summary = {"neg_log_likelihood": 100.0, "bic": 210.0, "version": 1,
+                           "has_unfit_edits": False}
+    assert "FINISH ARMED" in await _decide(tool, "finish")
+    # Fit gone again -> counting restarts from 1, so it refuses rather than immediately gives up.
+    session.fit_summary = {"neg_log_likelihood": None, "bic": None, "version": 0}
+    assert "FINISH REFUSED" in await _decide(tool, "finish")
+
+
+@pytest.mark.asyncio
+async def test_confirmed_finish_records_confirmed_flag():
+    """A confirmed finish sets finish_state['confirmed'] so the driver won't bounce it back."""
+    mod = _load_agent_module()
+    fs = {}
+    tool = _tool_for(mod, {"neg_log_likelihood": 100.0, "bic": 210.0, "version": 5,
+                           "has_unfit_edits": False}, finish_state=fs)
+    await _decide(tool, "finish")           # arm
+    assert fs.get("confirmed") is not True   # not yet — a single call never confirms
+    second = await _decide(tool, "finish")   # confirm
+    assert second.startswith("Recorded: finish")
+    assert fs["confirmed"] is True
 
 
 @pytest.mark.asyncio

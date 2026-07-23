@@ -60,22 +60,40 @@ class _Probe:
 class _FakeAgent:
     """Graph stub whose astream yields ONE super-step then ends — a clean 'completed' with
     whatever the probe reports as the model state. Records each astream input so the test can
-    see the resume nudge."""
+    see the resume nudge. If ``confirm_after`` is set, it flips the captured finish_state to
+    confirmed on that astream call, simulating the model finishing through make_decision."""
 
     def __init__(self):
         self.inputs = []
+        self.captured = {}          # {"fs": finish_state} populated by the capturing _decision_tool
+        self.confirm_after = None
 
     def astream(self, stream_input, config=None, stream_mode=None):
         self.inputs.append(stream_input)
+        n = len(self.inputs)
+        captured, confirm_after = self.captured, self.confirm_after
 
         async def _gen():
+            if confirm_after and n >= confirm_after and captured.get("fs") is not None:
+                captured["fs"]["confirmed"] = True
             yield {"messages": []}
         return _gen()
 
 
-def _run(mod, monkeypatch, probe):
+def _run(mod, monkeypatch, probe, confirm_after=None):
     from langchain_core.tools import StructuredTool
     fake_agent = _FakeAgent()
+    fake_agent.confirm_after = confirm_after
+
+    # Capture the finish_state the driver hands the decision tool, so the fake agent can flip it
+    # to confirmed (a fake astream can't itself call make_decision).
+    _real_decision_tool = mod._decision_tool
+
+    def _capturing_decision_tool(session, finish_state=None):
+        fake_agent.captured["fs"] = finish_state
+        return _real_decision_tool(session, finish_state)
+
+    monkeypatch.setattr(mod, "_decision_tool", _capturing_decision_tool)
 
     # Real (inert) tool objects named per ALLOWED_TOOLS so _select_tools' curation passes; the
     # faked create_deep_agent ignores them, so they are never actually invoked.
@@ -105,30 +123,43 @@ def _run(mod, monkeypatch, probe):
 
 
 @requires_harness
-def test_no_model_run_nudges_resumes_then_relabels(monkeypatch):
+def test_no_model_silent_stop_bounces_with_build_nudge(monkeypatch):
+    """A silent stop that authored no model is bounced back with the BUILD nudge, up to
+    _MAX_SILENT_BOUNCES, then relabelled 'no_model_built'. The fake never confirms a finish, so
+    it is treated as a silent stop every time."""
     mod = _load_agent_module()
     result, fake_agent = _run(mod, monkeypatch, _Probe(model_initialized=False))
 
-    # Never built a model -> relabelled, not an ambiguous "completed".
     assert result["stop_reason"] == "no_model_built"
-    # Initial drive + one resume per _RUN_RESUME_ATTEMPTS.
-    assert len(fake_agent.inputs) == 1 + mod._RUN_RESUME_ATTEMPTS
-    # The resumes injected the build nudge as a fresh user turn (the first input is the task).
-    resume_inputs = fake_agent.inputs[1:]
-    assert resume_inputs, "expected at least one resume"
-    for inp in resume_inputs:
+    assert len(fake_agent.inputs) == 1 + mod._MAX_SILENT_BOUNCES  # initial drive + N bounces
+    for inp in fake_agent.inputs[1:]:                             # every bounce = the build nudge
         msg = inp["messages"][0]
-        assert msg["role"] == "user"
-        assert msg["content"] == mod._NO_MODEL_NUDGE
+        assert msg["role"] == "user" and msg["content"] == mod._NO_MODEL_NUDGE
 
 
 @requires_harness
-def test_run_that_authors_a_model_completes_without_resume(monkeypatch):
+def test_model_silent_stop_bounces_into_the_gate(monkeypatch):
+    """A silent stop WITH a model (no finish through make_decision) is bounced with the FINISH
+    nudge — the gate cannot be sidestepped — and relabelled 'silent_stop', not 'completed'."""
     mod = _load_agent_module()
     result, fake_agent = _run(mod, monkeypatch, _Probe(model_initialized=True))
 
-    # A run that authored a model must NOT be relabelled empty and must NOT be resumed. (The
-    # exact label is "completed"; a faked graph runs no real tools, so the orthogonal, pre-
-    # existing zero-tools relabel may make it "no_tools_executed" — either way, not our label.)
-    assert result["stop_reason"] != "no_model_built"
-    assert len(fake_agent.inputs) == 1              # no resume
+    assert result["stop_reason"] == "silent_stop"                # not an accepted finish
+    assert len(fake_agent.inputs) == 1 + mod._MAX_SILENT_BOUNCES
+    for inp in fake_agent.inputs[1:]:                            # every bounce = the finish nudge
+        msg = inp["messages"][0]
+        assert msg["role"] == "user" and msg["content"] == mod._SILENT_FINISH_NUDGE
+
+
+@requires_harness
+def test_confirmed_finish_is_not_bounced(monkeypatch):
+    """A run that finishes through the gate (finish_state confirmed) must NOT be bounced: it ends
+    as 'completed' the moment the confirm lands, not re-driven."""
+    mod = _load_agent_module()
+    # First turn stops silently -> one bounce; on the 2nd turn the model "confirms" -> done.
+    result, fake_agent = _run(mod, monkeypatch, _Probe(model_initialized=True), confirm_after=2)
+    # A confirmed finish is respected: NOT relabelled as a bypassed gate, and NOT re-bounced.
+    # (The exact label may be the orthogonal pre-existing "no_tools_executed" — the faked graph
+    # runs no real tools — but never our silent-stop labels.)
+    assert result["stop_reason"] not in ("silent_stop", "no_model_built")
+    assert len(fake_agent.inputs) == 2                          # initial + 1 bounce, then confirmed

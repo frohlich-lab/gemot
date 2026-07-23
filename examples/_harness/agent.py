@@ -637,14 +637,23 @@ def _subagent_prompt_key() -> str:
     return "system_prompt"
 
 
-_MAX_FINISH_REFUSALS = 2   # push back on finishing with NO valid fit this many times, then relent
+# A silent stop (the graph ends on a no-tool turn) is not an accepted way to finish: the driver
+# bounces it back into the finish gate this many times before relenting so a genuinely stuck run
+# still terminates (at the step/wall limit) rather than looping forever.
+_MAX_SILENT_BOUNCES = 3
+
+# After this many CONSECUTIVE finish attempts with no valid fit, the gate gives up: it flags the
+# run (finish_state["gave_up"]) so the driver ends it promptly as no-model-built, rather than
+# refusing forever while the model spams finish to the recursion limit. It is NOT an accepted
+# finish — there is no fitted model to score — just a bounded, honest termination.
+_MAX_NO_FIT_FINISH_ATTEMPTS = 5
 
 
 async def _current_fit(session) -> dict[str, Any]:
     """Fetch the CURRENT HEAD's fit metrics from the server (ground truth, not the agent's
     self-report). Returns {} if the metrics can't be read — the finish check then sees no
-    valid fit and fails CLOSED: it pushes back on ``finish`` (bounded by
-    ``_MAX_FINISH_REFUSALS``) rather than letting the run end with no scored model."""
+    valid fit and fails CLOSED: it refuses ``finish`` rather than letting the run end with no
+    scored model."""
     try:
         res = await session.call_tool("get_fit_summary", {})
         sc = getattr(res, "structuredContent", None)
@@ -678,6 +687,19 @@ _NO_MODEL_NUDGE = (
     "score. The task is to BUILD a kinetic model of this system: call set_model with an Antimony "
     "model (reactions + rate laws for the observed species, plus any latent/unobserved driver "
     "state the data imply), then fit it. Do that now — do not stop until a fitted model exists."
+)
+
+
+# Injected when a run with a built model ended WITHOUT finishing through make_decision — a silent
+# stop is not an accepted exit. Bare enforcement of the protocol (no coaching on what to fix): it
+# points the model at the finish gate, which then requires a fitted model and shows the diagnosis
+# before it will confirm.
+_SILENT_FINISH_NUDGE = (
+    "You ended the run without finishing it. A run is ONLY complete when you finish through "
+    "make_decision('finish') — a silent stop is not accepted. Your model must have a CURRENT fit: "
+    "if you have edited it since the last fit, call fit first. Then call make_decision('finish') "
+    "— you will be shown the fit's diagnosis and asked to confirm. If the fit is inadequate, keep "
+    "improving the model instead. Do not stop until you have finished through make_decision."
 )
 
 
@@ -780,18 +802,22 @@ def _token_accountant():
     return _Accountant()
 
 
-def _decision_tool(session):
+def _decision_tool(session, finish_state=None):
     """A lead-only control tool for the two non-default decisions: ``rollback`` and ``finish``.
 
     Plain iteration needs no call — to keep going the lead simply makes the next ``set_model``
     edit — so the tool exists only to record a rollback or to gate a finish.
 
-    The panel otherwise tends to make one edit and stop, so ``finish`` is pushed back — but
-    ONLY while there is no valid fit to finish on: no model has been built yet, or the fit's
-    objective is non-finite. BIC is the success target and there is no BIC without a fit, so
-    that (and only that) is a genuine reason to keep going. The push-back is bounded — after
-    ``_MAX_FINISH_REFUSALS`` attempts it RELENTS so a genuinely-stuck run ends cleanly instead
-    of looping to the recursion limit.
+    ``finish`` is the ONLY legitimate way to end a run: a run that silently stops (a no-tool
+    turn) is bounced back into this gate by the driver (see run_deepagents), so the gate cannot
+    be sidestepped. To finish, the model MUST have a fitted model — a finish with no valid fit,
+    or with edits made since the last fit, is REFUSED and never relented (the harness does not
+    accept an unfitted model as finished; the run ends by other means — the step/wall limits —
+    rather than by accepting an unscored result). A valid finish is a TWO-call handshake: the
+    first call ARMS and presents the fit diagnosis (bic + residual structure), the second
+    CONFIRMS — so a diagnosis is always shown before a run is allowed to end. ``finish_state``
+    (a shared dict) records ``confirmed`` for the driver, so a properly-confirmed finish is not
+    bounced.
 
     It deliberately does NOT gate on the χ² goodness-of-fit (chi2_gof_pvalue / reduced_chi2).
     Whenever the observable noise sigmas are estimated (as in the issue-#54 benchmarks — though
@@ -802,6 +828,10 @@ def _decision_tool(session):
     """
     from langchain_core.tools import StructuredTool
 
+    finish_state = finish_state if finish_state is not None else {}
+    finish_state.setdefault("confirmed", False)
+    finish_state.setdefault("gave_up", False)
+
     _guidance = {
         "rollback": "Recorded: rollback. Find the BEST-scoring prior version with list_versions "
                     "(LOWEST bic / is_new_best, not just the previous one) and bring it back with "
@@ -810,15 +840,15 @@ def _decision_tool(session):
         "finish": "Recorded: finish. Report the final neg_log_likelihood and bic and exactly "
                   "what you changed, then stop.",
     }
-    # `finish_refusals` bounds the push-back on finishing with no valid fit; `armed_token`
-    # identifies the fit a finish was ARMED on (the diagnosis has been shown and a confirming
-    # second finish is awaited), or None when not armed. The token is the fit's identity, so an
-    # edit + refit between the two calls re-arms (the shown diagnosis would otherwise be stale).
-    # It is NOT the get_fit_summary "version": that is None after a rollback/restore_version (the
-    # persisted per-version sim blob carries no version), and `None != None` would then skip
-    # arming and confirm on the first call — bypassing the gate on the common rollback→finish
-    # path. bic+nll identify the scored fit whether or not a version is attached.
-    state = {"finish_refusals": 0, "armed_token": None}
+    # `armed_token` identifies the fit a finish was ARMED on (the diagnosis has been shown and a
+    # confirming second finish is awaited), or None when not armed. The token is the fit's
+    # identity, so an edit + refit between the two calls re-arms (the shown diagnosis would
+    # otherwise be stale). It is NOT the get_fit_summary "version": that is None after a
+    # rollback/restore_version (the persisted per-version sim blob carries no version), and
+    # `None != None` would then skip arming and confirm on the first call — bypassing the gate on
+    # the common rollback→finish path. bic+nll identify the scored fit whether or not a version
+    # is attached.
+    state = {"armed_token": None, "no_fit_refusals": 0}
 
     def _finite(x):
         return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
@@ -842,25 +872,32 @@ def _decision_tool(session):
             # are uninformative when the noise sigmas are estimated, and chasing p ≥ 0.05 costs
             # the best-BIC model.
             if not has_fit:
-                state["armed_token"] = None  # can't confirm a finish with nothing to score
-                if state["finish_refusals"] < _MAX_FINISH_REFUSALS:
-                    state["finish_refusals"] += 1
-                    print(f"[finish BLOCKED {state['finish_refusals']}/{_MAX_FINISH_REFUSALS}] "
-                          "no valid fit (no model built, non-finite objective, or no bic)")
+                # NEVER relented into an accepted finish: the harness does not record an unfitted
+                # model as finished (there is no bic to score). But it does not refuse FOREVER
+                # either — after _MAX_NO_FIT_FINISH_ATTEMPTS consecutive no-fit attempts it GIVES
+                # UP: flags the run so the driver ends it promptly as no-model-built, instead of
+                # letting the model spam finish to the recursion limit.
+                state["armed_token"] = None
+                state["no_fit_refusals"] += 1
+                if state["no_fit_refusals"] >= _MAX_NO_FIT_FINISH_ATTEMPTS:
+                    finish_state["gave_up"] = True
+                    print(f"[finish GAVE UP] no fittable model after {state['no_fit_refusals']} "
+                          "attempts — ending the run as no-model-built")
                     return (
-                        f"FINISH REFUSED ({state['finish_refusals']}/{_MAX_FINISH_REFUSALS}) — "
-                        "there is no valid fit to finish on: no model has been built yet, or the "
-                        "fit has no finite bic to report (a non-finite objective, or an incomplete "
-                        "n/k). Build a model that simulates and fits, then finish on its bic."
+                        f"No fittable model after {state['no_fit_refusals']} finish attempts — "
+                        "this run has no scoreable result and is being ended as no-model-built. "
+                        "Stop now."
                     )
-                # exhausted the push-back: relent so the run ends cleanly, not at the step limit
-                print(f"[finish ALLOWED] after {state['finish_refusals']} refusals; still no "
-                      "valid fit")
+                print(f"[finish BLOCKED {state['no_fit_refusals']}/{_MAX_NO_FIT_FINISH_ATTEMPTS}] "
+                      "no valid fit (no model built, non-finite objective, or no bic)")
                 return (
-                    f"Recorded: finish — NOTE there is STILL no valid fit after "
-                    f"{state['finish_refusals']} further attempts. State plainly that no fitted "
-                    "model could be built, then stop."
+                    "FINISH REFUSED — there is no valid fit to finish on: no model has been built "
+                    "yet, or the fit has no finite bic (a non-finite objective, or an incomplete "
+                    "n/k). A run is NOT accepted as finished without a FITTED model. Build a model "
+                    "that simulates and fits, then finish on its bic."
                 )
+            # A valid fit exists -> reset the no-fit give-up counter.
+            state["no_fit_refusals"] = 0
             # A model edited since the last fit has STALE metrics: the bic above belongs to the
             # previous structure, not the working one, so finishing now would score the wrong
             # model. Refuse until it is refitted. Naturally escapable (call fit) and version-
@@ -904,8 +941,10 @@ def _decision_tool(session):
                     "bottomed out BIC and are satisfied with the residuals, call finish AGAIN to "
                     "confirm and end the run."
                 )
-            # Second finish on the same fit -> confirmed.
+            # Second finish on the same fit -> confirmed. Record it so the driver does not bounce
+            # a legitimately-finished run back into the gate.
             state["armed_token"] = None
+            finish_state["confirmed"] = True
             chi2_note = ""
             if fit.get("chi2_gof_pvalue") is None and fit.get("reduced_chi2") is None:
                 chi2_note = (" (χ² goodness-of-fit is not reported here — n - k <= 0 or chi2 is "
@@ -1646,7 +1685,11 @@ async def run_deepagents(
     # querying data itself. deepagents' subagents hold their own resolved tool objects, so a
     # restricted top-level tool list does not starve them.
     lead_tools = [tools_by_name[n] for n in ORCHESTRATOR_TOOLS if n in tools_by_name]
-    lead_tools = [*lead_tools, _decision_tool(session)]
+    # Shared with the driver loop: the decision tool sets finish_state["confirmed"] on a
+    # confirmed finish (so a legitimately-finished run is NOT bounced back), and "gave_up" after
+    # too many no-fit finish attempts (so the driver ends the run promptly, not at recursion).
+    finish_state = {"confirmed": False, "gave_up": False}
+    lead_tools = [*lead_tools, _decision_tool(session, finish_state)]
 
     llm = ChatOpenAI(
         model=model,
@@ -1768,7 +1811,10 @@ async def run_deepagents(
 
     stream_input: Any = {"messages": [{"role": "user", "content": task}]}
     resume_left = _RUN_RESUME_ATTEMPTS if checkpointer is not None else 0
-    # Last clean-completion probe of whether a model was authored (see the no-model resume);
+    # A silent stop (graph ends on a no-tool turn) without a confirmed finish is bounced back
+    # into the finish gate this many times; separate from resume_left, which is for transients.
+    silent_bounces = 0
+    # Last clean-completion probe of whether a model was authored (see the silent-stop bounce);
     # captured so the post-loop relabel reuses it instead of re-probing. Only read when
     # stop_reason == "completed", which guarantees the intercept refreshed it that iteration.
     model_committed = True
@@ -1795,6 +1841,10 @@ async def run_deepagents(
                 if deadline is not None and time.monotonic() >= deadline:
                     wall_budget_exceeded = True
                     break
+                # The gate gave up (too many no-fit finish attempts) — end promptly at this
+                # boundary rather than letting the model spam finish to the recursion limit.
+                if finish_state["gave_up"]:
+                    break
                 # Deterministic early-stop: poll the server between super-steps and stop at this
                 # clean boundary once the run has stopped improving (streak cap / plateau).
                 early_stopped = await _early_stop_reason()
@@ -1802,6 +1852,7 @@ async def run_deepagents(
                     break
             stop_reason = (
                 "wall_time_budget_exceeded" if wall_budget_exceeded
+                else "no_model_built" if finish_state["gave_up"]
                 else f"early_stop: {early_stopped}" if early_stopped
                 else "completed"
             )
@@ -1825,26 +1876,33 @@ async def run_deepagents(
             print(f"[agent] early-stop: {early_stopped} — stopping at this step boundary; "
                   "the judge restores + scores the best-BIC checkpoint.")
             break
+        if finish_state["gave_up"]:
+            print("[agent] finish gate gave up (no fittable model after repeated attempts) — "
+                  "ending the run as no-model-built.")
+            break
         if retriable is None:
-            # Clean graph termination. A "completed" run that authored NO model built nothing the
-            # judge can score — the lead ended with a no-tool turn, bypassing the finish gate
-            # (which only guards make_decision). Nudge it to build one and resume — bounded by the
-            # same resume budget, paced by the same backoff, and only while the wall-time deadline
-            # has NOT passed (like the retriable path below; the per-step check can miss a
-            # deadline that lands on the same step the graph completes) — rather than accept a
-            # silent empty run. A run that DID author a model just breaks and completes normally.
-            # The probe result is captured so the post-loop relabel reuses it (no second probe).
-            if stop_reason == "completed":
+            # Clean graph termination. A "completed" that did NOT pass the finish gate is a SILENT
+            # STOP — the lead ended on a no-tool turn, sidestepping make_decision. A silent stop is
+            # not an accepted exit: bounce it back into the gate so the run only ends by finishing
+            # properly (a fitted model, diagnosis shown, confirmed) — with no coaching on WHAT to
+            # fix, just enforcement of the protocol. Bounded (_MAX_SILENT_BOUNCES) so a genuinely
+            # stuck run still terminates at the step/wall limit rather than looping. A CONFIRMED
+            # finish is respected (not bounced) and needs neither the probe nor the relabel, so it
+            # short-circuits first — saving a describe_problem call on the good path. The no-model
+            # case gets the build nudge; a built-but-unfinished model gets the finish nudge. No
+            # backoff: a silent stop is not a rate-limited transient, so there is nothing to wait
+            # out. model_committed is captured for the post-loop relabel (no second probe).
+            if stop_reason == "completed" and not finish_state["confirmed"]:
                 model_committed = await _model_committed(progress_probe)
                 past_deadline = deadline is not None and time.monotonic() >= deadline
-                if not model_committed and resume_left > 0 and not past_deadline:
-                    resume_left -= 1
-                    backoff = min(5.0 * (_RUN_RESUME_ATTEMPTS - resume_left), 30.0)
-                    print("[agent] run ended with NO model authored (silent stop, bypassing the "
-                          f"finish gate) — nudging to build one and resuming in {backoff:.0f}s "
-                          f"({resume_left} left)")
-                    await asyncio.sleep(backoff)
-                    stream_input = {"messages": [{"role": "user", "content": _NO_MODEL_NUDGE}]}
+                if (silent_bounces < _MAX_SILENT_BOUNCES and checkpointer is not None
+                        and not past_deadline):
+                    silent_bounces += 1
+                    nudge = _NO_MODEL_NUDGE if not model_committed else _SILENT_FINISH_NUDGE
+                    what = "NO model authored" if not model_committed else "no finish through the gate"
+                    print(f"[agent] silent stop ({what}) — bouncing back to finish properly "
+                          f"({silent_bounces}/{_MAX_SILENT_BOUNCES})")
+                    stream_input = {"messages": [{"role": "user", "content": nudge}]}
                     continue
             break
         if deadline is not None and time.monotonic() >= deadline:
@@ -1869,16 +1927,16 @@ async def run_deepagents(
     # are EXCLUDED as no_tools_executed rather than counted as an ambiguous silent "completion".
     # Gate on the guard actually being installed: without the `middleware` hook (a deepagents API
     # drift) `tools_executed` stays 0 even when tools ran, so the count is not trustworthy.
-    # A "completed" run that still authored no model (resume budget exhausted, or no
-    # checkpointer to resume with) is a degenerate empty run — the lead silently stopped without
-    # building anything, bypassing the finish gate. Label it honestly (not an ambiguous
-    # "completed") so it is not read as a real attempt. This subsumes the older zero-tools
-    # relabel: a delegation-only run (bio `task` ran, model never built) has tools_executed > 0
-    # yet no model, which that check missed.
-    # Reuses the intercept's probe (model_committed): a "completed" stop_reason here means the
-    # final iteration ran the intercept, which refreshed it — so no second describe_problem call.
-    if stop_reason == "completed" and not model_committed:
-        stop_reason = "no_model_built"
+    # A "completed" stop_reason that did NOT pass the finish gate (bounces exhausted, or no
+    # checkpointer to resume from) is relabelled honestly rather than read as a proper finish, so
+    # evaluation can see a bypassed gate: "no_model_built" when nothing was authored, else
+    # "silent_stop" (a model exists but the run never finished through make_decision). A confirmed
+    # finish keeps "completed". Reuses the intercept's probe (model_committed): a "completed"
+    # stop_reason here means the final iteration ran the intercept, which refreshed it — no second
+    # describe_problem call. (Subsumes the older zero-tools relabel: a delegation-only run has
+    # tools_executed > 0 yet no model, which that check missed.)
+    if stop_reason == "completed" and not finish_state["confirmed"]:
+        stop_reason = "no_model_built" if not model_committed else "silent_stop"
     elif guard_installed and stop_reason == "completed" and guard_stats["tools_executed"] == 0:
         stop_reason = "no_tools_executed"
     if guard_stats["dropped_dup_tool_calls"]:
