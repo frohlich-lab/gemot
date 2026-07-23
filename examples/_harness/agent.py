@@ -1245,32 +1245,15 @@ _RUN_RESUME_ATTEMPTS = 3       # resume the graph from the last checkpoint after
 # super-step that legitimately streams nothing back for minutes.
 _STEP_STALL_TIMEOUT_S = 600.0
 
-# History trimming for the LEAD. This workload is ~90% input tokens, dominated by tool RESULTS
-# (analyst reports, set_model/commit payloads, get_measurements/query_data dumps) re-sent on
-# every turn — which ballooned a run to ~1.1M tokens and slow/hanging calls. The panel re-reads
-# live state each round (get_fit_summary / get_model_structure), so stale tool outputs in the
-# history are pure overhead: once the lead's context exceeds the trigger we CLEAR the oldest
-# tool results (keeping the most-recent few verbatim + all tool CALLS, so tool-call/result
-# pairing stays valid), replacing them with a small placeholder. No extra LLM calls.
-# Relaxed from an aggressive 45k/keep-3: at that setting the lead lost the record of what its
-# earlier attempts fit to and flip-flopped between structures instead of converging. Keep much
-# more history (higher trigger + more recent tool results retained) so it can learn from its
-# own attempt log; still bounded well under the model's context window, and the per-request
-# timeout guard backstops any slow call so relaxing this can't reinstate the old ~1M-token hang.
-_CONTEXT_CLEAR_TRIGGER = 90_000     # tokens; clear old tool results once the context exceeds this
-_CONTEXT_KEEP_TOOL_RESULTS = 8      # keep this many most-recent tool results verbatim
-
-
-def _history_trimmer():
-    """Context-editing middleware (lead-only) that clears stale tool results — see above."""
-    from langchain.agents.middleware import ContextEditingMiddleware
-    from langchain.agents.middleware.context_editing import ClearToolUsesEdit
-
-    return ContextEditingMiddleware(
-        edits=[ClearToolUsesEdit(trigger=_CONTEXT_CLEAR_TRIGGER,
-                                 keep=_CONTEXT_KEEP_TOOL_RESULTS)],
-        token_count_method="approximate",
-    )
+# NOTE: the lead used to run a ContextEditingMiddleware (ClearToolUsesEdit) that cleared old
+# tool results once its context passed ~90k tokens — a guard against an early failure mode where
+# re-sent tool RESULTS ballooned a run to ~1.1M tokens and hanging calls. It was removed: all
+# target models have a 1M-token window and the recursion limit already caps a run at ~120k tokens
+# (a full crauste sweep of 17 runs topped out at 118k and the trimmer fired on only 2 of them,
+# once each). With prompt caching the cleared history was ~98% near-free cache_read, while the
+# clear itself invalidated the cached prefix — so trimming was net token-negative. The per-request
+# timeout still backstops any slow call. Re-add a trimmer only if a model with a smaller window
+# is introduced.
 
 
 # --- tool-dispatch guard: make sure proposed tool calls actually FIRE -----------------------
@@ -1731,17 +1714,19 @@ async def run_deepagents(
               "running a single agent without the analyst panel.")
     # Lead middleware: drop deepagents' built-in FS/todo tools (the analysts can't be reliably
     # filtered in this deepagents version — see _builtin_tool_filter; `task` is untouched), hide a
-    # circuit-broken tool so it stops being re-proposed, trim the lead's re-sent tool-result history
-    # so the (input-dominated) context stays bounded instead of ballooning to ~1M tokens and
-    # hanging, and guard tool dispatch (dedupe duplicate calls in a batch; push back on idle no-tool
-    # turns and label a run that never fires a tool as no_tools_executed — see _tool_dispatch_guard).
+    # circuit-broken tool so it stops being re-proposed, and guard tool dispatch (dedupe duplicate
+    # calls in a batch; push back on idle no-tool turns and label a run that never fires a tool as
+    # no_tools_executed — see _tool_dispatch_guard). No history trimming: all target models have a
+    # 1M-token window and the recursion limit caps a run at ~120k tokens, so the old tool-result
+    # trimmer only ever fired on a rare over-long run and, with prompt caching, cost more (a clear
+    # invalidates the cached prefix) than the near-free cache_read history it removed.
     guard_stats: dict[str, Any] = {"tools_executed": 0, "dropped_dup_tool_calls": 0,
                                    "idle_nudges": 0, "gave_up_no_tools": False,
                                    "unexpected_task_kwargs": [], "task_arg_rejections": 0}
     guard_installed = "middleware" in params
     if guard_installed:
         kwargs["middleware"] = [
-            _builtin_tool_filter(), _disabled_tool_filter(breaker_state), _history_trimmer(),
+            _builtin_tool_filter(), _disabled_tool_filter(breaker_state),
             # _task_arg_guard is placed OUTSIDE _tool_dispatch_guard (earlier in the list = outer
             # tool-call wrapper) so a REJECTED `task` call short-circuits before the dispatch guard
             # counts it — a bounced call never dispatched a subagent, so it must not inflate
