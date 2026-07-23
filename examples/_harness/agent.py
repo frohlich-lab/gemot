@@ -655,6 +655,21 @@ async def _current_fit(session) -> dict[str, Any]:
     return {}
 
 
+async def _current_diagnosis(session) -> dict[str, Any]:
+    """The current HEAD's residual diagnosis (``get_fit_diagnosis``), or {} if unreadable.
+
+    Used to put the fit's residual-structure verdict in front of the lead at the finish
+    decision, so a finish is a considered call on the diagnosis rather than a reflex."""
+    try:
+        res = await session.call_tool("get_fit_diagnosis", {})
+        sc = getattr(res, "structuredContent", None)
+        if isinstance(sc, dict):
+            return sc.get("result", sc) if set(sc.keys()) == {"result"} else sc
+    except Exception:  # pragma: no cover - never let the check break the run
+        pass
+    return {}
+
+
 def _decision_tool(session):
     """A lead-only control tool for the two non-default decisions: ``rollback`` and ``finish``.
 
@@ -685,7 +700,18 @@ def _decision_tool(session):
         "finish": "Recorded: finish. Report the final neg_log_likelihood and bic and exactly "
                   "what you changed, then stop.",
     }
-    state = {"finish_refusals": 0}  # bounded push-back on finishing with no valid fit
+    # `finish_refusals` bounds the push-back on finishing with no valid fit; `armed_token`
+    # identifies the fit a finish was ARMED on (the diagnosis has been shown and a confirming
+    # second finish is awaited), or None when not armed. The token is the fit's identity, so an
+    # edit + refit between the two calls re-arms (the shown diagnosis would otherwise be stale).
+    # It is NOT the get_fit_summary "version": that is None after a rollback/restore_version (the
+    # persisted per-version sim blob carries no version), and `None != None` would then skip
+    # arming and confirm on the first call — bypassing the gate on the common rollback→finish
+    # path. bic+nll identify the scored fit whether or not a version is attached.
+    state = {"finish_refusals": 0, "armed_token": None}
+
+    def _finite(x):
+        return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
 
     async def make_decision(action: str, rationale: str = "") -> str:
         act = (action or "").strip().lower()
@@ -694,19 +720,19 @@ def _decision_tool(session):
             fit = await _current_fit(session)
             nll = fit.get("neg_log_likelihood")
             bic = fit.get("bic")
+            version = fit.get("version")
             # Require a finite BIC — the score the harness actually finishes on. A finite nll is
             # necessary but not sufficient: get_fit_summary reports bic=None when n_data_points/k
             # are incomplete, and finishing then would report "bic=n/a" while the refusal text
             # promises "there is no bic to report". Gate on the score that must exist.
-            def _finite(x):
-                return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
             has_fit = _finite(nll) and _finite(bic)
-            # Block finish ONLY when there is no valid fit to finish on (nothing built, a
-            # non-finite objective, or no computable bic) — a genuine failure, not a
-            # goodness-of-fit judgement. We do NOT gate on chi2_gof_pvalue/reduced_chi2 (see the
-            # docstring): they are uninformative when the noise sigmas are estimated, and chasing
-            # p ≥ 0.05 costs the best-BIC model.
+            # Block finish when there is no valid fit to finish on (nothing built, a non-finite
+            # objective, or no computable bic) — a genuine failure, not a goodness-of-fit
+            # judgement. We do NOT gate on chi2_gof_pvalue/reduced_chi2 (see the docstring): they
+            # are uninformative when the noise sigmas are estimated, and chasing p ≥ 0.05 costs
+            # the best-BIC model.
             if not has_fit:
+                state["armed_token"] = None  # can't confirm a finish with nothing to score
                 if state["finish_refusals"] < _MAX_FINISH_REFUSALS:
                     state["finish_refusals"] += 1
                     print(f"[finish BLOCKED {state['finish_refusals']}/{_MAX_FINISH_REFUSALS}] "
@@ -725,20 +751,64 @@ def _decision_tool(session):
                     f"{state['finish_refusals']} further attempts. State plainly that no fitted "
                     "model could be built, then stop."
                 )
-            # Valid fit -> finish is allowed. BIC is the target; χ² is NOT a gate. When the χ²
-            # metrics are absent, say so (and why) rather than surfacing it as a fit rejection.
-            # goodness_of_fit leaves them None when the degrees of freedom n - k are <= 0 or chi2
-            # itself is missing — NOT because sigmas are estimated (with estimated sigmas χ² is
-            # still computed, just uninformative, which the prompt/docstrings cover separately).
+            # A model edited since the last fit has STALE metrics: the bic above belongs to the
+            # previous structure, not the working one, so finishing now would score the wrong
+            # model. Refuse until it is refitted. Naturally escapable (call fit) and version-
+            # tracked, so it cannot loop indefinitely.
+            if fit.get("has_unfit_edits"):
+                state["armed_token"] = None
+                print("[finish BLOCKED] unfit edits since last fit — metrics are stale")
+                return (
+                    "FINISH REFUSED — the working model has edits made SINCE the last fit, so "
+                    "the reported bic belongs to the previous structure, not this one. Call fit "
+                    "to score the current model, then finish on its bic."
+                )
+            # Valid, fitted model. First finish call ARMS: show the residual diagnosis and
+            # require a confirming second finish. This forces the finish to be a considered call
+            # on the fit's residual STRUCTURE (sign/runs tests — the signal that survives
+            # estimated sigmas) rather than a reflex. The token identifies THIS fit (bic+nll,
+            # plus version as a tiebreak) so an edit + refit — or a rollback, which leaves
+            # version None but changes bic/nll — re-arms rather than confirming a stale diagnosis.
+            token = (bic, nll, version)
+            if state["armed_token"] != token:
+                state["armed_token"] = token
+                diag = await _current_diagnosis(session)
+                rs = diag.get("residual_structure") or {}
+                struct = rs.get("summary") or "residual-structure tests unavailable."
+                per = diag.get("per_observable") or []
+                worst = max(per, key=lambda o: abs(o.get("mean_weighted_residual") or 0.0),
+                            default=None) if per else None
+                worst_line = ""
+                if worst is not None:
+                    st = worst.get("sign_test") or {}
+                    rtst = worst.get("runs_test") or {}
+                    worst_line = (f" Worst observable {worst.get('observable_id')}: "
+                                  f"sign-test p={st.get('p')}, runs-test p={rtst.get('p')}.")
+                print(f"[finish ARMED v={version}] bic={bic:.6g} — presented diagnosis, "
+                      "awaiting confirming finish")
+                return (
+                    f"FINISH ARMED — review before confirming. Current fit: bic={bic:.6g}, "
+                    f"neg_log_likelihood={nll:.6g}. Residual structure: {struct}{worst_line} "
+                    "If systematic structure is flagged, the model's FORM is still missing "
+                    "something — keep improving BIC instead of finishing. If you have genuinely "
+                    "bottomed out BIC and are satisfied with the residuals, call finish AGAIN to "
+                    "confirm and end the run."
+                )
+            # Second finish on the same fit -> confirmed.
+            state["armed_token"] = None
             chi2_note = ""
             if fit.get("chi2_gof_pvalue") is None and fit.get("reduced_chi2") is None:
                 chi2_note = (" (χ² goodness-of-fit is not reported here — n - k <= 0 or chi2 is "
                              "unavailable, so it could not be computed; this is NOT a fit rejection.)")
+            print(f"[finish CONFIRMED v={version}] bic={bic:.6g}")
             return (
                 f"Recorded: finish — final bic={bic:.6g}, neg_log_likelihood={nll:.6g}."
                 f"{chi2_note} Report the bic, the neg_log_likelihood, and exactly what you "
                 "changed, then stop."
             )
+        # Any non-finish decision (rollback) disarms a pending finish: the state has changed, so
+        # a later finish must re-present the diagnosis rather than confirm against a stale one.
+        state["armed_token"] = None
         return _guidance.get(act, "Unknown action — use one of: rollback, finish.")
 
     return StructuredTool.from_function(
@@ -752,8 +822,13 @@ def _decision_tool(session):
             "prior version with restore_version) or 'finish' (residuals show no systematic "
             "structure AND bic has bottomed out). BIC is the ONLY success target; chi2_gof_pvalue "
             "/ reduced_chi2 are UNINFORMATIVE when the noise sigmas are estimated — do NOT keep "
-            "iterating just to chase chi2_gof_pvalue ≥ 0.05. 'finish' is refused only when there "
-            "is no valid fit yet (no model built). Prefer the FEWEST free parameters that fit "
+            "iterating just to chase chi2_gof_pvalue ≥ 0.05; use the sign_test / runs_test in "
+            "get_fit_diagnosis (they read residual SIGNS, so they still detect bias/time-trend "
+            "when chi2 is flat). 'finish' takes TWO calls: the first ARMS it and shows you the "
+            "current bic and residual-structure diagnosis; review it, then call 'finish' AGAIN to "
+            "confirm and end. 'finish' is refused when there is no valid fit yet (no model built / "
+            "no finite bic) OR the model has edits since its last fit (call fit first — the "
+            "reported bic is stale otherwise). Prefer the FEWEST free parameters that fit "
             "(lower bic wins). Give a one-line `rationale`."
         ),
     )

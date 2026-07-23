@@ -281,6 +281,40 @@ async def _restore_best_checkpoint(call) -> None:
               f"({type(exc).__name__}: {exc}); scoring HEAD instead")
 
 
+def _residual_structure_fields(diagnosis) -> dict | None:
+    """A compact, bounded residual-structure block for result.json from a get_fit_diagnosis
+    payload, or ``None`` when no diagnosis is available (no simulation / model-less run).
+
+    Keeps the rolled-up verdict (which observables show significant sign-test bias or runs-test
+    time trend, and whether the tests were underpowered) plus one row per observable with the
+    two p-values and the bias magnitude — enough to analyse a sweep without the per-point data.
+    """
+    if not isinstance(diagnosis, dict):
+        return None
+    rolled = diagnosis.get("residual_structure")
+    per = diagnosis.get("per_observable")
+    if not isinstance(rolled, dict) and not isinstance(per, list):
+        return None
+    per_obs = []
+    for o in (per or []):
+        if not isinstance(o, dict):
+            continue
+        st = o.get("sign_test") or {}
+        rt = o.get("runs_test") or {}
+        per_obs.append({
+            "observable_id": o.get("observable_id"),
+            "sign_test_p": st.get("p"),
+            "runs_test_p": rt.get("p"),
+            "mean_weighted_residual": o.get("mean_weighted_residual"),
+            "low_power": bool(o.get("structure_low_power")),
+        })
+    return {
+        "flagged_observables": (rolled or {}).get("flagged_observables", []),
+        "low_power": bool((rolled or {}).get("low_power")),
+        "per_observable": per_obs,
+    }
+
+
 async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta: dict,
                  clock: "_ToolClock", t0: float) -> "tuple[int, dict]":
     """Judge the repaired model against the true model by BIC (structure-agnostic).
@@ -327,6 +361,17 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     k = sum(1 for p in params if p.get("estimate")) if isinstance(params, list) else 0
     chi2 = final.get("chi2") if isinstance(final, dict) else None
     chi2 = float(chi2) if chi2 is not None else None
+    # Residual-structure tests (sign / runs) of the SCORED model — the checkpoint was already
+    # restored above, so this is the fit that gets judged. Recorded for post-hoc analysis: e.g.
+    # whether runs that passed the BIC gate also had structure-free residuals, and whether the
+    # tests were underpowered. Report-only: a diagnosis failure must never fail the run (which
+    # would leave no result.json at all — the exact unscored-run outcome the harness avoids), so
+    # the whole call is guarded and degrades to None.
+    try:
+        residual_structure = _residual_structure_fields(await call("get_fit_diagnosis"))
+    except Exception as exc:  # noqa: BLE001 - report-only diagnostic; never fail the judge on it
+        print(f"  (residual-structure diagnosis unavailable: {type(exc).__name__}: {exc})")
+        residual_structure = None
     head = int((await call("current_version")).get("version", 0))
     diff = await call("diff_versions", from_version=0, to_version=head) if head else {}
     errors = await call("get_errors", limit=20)
@@ -439,6 +484,7 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         "bic_threshold": scenario.bic_threshold,
         "chi2_dof": dof,
         "chi2_gof_pvalue": p_gof,
+        "residual_structure": residual_structure,
         "reference": ref,
         "reactions": [r.get("id") for r in reactions],
         "species": sorted(current_species),
