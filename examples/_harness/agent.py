@@ -125,11 +125,11 @@ ORCHESTRATOR_TOOLS = [
     # mutate the working model but do NOT fit — `fit` is the single tool that fits + snapshots a
     # version, so the lead MUST call it to score any edit. Assemble a coherent change, then fit once.
     "fit",
-    # change a parameter's ESTIMATION in place — the prompt tells the lead to WIDEN a binding
+    # change parameters' ESTIMATION in place — the prompt tells the lead to WIDEN a binding
     # bound (or switch scale) rather than re-typing a value the multistart fit ignores (fit-free —
-    # call fit after):
-    "change_parameter_bounds",
-    "change_parameter_scale",
+    # call fit after). ONE batched editor: bundle every bound/scale change of a coherent retuning
+    # into a single change_parameters call, then fit once.
+    "change_parameters",
     # NOTE: the UNBOUNDED data/diagnostic tools (get_measurements, query_data, get_fitting_log,
     # get_parameters, list_data_tables) are deliberately NOT here — they belong to the analyst
     # subagents, since their large results would pile up in the lead's re-sent history (the
@@ -164,7 +164,7 @@ TOOL_DESCRIPTIONS = {
                   "BACK to a model use restore_version(n), not set_model. Args: antimony, "
                   "justification, references?."),
     "fit": ("Fit the current working model and snapshot a version — the ONLY tool that fits. Edits "
-            "(set_model, change_parameter_bounds/scale) leave the model UNFIT (describe_problem -> "
+            "(set_model, change_parameters) leave the model UNFIT (describe_problem -> "
             "has_unfit_edits: true); assemble a coherent change, then call fit ONCE to score it. "
             "Fits the free parameters (pyPESTO multistart), simulates, and returns the fit block "
             "(neg_log_likelihood, chi2, bic, improvement, is_new_best) + a progress block + the new "
