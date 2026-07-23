@@ -649,31 +649,42 @@ _MAX_SILENT_BOUNCES = 3
 _MAX_NO_FIT_FINISH_ATTEMPTS = 5
 
 
-async def _current_fit(session) -> dict[str, Any]:
+def _structured(res) -> Any:
+    """The tool's structured payload from a CallToolResult — unwrapping FastMCP's ``{"result": x}``
+    envelope — or ``None`` when there is no structured dict. The one place the finish gate and the
+    driver probes share for reading a tool result, so the unwrap rule lives in exactly one spot."""
+    sc = getattr(res, "structuredContent", None)
+    if isinstance(sc, dict):
+        return sc.get("result", sc) if set(sc.keys()) == {"result"} else sc
+    return None
+
+
+async def _current_fit(call_tool) -> dict[str, Any]:
     """Fetch the CURRENT HEAD's fit metrics from the server (ground truth, not the agent's
-    self-report). Returns {} if the metrics can't be read — the finish check then sees no
-    valid fit and fails CLOSED: it refuses ``finish`` rather than letting the run end with no
-    scored model."""
+    self-report). ``call_tool`` is an ``await call_tool(name, args)`` handle — the finish gate
+    passes the UN-TIMED probe so this internal poll doesn't inflate the tool clock / tool_calls
+    metric. Returns {} if the metrics can't be read — the finish check then sees no valid fit and
+    fails CLOSED: it refuses ``finish`` rather than letting the run end with no scored model."""
     try:
-        res = await session.call_tool("get_fit_summary", {})
-        sc = getattr(res, "structuredContent", None)
-        if isinstance(sc, dict):
-            return sc.get("result", sc) if set(sc.keys()) == {"result"} else sc
+        data = _structured(await call_tool("get_fit_summary", {}))
+        if isinstance(data, dict):
+            return data
     except Exception:  # pragma: no cover - never let the check break the run
         pass
     return {}
 
 
-async def _current_diagnosis(session) -> dict[str, Any]:
+async def _current_diagnosis(call_tool) -> dict[str, Any]:
     """The current HEAD's residual diagnosis (``get_fit_diagnosis``), or {} if unreadable.
+    ``call_tool`` is an ``await call_tool(name, args)`` handle (the finish gate passes the
+    un-timed probe so this doesn't inflate the tool clock).
 
     Used to put the fit's residual-structure verdict in front of the lead at the finish
     decision, so a finish is a considered call on the diagnosis rather than a reflex."""
     try:
-        res = await session.call_tool("get_fit_diagnosis", {})
-        sc = getattr(res, "structuredContent", None)
-        if isinstance(sc, dict):
-            return sc.get("result", sc) if set(sc.keys()) == {"result"} else sc
+        data = _structured(await call_tool("get_fit_diagnosis", {}))
+        if isinstance(data, dict):
+            return data
     except Exception:  # pragma: no cover - never let the check break the run
         pass
     return {}
@@ -716,15 +727,12 @@ async def _model_committed(probe) -> bool:
     if probe is None:
         return True
     try:
-        res = await probe("describe_problem", {})
-        sc = getattr(res, "structuredContent", None)
-        if isinstance(sc, dict):
-            data = sc.get("result", sc) if set(sc.keys()) == {"result"} else sc
-            # Only a payload that EXPLICITLY reports model_initialized decides the answer; a
-            # malformed/partial payload (key absent) falls through to fail-open True, so an
-            # unexpected response shape never triggers a spurious no-model resume.
-            if isinstance(data, dict) and "model_initialized" in data:
-                return bool(data["model_initialized"])
+        data = _structured(await probe("describe_problem", {}))
+        # Only a payload that EXPLICITLY reports model_initialized decides the answer; a
+        # malformed/partial payload (key absent) falls through to fail-open True, so an
+        # unexpected response shape never triggers a spurious no-model resume.
+        if isinstance(data, dict) and "model_initialized" in data:
+            return bool(data["model_initialized"])
     except Exception:  # pragma: no cover - never let the check break the run
         pass
     return True
@@ -802,8 +810,12 @@ def _token_accountant():
     return _Accountant()
 
 
-def _decision_tool(session, finish_state=None):
+def _decision_tool(session, finish_state=None, probe=None):
     """A lead-only control tool for the two non-default decisions: ``rollback`` and ``finish``.
+
+    ``probe`` is the driver's UN-TIMED ``await probe(name, args)`` handle; the gate's internal
+    get_fit_summary / get_fit_diagnosis polls go through it so they don't inflate the run's
+    tool_calls / compute_seconds (falling back to the timed ``session`` handle when absent).
 
     Plain iteration needs no call — to keep going the lead simply makes the next ``set_model``
     edit — so the tool exists only to record a rollback or to gate a finish.
@@ -831,14 +843,18 @@ def _decision_tool(session, finish_state=None):
     finish_state = finish_state if finish_state is not None else {}
     finish_state.setdefault("confirmed", False)
     finish_state.setdefault("gave_up", False)
+    # Read HEAD's fit/diagnosis through the un-timed probe when the driver wires one, so the
+    # gate's own polling doesn't count toward the tool clock / tool_calls metric; fall back to
+    # the (timed) session handle otherwise.
+    reader = probe if probe is not None else session.call_tool
 
+    # `finish` is handled entirely in the branch below (every path there returns), so it needs
+    # no entry here — only `rollback` and the unknown-action default ever reach _guidance.
     _guidance = {
         "rollback": "Recorded: rollback. Find the BEST-scoring prior version with list_versions "
                     "(LOWEST bic / is_new_best, not just the previous one) and bring it back with "
                     "restore_version(v) — do NOT re-author it with set_model (that refits to the "
                     "same result and makes a duplicate). Then continue from there.",
-        "finish": "Recorded: finish. Report the final neg_log_likelihood and bic and exactly "
-                  "what you changed, then stop.",
     }
     # `armed_token` identifies the fit a finish was ARMED on (the diagnosis has been shown and a
     # confirming second finish is awaited), or None when not armed. The token is the fit's
@@ -857,7 +873,7 @@ def _decision_tool(session, finish_state=None):
         act = (action or "").strip().lower()
         print(f"[lead decision] {act or '?'} — {rationale}")
         if act == "finish":
-            fit = await _current_fit(session)
+            fit = await _current_fit(reader)
             nll = fit.get("neg_log_likelihood")
             bic = fit.get("bic")
             version = fit.get("version")
@@ -919,7 +935,7 @@ def _decision_tool(session, finish_state=None):
             token = (bic, nll, version)
             if state["armed_token"] != token:
                 state["armed_token"] = token
-                diag = await _current_diagnosis(session)
+                diag = await _current_diagnosis(reader)
                 rs = diag.get("residual_structure") or {}
                 struct = rs.get("summary") or "residual-structure tests unavailable."
                 per = diag.get("per_observable") or []
@@ -1672,7 +1688,7 @@ async def run_deepagents(
     # confirmed finish (so a legitimately-finished run is NOT bounced back), and "gave_up" after
     # too many no-fit finish attempts (so the driver ends the run promptly, not at recursion).
     finish_state = {"confirmed": False, "gave_up": False}
-    lead_tools = [*lead_tools, _decision_tool(session, finish_state)]
+    lead_tools = [*lead_tools, _decision_tool(session, finish_state, probe=progress_probe)]
 
     llm = ChatOpenAI(
         model=model,
@@ -1784,12 +1800,9 @@ async def run_deepagents(
         if progress_probe is None:
             return None
         try:
-            res = await progress_probe("get_progress", {})
-            sc = getattr(res, "structuredContent", None)
-            if isinstance(sc, dict):
-                data = sc.get("result", sc) if set(sc.keys()) == {"result"} else sc
-                if isinstance(data, dict) and data.get("should_stop"):
-                    return data.get("stop_reason") or "early-stop condition met"
+            data = _structured(await progress_probe("get_progress", {}))
+            if isinstance(data, dict) and data.get("should_stop"):
+                return data.get("stop_reason") or "early-stop condition met"
         except Exception:  # pragma: no cover - never let the probe break the run
             pass
         return None
@@ -1907,23 +1920,26 @@ async def run_deepagents(
         await asyncio.sleep(backoff)
         stream_input = None  # resume pending work from the checkpoint
 
-    # A run that ended cleanly but never dispatched a single tool built nothing (the degenerate
-    # "proposes tool calls but none fire" case the guard pushes back on). Relabel it so these runs
-    # are EXCLUDED as no_tools_executed rather than counted as an ambiguous silent "completion".
-    # Gate on the guard actually being installed: without the `middleware` hook (a deepagents API
-    # drift) `tools_executed` stays 0 even when tools ran, so the count is not trustworthy.
     # A "completed" stop_reason that did NOT pass the finish gate (bounces exhausted, or no
     # checkpointer to resume from) is relabelled honestly rather than read as a proper finish, so
-    # evaluation can see a bypassed gate: "no_model_built" when nothing was authored, else
-    # "silent_stop" (a model exists but the run never finished through make_decision). A confirmed
-    # finish keeps "completed". Reuses the intercept's probe (model_committed): a "completed"
-    # stop_reason here means the final iteration ran the intercept, which refreshed it — no second
-    # describe_problem call. (Subsumes the older zero-tools relabel: a delegation-only run has
-    # tools_executed > 0 yet no model, which that check missed.)
+    # evaluation can see a bypassed gate. Three cases, most specific first:
+    #   * no_tools_executed — the lead only ever emitted no-tool turns, so the dispatch guard
+    #     pushed back _MAX_IDLE_MODEL_STEPS times and GAVE UP (guard_stats["gave_up_no_tools"]):
+    #     the degenerate "proposes tool calls but none fire" run. Distinct from a run that DID
+    #     dispatch tools but built no model (e.g. delegation-only), which stays no_model_built.
+    #     Gated on the guard actually being installed (without the `middleware` hook the counters
+    #     are not trustworthy). This must come first: gave_up_no_tools implies no model, so it
+    #     would otherwise be swallowed by the no_model_built branch below.
+    #   * no_model_built — nothing was authored;
+    #   * silent_stop — a model exists but the run never finished through make_decision.
+    # A confirmed finish keeps "completed". Reuses the intercept's probe (model_committed): a
+    # "completed" stop_reason here means the final iteration ran the intercept, which refreshed it
+    # — no second describe_problem call.
     if stop_reason == "completed" and not finish_state["confirmed"]:
-        stop_reason = "no_model_built" if not model_committed else "silent_stop"
-    elif guard_installed and stop_reason == "completed" and guard_stats["tools_executed"] == 0:
-        stop_reason = "no_tools_executed"
+        if guard_installed and guard_stats.get("gave_up_no_tools"):
+            stop_reason = "no_tools_executed"
+        else:
+            stop_reason = "no_model_built" if not model_committed else "silent_stop"
     if guard_stats["dropped_dup_tool_calls"]:
         print(f"[agent] de-duplicated {guard_stats['dropped_dup_tool_calls']} identical tool "
               "call(s) within a batch over the run")

@@ -287,7 +287,10 @@ def run_experiments(
 
 def _phoenix_base_url(url: str) -> str:
     """Normalize to the Phoenix base (strip a trailing OTLP path) for ``Client`` — see
-    :func:`tracing.phoenix_base_url` (the shared implementation)."""
+    :func:`tracing.phoenix_base_url` (the shared implementation). Kept as a thin LAZY-import
+    wrapper (not a top-level ``from .tracing import``) so this module still loads when imported
+    standalone via ``spec_from_file_location`` (as the tests do), where relative imports at
+    module-load time would fail."""
     from .tracing import phoenix_base_url
     return phoenix_base_url(url)
 

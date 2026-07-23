@@ -89,9 +89,9 @@ def _run(mod, monkeypatch, probe, confirm_after=None):
     # to confirmed (a fake astream can't itself call make_decision).
     _real_decision_tool = mod._decision_tool
 
-    def _capturing_decision_tool(session, finish_state=None):
+    def _capturing_decision_tool(session, finish_state=None, probe=None):
         fake_agent.captured["fs"] = finish_state
-        return _real_decision_tool(session, finish_state)
+        return _real_decision_tool(session, finish_state, probe=probe)
 
     monkeypatch.setattr(mod, "_decision_tool", _capturing_decision_tool)
 

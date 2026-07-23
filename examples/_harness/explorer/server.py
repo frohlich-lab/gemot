@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -21,6 +22,11 @@ from starlette.requests import Request
 from . import archive, bundle
 
 _HERE = Path(__file__).resolve().parent
+
+# Cap on the archived-bundle cache (see create_app). The explorer is a long-lived service (up to
+# EXPLORER_TIME, ~1 day), so an unbounded dict would grow by one full run bundle for every
+# distinct archived run ever opened; a bounded LRU keeps the hot set cached without that leak.
+_ARCHIVED_CACHE_MAX = 256
 
 
 def _phoenix_base_url(explicit: str | None) -> str:
@@ -41,7 +47,7 @@ def create_app(archive_root: Path | None = None, phoenix_base_url: str | None = 
     examples_root = Path(examples_root) if examples_root else archive_root.parent
     px_url = _phoenix_base_url(phoenix_base_url)
     templates = Jinja2Templates(directory=str(_HERE / "templates"))
-    cache: dict[str, dict] = {}
+    cache: "OrderedDict[str, dict]" = OrderedDict()  # archived bundles, LRU-bounded (see below)
     live_cache: dict[str, tuple[float, dict]] = {}  # run_id -> (monotonic_ts, bundle)
     # Seconds a live bundle is reused before re-fetching. Kept fairly high because each refresh
     # re-queries the whole Phoenix trace (an Arrow->pandas build that is the process's heaviest,
@@ -53,6 +59,11 @@ def create_app(archive_root: Path | None = None, phoenix_base_url: str | None = 
     # pandas/pyarrow trace-dataframe machinery is not safe under concurrent access and will
     # segfault the process — this lock (held for the whole bundle build) prevents that.
     fetch_lock = threading.Lock()
+    # Guards the archived-bundle `cache` (the read/insert/LRU-evict below): uvicorn dispatches
+    # these sync handlers across a threadpool, so concurrent polls could otherwise evict a key
+    # between another request's membership check and its read — a KeyError. Held only for the
+    # cheap dict ops, never around the heavy _build().
+    cache_lock = threading.Lock()
 
     def _build(run_id: str, run_dir, meta: dict) -> dict:
         kw = dict(run_dir=run_dir, meta=meta, phoenix_base_url=px_url,
@@ -109,19 +120,27 @@ def create_app(archive_root: Path | None = None, phoenix_base_url: str | None = 
         # Otherwise the run is finished (or never was live): serve the archived bundle. Once a
         # run the client was watching finishes, this path takes over and returns live=false,
         # which stops the client polling — a seamless hand-off from the live view.
-        if refresh:
-            cache.pop(run_id, None)
-        if run_id in cache:
-            return JSONResponse(cache[run_id])
+        with cache_lock:
+            if refresh:
+                cache.pop(run_id, None)
+            cached = cache.get(run_id)
+            if cached is not None:
+                cache.move_to_end(run_id)  # LRU: mark as most-recently used
+        if cached is not None:
+            return JSONResponse(cached)
         loaded = archive.load_run_meta(run_id, archive_root)
         if loaded is None:
             raise HTTPException(404, f"unknown run {run_id!r}")
         run_dir, meta = loaded
-        data = _build(run_id, run_dir, meta)
+        data = _build(run_id, run_dir, meta)  # heavy; outside cache_lock (uses its own fetch_lock)
         data["live"] = False
         # cache only once the Phoenix half succeeded (so a not-yet-ingested trace can be retried)
         if data.get("phoenix", {}).get("ok") or not meta.get("phoenix_trace_id"):
-            cache[run_id] = data
+            with cache_lock:
+                cache[run_id] = data
+                cache.move_to_end(run_id)
+                while len(cache) > _ARCHIVED_CACHE_MAX:  # evict least-recently-used bundles
+                    cache.popitem(last=False)
         return JSONResponse(data)
 
     return app

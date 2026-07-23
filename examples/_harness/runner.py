@@ -186,6 +186,23 @@ def _git_sha(path: Path) -> str | None:
     return f"{sha}+dirty" if dirty else sha
 
 
+def _bic_reference(ref) -> float | None:
+    """BIC of the true-model reference, or ``None`` when it is absent or malformed.
+
+    ``scenario.reference()`` catches JSON *parse* errors but not a ``reference.json`` that parses
+    yet lacks ``nll``/``k``/``n`` (or carries ``null``). Guard here so an author-side reference
+    problem degrades to "no BIC gate" rather than raising a ``KeyError``/``TypeError`` that
+    ``_drive``'s broad handler would misreport as an aborted (provider) run — and so the live
+    marker and the judge compute the reference identically."""
+    if not ref:
+        return None
+    from .scenario import bic
+    try:
+        return bic(ref["nll"], ref["k"], ref["n"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _write_live_marker(work: Path, meta: dict, scenario: Scenario) -> None:
     """Write ``work/run_live.json`` so the run explorer can watch this run WHILE it is still
     in flight — before ``result.json`` (written only at run end) exists.
@@ -199,10 +216,8 @@ def _write_live_marker(work: Path, meta: dict, scenario: Scenario) -> None:
     run's ``cleanup()`` wipes ``work/`` and with it any stale marker.
     """
     try:
-        from .scenario import bic
-
         ref = scenario.reference()
-        bic_ref = bic(ref["nll"], ref["k"], ref["n"]) if ref else None
+        bic_ref = _bic_reference(ref)
         marker = {
             **meta,
             "run_id": meta.get("phoenix_trace_id") or f"live-{scenario.name}",
@@ -381,7 +396,7 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     # BIC gate against the true-model reference.
     ref = scenario.reference()
     bic_cand = bic(final_nll, k, n) if (n and final_nll is not None) else None
-    bic_ref = bic(ref["nll"], ref["k"], ref["n"]) if ref else None
+    bic_ref = _bic_reference(ref)
     delta_bic = (bic_cand - bic_ref) if (bic_cand is not None and bic_ref is not None) else None
     if delta_bic is not None:
         success = delta_bic <= scenario.bic_threshold
@@ -418,7 +433,10 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         print(f"  BIC:  candidate {bic_cand:.6g} | true-model {bic_ref:.6g} | "
               f"ΔBIC {delta_bic:+.6g}  (accept if <= {scenario.bic_threshold:g})")
     else:
-        print(f"  BIC:  unavailable (reference {'missing' if ref is None else 'ok'}, n={n})")
+        # A reference that parses but lacks nll/k/n makes bic_ref None while `ref` is a truthy
+        # dict — report that as "malformed", not "ok", so the real cause of the missing gate shows.
+        ref_state = "missing" if not ref else ("ok" if bic_ref is not None else "malformed")
+        print(f"  BIC:  unavailable (reference {ref_state}, n={n})")
     if p_gof is not None:
         print(f"  chi2 GoF:             p={p_gof:.3g} (dof={dof}) "
               f"— {'consistent with noise' if p_gof >= 0.05 else 'worse than noise'}")

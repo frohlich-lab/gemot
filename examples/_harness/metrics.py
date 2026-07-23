@@ -62,7 +62,10 @@ def _parse_iso(value: str | None) -> dt.datetime | None:
 
 def _phoenix_base_url(url: str) -> str:
     """Normalize to the Phoenix base for ``Client(base_url=...)`` — see
-    :func:`tracing.phoenix_base_url` (the shared implementation)."""
+    :func:`tracing.phoenix_base_url` (the shared implementation). Kept as a thin LAZY-import
+    wrapper (not a top-level ``from .tracing import``) so this module still loads when imported
+    standalone via ``spec_from_file_location`` (as the tests do), where relative imports at
+    module-load time would fail."""
     from .tracing import phoenix_base_url
     return phoenix_base_url(url)
 
@@ -77,9 +80,13 @@ def phoenix_trace_metrics(
 ) -> dict[str, Any]:
     """Token usage + span counts for one run's trace, or ``{"phoenix_note": ...}`` on miss.
 
-    Resolution order: exact ``trace_id`` → the run's [started, ended] window → the most
-    recent trace in the project. The window both narrows the query (projects accumulate
-    every historical run) and disambiguates when no trace id was recorded.
+    The [started, ended] window narrows the query (projects accumulate every historical run).
+    Attribution is deliberately conservative so it survives a CONCURRENT sweep, where the window
+    returns several runs' spans: an exact ``trace_id`` match wins; otherwise usage is reported
+    only when the window resolves to a SINGLE trace (or, with no id recorded and several traces,
+    the most recent one). If a requested ``trace_id`` isn't in the window and other traces are, it
+    returns a miss (blank usage) rather than summing the whole window and folding other runs'
+    tokens into this row. A frame with no trace-id column at all falls back to summing the window.
     """
     try:
         from phoenix.client import Client
@@ -101,18 +108,40 @@ def phoenix_trace_metrics(
         return {"phoenix_note": "no spans in window"}
 
     note = None
-    if trace_id and "context.trace_id" in df.columns and (df["context.trace_id"] == trace_id).any():
-        sub = df[df["context.trace_id"] == trace_id]
-    elif start is not None or end is not None:
-        sub = df  # the window already isolates this run
-        note = "matched by time window" if not trace_id else "trace id not found; used window"
-    elif "context.trace_id" in df.columns and "start_time" in df.columns:
-        latest = df.sort_values("start_time").iloc[-1]["context.trace_id"]
-        sub = df[df["context.trace_id"] == latest]
-        note = "matched latest trace (no id/window)"
+    tid_col = "context.trace_id"
+    if trace_id and tid_col in df.columns and (df[tid_col] == trace_id).any():
+        sub = df[df[tid_col] == trace_id]
+    elif tid_col in df.columns:
+        # Do NOT sum an arbitrary multi-run window: under a concurrent sweep the [start, end]
+        # window (or a project queried with no id/window) returns OTHER runs' spans too, and
+        # blindly summing them inflates this run's tokens/counts. Only attribute when the frame
+        # resolves to a SINGLE trace; if the requested trace isn't present (not yet ingested, or
+        # dropped by the `limit`) and others are, report the miss and leave usage blank — an
+        # honest gap beats a total polluted by other runs.
+        uniq = df[tid_col].dropna().unique().tolist()
+        if len(uniq) == 1:
+            sub = df[df[tid_col] == uniq[0]]
+            note = ("matched single trace in window" if not trace_id
+                    else f"trace {trace_id} not found; used the single trace in the window")
+        elif not uniq:
+            return {"phoenix_note": "no trace ids in window"}
+        elif trace_id:
+            return {"phoenix_note":
+                    f"trace {trace_id} not found among {len(uniq)} traces in the window"}
+        elif "start_time" in df.columns:
+            non_null = df[df[tid_col].notna()]
+            latest = non_null.sort_values("start_time").iloc[-1][tid_col]
+            sub = df[df[tid_col] == latest]
+            note = "no trace id; matched latest trace in window"
+        else:
+            return {"phoenix_note": f"no trace id and {len(uniq)} traces in the window"}
     else:
+        # No trace-id column at all: the [start, end] query window is the only isolation
+        # available, so fall back to summing it (the pre-existing behavior, so a single-run
+        # deployment still reports usage). Flagged unverified because a concurrent window without
+        # trace ids could include other runs.
         sub = df
-        note = "no trace id column"
+        note = "no trace id column; summed the query window (unverified)"
 
     kinds = sub["attributes.openinference.span.kind"] if \
         "attributes.openinference.span.kind" in sub.columns else None
