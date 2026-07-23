@@ -129,3 +129,45 @@ async def test_rollback_disarms_a_pending_finish():
     assert "FINISH ARMED" in await _decide(tool, "finish")
     await _decide(tool, "rollback")                          # disarms
     assert "FINISH ARMED" in await _decide(tool, "finish")   # must arm again, not confirm
+
+
+# --- _model_committed: the driver-loop guard for a silent stop that built nothing ------------
+def _probe_returning(payload):
+    async def probe(tool, args):
+        assert tool == "describe_problem"
+        return _FakeResult(payload)
+    return probe
+
+
+@pytest.mark.asyncio
+async def test_model_committed_true_when_model_initialized():
+    mod = _load_agent_module()
+    assert await mod._model_committed(_probe_returning({"model_initialized": True})) is True
+
+
+@pytest.mark.asyncio
+async def test_model_committed_false_when_no_model():
+    """The no-op case: a run that authored nothing (the lead stopped after only delegating to
+    the biocurator) must be detected so the driver can nudge + resume instead of scoring k=0."""
+    mod = _load_agent_module()
+    assert await mod._model_committed(_probe_returning({"model_initialized": False})) is False
+
+
+@pytest.mark.asyncio
+async def test_model_committed_fails_open():
+    """Must never nuke a real run: an absent probe, a raising probe, or a malformed payload all
+    return True (assume a model exists) rather than triggering a spurious no-model resume."""
+    mod = _load_agent_module()
+    assert await mod._model_committed(None) is True
+
+    async def raising(tool, args):
+        raise RuntimeError("probe down")
+    assert await mod._model_committed(raising) is True
+
+    assert await mod._model_committed(_probe_returning({})) is True          # key missing
+    assert await mod._model_committed(_probe_returning(None)) is True        # no structured content
+
+
+def test_no_model_nudge_text_is_actionable():
+    mod = _load_agent_module()
+    assert "set_model" in mod._NO_MODEL_NUDGE and "fit" in mod._NO_MODEL_NUDGE.lower()

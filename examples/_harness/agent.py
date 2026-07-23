@@ -670,6 +670,44 @@ async def _current_diagnosis(session) -> dict[str, Any]:
     return {}
 
 
+# Injected as a fresh user turn when a run ended cleanly having authored NO model (see
+# _model_committed). It restates the task so the resumed graph builds something rather than
+# repeating the silent stop.
+_NO_MODEL_NUDGE = (
+    "You ended the run without authoring a model — nothing was built, so there is nothing to "
+    "score. The task is to BUILD a kinetic model of this system: call set_model with an Antimony "
+    "model (reactions + rate laws for the observed species, plus any latent/unobserved driver "
+    "state the data imply), then fit it. Do that now — do not stop until a fitted model exists."
+)
+
+
+async def _model_committed(probe) -> bool:
+    """Whether the run has authored a model (``describe_problem.model_initialized``).
+
+    The driver uses this to catch a run that ended cleanly having built nothing: the lead
+    emitted a no-tool turn and the deepagents graph terminated WITHOUT going through the finish
+    gate (which only guards ``make_decision('finish')``) — so neither the finish gate nor the
+    zero-tools relabel (a `task` delegation to the biocurator counts as a tool) sees it, and it
+    would otherwise score as an empty k=0 "completed" run. Probes via the un-timed
+    ``progress_probe`` so the check doesn't inflate the tool clock. Fails OPEN (returns True)
+    whenever it cannot determine the state, so an unavailable/failing probe never nukes a run."""
+    if probe is None:
+        return True
+    try:
+        res = await probe("describe_problem", {})
+        sc = getattr(res, "structuredContent", None)
+        if isinstance(sc, dict):
+            data = sc.get("result", sc) if set(sc.keys()) == {"result"} else sc
+            # Only a payload that EXPLICITLY reports model_initialized decides the answer; a
+            # malformed/partial payload (key absent) falls through to fail-open True, so an
+            # unexpected response shape never triggers a spurious no-model resume.
+            if isinstance(data, dict) and "model_initialized" in data:
+                return bool(data["model_initialized"])
+    except Exception:  # pragma: no cover - never let the check break the run
+        pass
+    return True
+
+
 def _decision_tool(session):
     """A lead-only control tool for the two non-default decisions: ``rollback`` and ``finish``.
 
@@ -1649,6 +1687,16 @@ async def run_deepagents(
 
     stream_input: Any = {"messages": [{"role": "user", "content": task}]}
     resume_left = _RUN_RESUME_ATTEMPTS if checkpointer is not None else 0
+    # Last clean-completion probe of whether a model was authored (see the no-model resume);
+    # captured so the post-loop relabel reuses it instead of re-probing. Only read when
+    # stop_reason == "completed", which guarantees the intercept refreshed it that iteration.
+    model_committed = True
+    if progress_probe is None:
+        # The no-model-built guard (and the deterministic early-stop) both need the probe; without
+        # it a silent no-model stop scores as an empty "completed" run instead of resuming to
+        # build one — so a caller that omits progress_probe reintroduces that gap silently.
+        print("[agent] no progress_probe wired — the no-model-built guard and deterministic "
+              "early-stop are disabled for this run")
     while True:
         retriable: str | None = None
         agen = None
@@ -1697,6 +1745,26 @@ async def run_deepagents(
                   "the judge restores + scores the best-BIC checkpoint.")
             break
         if retriable is None:
+            # Clean graph termination. A "completed" run that authored NO model built nothing the
+            # judge can score — the lead ended with a no-tool turn, bypassing the finish gate
+            # (which only guards make_decision). Nudge it to build one and resume — bounded by the
+            # same resume budget, paced by the same backoff, and only while the wall-time deadline
+            # has NOT passed (like the retriable path below; the per-step check can miss a
+            # deadline that lands on the same step the graph completes) — rather than accept a
+            # silent empty run. A run that DID author a model just breaks and completes normally.
+            # The probe result is captured so the post-loop relabel reuses it (no second probe).
+            if stop_reason == "completed":
+                model_committed = await _model_committed(progress_probe)
+                past_deadline = deadline is not None and time.monotonic() >= deadline
+                if not model_committed and resume_left > 0 and not past_deadline:
+                    resume_left -= 1
+                    backoff = min(5.0 * (_RUN_RESUME_ATTEMPTS - resume_left), 30.0)
+                    print("[agent] run ended with NO model authored (silent stop, bypassing the "
+                          f"finish gate) — nudging to build one and resuming in {backoff:.0f}s "
+                          f"({resume_left} left)")
+                    await asyncio.sleep(backoff)
+                    stream_input = {"messages": [{"role": "user", "content": _NO_MODEL_NUDGE}]}
+                    continue
             break
         if deadline is not None and time.monotonic() >= deadline:
             # Out of time even before a resume would start — don't burn a backoff on a retry
@@ -1720,7 +1788,17 @@ async def run_deepagents(
     # are EXCLUDED as no_tools_executed rather than counted as an ambiguous silent "completion".
     # Gate on the guard actually being installed: without the `middleware` hook (a deepagents API
     # drift) `tools_executed` stays 0 even when tools ran, so the count is not trustworthy.
-    if guard_installed and stop_reason == "completed" and guard_stats["tools_executed"] == 0:
+    # A "completed" run that still authored no model (resume budget exhausted, or no
+    # checkpointer to resume with) is a degenerate empty run — the lead silently stopped without
+    # building anything, bypassing the finish gate. Label it honestly (not an ambiguous
+    # "completed") so it is not read as a real attempt. This subsumes the older zero-tools
+    # relabel: a delegation-only run (bio `task` ran, model never built) has tools_executed > 0
+    # yet no model, which that check missed.
+    # Reuses the intercept's probe (model_committed): a "completed" stop_reason here means the
+    # final iteration ran the intercept, which refreshed it — so no second describe_problem call.
+    if stop_reason == "completed" and not model_committed:
+        stop_reason = "no_model_built"
+    elif guard_installed and stop_reason == "completed" and guard_stats["tools_executed"] == 0:
         stop_reason = "no_tools_executed"
     if guard_stats["dropped_dup_tool_calls"]:
         print(f"[agent] de-duplicated {guard_stats['dropped_dup_tool_calls']} identical tool "
