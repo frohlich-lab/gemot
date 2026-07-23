@@ -36,12 +36,14 @@ wandb/
 examples/_runs_archive/
 
 # Slurm runner (slurm/): the conda env, per-task scratch copies, job logs, collected
-# per-sweep results, and the shared Phoenix collector's on-disk data. All generated.
+# per-sweep results, the shared Phoenix collector's on-disk data, and the explorer service's
+# published endpoint + live-run symlink root. All generated.
 envs/
 .slurm_scratch/
 slurm/logs/
 slurm/runs/
 slurm/phoenix_data/
+slurm/explorer_data/
 
 # Local Phoenix working dir for the example harness (examples/_harness/__init__.py) --
 # ephemeral trace data for locally-launched Phoenix apps / clients. Generated.

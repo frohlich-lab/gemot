@@ -85,15 +85,30 @@ def session(yaml_path, tmp_path):
     )
 
 
+@pytest.fixture(scope="session")
+def amici_build_root(tmp_path_factory):
+    """One AMICI build root shared by the whole test session.
+
+    The engine caches compiled models by SBML hash, and nearly every test here uses the same
+    toy model — but a function-scoped ``tmp_path`` gave each test a private build root, so the
+    cache could never hit and every test paid a fresh ~60-90s C++ compile (fit tests twice
+    over, since pyPESTO builds its own module). Sharing the root lets a structure compile once
+    per session. Nothing leaks between tests: the root holds only compiled artifacts, keyed by
+    the hash of the model that produced them, and a genuinely different model still gets its
+    own build directory.
+    """
+    return tmp_path_factory.mktemp("amici_build_root")
+
+
 @pytest.fixture
-def engine(session, tmp_path):
+def engine(session, amici_build_root):
     from petab_mcp.engine import AmiciEngine
 
-    return AmiciEngine(session, build_root=str(tmp_path / "amici"))
+    return AmiciEngine(session, build_root=str(amici_build_root))
 
 
 @pytest.fixture
-def fit_session(session, tmp_path):
+def fit_session(session, amici_build_root):
     """A session with the AMICI engine wired and auto-fit on (small n_starts).
 
     Use for tests that exercise the ``fit`` path; the engine is reachable as
@@ -101,7 +116,7 @@ def fit_session(session, tmp_path):
     """
     from petab_mcp.engine import AmiciEngine
 
-    session.engine = AmiciEngine(session, build_root=str(tmp_path / "amici"))
+    session.engine = AmiciEngine(session, build_root=str(amici_build_root))
     session.auto_fit = True
     session.auto_fit_starts = 2
     return session
