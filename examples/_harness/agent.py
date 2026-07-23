@@ -396,7 +396,12 @@ BIOCURATOR_PROMPT = (
     "between compartments). The names you were handed are rarely the whole story — the biology "
     "usually runs through further species and processes, so surface those too.\n"
     "If you have lookup tools, use them — prefer curated interaction/pathway sources — rather than "
-    "answering from memory. If you have NO lookup tools available, do NOT refuse: answer from your "
+    "answering from memory. When you search the LITERATURE, rank results by RELEVANCE rather than "
+    "by citation count, and query for the SPECIFIC mechanism or interaction you need: the "
+    "most-cited papers matching a broad keyword are usually general reviews that will not answer a "
+    "specific mechanistic question, so a few targeted searches beat many broad ones, and read "
+    "titles/abstracts to judge fit before relying on a paper. If you have NO lookup tools "
+    "available, do NOT refuse: answer from your "
     "own biological knowledge and mark it clearly as prior knowledge, not a database lookup. Report "
     "ONLY the biology of these entities: their identities, "
     "their interactions, and the wider set of entities and processes they are part of. Some "
@@ -557,6 +562,57 @@ def _content_to_text(content: Any) -> str:
     return str(content or "")
 
 
+# EuropePMC's ``get_europepmc_articles`` returns ``resultType=core`` records — for each of ~10
+# hits it ships the FULL bibliographic record (author/affiliation lists, MeSH headings, grant
+# lists, chemical/keyword lists, cross-references, full-text URL lists, citation counts). That is
+# ~50k+ tokens per search of metadata the biocurator never uses to build an ODE model; across ~10
+# searches it drove the biocurator's context past 120k tokens/turn (a whole crauste run's analyst
+# input was ~800k, vs ~150k without literature). We keep only the fields that carry modelling
+# signal — title, abstract, DOI/PMID, journal, year, a capped author line — and drop the rest. The
+# FULL response is still recorded (DOIs/PMIDs) for the provenance audit trail before trimming.
+_EPMC_KEEP_FIELDS = ("id", "source", "pmid", "pmcid", "doi", "title", "authorString",
+                     "pubYear", "abstractText")
+_EPMC_AUTHOR_CAP = 200
+
+
+def _trim_europepmc_search(text: str) -> "str | None":
+    """Slim a ``get_europepmc_articles`` (resultType=core) JSON response to just the fields a
+    modeller needs. Returns the trimmed JSON string, or ``None`` if the text isn't the expected
+    shape (leave it untouched) — best-effort, never raises."""
+    import json
+    try:
+        data = json.loads(text)
+        results = data["resultList"]["result"]
+    except (ValueError, TypeError, KeyError):
+        return None
+    if not isinstance(results, list):
+        return None
+    slim = []
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        row = {k: r[k] for k in _EPMC_KEEP_FIELDS if k in r}
+        journal = ((r.get("journalInfo") or {}).get("journal") or {}).get("title")
+        if journal:
+            row["journalTitle"] = journal
+        # Publication type (review vs primary article) lives under pubTypeList.pubType, not at the
+        # top level — extract it explicitly so the biocurator can weigh source type.
+        pub_type = (r.get("pubTypeList") or {}).get("pubType")
+        if pub_type:
+            row["pubType"] = pub_type
+        authors = row.get("authorString")
+        if isinstance(authors, str) and len(authors) > _EPMC_AUTHOR_CAP:
+            suffix = "…et al."
+            cap = max(0, _EPMC_AUTHOR_CAP - len(suffix))
+            row["authorString"] = authors[:cap].rstrip(",; ") + suffix
+    out = {"hitCount": data.get("hitCount"), "resultList": {"result": slim}}
+    # Preserve the (tiny) paging cursors so a cursor-based follow-up search still works.
+    for k in ("nextCursorMark", "nextPageUrl"):
+        if data.get(k) is not None:
+            out[k] = data[k]
+    return json.dumps(out, ensure_ascii=False)
+
+
 def _wrap_literature_recorder(tools: list, log: list) -> list:
     """Wrap each literature tool's coroutine to append {tool, query, dois, pmids} to ``log`` on
     every call — the provenance trail of what the biocurator read. Mutates the tool objects in
@@ -578,13 +634,25 @@ def _wrap_literature_recorder(tools: list, log: list) -> list:
                 try:
                     content = result[0] if isinstance(result, tuple) else result
                     text = _content_to_text(content)
+                    # Record the FULL response (complete DOI/PMID audit trail) BEFORE any trimming.
                     log.append({
                         "tool": name,
                         "query": arguments,
-                        "dois": sorted(set(_DOI_RE.findall(text)))[:50],
-                        "pmids": sorted(set(_PMID_RE.findall(text)))[:50],
+                        "dois": sorted(set(_DOI_RE.findall(text))),
+                        "pmids": sorted(set(_PMID_RE.findall(text))),
                     })
-                except Exception:  # pragma: no cover - provenance must never break a tool call
+                    # Hand the biocurator a slimmed article payload (drops resultType=core bloat
+                    # the model never uses); the audit log above still has everything.
+                    if name == "get_europepmc_articles":
+                        slim = _trim_europepmc_search(text)
+                        if slim is not None and len(slim) < len(text):
+                            # Preserve the original content SHAPE (bare string vs list-of-blocks)
+                            # so trimmed and untrimmed results are the same type downstream.
+                            new_content = ([{"type": "text", "text": slim}]
+                                           if isinstance(content, list) else slim)
+                            return ((new_content,) + result[1:]
+                                    if isinstance(result, tuple) else new_content)
+                except Exception:  # pragma: no cover - provenance/trim must never break a tool call
                     pass
                 return result
 
