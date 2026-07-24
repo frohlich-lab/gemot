@@ -1165,6 +1165,33 @@ _DISABLED_TOOL_HINT_DEFAULT = (
 )
 
 
+# Transport/connection failures — a hung or closed MCP server (in practice a flaky HOSTED bio
+# server: BioContextAI / OmniPath). These are NOT retryable tool errors: the model can't fix an
+# unreachable server, and letting one propagate aborts the whole run (9 runs across sweeps died as
+# `stop_reason: ClosedResourceError`, several at n_fits=0). anyio stream errors are matched by class
+# NAME (so we don't hard-import anyio internals that vary across versions); the httpx family is
+# matched against its public TransportError base in _is_transport_error, so the breaker classifies
+# the SAME httpx surface the resume backstop does rather than a hand-listed subset that can drift.
+_TRANSPORT_ERROR_NAMES = frozenset({
+    "ClosedResourceError", "BrokenResourceError", "EndOfStream",           # anyio streams
+})
+
+
+def _is_transport_error(exc: BaseException) -> bool:
+    """True for a transport/connection failure (an unreachable/closed MCP server) as opposed to a
+    normal tool error the model should see and retry. Covers the anyio stream errors (by name), the
+    builtin ConnectionError, and the WHOLE httpx.TransportError family (ConnectError/ReadError/
+    WriteError/ReadTimeout/ConnectTimeout/RemoteProtocolError/PoolTimeout/WriteTimeout/… ) — the same
+    surface the run-loop resume backstop matches, so the two never disagree on what is 'transport'."""
+    if type(exc).__name__ in _TRANSPORT_ERROR_NAMES or isinstance(exc, ConnectionError):
+        return True
+    try:
+        import httpx
+    except Exception:  # pragma: no cover - httpx always present with mcp
+        return False
+    return isinstance(exc, httpx.TransportError)
+
+
 def _new_breaker_state() -> dict[str, Any]:
     """Mutable, run-scoped state shared by the wrapped tools and the lead's tool filter."""
     return {"disabled": set(), "n_tool_errors": 0, "streaks": {}, "events": []}
@@ -1175,6 +1202,17 @@ def _breaker_message(name: str, hint: str) -> list[dict[str, str]]:
     return [{"type": "text", "text": (
         f"TOOL DISABLED: `{name}` failed repeatedly with the same error and is disabled for the "
         f"rest of this run. Do NOT call it again — {hint}"
+    )}]
+
+
+def _transport_breaker_message(name: str, hint: str) -> list[dict[str, str]]:
+    """Degraded block for a tool disabled after a transport failure (an unreachable/closed server).
+
+    Distinct from :func:`_breaker_message`: a transport error disables on the FIRST failure, so the
+    "failed repeatedly with the same error" wording would misdescribe it."""
+    return [{"type": "text", "text": (
+        f"TOOL DISABLED: `{name}`'s server is unreachable or closed (transport error) and it is "
+        f"disabled for the rest of this run. Do NOT call it again — {hint}"
     )}]
 
 
@@ -1233,15 +1271,25 @@ def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
     return False
 
 
-def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any]) -> list:
+def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
+                                     transport_disable_names: set[str] | None = None) -> list:
     """Wrap each tool's coroutine so repeated identical failures disable it (see above).
 
     Mutates the tool objects in place (and returns the list) so the breaker rides along into
     the analyst subagents, which hold these same objects. Best-effort: a tool without a
     coroutine is left untouched.
+
+    ``transport_disable_names`` is the set of tool names for which a SINGLE transport error
+    (unreachable/closed server) disables the tool immediately, without waiting for the 3-strike
+    breaker. This is scoped to the EXTERNAL, optional bio tools (flaky hosted servers the model
+    can't fix); a transport error on a CORE petab tool (the local server) instead falls through to
+    the normal 3-strike / re-raise path, so one localhost blip can't silently strip ``fit`` /
+    ``set_model`` for the rest of the run.
     """
     import inspect
     from functools import wraps
+
+    transport_disable = transport_disable_names or set()
 
     for tool in tools:
         name = getattr(tool, "name", None)
@@ -1258,7 +1306,19 @@ def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any]) -> list
                 try:
                     result = await orig(runtime=runtime, **arguments)
                 except Exception as exc:  # a raised tool error (e.g. MCP isError -> ToolException)
-                    if _record_error(state, name, f"{type(exc).__name__}: {exc}"):
+                    tripped = _record_error(state, name, f"{type(exc).__name__}: {exc}")
+                    # A transport error (unreachable/closed server) on an EXTERNAL bio tool can't be
+                    # fixed by the model and aborts the whole run if it propagates — disable that
+                    # tool for the rest of the run and return the degraded message NOW, without
+                    # waiting for the 3-strike breaker. (Mid-run counterpart to the bio-session
+                    # isolation that already handles connect/discovery failures.) A transport error
+                    # on a CORE petab tool is NOT auto-disabled here: it falls through to the normal
+                    # 3-strike / re-raise path, so a single localhost blip can't strip `fit` or
+                    # `set_model` for the rest of the run.
+                    if name in transport_disable and _is_transport_error(exc):
+                        state["disabled"].add(name)
+                        return (_transport_breaker_message(name, hint), None)
+                    if tripped:
                         return (_breaker_message(name, hint), None)
                     raise
                 content, artifact = result if isinstance(result, tuple) else (result, None)
@@ -1714,7 +1774,10 @@ async def run_deepagents(
     # the lead and the analyst subagents (both reference these same objects), so a tool that
     # keeps failing identically is disabled for the run instead of being re-proposed endlessly.
     breaker_state = _new_breaker_state()
-    _wrap_tools_with_circuit_breaker(all_tools, breaker_state)
+    # Only the EXTERNAL bio tools (flaky hosted servers) get the immediate transport-error disable;
+    # a transport blip on a core petab tool must NOT silently strip it for the rest of the run.
+    _bio_names = {nm for nm in (getattr(t, "name", None) for t in bio_tools) if nm}
+    _wrap_tools_with_circuit_breaker(all_tools, breaker_state, transport_disable_names=_bio_names)
     # Provenance: record the biocurator's LITERATURE accesses (query + returned DOIs/PMIDs) for
     # audit + analysis (surfaced as biocurator_literature). Only literature tools are wrapped, and
     # only when --bio-literature made them resolve into bio_tools; empty otherwise.
@@ -1783,8 +1846,24 @@ async def run_deepagents(
 
     from openai import (APIConnectionError, APITimeoutError, InternalServerError,
                         RateLimitError)
-    _TRANSIENT_ERRORS = (APIConnectionError, APITimeoutError, InternalServerError,
-                         RateLimitError, JSONDecodeError)
+    _TRANSIENT_ERRORS: tuple = (APIConnectionError, APITimeoutError, InternalServerError,
+                                RateLimitError, JSONDecodeError)
+    # Backstop: a transport error (a closed/hung MCP server) that ESCAPES the per-tool breaker —
+    # e.g. raised at the `task` subagent boundary or the bio ClientSession itself — should RESUME
+    # the run from the checkpoint rather than abort it (the petab server is still alive). Cover both
+    # transport layers the breaker classifies in _TRANSPORT_ERROR_NAMES: the anyio stream errors and
+    # httpx's TransportError base (ConnectError/ReadError/WriteError/ReadTimeout/ConnectTimeout/
+    # RemoteProtocolError all derive from it).
+    try:
+        from anyio import BrokenResourceError, ClosedResourceError, EndOfStream
+        _TRANSIENT_ERRORS = _TRANSIENT_ERRORS + (ClosedResourceError, BrokenResourceError, EndOfStream)
+    except Exception:  # pragma: no cover - anyio always present with mcp, but never fail on import
+        pass
+    try:
+        import httpx
+        _TRANSIENT_ERRORS = _TRANSIENT_ERRORS + (httpx.TransportError,)
+    except Exception:  # pragma: no cover - httpx always present with mcp, but never fail on import
+        pass
 
     # deepagents renamed the prompt kwarg between releases (instructions -> system_prompt).
     # Pass whichever the installed version accepts, plus the analyst subagents.
