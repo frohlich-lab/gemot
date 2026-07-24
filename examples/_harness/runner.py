@@ -330,16 +330,55 @@ def _residual_structure_fields(diagnosis) -> dict | None:
     }
 
 
+# The collapse threshold lives in petab_mcp.constants so the session's adequacy gate and this
+# judge gate share ONE value (re-exported under the old name for callers/tests).
+from petab_mcp.constants import NOISE_SIGMA_COLLAPSE_FRACTION as _NOISE_SIGMA_COLLAPSE_FRACTION
+
+
+def _noise_sigma_flag(report) -> dict | None:
+    """Report-only integrity marker: is any ESTIMATED noise sigma implausible relative to the data
+    — INFLATED past its data-driven cap (absorbing model misfit) or COLLAPSED far below the data
+    std (overfitting the noise for a suspiciously good BIC)? Returns
+    ``{inflated, collapsed, max_fraction_of_data_std, min_fraction_of_data_std}`` or ``None`` when
+    the problem has no estimated sigma.
+
+    An inflated/collapsed sigma DISQUALIFIES an otherwise-passing BIC (see _judge) — a hidden
+    integrity gate applied post-run and never surfaced to the agent. The full block is also written
+    to result.json so a gated (or borderline) run is auditable. The collapse threshold
+    ``_NOISE_SIGMA_COLLAPSE_FRACTION`` is a heuristic — tune it if a genuinely better, more flexible
+    model (a legitimately small residual sigma) is being false-failed.
+    """
+    if not isinstance(report, dict) or not report:
+        return None
+    # Single source of truth for both predicates (shared with the session adequacy gate).
+    from petab_mcp.fitting import noise_sigma_collapsed, noise_sigma_inflated
+    inflated = noise_sigma_inflated(report)
+    collapsed = noise_sigma_collapsed(report)
+    hi = lo = None
+    for e in report.values():
+        if not isinstance(e, dict):
+            continue
+        frac = e.get("fraction_of_data_std")
+        if isinstance(frac, (int, float)):
+            hi = frac if hi is None else max(hi, frac)
+            lo = frac if lo is None else min(lo, frac)
+    return {"inflated": inflated, "collapsed": collapsed,
+            "max_fraction_of_data_std": hi, "min_fraction_of_data_std": lo}
+
+
 async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta: dict,
                  clock: "_ToolClock", t0: float) -> "tuple[int, dict]":
     """Judge the repaired model against the true model by BIC (structure-agnostic).
 
     Success ⇔ the repaired model can't be rejected relative to the true (data-generating)
-    model: ``BIC(candidate) - BIC(true) <= scenario.bic_threshold``. We don't require any
-    particular rate-law FORM (models need not be structurally identifiable) and we don't
-    special-case invented species — BIC's ``k·ln(n)`` penalty makes an extra parameter earn
-    its keep. A χ² goodness-of-fit p-value (residuals vs the known noise) is reported
-    alongside. The scenario's optional ``diagnostics`` hook adds report-only detail.
+    model — ``BIC(candidate) - BIC(true) <= scenario.bic_threshold`` — AND its estimated noise
+    sigma is plausible (not inflated to absorb misfit or collapsed to overfit the noise; see
+    ``_noise_sigma_flag``). The sigma check is a HIDDEN integrity gate: it never reaches the agent,
+    so a good BIC bought with an implausible noise model can't slip through and can't be gamed
+    around. We don't require any particular rate-law FORM (models need not be structurally
+    identifiable) and we don't special-case invented species — BIC's ``k·ln(n)`` penalty makes an
+    extra parameter earn its keep. A χ² goodness-of-fit p-value (residuals vs the known noise) is
+    reported alongside. The scenario's optional ``diagnostics`` hook adds report-only detail.
 
     Returns ``(exit_code, result)``: the process exit code (0 on success, 1 otherwise) and
     the machine-readable result dict (also written to ``work/result.json``), so the caller
@@ -393,15 +432,24 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     # baseline.nll is None for a zero-shot build (no model shipped → nothing to score).
     delta = (baseline.nll - final_nll) if (baseline.nll is not None and final_nll is not None) else None
 
-    # BIC gate against the true-model reference.
+    # Estimated-noise-sigma plausibility of the SCORED model. A wrong model can reach a good BIC
+    # by making the noise model implausible — inflating sigma to absorb misfit, or collapsing it to
+    # overfit the noise — so an implausible sigma disqualifies an otherwise-passing BIC. This is a
+    # HIDDEN integrity gate: applied post-run in the judge and NEVER surfaced to the agent (which
+    # only ever sees its own noise_sigma_report, not this verdict), so it can't be gamed around.
+    # The raw report is stored in result.json too (it wasn't before) to audit gaming after the fact.
+    noise_sigma_report = final.get("noise_sigma_report") if isinstance(final, dict) else None
+    noise_sigma_flag = _noise_sigma_flag(noise_sigma_report)
+    sigma_implausible = bool(noise_sigma_flag
+                             and (noise_sigma_flag["inflated"] or noise_sigma_flag["collapsed"]))
+
+    # BIC gate against the true-model reference, AND the hidden sigma-plausibility gate.
     ref = scenario.reference()
     bic_cand = bic(final_nll, k, n) if (n and final_nll is not None) else None
     bic_ref = _bic_reference(ref)
     delta_bic = (bic_cand - bic_ref) if (bic_cand is not None and bic_ref is not None) else None
-    if delta_bic is not None:
-        success = delta_bic <= scenario.bic_threshold
-    else:  # no reference / no data points — can't apply the gate
-        success = False
+    bic_pass = delta_bic is not None and delta_bic <= scenario.bic_threshold
+    success = bic_pass and not sigma_implausible
     # χ² goodness-of-fit vs the known noise (reported, not gating).
     dof = max(0, n - k)
     p_gof = chi2_gof_pvalue(chi2, dof)
@@ -481,6 +529,13 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         verdict = "no valid fit (the model was never built or produced a non-finite objective)."
     elif delta_bic is None:
         verdict = "could not evaluate BIC (missing reference.json or no data points)."
+    elif bic_pass and sigma_implausible:
+        which = " and ".join(
+            w for w, on in (("inflated (absorbing misfit)", noise_sigma_flag["inflated"]),
+                            ("collapsed (overfitting the noise)", noise_sigma_flag["collapsed"]))
+            if on)
+        verdict = (f"BIC passes (ΔBIC {delta_bic:+.3g}) but the estimated noise sigma is {which} — "
+                   "the good score rests on an implausible noise model, so it does not count.")
     else:
         verdict = (f"rejectable: ΔBIC {delta_bic:+.3g} > {scenario.bic_threshold:g} — the fit is "
                    "decisively worse than the true model.")
@@ -503,6 +558,10 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         "chi2_dof": dof,
         "chi2_gof_pvalue": p_gof,
         "residual_structure": residual_structure,
+        # Noise-sigma plausibility of the scored model: GATES success (an inflated/collapsed sigma
+        # disqualifies an otherwise-passing BIC; see the gate above) but is never shown to the agent.
+        "noise_sigma_report": noise_sigma_report,
+        "noise_sigma_flag": noise_sigma_flag,
         "reference": ref,
         "reactions": [r.get("id") for r in reactions],
         "species": sorted(current_species),
