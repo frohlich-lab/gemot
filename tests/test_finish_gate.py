@@ -171,6 +171,71 @@ async def test_finish_arms_even_when_version_is_none():
     assert second.startswith("Recorded: finish")
 
 
+def _fit(**kw):
+    base = {"neg_log_likelihood": 100.0, "bic": 210.0, "version": 5, "has_unfit_edits": False}
+    base.update(kw)
+    return base
+
+
+@pytest.mark.asyncio
+async def test_finish_refused_on_implausible_sigma_then_relents():
+    """A finish on a fit with an inflated (or collapsed) ESTIMATED sigma is REFUSED with the
+    fix-the-mechanism advice — but bounded: after _MAX_SIGMA_FINISH_REFUSALS it relents (arms) so a
+    model that genuinely can't reach a plausible sigma still terminates at its honest score."""
+    mod = _load_agent_module()
+    tool = _tool_for(mod, _fit(noise_sigma_inflated=True,
+                               noise_sigma_advice="fix the mechanism, not the noise."))
+    for _ in range(mod._MAX_SIGMA_FINISH_REFUSALS):
+        out = await _decide(tool, "finish")
+        assert "FINISH REFUSED" in out and "implausible noise model" in out
+        assert "inflated" in out and "fix the mechanism" in out
+        assert not out.startswith("Recorded: finish")
+    # Bounded: the next attempt relents and ARMS instead of refusing forever.
+    assert "FINISH ARMED" in await _decide(tool, "finish")
+
+
+@pytest.mark.asyncio
+async def test_collapsed_sigma_is_also_refused():
+    mod = _load_agent_module()
+    tool = _tool_for(mod, _fit(noise_sigma_collapsed=True,
+                               noise_sigma_advice="prefer a simpler mechanism."))
+    out = await _decide(tool, "finish")
+    assert "FINISH REFUSED" in out and "collapsed" in out
+
+
+@pytest.mark.asyncio
+async def test_refusal_names_both_tails_when_both_present():
+    """With one observable inflated and another collapsed, the refusal names BOTH tails so the agent
+    doesn't fix one and get silently re-blocked on the other."""
+    mod = _load_agent_module()
+    tool = _tool_for(mod, _fit(noise_sigma_inflated=True, noise_sigma_collapsed=True,
+                               noise_sigma_advice="fix the mechanism."))
+    out = await _decide(tool, "finish")
+    assert "FINISH REFUSED" in out and "inflated and collapsed" in out
+
+
+@pytest.mark.asyncio
+async def test_sigma_block_clears_when_the_fix_makes_sigma_plausible():
+    """The refusal counter resets the moment the sigma is plausible again, so a real structural
+    fix immediately clears the block (arms normally) rather than staying penalised."""
+    mod = _load_agent_module()
+    session = _FakeSession(_fit(noise_sigma_inflated=True, noise_sigma_advice="x"))
+    tool = mod._decision_tool(session)
+    assert "FINISH REFUSED" in await _decide(tool, "finish")
+    # Agent fixes the model FORM -> plausible sigma -> finish arms normally (counter reset).
+    session.fit_summary = _fit(noise_sigma_inflated=False, noise_sigma_collapsed=False)
+    assert "FINISH ARMED" in await _decide(tool, "finish")
+
+
+@pytest.mark.asyncio
+async def test_plausible_sigma_finish_is_unaffected():
+    """A fit with no implausible-sigma flags arms/confirms exactly as before (no regression)."""
+    mod = _load_agent_module()
+    tool = _tool_for(mod, _fit(noise_sigma_inflated=False, noise_sigma_collapsed=False))
+    assert "FINISH ARMED" in await _decide(tool, "finish")
+    assert (await _decide(tool, "finish")).startswith("Recorded: finish")
+
+
 @pytest.mark.asyncio
 async def test_rollback_disarms_a_pending_finish():
     mod = _load_agent_module()

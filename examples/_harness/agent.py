@@ -716,6 +716,14 @@ _MAX_SILENT_BOUNCES = 3
 # finish — there is no fitted model to score — just a bounded, honest termination.
 _MAX_NO_FIT_FINISH_ATTEMPTS = 5
 
+# A finish on a model whose ESTIMATED noise sigma is implausible (inflated to absorb misfit, or
+# collapsed to overfit the noise — the server flags this in get_fit_summary) is REFUSED with the
+# fix-the-mechanism advice, so the agent doesn't submit a BIC that rests on a gamed noise model
+# (the judge fails those anyway). Bounded like the no-fit gate: after this many consecutive refusals
+# it relents (lets the finish through) so a model that genuinely can't reach a plausible sigma still
+# terminates cleanly at its honest — losing — score, instead of spamming finish to the step limit.
+_MAX_SIGMA_FINISH_REFUSALS = 3
+
 
 def _structured(res) -> Any:
     """The tool's structured payload from a CallToolResult — unwrapping FastMCP's ``{"result": x}``
@@ -932,7 +940,7 @@ def _decision_tool(session, finish_state=None, probe=None):
     # `None != None` would then skip arming and confirm on the first call — bypassing the gate on
     # the common rollback→finish path. bic+nll identify the scored fit whether or not a version
     # is attached.
-    state = {"armed_token": None, "no_fit_refusals": 0}
+    state = {"armed_token": None, "no_fit_refusals": 0, "sigma_refusals": 0}
 
     def _finite(x):
         return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
@@ -994,6 +1002,35 @@ def _decision_tool(session, finish_state=None, probe=None):
                     "the reported bic belongs to the previous structure, not this one. Call fit "
                     "to score the current model, then finish on its bic."
                 )
+            # HARD STOP on a gamed noise model: an inflated/collapsed ESTIMATED sigma makes the
+            # good-looking bic rest on an implausible noise model (the judge fails those). Refuse the
+            # finish with the fix-the-mechanism advice so the agent addresses the FORM, not the noise
+            # — but bounded (like the no-fit gate) so a model that genuinely can't reach a plausible
+            # sigma still terminates at its honest score instead of spamming finish. A plausible
+            # sigma resets the counter, so a real fix immediately clears the block.
+            sigma_inflated = bool(fit.get("noise_sigma_inflated"))
+            sigma_collapsed = bool(fit.get("noise_sigma_collapsed"))
+            if sigma_inflated or sigma_collapsed:
+                if state["sigma_refusals"] < _MAX_SIGMA_FINISH_REFUSALS:
+                    state["armed_token"] = None
+                    state["sigma_refusals"] += 1
+                    advice = fit.get("noise_sigma_advice") or (
+                        "the estimated noise sigma is implausible.")
+                    # Name BOTH tails when both are present (one observable inflated, another
+                    # collapsed) so the agent doesn't fix one and get re-blocked on the other.
+                    which = " and ".join(w for w, on in (("inflated", sigma_inflated),
+                                                         ("collapsed", sigma_collapsed)) if on)
+                    print(f"[finish BLOCKED {state['sigma_refusals']}/{_MAX_SIGMA_FINISH_REFUSALS}] "
+                          f"noise sigma {which} — refusing finish on a gamed noise model")
+                    return (
+                        f"FINISH REFUSED — this fit's bic rests on an implausible noise model: "
+                        f"{advice} Fix the model FORM and refit; a finish resting on {which} noise "
+                        "is not accepted. (get_fit_summary/get_fit_diagnosis flag which observable.)"
+                    )
+                print(f"[finish RELENTED] noise sigma still implausible after "
+                      f"{state['sigma_refusals']} refusals — allowing finish at its honest score")
+            else:
+                state["sigma_refusals"] = 0
             # Valid, fitted model. First finish call ARMS: show the residual diagnosis and
             # require a confirming second finish. This forces the finish to be a considered call
             # on the fit's residual STRUCTURE (sign/runs tests — the signal that survives
