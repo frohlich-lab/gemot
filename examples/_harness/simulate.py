@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -266,6 +267,30 @@ def fit_reference(
     return fitted, nll
 
 
+def _effective_reference_sigmas(problem, raw: dict) -> dict:
+    """``{sigma_id: effective sd}`` for the reference fit — the noiseFormula evaluated at those
+    values, which is what a candidate's ``effective_sigma`` must be judged against.
+
+    The RAW parameter is not comparable across models when the formula is composite or
+    proportional: fiedler's sd is ``per-gel scale * sigma``, so a candidate predicting a different
+    amplitude can trade scale against sigma and land on an IDENTICAL sd while its raw sigma differs
+    several-fold — judging raw values fails a model whose noise level equals the truth's.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+    from petab_mcp import reconcile as _reconcile
+
+    out: dict = {}
+    for pid, value in (raw or {}).items():
+        try:
+            effective = _reconcile.sigma_effective_value(
+                problem, pid, float(value), fitted_values=raw)
+        except Exception:  # noqa: BLE001 - advisory extra
+            effective = None
+        if effective is not None:
+            out[pid] = float(effective)
+    return out
+
+
 def write_reference(
     model_ant: str,
     parameter_df: pd.DataFrame,
@@ -297,6 +322,29 @@ def write_reference(
         seed_at_nominal=seed_at_nominal,
     )
     ref = {"nll": float(nll), "k": int(len(fitted)), "n": int(len(measurement_df))}
+    # Record the reference fit's own noise sigmas, symmetrically with write_reference_from_problem.
+    # DEFENSIVE ONLY, and deliberately not load-bearing: every example that uses this writer today
+    # (the synthetic enzyme_kinetics / predator_prey / repressilator) ships all of its sigmas FIXED
+    # (estimate=0), so `fitted` contains none of them and both maps come out empty. A fixed sigma
+    # cannot be inflated or collapsed by an agent, so there is nothing for the reference gate to
+    # judge there — the gate's CI coverage comes from the unit tests over _reference_sigma_flag,
+    # not from these examples. This exists so a future synthetic example that ESTIMATES a sigma is
+    # recorded like any other, rather than silently falling back to the data-std band.
+    try:
+        import petab.v1 as _petab
+
+        _problem = _petab.Problem(
+            model=None, condition_df=condition_df, observable_df=observable_df,
+            measurement_df=measurement_df, parameter_df=parameter_df)
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+        from petab_mcp import reconcile as _reconcile
+
+        sigma_ids = _reconcile.plausibility_sigma_ids(_problem)
+        ref["noise_sigma"] = {pid: float(value) for pid, value in fitted.items()
+                              if pid in sigma_ids}
+        ref["noise_sigma_effective"] = _effective_reference_sigmas(_problem, ref["noise_sigma"])
+    except Exception as exc:  # noqa: BLE001 - advisory extra; never lose the nll/k/n bar
+        print(f"[reference] could not record reference noise sigmas ({type(exc).__name__}: {exc})")
     Path(path).write_text(json.dumps(ref, indent=2) + "\n")
     return ref
 
@@ -358,19 +406,72 @@ def write_reference_from_problem(
         progress_bar=False)
     nll = float(result.optimize_result.list[0]["fval"])
 
+    # The vector the recorded nll belongs to, so the reference noise sigmas below are read off the
+    # SAME fit (not the multistart best when the published optimum won, or vice versa).
+    x_full_used = None
     if seed_at_nominal:
         x_full = np.array([scale(float(pdf.loc[name, NOMINAL_VALUE]),
                                  pdf.loc[name, PARAMETER_SCALE]) for name in pp.x_names])
         fval_nom = float(pp.objective(pp.get_reduced_vector(x_full)))
         if np.isfinite(fval_nom) and fval_nom < nll:
             nll = fval_nom
+            x_full_used = x_full
 
     # k = the number of ESTIMATED parameters in the PUBLISHED table (fixed known-constants and any
     # fixed observation params are NOT counted), n = number of measurements.
     k = sum(int(float(pdf.loc[pid, ESTIMATE])) == 1 for pid in pdf.index)
     ref = {"nll": float(nll), "k": int(k), "n": int(len(problem.measurement_df))}
+    # The reference fit's own NOISE SIGMAS — the only defensible "true sigma" for an ESTIMATED
+    # sigma, whose nominalValue is merely a start point (8 of 12 benchmark examples estimate their
+    # sigma, and e.g. perelson's nominalValue is a linear placeholder for a log10-space sd). The
+    # judge compares a candidate's fitted sigma against these instead of against a fraction of the
+    # marginal data std, which conflates variance the model EXPLAINS with variance it can't (#118).
+    # Best-effort: a failure here must never cost us the nll/k/n bar.
+    try:
+        ref["noise_sigma"] = _reference_noise_sigmas(problem, pp, result, pdf, x_full_used)
+        ref["noise_sigma_effective"] = _effective_reference_sigmas(problem, ref["noise_sigma"])
+    except Exception as exc:  # noqa: BLE001 - advisory extra; the BIC bar is what must be written
+        print(f"[reference] could not record reference noise sigmas ({type(exc).__name__}: {exc})")
     Path(path).write_text(json.dumps(ref, indent=2) + "\n")
     return ref
+
+
+def _reference_noise_sigmas(problem, pp, result, pdf, x_full_used=None) -> dict:
+    """``{sigma_parameter_id: fitted linear value}`` for the reference fit — the noise level the
+    TRUE model needs to explain this data.
+
+    Values come from whichever vector produced the recorded ``nll``: the published optimum when
+    seeding at nominal beat the multistart, else the best start. Returned on the LINEAR scale
+    (un-scaled from each parameter's estimation scale), matching what the server reports for a
+    candidate. Only parameters the observation model uses as a noise sigma are included.
+    """
+    import numpy as np
+    from petab.v1.C import NOMINAL_VALUE
+    from petab.v1.parameters import unscale
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+    from petab_mcp import reconcile as _reconcile
+
+    sigma_ids = _reconcile.plausibility_sigma_ids(problem)
+    if not sigma_ids:
+        return {}
+    if x_full_used is not None:
+        x = np.asarray(x_full_used, dtype=float)
+    else:
+        x = np.asarray(result.optimize_result.list[0]["x"], dtype=float)
+    scales = list(pp.x_scales)
+    out: dict[str, float] = {}
+    for name, value, scale_name in zip(pp.x_names, x, scales):
+        if name in sigma_ids:
+            out[name] = float(unscale(float(value), scale_name))
+    # Fixed sigmas never enter the optimizer vector; take their published value.
+    for pid in sigma_ids - set(out):
+        if pid in pdf.index:
+            try:
+                out[pid] = float(pdf.loc[pid, NOMINAL_VALUE])
+            except (TypeError, ValueError):
+                continue
+    return out
 
 
 def add_noise_and_write(

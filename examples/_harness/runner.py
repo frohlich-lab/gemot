@@ -333,6 +333,97 @@ def _residual_structure_fields(diagnosis) -> dict | None:
 # The collapse threshold lives in petab_mcp.constants so the session's adequacy gate and this
 # judge gate share ONE value (re-exported under the old name for callers/tests).
 from petab_mcp.constants import NOISE_SIGMA_COLLAPSE_FRACTION as _NOISE_SIGMA_COLLAPSE_FRACTION
+from petab_mcp.constants import (
+    NOISE_SIGMA_REFERENCE_FACTOR as _NOISE_SIGMA_REFERENCE_FACTOR,
+)
+
+
+def _reference_sigma_flag(report, reference) -> dict | None:
+    """Plausibility of the candidate's ESTIMATED sigmas against the TRUE model's OWN fitted sigmas
+    (``reference.json``'s ``noise_sigma``), or ``None`` when the reference doesn't record them.
+
+    This is the dimensionally sound comparison and the judge's preferred one (#118): the marginal
+    data std conflates variance the model EXPLAINS with variance it cannot, which is why legitimate
+    sigmas span ~0.0004-0.59 of it and no fixed band can hold the truth. Against the reference's own
+    sigma the scale question disappears — a correct fit lands near 1 — so the only choice left is a
+    tolerance FACTOR, kept generous because a good model that isn't literally the truth still has
+    somewhat different residuals (a sharp chi2 point-null rejects near-misses once n is large).
+
+    Returns ``{inflated, collapsed, max_ratio, min_ratio}`` where the ratios are
+    ``fitted / reference`` per sigma.
+    """
+    if not isinstance(report, dict) or not report:
+        return None
+    # Prefer the EFFECTIVE sd on BOTH sides: for a composite/proportional noiseFormula the raw
+    # parameter is not comparable across models (fiedler's sd is per-gel scale * sigma, so a
+    # candidate at a different amplitude trades scale against sigma and reaches an IDENTICAL sd
+    # with a raw sigma several-fold off — judged raw, it fails for matching the truth). Fall back
+    # to raw-vs-raw for a reference written before noise_sigma_effective existed.
+    reference = reference if isinstance(reference, dict) else {}
+    effective_ref = reference.get("noise_sigma_effective")
+    use_effective = isinstance(effective_ref, dict) and bool(effective_ref)
+    ref_sigmas = effective_ref if use_effective else reference.get("noise_sigma")
+    if not isinstance(ref_sigmas, dict) or not ref_sigmas:
+        return None
+    # The reference is fit on the PRISTINE collection problem, whose parameter ids can differ from
+    # the materialized ones an agent sees (perelson ships `sd_viral_load` but the collection calls
+    # it `sd_task0_model0_perelson1_V`). When BOTH sides have exactly one sigma there is no
+    # ambiguity about the pairing, so match them positionally rather than losing the comparison —
+    # anything more than one-to-one stays id-matched, since a wrong pairing is worse than none.
+    solo_pairing = len(report) == 1 and len(ref_sigmas) == 1
+    solo_ref_value = next(iter(ref_sigmas.values())) if solo_pairing else None
+    hi = lo = None
+    for pid, entry in report.items():
+        if not isinstance(entry, dict):
+            continue
+        # Match the side chosen above: effective vs effective, or raw vs raw.
+        fitted = (entry.get("effective_sigma") if use_effective and "effective_sigma" in entry
+                  else entry.get("fitted"))
+        ref_value = ref_sigmas.get(pid, solo_ref_value) if solo_pairing else ref_sigmas.get(pid)
+        try:
+            fitted, ref_value = float(fitted), float(ref_value)
+        except (TypeError, ValueError):
+            # EVERY reported sigma must be pairable and usable. Skipping one and judging on the
+            # rest would let an agent rename (or zero) the sigmas it games and keep one honest
+            # sigma matching, so the gate reports max_ratio ~ 1 and passes a model whose noise was
+            # gamed on every other observable. Give up instead, so `_judge` falls through to the
+            # data-std band rather than accepting a partial verdict.
+            return None
+        if not (fitted > 0 and ref_value > 0):
+            return None
+        ratio = fitted / ref_value
+        hi = ratio if hi is None else max(hi, ratio)
+        lo = ratio if lo is None else min(lo, ratio)
+    if hi is None:
+        return None
+    return {"inflated": hi > _NOISE_SIGMA_REFERENCE_FACTOR,
+            "collapsed": lo < 1.0 / _NOISE_SIGMA_REFERENCE_FACTOR,
+            "max_ratio": hi, "min_ratio": lo,
+            # Same key names the data-std fallback emits, so a consumer of result.json's
+            # noise_sigma_flag sees ONE shape regardless of which basis produced it.
+            "max_fraction_of_data_std": _max_fraction_of_data_std(report),
+            "min_fraction_of_data_std": _min_fraction_of_data_std(report)}
+
+
+def _fractions_of_data_std(report) -> list[float]:
+    """Every numeric ``fraction_of_data_std`` in a noise_sigma_report (may be empty)."""
+    out = []
+    for entry in (report or {}).values():
+        if isinstance(entry, dict):
+            frac = entry.get("fraction_of_data_std")
+            if isinstance(frac, (int, float)):
+                out.append(float(frac))
+    return out
+
+
+def _max_fraction_of_data_std(report) -> float | None:
+    fractions = _fractions_of_data_std(report)
+    return max(fractions) if fractions else None
+
+
+def _min_fraction_of_data_std(report) -> float | None:
+    fractions = _fractions_of_data_std(report)
+    return min(fractions) if fractions else None
 
 
 def _noise_sigma_flag(report) -> dict | None:
@@ -439,12 +530,19 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     # only ever sees its own noise_sigma_report, not this verdict), so it can't be gamed around.
     # The raw report is stored in result.json too (it wasn't before) to audit gaming after the fact.
     noise_sigma_report = final.get("noise_sigma_report") if isinstance(final, dict) else None
-    noise_sigma_flag = _noise_sigma_flag(noise_sigma_report)
+    ref = scenario.reference()
+    # PREFER the reference-sigma comparison (#118): a candidate sigma is judged against the TRUE
+    # model's own fitted sigma, not against a fraction of the marginal data std (which conflates
+    # explained and unexplained variance, so no fixed band holds the truth). Falls back to the
+    # data-std band for a reference.json written before `noise_sigma` was recorded — regenerate
+    # with `python examples/setup.py --refit <example>` to switch an example over.
+    reference_sigma_flag = _reference_sigma_flag(noise_sigma_report, ref)
+    noise_sigma_flag = reference_sigma_flag or _noise_sigma_flag(noise_sigma_report)
+    sigma_basis = "reference" if reference_sigma_flag else "data_std"
     sigma_implausible = bool(noise_sigma_flag
                              and (noise_sigma_flag["inflated"] or noise_sigma_flag["collapsed"]))
 
     # BIC gate against the true-model reference, AND the hidden sigma-plausibility gate.
-    ref = scenario.reference()
     bic_cand = bic(final_nll, k, n) if (n and final_nll is not None) else None
     bic_ref = _bic_reference(ref)
     delta_bic = (bic_cand - bic_ref) if (bic_cand is not None and bic_ref is not None) else None
@@ -562,6 +660,9 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         # disqualifies an otherwise-passing BIC; see the gate above) but is never shown to the agent.
         "noise_sigma_report": noise_sigma_report,
         "noise_sigma_flag": noise_sigma_flag,
+        # which comparison produced the flag: "reference" (vs the true model's own
+        # fitted sigma, preferred) or "data_std" (the legacy marginal-std band).
+        "noise_sigma_basis": sigma_basis,
         "reference": ref,
         "reactions": [r.get("id") for r in reactions],
         "species": sorted(current_species),
