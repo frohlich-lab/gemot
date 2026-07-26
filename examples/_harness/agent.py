@@ -120,15 +120,20 @@ ORCHESTRATOR_TOOLS = [
     # change_rate_law / remove_reaction) were removed. `restore_version` (above) IS included:
     # "going back" via re-authoring the old model wastes a recompile+refit and appends a duplicate
     # (the top sweep waste — issue #59), so the lead is given the cheap restore instead.
-    "set_model",            # build the first model AND re-author it wholesale in one step (fit-free)
-    # score the assembled model. Edits are fit-free (issue #81): set_model / change_parameter_*
-    # mutate the working model but do NOT fit — `fit` is the single tool that fits + snapshots a
-    # version, so the lead MUST call it to score any edit. Assemble a coherent change, then fit once.
+    # It also carries the OPTIONAL bundle (issue #114): `parameters=[...]` applies the bound/scale
+    # edits atomically with the re-author and `fit=true` scores them, so the dominant
+    # set_model -> change_parameters -> fit cycle (55% of the lead's calls) costs ONE step.
+    "set_model",            # build the first model AND re-author it wholesale in one step
+    # score the assembled model. Edits are fit-free by default (issue #81): set_model /
+    # change_parameters mutate the working model but do NOT fit unless asked — `fit` is the single
+    # tool that fits + snapshots a version, and is still what the lead calls when a coherent change
+    # spans SEVERAL edits (assemble, then fit once).
     "fit",
     # change parameters' ESTIMATION in place — the prompt tells the lead to WIDEN a binding
-    # bound (or switch scale) rather than re-typing a value the multistart fit ignores (fit-free —
-    # call fit after). ONE batched editor: bundle every bound/scale change of a coherent retuning
-    # into a single change_parameters call, then fit once.
+    # bound (or switch scale) rather than re-typing a value the multistart fit ignores. ONE batched
+    # editor: bundle every bound/scale change of a coherent retuning into a single call (with
+    # fit=true to score it), or pass them to set_model(parameters=[...]) when they belong with a
+    # re-author.
     "change_parameters",
     # NOTE: the UNBOUNDED data/diagnostic tools (get_measurements, query_data, get_fitting_log,
     # get_parameters, list_data_tables) are deliberately NOT here — they belong to the analyst
@@ -158,19 +163,41 @@ TOOL_DESCRIPTIONS = {
                   "initial conditions, parameters, reactions). BUILDS the first model when none "
                   "exists (model_initialized: false) AND re-authors/replaces an existing one. Use "
                   "for the initial build and for any coupled/symmetric or multi-reaction STRUCTURAL "
-                  "change in one coherent step; reconciles + lints, reverts on failure. This is an "
-                  "EDIT: it does NOT fit and does NOT create a version — call fit() to score the "
-                  "assembled model. Warns if a previously-estimated parameter is dropped. To go "
-                  "BACK to a model use restore_version(n), not set_model. Args: antimony, "
-                  "justification, references?."),
-    "fit": ("Fit the current working model and snapshot a version — the ONLY tool that fits. Edits "
-            "(set_model, change_parameters) leave the model UNFIT (describe_problem -> "
-            "has_unfit_edits: true); assemble a coherent change, then call fit ONCE to score it. "
+                  "change in one coherent step; reconciles + lints, reverts on failure. PREFER THE "
+                  "ONE-CALL FORM: parameters=[{parameter_id, lower_bound?, upper_bound?, scale?}, "
+                  "...] applies those bound/scale edits atomically with the re-author (they may "
+                  "target a parameter it introduces), and fit=true "
+                  "scores them as ONE version — returned nested under `fit`, with "
+                  "version/committed mirrored on top. Without fit= it is a fit-free EDIT. If the "
+                  "edit applies but nothing is scored (applied: true, committed: false) the edit "
+                  "STAYS in place — `fit.error` = a failed fit (repair it, don't re-apply); "
+                  "`fit.no_change` = this structure already IS a version (change something else). "
+                  "Warns if a "
+                  "previously-estimated parameter is dropped. To go BACK to a model use "
+                  "restore_version(n), not set_model. Args: antimony, justification, references?, "
+                  "parameters?, fit?, n_starts?."),
+    "change_parameters": ("Batch-edit the estimation BOUNDS and/or SCALE of parameters in ONE "
+                          "atomic call — the search space, never a parameter's value. changes is a "
+                          "non-empty list of {parameter_id, lower_bound?, upper_bound?, scale?} "
+                          "entries (a bound edit gives BOTH bounds; scale is 'lin'|'log'|'log10'); "
+                          "one rejected entry reverts the whole batch. Takes fit=/n_starts= like "
+                          "set_model; pass these entries as set_model's parameters= when they "
+                          "belong with a re-author. REJECTS widening an estimated noise sigma past "
+                          "its data-driven cap, and a 3rd widening of a still-pinned parameter. "
+                          "Args: changes, justification, references?, fit?, n_starts?."),
+    "fit": ("Fit the current working model and snapshot a version. Needed "
+            "on its own only when a coherent change spans SEVERAL edits: without fit=true they "
+            "leave the model UNFIT (describe_problem -> has_unfit_edits: true), so make the edits, "
+            "then call fit ONCE to score them together — a one-edit change is cheaper as "
+            "set_model(..., fit=true), which runs this same fit. "
             "Fits the free parameters (pyPESTO multistart), simulates, and returns the fit block "
             "(neg_log_likelihood, chi2, bic, improvement, is_new_best) + a progress block + the new "
             "version. Skips the refit and returns stored metrics if the model is identical to the "
-            "current version (no_change: true). Args: n_starts? (0 = simulate only), justification?."),
-    "describe_problem": "Orientation: whether a model exists (model_initialized), table/entity counts, current version, and whether the working model has unfit edits (has_unfit_edits). Cheap.",
+            "current version (no_change: true). Args: n_starts? (REPLACES the server's default "
+            "multistart count — describe_problem's fit_n_starts_default — so omit it unless you "
+            "want MORE than that; below it fits LESS hard, 0 only simulates. The result's n_starts "
+            "is what actually ran), justification?."),
+    "describe_problem": "Orientation: whether a model exists (model_initialized), table/entity counts, current version, whether the working model has unfit edits (has_unfit_edits), and the multistart count a fit uses by default (fit_n_starts_default). Cheap.",
     "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law) — empty until a model is built.",
     "get_parameters": ("Parameter table: id, bounds, scale, nominalValue (the fitted value), "
                        "estimate flag. Fixed (estimate=0) rows include the observation-noise "

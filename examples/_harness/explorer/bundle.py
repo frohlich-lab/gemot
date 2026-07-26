@@ -14,8 +14,9 @@
 The conversation (turns/tokens/analyst sub-agents) comes from Phoenix — queried by the indexed
 ``trace_id`` (fast; unfiltered pulls time out). The model-variant + score trajectory comes from the
 run's ``.petab_mcp/`` version store. BIC-per-variant is recomputed (``2·nll + k·ln(n)``) since only
-the final BIC is persisted. The two are stitched by aligning each ``fit`` tool span with the
-version ``timestamp`` it produced.
+the final BIC is persisted. The two are stitched by aligning each fitting tool span — the
+standalone ``fit``, or an editor called with ``fit=true`` (issue #114) — with the version it
+produced.
 """
 
 from __future__ import annotations
@@ -459,40 +460,60 @@ def _tool_result(output_value) -> dict | None:
         return None
 
 
+# The tools whose result can carry a committed version: the standalone `fit`, and either editor
+# called with `fit=true` (issue #114 — a bundled call is one span, so a run that always bundles
+# emits NO `fit` span at all and a fit-only filter would see an empty trajectory).
+_FITTING_TOOLS = ("fit", "set_model", "change_parameters")
+
+
+def _fit_block(res: dict) -> dict:
+    """The part of a tool result carrying the fit scalars. A bundled edit nests the whole fit
+    result under ``fit``; a standalone ``fit`` carries them at the top level."""
+    nested = res.get("fit")
+    return nested if isinstance(nested, dict) else res
+
+
 def load_variants_from_spans(df, n_default: int | None) -> list[dict]:
-    """Reconstruct the model-variant trajectory from the trace's ``fit`` tool spans — the
+    """Reconstruct the model-variant trajectory from the trace's fitting tool spans — the
     fallback when the on-disk version store has been wiped. Since issue #81 the fit block + version
-    live on the ``fit`` span (edits are fit-free), so a variant is a committed ``fit``; its Antimony
-    is taken from the most recent preceding ``set_model`` input."""
+    live on whichever call fitted (edits are fit-free unless bundled), so a variant is any committed
+    ``fit`` / ``set_model(fit=true)`` / ``change_parameters(fit=true)``; its Antimony is taken from
+    that call's own input when it re-authored, else from the most recent preceding ``set_model``."""
     tool_c = "attributes.tool.name"
     if tool_c not in df.columns:
         return []
-    spans = df[df[tool_c].isin(("set_model", "fit"))].sort_values("start_time")
+    spans = df[df[tool_c].isin(_FITTING_TOOLS)].sort_values("start_time")
     variants: list[dict] = []
     last_ant: str | None = None
     for _, r in spans.iterrows():
-        name = r.get(tool_c)
-        if name == "set_model":
+        if r.get(tool_c) == "set_model":
             try:
                 last_ant = (json.loads(r.get("attributes.input.value")) or {}).get("antimony")
             except Exception:
                 pass
-            continue
         res = _tool_result(r.get("attributes.output.value"))
-        if not res or not res.get("committed"):  # skipped/rejected fit -> no version
+        # No version unless something actually fitted: an unbundled edit, and a rejected or
+        # skipped fit, all report committed falsy.
+        if not res or not res.get("committed"):
             continue
-        improvement = res.get("improvement") or {}
+        fit = _fit_block(res)
+        improvement = fit.get("improvement") or {}
         variants.append({
             "index": len(variants),
             "version": res.get("version"),
             "label": "fit", "kind": "fit",
-            "nll": res.get("neg_log_likelihood"),
-            "chi2": res.get("chi2"),
-            "bic": res.get("bic"),
-            "k": res.get("n_estimated"),
-            "n": res.get("n_data_points") or n_default,
+            "nll": fit.get("neg_log_likelihood"),
+            "chi2": fit.get("chi2"),
+            "bic": fit.get("bic"),
+            "k": fit.get("n_estimated"),
+            "n": fit.get("n_data_points") or n_default,
             "is_new_best": improvement.get("is_new_best"),
-            "timestamp": res.get("event_timestamp"),
+            # The FIT's timestamp, not the edit's: a variant IS a fit snapshot, and that is what
+            # the on-disk version store is keyed on. On a bundled call `res.event_timestamp` is
+            # the (earlier) edit event, so preferring it would skew time-based ordering against
+            # the version store. `_fit_block` returns `res` itself for a standalone fit, so this
+            # reads the right field in both shapes.
+            "timestamp": fit.get("event_timestamp") or res.get("event_timestamp"),
             "antimony": last_ant,
             "params": [],
             "justification": res.get("justification"),
@@ -532,7 +553,8 @@ def _vnum_of(x) -> int | None:
 
 def _map_variants_to_turns(turns: list[dict], variants: list[dict]) -> None:
     """Tag each turn with the model variant it produced, matched by the **committed version
-    number** in that turn's ``fit`` result — not by position.
+    number** in that turn's fitting result — the standalone ``fit`` or an editor called with
+    ``fit=true`` (issue #114) — not by position.
 
     Positional pairing (j-th fit turn ↔ j-th fitted variant) silently mis-labels every
     variant whenever the counts diverge, which they routinely do: *rejected* / no-op ``fit`` calls
@@ -548,11 +570,11 @@ def _map_variants_to_turns(turns: list[dict], variants: list[dict]) -> None:
     for t in turns:
         last_v = None
         for tc in t.get("tools", []):
-            if tc.get("name") != "fit":
+            if tc.get("name") not in _FITTING_TOOLS:
                 continue
             res = _tool_result(tc.get("result"))
             if not (isinstance(res, dict) and res.get("committed")):
-                continue  # rejected / no-op fit — it produced no new version
+                continue  # unbundled edit, or a rejected / no-op fit — no new version
             v = by_version.get(_vnum_of(res.get("version")))
             if v is not None:
                 last_v = v
@@ -624,7 +646,7 @@ def build_bundle(run_id: str, *, run_dir: Path, meta: dict,
         if df is not None:
             turns, totals, phoenix = load_turns(trace_id, phoenix_base_url, project, df=df)
             # If the on-disk store was wiped, rebuild the variant trajectory from the trace's
-            # fit spans so the score panel still works.
+            # fitting spans so the score panel still works.
             if not variants:
                 variants = load_variants_from_spans(df, meta.get("n"))
                 for v in variants:
