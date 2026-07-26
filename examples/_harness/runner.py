@@ -896,6 +896,12 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                         # biocurator was actually handed its entities and catch a relapse.
                         "biocurator_entities": agent_out.get("biocurator_entities", []),
                         "unexpected_task_kwargs": agent_out.get("unexpected_task_kwargs", []),
+                        # The panel the lead could delegate to, and whether deepagents' uncurated
+                        # `general-purpose` subagent was confirmed off (false = confirmed off;
+                        # true/null = contaminated or unverified — issue #112). Recorded so a
+                        # sweep can filter such runs out instead of re-reading logs.
+                        "subagent_names": agent_out.get("subagent_names", []),
+                        "general_purpose_subagent": agent_out.get("general_purpose_subagent"),
                         # Provenance of the literature the biocurator READ (per call: query +
                         # returned DOIs/PMIDs; only populated under --bio-literature) — an audit
                         # trail for analysis and for the leakage check on published problems.

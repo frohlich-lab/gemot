@@ -381,6 +381,8 @@ _BIOCURATOR_REPORT_CONTRACT = (
     "processes they belong to."
 )
 
+BIOCURATOR_NAME = "biocurator"
+
 BIOCURATOR_PROMPT = (
     "You are a biocurator: a biological reference desk. You are handed the NAMES of some "
     "biological entities — genes, proteins, metabolites, or other molecular species — and you "
@@ -425,6 +427,14 @@ BIOCURATOR_DESCRIPTION = (
     "what you are doing. Consult it when proposing or altering the model's structure, and cite any "
     "PMID/DOI it returns in the `set_model` references."
 )
+
+# The COMPLETE panel: the only `subagent_type` values the lead may delegate to. deepagents
+# additionally AUTO-INSERTS a `general-purpose` subagent holding the FULL tool pool unless the
+# active harness profile disables it — which let the lead delegate `set_model`/`fit`/
+# `change_parameters` into a subagent and bypass lead-only authoring, plus sink ~39% of that
+# subagent's calls into unused filesystem builtins (issue #112). run_deepagents turns that
+# auto-add off (see _disable_general_purpose_subagent), so this tuple is the whole registry.
+SUBAGENT_NAMES = (*(spec["name"] for spec in ANALYSTS), BIOCURATOR_NAME)
 
 # Curated default tool allowlist for the biocurator. The default bio server (BioContextAI
 # Knowledgebase) exposes ~50 tools across ~20 databases — literature search, clinical trials,
@@ -525,7 +535,7 @@ def _build_biocurator_subagent(bio_tools: list, entity_names: "list[str] | None"
     """
     prompt_key = _subagent_prompt_key()
     return {
-        "name": "biocurator",
+        "name": BIOCURATOR_NAME,
         "description": BIOCURATOR_DESCRIPTION,
         prompt_key: BIOCURATOR_PROMPT + _biocurator_entity_block(entity_names or []),
         "tools": list(bio_tools),
@@ -605,6 +615,7 @@ def _trim_europepmc_search(text: str) -> "str | None":
             suffix = "…et al."
             cap = max(0, _EPMC_AUTHOR_CAP - len(suffix))
             row["authorString"] = authors[:cap].rstrip(",; ") + suffix
+        slim.append(row)
     out = {"hitCount": data.get("hitCount"), "resultList": {"result": slim}}
     # Preserve the (tiny) paging cursors so a cursor-based follow-up search still works.
     for k in ("nextCursorMark", "nextPageUrl"):
@@ -1129,6 +1140,65 @@ def _build_subagents(tools_by_name: dict[str, Any]) -> list[dict[str, Any]]:
     return subagents
 
 
+# --- drop deepagents' auto-added `general-purpose` subagent -------------------------------
+# On top of the subagents we pass, deepagents AUTO-INSERTS one named `general-purpose` holding
+# the FULL tool pool (deepagents 0.6.12 graph.py: it is added unless the active HarnessProfile
+# sets `general_purpose_subagent.enabled = False`, or the caller supplies a spec of that name).
+# We never curated it, and it broke the panel two ways (issue #112, sweep 50751606):
+#   * containment leak — the lead delegated to it and it called `set_model` (9x), `fit` and
+#     `change_parameters` INSIDE a subagent, bypassing lead-only authoring;
+#   * waste sink — 84 of its 215 tool calls (39%) were filesystem builtins (glob/ls/read_file/
+#     grep), which have no role in a PEtab modeling task.
+# This is a different mechanism from the tool-pool filter below: the SUBAGENT is removed, not
+# its tools. We register a provider-level HarnessProfile because deepagents resolves the
+# profile for a PRE-BUILT model (which is what we hand it) via the model's `ls_provider` —
+# "openai" for ChatOpenAI, which every model in this harness runs through (OpenRouter is
+# reached via ChatOpenAI's base_url). Registration is additive and merges with deepagents' own
+# per-model built-in profiles, so it does not clobber them.
+_gp_subagent_disabled = False
+
+
+def _disable_general_purpose_subagent() -> bool:
+    """Turn off deepagents' auto-added ``general-purpose`` subagent. Idempotent.
+
+    Returns True when the profile was registered. Warns and returns False if the installed
+    deepagents doesn't expose the harness-profile API (a version drift) — the run continues
+    with the roster deepagents builds, and ``_general_purpose_enabled`` reports the outcome.
+    """
+    global _gp_subagent_disabled
+    if _gp_subagent_disabled:
+        return True
+    try:
+        from deepagents import (GeneralPurposeSubagentProfile, HarnessProfile,
+                                register_harness_profile)
+        register_harness_profile(
+            "openai",
+            HarnessProfile(general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)),
+        )
+    except Exception as exc:  # pragma: no cover - guards against a deepagents API drift
+        print(f"[agent] WARNING: could not disable deepagents' `general-purpose` subagent "
+              f"({type(exc).__name__}: {exc}); the lead may be able to delegate model authoring "
+              "to it (issue #112).")
+        return False
+    _gp_subagent_disabled = True
+    return True
+
+
+def _general_purpose_enabled(llm) -> "bool | None":
+    """Would deepagents still auto-add the ``general-purpose`` subagent for ``llm``?
+
+    Resolved through the SAME lookup ``create_deep_agent`` uses, so this answers the question
+    the profile registration was meant to settle rather than approximating it. ``None`` means
+    the private resolver is gone (API drift) and the answer is unknown.
+    """
+    try:
+        from deepagents.profiles.harness.harness_profiles import _harness_profile_for_model
+        profile = _harness_profile_for_model(llm, None).general_purpose_subagent
+    except Exception:  # pragma: no cover - guards against a deepagents API drift
+        return None
+    return not (profile is not None and profile.enabled is False)
+
+
 # deepagents injects a set of built-in filesystem + todo tools (ls/glob/read_file/write_file/
 # edit_file/grep/execute/write_todos) into every agent, on top of the `tools` we pass. This
 # task has no filesystem — the real tools are the MCP tools — so those built-ins are pure
@@ -1138,8 +1208,10 @@ def _build_subagents(tools_by_name: dict[str, Any]) -> list[dict[str, Any]]:
 # the panel depends on it. We attach this filter to the LEAD only: neither the per-model
 # `HarnessProfile.excluded_tools` route nor a per-subagent `middleware` list reliably reaches
 # deepagents 0.6.12's declarative analyst subagents (both were verified to still leak FS calls
-# there), so the analysts keep their built-ins for now — the lead is the heavy tool-caller and
-# is the one worth trimming. Filtering the subagents cleanly needs an upstream deepagents fix.
+# there), so the four curated analysts keep their built-ins for now — the lead is the heavy
+# tool-caller and is the one worth trimming. Trimming the analysts cleanly needs an upstream
+# deepagents fix. Note this caveat no longer covers the biggest FS-call sink: the uncurated
+# `general-purpose` subagent is removed outright above, not filtered.
 _BUILTIN_TOOLS_TO_HIDE = frozenset({
     "write_todos", "ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute",
 })
@@ -1922,7 +1994,8 @@ async def run_deepagents(
     # invalidates the cached prefix) than the near-free cache_read history it removed.
     guard_stats: dict[str, Any] = {"tools_executed": 0, "dropped_dup_tool_calls": 0,
                                    "idle_nudges": 0, "gave_up_no_tools": False,
-                                   "unexpected_task_kwargs": [], "task_arg_rejections": 0}
+                                   "unexpected_task_kwargs": [], "task_arg_rejections": 0,
+                                   "subagent_names": [], "general_purpose_subagent": None}
     guard_installed = "middleware" in params
     if guard_installed:
         kwargs["middleware"] = [
@@ -1949,6 +2022,21 @@ async def run_deepagents(
         except Exception as exc:  # pragma: no cover - resume is a best-effort enhancement
             print(f"[agent] no checkpointer ({type(exc).__name__}); a stall will end the run "
                   "instead of resuming.")
+    # Drop the uncurated `general-purpose` subagent BEFORE the graph is built — it is added
+    # during create_deep_agent, so this must precede it (issue #112). Then verify through
+    # deepagents' own resolver: a run whose panel still carries it is contaminated (the lead can
+    # delegate model authoring), so record the verdict in result.json rather than only logging
+    # it, and warn loudly. We do NOT abort — a harness-detail drift must not cost a sweep run.
+    _disable_general_purpose_subagent()
+    gp_enabled = _general_purpose_enabled(llm)
+    guard_stats["general_purpose_subagent"] = gp_enabled
+    guard_stats["subagent_names"] = [s["name"] for s in subagents]
+    if gp_enabled is not False:
+        print("[agent] WARNING: deepagents' `general-purpose` subagent is "
+              + ("still enabled" if gp_enabled else "of unknown status")
+              + " — the lead may be able to delegate model authoring to an uncurated subagent "
+                "holding the full tool pool (issue #112). Treat this run's containment as "
+                "unverified.")
     agent = create_deep_agent(**kwargs)
 
     stop_reason = "completed"
