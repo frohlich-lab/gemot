@@ -104,7 +104,13 @@ ORCHESTRATOR_TOOLS = [
     "list_observables",     # what is measured (observable -> species) — needed to name species
     "list_conditions",      # per-condition inputs/doses set in the condition table (match by name)
     # score / diagnose (both COMPACT + bounded) / history
-    "get_fit_summary",
+    # NOTE: get_fit_summary is deliberately NOT here. `fit` (and rollback/restore) already return
+    # the whole fit block — metrics, bic, parameters_at_bound, the noise-sigma verdict + advice,
+    # and the residual_structure verdict — so for the LEAD, which is the only agent that fits, a
+    # summary call reads back what it was just handed. Trace analysis of sweep 50751606 measured 9
+    # such calls against 451 fits: near-zero benefit for a tool schema re-sent every turn. The tool
+    # stays on the server: the analysts (who never fit) and the harness's own finish gate and
+    # final scoring all read the score through it. `describe_problem` covers has_unfit_edits.
     "get_fit_diagnosis",    # per-observable bias/chi2 + worst-N points — bounded residual read
     "get_identifiability",  # FIM SE/correlations + multistart spread — WHICH params to cut/merge
     "list_versions",        # scored version history — pick the BEST version to go back to
@@ -135,12 +141,21 @@ ORCHESTRATOR_TOOLS = [
     # fit=true to score it), or pass them to set_model(parameters=[...]) when they belong with a
     # re-author.
     "change_parameters",
+    # ...and READ them, so the lead can see what it is changing: id, bounds, scale, nominalValue,
+    # plus each row's `role` (kinetic / noise_sigma / observable_scaling / initial_condition /
+    # exponent / constant) and `status` (estimated / fixed). The prompt directs the lead here to
+    # check whether a sigma_* is ESTIMATED, and it is the read that keeps a widening or a re-author
+    # honest: a symbol introduced is added ESTIMATED and counts toward k however tight its bounds,
+    # and an observation-model factor must never be wired into a rate law. One row per parameter,
+    # so it grows with the model — the only lead tool not strictly size-bounded, kept because
+    # change_parameters without it is an edit made blind.
+    "get_parameters",
     # NOTE: the UNBOUNDED data/diagnostic tools (get_measurements, query_data, get_fitting_log,
-    # get_parameters, list_data_tables) are deliberately NOT here — they belong to the analyst
-    # subagents, since their large results would pile up in the lead's re-sent history (the
-    # input-token cost). The lead instead has get_fit_diagnosis (a COMPACT, size-bounded residual
-    # read) for cheap self-diagnosis, and DELEGATES the deep dives — full residual SQL, the
-    # optimizer log, raw data characterization — to the analysts via `task`.
+    # list_data_tables) are deliberately NOT here — they belong to the analyst subagents, since
+    # their large results would pile up in the lead's re-sent history (the input-token cost). The
+    # lead instead has get_fit_diagnosis (a COMPACT, size-bounded residual read) for cheap
+    # self-diagnosis, and DELEGATES the deep dives — full residual SQL, the optimizer log, raw
+    # data characterization — to the analysts via `task`.
 ]
 
 # The full set handed to create_deep_agent: the union of the lead's tools and every
@@ -191,7 +206,10 @@ TOOL_DESCRIPTIONS = {
             "then call fit ONCE to score them together — a one-edit change is cheaper as "
             "set_model(..., fit=true), which runs this same fit. "
             "Fits the free parameters (pyPESTO multistart), simulates, and returns the fit block "
-            "(neg_log_likelihood, chi2, bic, improvement, is_new_best) + a progress block + the new "
+            "(neg_log_likelihood, chi2, bic, improvement, is_new_best) + a progress block + "
+            "residual_structure (flagged_observables + summary: whether the model's FORM is still "
+            "incomplete — read it HERE, do not spend a get_fit_diagnosis call to ask) + the "
+            "noise-sigma verdict (noise_sigma_report/_inflated/_collapsed + advice) + the new "
             "version. Skips the refit and returns stored metrics if the model is identical to the "
             "current version (no_change: true). Args: n_starts? (REPLACES the server's default "
             "multistart count — describe_problem's fit_n_starts_default — so omit it unless you "
@@ -199,16 +217,24 @@ TOOL_DESCRIPTIONS = {
             "is what actually ran), justification?."),
     "describe_problem": "Orientation: whether a model exists (model_initialized), table/entity counts, current version, whether the working model has unfit edits (has_unfit_edits), and the multistart count a fit uses by default (fit_n_starts_default). Cheap.",
     "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law) — empty until a model is built.",
-    "get_parameters": ("Parameter table: id, bounds, scale, nominalValue (the fitted value), "
-                       "estimate flag. Fixed (estimate=0) rows include the observation-noise "
-                       "parameters (sigma_*) and the parametric initial conditions (*_init) — "
-                       "these belong to the noise / experimental model, NOT the kinetics, and "
-                       "must never appear in a rate law."),
+    "get_parameters": ("Parameter table, one row per parameter: id, bounds, scale, nominalValue "
+                       "(the fitted value), estimate flag, plus `role` (kinetic / noise_sigma / "
+                       "observable_scaling / initial_condition / exponent / constant) and `status` "
+                       "(estimated / fixed). Read `role` to keep roles straight: a noise_sigma or "
+                       "observable_scaling parameter belongs to the OBSERVATION model, not the "
+                       "kinetics, and must never appear in a rate law — whether or not it is "
+                       "estimated. Read `status` before adding parameters: every ESTIMATED one "
+                       "counts toward k and inflates bic however tight its bounds, and a symbol "
+                       "you introduce is added estimated. Do NOT assume sigma_* or *_init are "
+                       "fixed — noise sigmas are often estimated, and initial conditions are "
+                       "estimated by DEFAULT (only an IC of exactly 0 or 1 stays fixed)."),
     "get_fit_summary": "Current fit metrics only (neg_log_likelihood, chi2, n_data_points) — a cheap score check.",
-    "get_fit_diagnosis": ("COMPACT residual diagnosis (bounded): per-observable weighted chi2 + "
-                          "mean_weighted_residual (bias) + worst-N points (measurement vs "
-                          "simulation). Shows WHERE/HOW the fit is off cheaply. Arg: worst_n. For a "
-                          "full custom breakdown or the optimizer log, delegate to an analyst."),
+    "get_fit_diagnosis": ("The DETAIL behind the residual_structure verdict fit already gave you: "
+                          "per-observable weighted chi2 + mean_weighted_residual (bias) + sign/runs "
+                          "test p-values + worst-N points (measurement vs simulation). Call it to "
+                          "see WHERE/HOW the fit is off — not to ask WHETHER it is (fit answers "
+                          "that). Arg: worst_n. For a full custom breakdown or the optimizer log, "
+                          "delegate to an analyst."),
     "get_identifiability": ("COMPACT identifiability diagnosis (bounded): per-parameter standard "
                             "error + fold_uncertainty, marginal & partial correlations, near-flat "
                             "FIM eigen-directions (non-identifiable parameter COMBINATIONS), and "
@@ -1063,7 +1089,8 @@ def _decision_tool(session, finish_state=None, probe=None):
                     return (
                         f"FINISH REFUSED — this fit's bic rests on an implausible noise model: "
                         f"{advice} Fix the model FORM and refit; a finish resting on {which} noise "
-                        "is not accepted. (get_fit_summary/get_fit_diagnosis flag which observable.)"
+                        "is not accepted. (the fit result's noise_sigma_report, and "
+                        "get_fit_diagnosis, flag which observable.)"
                     )
                 print(f"[finish RELENTED] noise sigma still implausible after "
                       f"{state['sigma_refusals']} refusals — allowing finish at its honest score")

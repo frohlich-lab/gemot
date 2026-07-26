@@ -14,11 +14,25 @@ is not a dependency of the petab-mcp package (only of the examples harness).
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
 
 _AGENT_PY = Path(__file__).resolve().parents[1] / "examples" / "_harness" / "agent.py"
+
+
+def _load_by_path(name, path):
+    """Load a harness module in isolation, by file path — see _load_agent_module.
+
+    Registered in ``sys.modules`` before exec: ``@dataclass`` resolves a class's module through
+    ``sys.modules[cls.__module__]``, so a module that defines one (scenario.py) fails to import
+    without it."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _load_agent_module():
@@ -233,3 +247,68 @@ def test_dedupe_also_collapses_the_raw_additional_kwargs_copy():
     ai = next(m for m in messages if getattr(m, "tool_calls", None))
     assert len(ai.tool_calls) == 1
     assert len(ai.additional_kwargs.get("tool_calls", [])) == 1
+
+
+# -- the lead's curated tool surface (issue #113 follow-up) -------------------
+def test_lead_does_not_carry_get_fit_summary_but_the_analysts_do():
+    """`fit` returns the whole fit block — metrics, bic, the noise-sigma verdict, the
+    residual_structure verdict — so for the LEAD, the only agent that fits, get_fit_summary reads
+    back what it was just handed (9 calls against 451 fits in the measured sweep). It is dropped
+    from its list, since every tool's schema is re-sent every turn.
+
+    It must NOT be removed from the server: the analysts never fit, so it is their only score
+    read, and the harness's own finish gate and final scoring go through it too.
+    """
+    mod = _load_agent_module()
+    assert "get_fit_summary" not in mod.ORCHESTRATOR_TOOLS
+    assert "fit" in mod.ORCHESTRATOR_TOOLS
+    # still reachable for everyone who cannot get the score from a fit result
+    assert "get_fit_summary" in mod.MATHEMATICIAN_TOOLS
+    assert "get_fit_summary" in mod.SIGNAL_ENGINEER_TOOLS
+    assert "get_fit_summary" in mod.ALLOWED_TOOLS
+    # and the panel still has a description for it (ALLOWED_TOOLS is what the panel ever sees)
+    assert "get_fit_summary" in mod.TOOL_DESCRIPTIONS
+
+
+def test_the_lead_is_never_told_to_call_a_tool_it_does_not_have():
+    """A prompt that points the lead at a tool missing from its list burns a step on a call that
+    cannot dispatch. Guards the get_fit_summary removal above against the prompt text drifting
+    back — the lead's system prompt lives in scenario.py, separately from its tool list."""
+    mod = _load_agent_module()
+    scenario = _load_by_path("_harness_scenario_under_test",
+                             _AGENT_PY.parent / "scenario.py")
+
+    lead_prompt = scenario.DEFAULT_SYSTEM_PROMPT
+    assert "get_fit_diagnosis" in lead_prompt, "sanity: this IS the lead's tool-naming prompt"
+
+    # The general rule: no tool the panel has but the LEAD does not may be named in the lead's
+    # prompt. Delegated reads (get_measurements, query_data, get_fitting_log, list_data_tables)
+    # and get_fit_summary belong to the analysts / the harness's own polls, so the prompt must
+    # describe them as work to DELEGATE, never as a call for the lead to make.
+    not_the_leads = sorted(t for t in mod.ALLOWED_TOOLS if t not in mod.ORCHESTRATOR_TOOLS)
+    assert not_the_leads, "sanity: some tools are analyst-only"
+    named = [t for t in not_the_leads if t in lead_prompt]
+    assert named == [], f"lead prompt names tools it cannot call: {named}"
+
+    # the panel-facing override for `fit` is lead-facing too
+    assert "get_fit_summary" not in mod.TOOL_DESCRIPTIONS["fit"]
+    # (the harness's OWN internal polls still call get_fit_summary — see _current_fit — which is
+    # why this checks the lead-facing text rather than the module source.)
+
+
+def test_get_parameters_description_does_not_contradict_the_parameter_table():
+    """The lead-facing description REPLACES the server docstring, so a wrong claim there is what
+    the model believes. It used to state that sigma_* and *_init rows are fixed (estimate=0):
+    initial conditions have been estimated by DEFAULT since #90 (only an IC of exactly 0 or 1
+    stays fixed), and an estimated noise sigma is the whole premise of the noise-sigma verdict.
+    """
+    mod = _load_agent_module()
+    desc = mod.TOOL_DESCRIPTIONS["get_parameters"]
+
+    # it must not assert the fixed-ness that reconcile contradicts
+    assert "estimate=0" not in desc
+    assert "estimated by DEFAULT" in desc or "estimated by default" in desc
+    # and it must name the two annotations the tool exists to surface
+    assert "role" in desc and "status" in desc
+    for role in ("kinetic", "noise_sigma", "observable_scaling", "initial_condition"):
+        assert role in desc, role
