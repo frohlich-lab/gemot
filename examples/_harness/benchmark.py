@@ -249,7 +249,8 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
 
 
 def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
-                        collection: Path | None = None) -> dict[str, Any]:
+                        collection: Path | None = None,
+                        param_overrides: dict[str, dict] | None = None) -> dict[str, Any]:
     """Regenerate the committed ``reference.json`` (the BIC bar): fit the PRISTINE published PEtab
     problem EXACTLY as it ships. Run only via ``setup.py --refit`` — slow, and its output is committed.
 
@@ -264,6 +265,15 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
 
     The candidate still fits the SAME data (materialize copies the collection's measurements/
     observables verbatim), so ``n`` matches; ``k`` is the published table's estimated-parameter count.
+
+    ``param_overrides`` ``{parameter_id: {column: value}}`` is a deliberate, per-example EXCEPTION to
+    "pristine": it edits the published parameter table before the reference is fit. Use it ONLY to
+    repair a published NOISE MODEL that ΔBIC cannot be computed against, and only when the SAME
+    override is applied to the candidate's table via ``materialize(shipped_param_overrides=...)`` —
+    otherwise the two sides are scored under different noise models and ΔBIC is meaningless. It must
+    NOT be used to carry the candidate's IC / parametrisation conventions into the reference: that is
+    the reconcile-mirroring #90 warns about, and it cancels shared handicaps instead of measuring
+    them. Every use needs an entry in ``examples/BENCHMARK_NOTES.md`` (see oliveira).
     """
     from _harness.simulate import write_reference_from_problem
 
@@ -271,6 +281,21 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     # The pristine published problem (shipped SBML + full published parameter table + data),
     # flattened if it uses per-measurement output overrides — the same load materialize uses.
     problem = _load_problem(name, collection)
+    if param_overrides:
+        unknown = sorted(set(param_overrides) - set(problem.parameter_df.index))
+        if unknown:
+            raise KeyError(f"{name}: param_overrides names parameters absent from the published "
+                           f"table: {unknown}")
+        for col in ("nominalValue", "lowerBound", "upperBound"):
+            if col in problem.parameter_df.columns:
+                problem.parameter_df[col] = problem.parameter_df[col].astype(float)
+        for pid, cells in param_overrides.items():
+            for col, val in cells.items():
+                problem.parameter_df.loc[pid, col] = val
+        if "estimate" in problem.parameter_df.columns:
+            problem.parameter_df["estimate"] = problem.parameter_df["estimate"].astype("int64")
+        print(f"[setup] {name}: reference is NOT pristine — param_overrides applied to "
+              f"{sorted(param_overrides)} (see BENCHMARK_NOTES.md)")
     return write_reference_from_problem(
         problem, build_dir=Path(example_dir) / ".gen_build" / "pristine",
         model_name=f"{name}_pristine", path=problem_dir / "reference.json",
