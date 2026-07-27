@@ -15,9 +15,7 @@ from __future__ import annotations
 
 import os
 import shutil
-import sys
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -231,7 +229,7 @@ def fit_reference(
     pp = importer.create_problem()
     # Cap each start's wall time exactly as the server's candidate fit does, so the reference and
     # candidate optimizers agree and ΔBIC parity holds, and parallelise the multistart the same way
-    # (a one-time offline fit — MultiProcessEngine just makes it faster; see _harness/fit_budget.py).
+    # (a one-time offline fit — MultiProcessEngine just makes it faster; see fit_budget.py).
     from .fit_budget import fides_maxtime_options, fit_engine
     optimizer = pypesto.optimize.FidesOptimizer(
         verbose=_logging.ERROR, options=fides_maxtime_options())
@@ -276,7 +274,6 @@ def _effective_reference_sigmas(problem, raw: dict) -> dict:
     amplitude can trade scale against sigma and land on an IDENTICAL sd while its raw sigma differs
     several-fold — judging raw values fails a model whose noise level equals the truth's.
     """
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
     from petab_mcp import reconcile as _reconcile
 
     out: dict = {}
@@ -336,7 +333,6 @@ def write_reference(
         _problem = _petab.Problem(
             model=None, condition_df=condition_df, observable_df=observable_df,
             measurement_df=measurement_df, parameter_df=parameter_df)
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
         from petab_mcp import reconcile as _reconcile
 
         sigma_ids = _reconcile.plausibility_sigma_ids(_problem)
@@ -449,7 +445,6 @@ def _reference_noise_sigmas(problem, pp, result, pdf, x_full_used=None) -> dict:
     from petab.v1.C import NOMINAL_VALUE
     from petab.v1.parameters import unscale
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
     from petab_mcp import reconcile as _reconcile
 
     sigma_ids = _reconcile.plausibility_sigma_ids(problem)

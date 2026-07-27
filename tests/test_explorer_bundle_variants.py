@@ -3,33 +3,18 @@
 Both halves of the explorer's variant trajectory used to key on the ``fit`` tool span. Now that a
 coherent change is normally one ``set_model(..., fit=true)`` call, a run can emit **zero** ``fit``
 spans — a fit-only filter would rebuild an empty trajectory and flag every variant ``no_turn``.
-These tests pin the widened matching (``examples/_harness/explorer/bundle.py``).
+These tests pin the widened matching (``petab_harness.explorer.bundle``).
 """
 
 from __future__ import annotations
 
-import importlib.util
 import json
-from pathlib import Path
 
 import pytest
 
 pd = pytest.importorskip("pandas")
 
-_BUNDLE_PY = (Path(__file__).resolve().parents[1]
-              / "examples" / "_harness" / "explorer" / "bundle.py")
-
-
-def _load_bundle_module():
-    """Load bundle.py by file path — it only touches stdlib at import time, so this avoids the
-    heavy `_harness` package __init__ (phoenix, petab_mcp)."""
-    spec = importlib.util.spec_from_file_location("_explorer_bundle_under_test", _BUNDLE_PY)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-B = _load_bundle_module()
+from petab_harness.explorer import bundle as B  # noqa: E402
 
 
 def _span_output(result: dict) -> str:

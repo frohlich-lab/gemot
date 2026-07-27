@@ -15,19 +15,20 @@ import json
 import shutil
 from pathlib import Path
 
+from .. import paths
+
 # per-version files worth keeping — small + sufficient for the trajectory panel. The big
 # pypesto_result.hdf5 / optimization.json are deliberately skipped to keep the archive lean.
 _VERSION_FILES = ("meta.json", "model.ant", "parameters.tsv", "simulations.json")
 
 
 def default_archive_root() -> Path:
-    # examples/_harness/explorer/archive.py -> examples/_runs_archive
-    return Path(__file__).resolve().parents[2] / "_runs_archive"
+    return paths.runs_archive_root()
 
 
 def default_examples_root() -> Path:
-    # examples/_harness/explorer/archive.py -> examples/  (holds each example's live work/)
-    return Path(__file__).resolve().parents[2]
+    # holds each example's live work/
+    return paths.examples_root()
 
 
 # Marker file the runner writes into ``work/`` while a run is in flight (see

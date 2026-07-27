@@ -1,6 +1,6 @@
 """Sweep-aggregation triage: don't score infrastructure-aborted runs as modeling failures.
 
-Covers issue #62. The unit under test is the abort triage in ``examples/_harness/experiments.py``:
+Covers issue #62. The unit under test is the abort triage in ``petab_harness.experiments``:
 
   * an INSTANT infrastructure abort before any work (out-of-credits 402, dropped connection,
     a scoring float() crash) with ``n_ops==0 && n_fits==0`` is EXCLUDED from the success/ΔBIC
@@ -9,31 +9,15 @@ Covers issue #62. The unit under test is the abort triage in ``examples/_harness
     is KEPT — its best-achieved ΔBIC is a valid partial result;
   * genuine outcomes (completed, wall-time budget, recursion limit) are always kept.
 
-The module is loaded straight from its file so the test needs neither the ``phoenix`` client nor
-the rest of the (heavy) harness — only stdlib + ``experiments.py`` itself.
+``experiments`` imports ``phoenix`` lazily and ``petab_harness``'s ``__init__`` is lazy too, so the
+test needs neither the ``phoenix`` client nor the rest of the (heavy) harness — only stdlib.
 """
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
 import pytest
 
-_EXPERIMENTS = (Path(__file__).resolve().parents[1]
-                / "examples" / "_harness" / "experiments.py")
-
-
-def _load_experiments():
-    spec = importlib.util.spec_from_file_location(
-        "_harness_experiments_under_test", _EXPERIMENTS)
-    mod = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(mod)
-    return mod
-
-
-experiments = _load_experiments()
+from petab_harness import experiments
 
 
 def _row(**over):

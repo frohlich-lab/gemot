@@ -9,8 +9,6 @@ pinned to the actual class. langchain_core is a harness dep, so skip where absen
 from __future__ import annotations
 
 import asyncio
-import importlib.util
-from pathlib import Path
 
 import pytest
 
@@ -18,14 +16,11 @@ pytest.importorskip("langchain_core", reason="harness-only dependency")
 anyio = pytest.importorskip("anyio")
 httpx = pytest.importorskip("httpx")
 
-_AGENT_PY = Path(__file__).resolve().parents[1] / "examples" / "_harness" / "agent.py"
+from petab_harness.agent import circuit_breaker as _breaker  # noqa: E402
 
 
 def _load_agent():
-    spec = importlib.util.spec_from_file_location("_harness_agent_breaker", _AGENT_PY)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return _breaker
 
 
 class _Tool:

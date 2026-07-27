@@ -1,22 +1,16 @@
 """Test the residual-structure block the judge writes into result.json
-(examples/_harness/runner.py `_residual_structure_fields`).
+(petab_harness.runner.scoring `_residual_structure_fields`).
 
-Pure projection of a get_fit_diagnosis payload; importing the harness runner pulls in `mcp`,
-so skip where that harness-only dependency is absent."""
+Pure projection of a get_fit_diagnosis payload. ``runner.scoring`` shares its thresholds with
+the server's own adequacy gate, so it needs `petab_mcp` — but not `mcp`; skip where that is
+absent."""
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 
-_EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
-if str(_EXAMPLES) not in sys.path:
-    sys.path.insert(0, str(_EXAMPLES))
-
-pytest.importorskip("mcp", reason="harness-only dependency")
-from _harness.runner import (  # noqa: E402
+pytest.importorskip("petab_mcp", reason="the shared sigma thresholds live there")
+from petab_harness.runner.scoring import (  # noqa: E402
     _NOISE_SIGMA_COLLAPSE_FRACTION,
     _noise_sigma_flag,
     _residual_structure_fields,

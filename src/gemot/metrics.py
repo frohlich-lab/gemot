@@ -27,6 +27,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from . import paths
+
 # Outcome columns copied straight from result.json.
 _RESULT_FIELDS = (
     "scenario", "example_version", "model", "driver", "success", "stop_reason",
@@ -48,7 +50,7 @@ _PHOENIX_FIELDS = (
 )
 
 HISTORY_FIELDS = _RESULT_FIELDS + _PHOENIX_FIELDS
-DEFAULT_HISTORY = Path(__file__).resolve().parent / "metrics_history.csv"
+DEFAULT_HISTORY = paths.metrics_history()
 
 
 def _parse_iso(value: str | None) -> dt.datetime | None:

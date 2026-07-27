@@ -1,5 +1,5 @@
 """Tests for the biocurator's EuropePMC payload trim (``_trim_europepmc_search`` in
-``_harness.agent``).
+``petab_harness.agent.literature``).
 
 ``get_europepmc_articles`` returns ``resultType=core`` records — for each hit the FULL
 bibliographic record (author/affiliation/MeSH/grant/chemical lists, cross-references, full-text
@@ -9,23 +9,17 @@ modelling-relevant fields and drops the rest. langchain_core is a harness dep, s
 
 from __future__ import annotations
 
-import importlib.util
 import json
-from pathlib import Path
 
 import pytest
 
 pytest.importorskip("langchain_core", reason="harness-only dependency")
 
-_AGENT_PY = Path(__file__).resolve().parents[1] / "examples" / "_harness" / "agent.py"
+from petab_harness.agent import literature as _literature  # noqa: E402
 
 
 def _load_agent_module():
-    spec = importlib.util.spec_from_file_location("_harness_agent_trim", _AGENT_PY)
-    assert spec is not None and spec.loader is not None, f"Unable to load agent module from {_AGENT_PY}"
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _literature
 
 
 def _core_payload():

@@ -1,12 +1,13 @@
-"""Tests for the biocurator bio-MCP session isolation (examples/_harness/bio_sessions.py).
+"""Tests for the biocurator bio-MCP session isolation (petab_harness.bio_sessions).
 
 Covers issue #86: a transport failure on a hosted bio-knowledge MCP session used to abort the
 whole deepagents run. ``open_bio_sessions`` now runs each session in its own supervised, detached
 ``asyncio`` task, so a failure at connect OR mid-run degrades the biocurator instead of aborting
 the run.
 
-``bio_sessions.py`` imports ``mcp`` LAZILY (only inside the real opener), so these tests load it by
-file path and inject a FAKE opener — no ``mcp``, no ``langchain``, no network, no live bio servers.
+``bio_sessions`` imports ``mcp`` LAZILY (only inside the real opener), and ``petab_harness``'s own
+``__init__`` is lazy too, so these tests just import it and inject a FAKE opener — no ``mcp``, no
+``langchain``, no network, no live bio servers.
 The supervision/teardown logic is pure ``asyncio`` and always runs; the end-to-end transport abort
 can only be exercised against a live server (see tests/test_biocurator_tools.py, which skips
 offline). Each async case is driven with ``asyncio.run`` so no pytest-asyncio config is needed.
@@ -16,28 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import importlib.util
 import time
-from pathlib import Path
 
-_BIO_SESSIONS_PY = (
-    Path(__file__).resolve().parents[1] / "examples" / "_harness" / "bio_sessions.py"
-)
-
-
-def _load_bio_sessions():
-    """Load bio_sessions.py in isolation (by file path) so no ``mcp``/``_harness`` package import
-    is needed (mirrors tests/test_agent_tool_dispatch.py). Its ``mcp`` import is lazy, inside the
-    default opener, which the tests never call."""
-    spec = importlib.util.spec_from_file_location("_bio_sessions_under_test", _BIO_SESSIONS_PY)
-    if spec is None or spec.loader is None:  # missing/misplaced file -> a clear error, not an AttributeError
-        raise ImportError(f"could not load bio_sessions.py from {_BIO_SESSIONS_PY}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-bio = _load_bio_sessions()
+from petab_harness import bio_sessions as bio
 
 
 # --------------------------------------------------------------------- fake sessions + openers

@@ -1,4 +1,4 @@
-"""Wiring test for the hidden sigma gate in ``runner._judge``:
+"""Wiring test for the hidden sigma gate in ``runner.judge._judge``:
 
     success = bic_pass AND not sigma_implausible
 
@@ -13,18 +13,18 @@ runs as passes. Importing the harness runner pulls in ``mcp``, so skip where tha
 from __future__ import annotations
 
 import asyncio
-import sys
 import time
 from pathlib import Path
 
 import pytest
 
-_EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
-if str(_EXAMPLES) not in sys.path:
-    sys.path.insert(0, str(_EXAMPLES))
-
 pytest.importorskip("mcp", reason="harness-only dependency")
-from _harness.runner import _NOISE_SIGMA_COLLAPSE_FRACTION, _ToolClock, _judge  # noqa: E402
+from petab_harness.runner import (  # noqa: E402
+    _NOISE_SIGMA_COLLAPSE_FRACTION,
+    _judge,
+    _reference_sigma_flag,
+    _ToolClock,
+)
 
 
 def _sigma_entry(fitted, cap, frac):
@@ -124,7 +124,6 @@ def test_bad_bic_fails_despite_plausible_sigma(tmp_path):
 
 # --- Design A: judge the sigma against the TRUE model's own fitted sigma (#118) --------------
 def _ref_flag(fitted, ref_sigma):
-    from _harness.runner import _reference_sigma_flag
     return _reference_sigma_flag({"s": {"fitted": fitted}}, {"noise_sigma": {"s": ref_sigma}})
 
 
@@ -152,7 +151,6 @@ def test_reference_sigma_flag_catches_both_tails():
 def test_reference_sigma_flag_is_none_without_recorded_reference_sigmas():
     """An older reference.json carries only {nll,k,n}; the judge must fall back to the data-std
     band rather than silently passing everything."""
-    from _harness.runner import _reference_sigma_flag
     assert _reference_sigma_flag({"s": {"fitted": 0.1}}, {"nll": 1.0, "k": 2, "n": 3}) is None
     assert _reference_sigma_flag({"s": {"fitted": 0.1}}, {"noise_sigma": {}}) is None
     assert _reference_sigma_flag({}, {"noise_sigma": {"s": 0.1}}) is None
@@ -163,7 +161,6 @@ def test_reference_sigma_pairs_a_lone_sigma_across_an_id_mismatch():
     materialized ones (perelson ships `sd_viral_load`; the collection calls it
     `sd_task0_model0_perelson1_V`). With exactly ONE sigma on each side the pairing is unambiguous,
     so match positionally rather than silently losing the comparison."""
-    from _harness.runner import _reference_sigma_flag
     f = _reference_sigma_flag({"sd_viral_load": {"fitted": 0.12}},
                               {"noise_sigma": {"sd_task0_model0_perelson1_V": 0.1228}})
     assert f is not None and not f["inflated"] and not f["collapsed"]
@@ -171,7 +168,6 @@ def test_reference_sigma_pairs_a_lone_sigma_across_an_id_mismatch():
 
 def test_reference_sigma_does_not_guess_when_several_sigmas_mismatch():
     """More than one sigma on either side -> stay id-matched: a WRONG pairing is worse than none."""
-    from _harness.runner import _reference_sigma_flag
     assert _reference_sigma_flag(
         {"a": {"fitted": 0.1}, "b": {"fitted": 0.2}},
         {"noise_sigma": {"x": 0.1, "y": 99.0}}) is None
@@ -181,7 +177,6 @@ def test_reference_gate_judges_effective_sigma_when_available():
     """A composite sd (scale*sigma) is only comparable across models as the PRODUCT: a candidate at
     a different amplitude trades scale against sigma and reaches an identical sd with a raw sigma
     several-fold off. Judged raw it fails for matching the truth; judged effective it passes."""
-    from _harness.runner import _reference_sigma_flag
     # truth: scale 4.0 * sigma 0.25 = 1.0. Candidate: scale 0.8 * sigma 1.25 = 1.0 (same sd).
     report = {"sd_o": {"fitted": 1.25, "effective_sigma": 1.0}}
     reference = {"noise_sigma": {"sd_o": 0.25}, "noise_sigma_effective": {"sd_o": 1.0}}

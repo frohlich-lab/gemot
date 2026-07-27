@@ -4,21 +4,15 @@ harness-only dependency, so skip where absent."""
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
 import pytest
 
 pytest.importorskip("langchain_core", reason="harness-only dependency")
 
-_AGENT_PY = Path(__file__).resolve().parents[1] / "examples" / "_harness" / "agent.py"
+from petab_harness.agent import token_usage as _token_usage  # noqa: E402
 
 
 def _load_agent_module():
-    spec = importlib.util.spec_from_file_location("_harness_agent_tok", _AGENT_PY)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _token_usage
 
 
 def _resp(usage_list=None, llm_output=None):

@@ -13,12 +13,8 @@ monkeypatched/needed; skip cleanly where absent.
 from __future__ import annotations
 
 import importlib.util
-import sys
-from pathlib import Path
 
 import pytest
-
-_EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
 
 def _have(mod: str) -> bool:
@@ -36,12 +32,8 @@ requires_harness = pytest.mark.skipif(
 
 
 def _load_agent_module():
-    # Import as the real _harness.agent package module (NOT the isolation-by-path loader the
-    # other tests use): run_deepagents does relative imports (from .fit_budget import ...) that
-    # only resolve with the package context.
-    if str(_EXAMPLES) not in sys.path:
-        sys.path.insert(0, str(_EXAMPLES))
-    from _harness import agent
+    from petab_harness import agent
+
     return agent
 
 
@@ -93,7 +85,7 @@ def _run(mod, monkeypatch, probe, confirm_after=None):
         fake_agent.captured["fs"] = finish_state
         return _real_decision_tool(session, finish_state, probe=probe)
 
-    monkeypatch.setattr(mod, "_decision_tool", _capturing_decision_tool)
+    monkeypatch.setattr(mod.driver, "_decision_tool", _capturing_decision_tool)
 
     # Real (inert) tool objects named per ALLOWED_TOOLS so _select_tools' curation passes; the
     # faked create_deep_agent ignores them, so they are never actually invoked.

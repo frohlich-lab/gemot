@@ -4,7 +4,7 @@ deepagents auto-inserts a `general-purpose` subagent holding the FULL tool pool 
 active harness profile disables it. We never curated it, and it broke the panel two ways in
 sweep 50751606: the lead delegated to it and it called `set_model` (9x), `fit` and
 `change_parameters` INSIDE a subagent — bypassing lead-only authoring — and 39% of its tool
-calls were unused filesystem builtins. ``examples/_harness/agent.py`` now registers a
+calls were unused filesystem builtins. ``petab_harness.agent`` now registers a
 ``HarnessProfile`` turning that auto-add off.
 
 The roster + lead-only-authoring assertions are dependency-free and always run. The last test
@@ -14,24 +14,9 @@ examples-harness requirements; it skips anywhere they are absent).
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
 import pytest
 
-_AGENT_PY = Path(__file__).resolve().parents[1] / "examples" / "_harness" / "agent.py"
-
-
-def _load_agent_module():
-    """Load agent.py in isolation (by file path) so the heavy _harness package __init__ is not
-    imported (mirrors tests/test_agent_tool_dispatch.py)."""
-    spec = importlib.util.spec_from_file_location("_harness_subagents_under_test", _AGENT_PY)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-agent = _load_agent_module()
+from petab_harness import agent
 
 _EDITORS = ("set_model", "fit", "change_parameters")
 

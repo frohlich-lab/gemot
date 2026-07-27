@@ -27,8 +27,12 @@ batches on a compute node.
 
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 from typing import Any
+
+from . import paths
 
 # observableParameter1_x / noiseParameter1_x placeholders in observable/noise formulas are
 # resolved from the measurement table at real PEtab-import time; for a standalone structural
@@ -167,10 +171,7 @@ def coupling_jaccard(
 # Runs the eval over ALREADY-COMPLETED runs (their archived model.ant), so it can be shimmed
 # onto sweeps that finished before this eval existed. Building the symbolic model is real CPU
 # (sympy) — run a whole-archive batch on a compute node (srun/sbatch), not the login node.
-import json  # noqa: E402
-from pathlib import Path  # noqa: E402
-
-_EXAMPLES_ROOT = Path(__file__).resolve().parents[1]  # examples/
+_EXAMPLES_ROOT = paths.examples_root()
 
 
 def observable_formulas(example: str) -> dict[str, str]:

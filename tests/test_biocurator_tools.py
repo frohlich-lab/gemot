@@ -1,8 +1,8 @@
 """CI guard: the curated biocurator tool names must still resolve on the live bio MCP servers.
 
-The biocurator (examples/_harness/agent.py) is handed a CURATED allowlist of tool names
+The biocurator (petab_harness.agent) is handed a CURATED allowlist of tool names
 (DEFAULT_BIO_TOOLS + LITERATURE_BIO_TOOLS) resolved against the hardcoded bio MCP endpoints
-(runner.BIO_MCP_URLS: BioContextAI + OmniPath). There is no all-tools fallback, so if an upstream
+(runner.endpoints.BIO_MCP_URLS: BioContextAI + OmniPath). There is no all-tools fallback, so if an upstream
 server RENAMES or drops a tool the curated names silently stop matching and the biocurator runs
 "dumb" (tool-less) on every run. This test connects to the live servers and asserts every curated
 name is still exposed, so a rename is caught in CI rather than silently degrading the benchmark.
@@ -15,31 +15,29 @@ missing.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
-import re
-from pathlib import Path
 
 import pytest
 
-_HARNESS = Path(__file__).resolve().parents[1] / "examples" / "_harness"
 _CONNECT_TIMEOUT_S = 30.0
 
 
 def _load_agent():
-    """Load agent.py in isolation (by path) to read its curated tool-name sets without importing
-    the heavy ``_harness`` package (mirrors tests/test_agent_tool_dispatch.py)."""
-    spec = importlib.util.spec_from_file_location(
-        "_biocurator_agent_under_test", _HARNESS / "agent.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    """The agent package, for its curated tool-name sets. Import-light: `petab_harness.__init__`
+    is lazy and the agent submodules only touch stdlib at import time."""
+    from petab_harness import agent
+
+    return agent
 
 
 def _bio_urls() -> "list[str]":
-    """The bio MCP endpoint URLs, read from runner.py's constants so this stays in sync."""
-    src = (_HARNESS / "runner.py").read_text()
-    return re.findall(r'_(?:BIOCONTEXT|OMNIPATH)_MCP_URL\s*=\s*"([^"]+)"', src)
+    """The bio MCP endpoint URLs the biocurator is pointed at.
+
+    ``runner.endpoints`` holds nothing but these constants and imports nothing, so this is a real
+    import rather than the regex-over-runner.py-source it used to be — which would go silently
+    empty, and so vacuously green, the moment that file was reorganised."""
+    from petab_harness.runner.endpoints import BIO_MCP_URLS
+
+    return list(BIO_MCP_URLS)
 
 
 async def _discover_tool_names(urls: "list[str]") -> "set[str]":
@@ -65,7 +63,7 @@ def test_curated_biocurator_tool_names_resolve_on_live_servers():
     assert curated, "no curated biocurator tool names defined"
 
     urls = _bio_urls()
-    assert urls, "no bio MCP URLs found in runner.py (constant renamed?)"
+    assert urls, "no bio MCP URLs found (constant renamed?)"
 
     try:
         import mcp  # noqa: F401

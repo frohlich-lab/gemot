@@ -1,4 +1,4 @@
-"""Tests for the biocurator input channel (examples/_harness/agent.py) — issue #91.
+"""Tests for the biocurator input channel (petab_harness.agent) — issue #91.
 
 The deepagents ``task`` tool delivers only a free-text ``description`` to a subagent; a lead that
 stuffs the biocurator's entity names into a ``prompt=`` argument has them SILENTLY DROPPED. The
@@ -20,20 +20,7 @@ from pathlib import Path
 
 import pytest
 
-_AGENT_PY = Path(__file__).resolve().parents[1] / "examples" / "_harness" / "agent.py"
-
-
-def _load_agent_module():
-    """Load agent.py in isolation (by file path) so the heavy _harness package __init__ is not
-    imported. agent.py only touches stdlib at import time (langchain/deepagents imports are lazy,
-    inside the driver functions)."""
-    spec = importlib.util.spec_from_file_location("_harness_agent_biocurator_input", _AGENT_PY)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-agent = _load_agent_module()
+from petab_harness import agent, scenario
 
 
 # --------------------------------------------------------------------- _unexpected_task_kwargs
@@ -98,29 +85,20 @@ def test_build_biocurator_subagent_without_names_leaves_prompt_unchanged():
 # --------------------------------------------------------------------- per-scenario curation
 def test_scenario_has_biocurator_entities_field():
     """The Scenario dataclass carries a hand-curated biocurator_entities list (default empty)."""
-    import sys
+    mod = scenario
 
-    scen_path = Path(__file__).resolve().parents[1] / "examples" / "_harness" / "scenario.py"
-    spec = importlib.util.spec_from_file_location("_scenario_field_test", scen_path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = mod  # register so dataclasses can resolve the string annotations
-    try:
-        spec.loader.exec_module(mod)
+    async def _noop(call, n):
+        return None
 
-        async def _noop(call, n):
-            return None
-
-        default = mod.Scenario(name="x", problem_dir=Path("/tmp"), scripted_fix=_noop)
-        assert default.biocurator_entities == []
-        # the mutable default must not be shared between instances
-        default.biocurator_entities.append("LEAK")
-        assert mod.Scenario(name="z", problem_dir=Path("/tmp"),
-                            scripted_fix=_noop).biocurator_entities == []
-        set_ = mod.Scenario(name="y", problem_dir=Path("/tmp"), scripted_fix=_noop,
-                            biocurator_entities=["STAT5A", "STAT5B"])
-        assert set_.biocurator_entities == ["STAT5A", "STAT5B"]
-    finally:
-        sys.modules.pop(spec.name, None)
+    default = mod.Scenario(name="x", problem_dir=Path("/tmp"), scripted_fix=_noop)
+    assert default.biocurator_entities == []
+    # the mutable default must not be shared between instances
+    default.biocurator_entities.append("LEAK")
+    assert mod.Scenario(name="z", problem_dir=Path("/tmp"),
+                        scripted_fix=_noop).biocurator_entities == []
+    set_ = mod.Scenario(name="y", problem_dir=Path("/tmp"), scripted_fix=_noop,
+                        biocurator_entities=["STAT5A", "STAT5B"])
+    assert set_.biocurator_entities == ["STAT5A", "STAT5B"]
 
 
 def test_every_example_curates_biocurator_entities():

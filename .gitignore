@@ -26,7 +26,7 @@ examples/*/.gen_build/
 
 # Per-run metrics log appended by collect_metrics.py (generated; grows every run —
 # the durable history belongs to a CI/nightly job, not to dev commits)
-examples/_harness/metrics_history.csv
+examples/metrics_history.csv
 
 # Local Weights & Biases run artifacts (run.py --wandb writes ./wandb/; synced to the cloud)
 wandb/
@@ -45,7 +45,7 @@ slurm/runs/
 slurm/phoenix_data/
 slurm/explorer_data/
 
-# Local Phoenix working dir for the example harness (examples/_harness/__init__.py) --
+# Local Phoenix working dir for the example harness (petab_harness/paths.py) --
 # ephemeral trace data for locally-launched Phoenix apps / clients. Generated.
 .phoenix/
 

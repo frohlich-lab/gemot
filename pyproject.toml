@@ -40,10 +40,62 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pytest-asyncio>=0.23"]
+# Includes the agent stack: the harness tests drive the REAL deepagents/langchain graph (with a
+# scripted fake chat model -- no network, no MCP server), and every one of them is guarded by an
+# importorskip. Without these, `pip install -e '.[dev]' && pytest` silently SKIPS ~20 tests and
+# reports green, which is how a broken _trim_europepmc_search and an uncurated `general-purpose`
+# subagent (issue #112) each stayed invisible. Phoenix and W&B are deliberately NOT pulled in --
+# no test touches them, and they are much heavier than the driver itself.
+dev = ["pytest>=7", "pytest-asyncio>=0.23", "petab-mcp[agent]"]
+
+# The deepagents driver stack: what the analyst panel actually runs on, and the only part of the
+# harness the test suite exercises. Split out from `harness` so `dev` can depend on exactly this
+# much, and so the version pins have ONE home.
+agent = [
+    # deepagents 0.6.12 requires the langchain 1.x line (langchain-core>=1.4.8), so
+    # langchain-openai must also be on 1.x -- the old 0.3.0 pin caps langchain-core at <0.4
+    # and makes the set unresolvable / import-broken (langgraph 1.x expects langchain-core 1.x).
+    "deepagents==0.6.12",
+    # The MCP<->langchain bridge (load_mcp_tools). Not a dependency of either package above, so
+    # it has to be named: tests/test_run_loop_no_model.py's guard requires it, and without it
+    # that file -- the only coverage of run_deepagents' run loop -- skips in CI too.
+    "langchain-mcp-adapters==0.3.0",
+    "langchain-openai>=1.3,<2",
+]
+
+# The agent harness (`petab_harness`): the deepagents driver every example's run.py drives,
+# plus Phoenix tracing and W&B metrics logging. NOT needed for `--driver scripted` (the
+# no-LLM harness self-test), which needs only the petab-mcp server itself, nor for
+# regenerating an example's synthetic data (generate_data.py needs only amici + petab,
+# which the server install already provides).
+#
+# Reaching a model also needs an OpenRouter API key:
+#     export OPENROUTER_API_KEY=sk-or-...      # https://openrouter.ai/keys
+harness = [
+    "petab-mcp[agent]",
+    # Arize Phoenix agent tracing (ON by default; disable at runtime with --no-phoenix).
+    # Traces every LLM + MCP tool call the agent makes as OpenTelemetry spans viewable in the
+    # Phoenix UI. arize-phoenix-otel + the LangChain instrumentor EXPORT the spans; the full
+    # `arize-phoenix` package provides the local in-process UI the runner launches when no
+    # PHOENIX_COLLECTOR_ENDPOINT is set, and >=18 provides the run_experiment / Datasets /
+    # Prompt-registry API that examples/run_experiments.py uses.
+    "arize-phoenix>=18",
+    "arize-phoenix-otel>=0.6",
+    "openinference-instrumentation-langchain>=0.1",
+    # Weights & Biases metrics logging for the model x temperature sweep (opt-in via run.py
+    # --wandb). Cluster-friendly alternative analysis UI to Phoenix Experiments; logs one
+    # small W&B run per (example x model x temperature x repeat) with the judge outcome.
+    # Credentials via `wandb login` (~/.netrc); `WANDB_MODE=offline` + `wandb sync` survives
+    # an egress-restricted cluster.
+    "wandb>=0.18",
+]
+# The blinded bio-knowledge analyst (`biocurator`) needs NO extra dependency here: it reaches
+# the hardcoded bio-knowledge MCP endpoints (petab_harness.runner.endpoints.BIO_MCP_URLS) over
+# streamable-HTTP with the langchain-mcp-adapters / mcp client already pinned above.
+
 # Run-explorer web UI (examples/explore_ui.py): serves the archived runs + Phoenix trace.
-# The Phoenix client it reads traces through already ships with the examples harness
-# (examples/_harness/requirements.txt); these are just the web-serving deps.
+# The Phoenix client it reads traces through ships with the `harness` extra above; these are
+# just the web-serving deps.
 explorer = ["fastapi>=0.110", "uvicorn>=0.23", "jinja2>=3.1"]
 
 [project.scripts]
@@ -54,10 +106,12 @@ Homepage = "https://github.com/ffroehlich/petab_mcp"
 Repository = "https://github.com/ffroehlich/petab_mcp"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/petab_mcp"]
+# petab_harness (the examples' agent harness) ships alongside the server rather than as its
+# own distribution: it is only ever installed next to petab_mcp, from this repo.
+packages = ["src/petab_mcp", "src/petab_harness"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/petab_mcp", "tests", "README.md", "LICENSE"]
+include = ["src/petab_mcp", "src/petab_harness", "tests", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

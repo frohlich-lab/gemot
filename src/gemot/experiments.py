@@ -7,7 +7,7 @@ outcome (BIC pass / ΔBIC / χ² goodness-of-fit p / reduced χ²). Each experim
 *batch* over the fixed example set, so batches are directly comparable in the Experiments
 UI over time.
 
-**Prompt tracking.** Prompts stay in the repo (``scenario.py`` / ``agent.py`` are the
+**Prompt tracking.** Prompts stay in the repo (``prompts.py`` is the
 source of truth). Here we hash their content into a stable ``prompt_version`` and register
 each logical prompt into Phoenix's **Prompt registry** (Phoenix versions a prompt when its
 content changes), then tag every experiment with the ``prompt_version`` — so an experiment
@@ -30,18 +30,24 @@ DATASET_PREFIX = "petab-mcp-repair"
 def collect_prompts() -> dict[str, str]:
     """The repo's agent-facing prompts, keyed by a stable registry name.
 
-    Source of truth is the code; this just gathers the text so it can be hashed + mirrored
-    into Phoenix. The analyst persona constants already include the shared report contract.
+    Source of truth is :mod:`petab_harness.prompts`; this just gathers the text so it can be
+    hashed + mirrored into Phoenix. The analyst persona constants already include the shared
+    report contract.
+
+    The key set is deliberately NARROWER than the full prompt surface in ``prompts``: the
+    biocurator persona, the tool descriptions, the nudges and the finish-gate refusals are all
+    model-facing but unregistered. That predates the prompt file and is left alone here on
+    purpose — ``prompt_version`` hashes exactly these keys and is stamped into every experiment
+    row, so widening the set would renumber history. Widen it as its own deliberate change.
     """
-    from . import agent as A
-    from .scenario import DEFAULT_SYSTEM_PROMPT, DEFAULT_TASK
+    from . import prompts as P
 
     return {
-        "petab-lead-system": DEFAULT_SYSTEM_PROMPT,
-        "petab-lead-task": DEFAULT_TASK,
-        "petab-analyst-mathematician": A.MATHEMATICIAN_PROMPT,
-        "petab-analyst-systems-scientist": A.SYSTEMS_SCIENTIST_PROMPT,
-        "petab-analyst-signal-engineer": A.SIGNAL_ENGINEER_PROMPT,
+        "petab-lead-system": P.DEFAULT_SYSTEM_PROMPT,
+        "petab-lead-task": P.DEFAULT_TASK,
+        "petab-analyst-mathematician": P.MATHEMATICIAN_PROMPT,
+        "petab-analyst-systems-scientist": P.SYSTEMS_SCIENTIST_PROMPT,
+        "petab-analyst-signal-engineer": P.SIGNAL_ENGINEER_PROMPT,
     }
 
 

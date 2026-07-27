@@ -1,4 +1,4 @@
-"""Tests for the deepagents driver's tool-dispatch guard (examples/_harness/agent.py).
+"""Tests for the deepagents driver's tool-dispatch guard (petab_harness.agent).
 
 Covers issue #63: a class of runs (first seen on the blasi zero-shot build) that proposed
 tool calls every step but executed ZERO tools, terminating early with nothing built. The guard
@@ -14,38 +14,17 @@ is not a dependency of the petab-mcp package (only of the examples harness).
 from __future__ import annotations
 
 import importlib.util
-import sys
-from pathlib import Path
 
 import pytest
 
-_AGENT_PY = Path(__file__).resolve().parents[1] / "examples" / "_harness" / "agent.py"
-
-
-def _load_by_path(name, path):
-    """Load a harness module in isolation, by file path — see _load_agent_module.
-
-    Registered in ``sys.modules`` before exec: ``@dataclass`` resolves a class's module through
-    ``sys.modules[cls.__module__]``, so a module that defines one (scenario.py) fails to import
-    without it."""
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+from petab_harness import agent, scenario
 
 
 def _load_agent_module():
-    """Load agent.py in isolation (by file path) so the heavy _harness package __init__
-    (which pulls in petab_mcp / phoenix) is not imported. agent.py only touches stdlib at
-    import time — every langchain/deepagents import is lazy, inside the driver functions."""
-    spec = importlib.util.spec_from_file_location("_harness_agent_under_test", _AGENT_PY)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-agent = _load_agent_module()
+    """The agent package. `petab_harness.__init__` is lazy (PEP 562) and every agent submodule
+    imports only stdlib at module scope, so this pulls in no langchain / deepagents / petab_mcp
+    / phoenix — the pure helpers below stay testable with none of them installed."""
+    return agent
 
 
 # --------------------------------------------------------------------- pure de-dup helpers
@@ -273,11 +252,8 @@ def test_lead_does_not_carry_get_fit_summary_but_the_analysts_do():
 def test_the_lead_is_never_told_to_call_a_tool_it_does_not_have():
     """A prompt that points the lead at a tool missing from its list burns a step on a call that
     cannot dispatch. Guards the get_fit_summary removal above against the prompt text drifting
-    back — the lead's system prompt lives in scenario.py, separately from its tool list."""
+    back — the lead's system prompt lives in prompts.py, separately from its tool list."""
     mod = _load_agent_module()
-    scenario = _load_by_path("_harness_scenario_under_test",
-                             _AGENT_PY.parent / "scenario.py")
-
     lead_prompt = scenario.DEFAULT_SYSTEM_PROMPT
     assert "get_fit_diagnosis" in lead_prompt, "sanity: this IS the lead's tool-naming prompt"
 

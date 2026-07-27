@@ -1,4 +1,4 @@
-"""Tests for the lead's finish gate (examples/_harness/agent.py `_decision_tool`).
+"""Tests for the lead's finish gate (petab_harness.agent `_decision_tool`).
 
 The gate must: refuse a finish when there is no valid fit; refuse when the working model has
 edits since its last fit (stale metrics); and otherwise require TWO finish calls — the first
@@ -9,21 +9,15 @@ payloads); langchain_core is a harness dep, so skip where it is absent.
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
 import pytest
 
 pytest.importorskip("langchain_core", reason="harness-only dependency")
 
-_AGENT_PY = Path(__file__).resolve().parents[1] / "examples" / "_harness" / "agent.py"
+from petab_harness import agent as _agent  # noqa: E402
 
 
 def _load_agent_module():
-    spec = importlib.util.spec_from_file_location("_harness_agent_finish_gate", _AGENT_PY)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _agent
 
 
 class _FakeResult:
