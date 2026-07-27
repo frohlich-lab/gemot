@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
-pd = pytest.importorskip("pandas")
+import pandas as pd
 
 from petab_harness.explorer import bundle as B  # noqa: E402
 

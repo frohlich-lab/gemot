@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 from pathlib import Path
 
@@ -12,20 +11,12 @@ DATA_DIR = Path(__file__).parent / "data" / "toy_v1"
 YAML_PATH = DATA_DIR / "problem.yaml"
 
 
-def _ensure_swig_on_path() -> None:
-    if shutil.which("swig"):
-        return
-    try:
-        import swig
-
-        cand = Path(swig.__file__).resolve().parent / "data" / "bin"
-        if (cand / "swig").exists():
-            os.environ["PATH"] = str(cand) + os.pathsep + os.environ.get("PATH", "")
-    except Exception:
-        pass
-
-
 def pytest_configure(config):  # noqa: D401 - pytest hook
+    # The server package already owns this (AMICI compiles a C++ model per structure and needs
+    # the SWIG the wheel was built against). It used to be copy-pasted here as a third identical
+    # implementation; call the shipped one instead.
+    from petab_mcp.engine import _ensure_swig_on_path
+
     _ensure_swig_on_path()
 
 
@@ -71,6 +62,42 @@ def reauthor_toy():
         return session.fit()
 
     return _reauthor
+
+
+def _langchain_available() -> bool:
+    """Is the harness-only ``langchain`` importable, submodule and all?
+
+    Note the two-step probe: when ``langchain`` IS installed, reaching for the submodule may
+    raise ModuleNotFoundError from a broken install (a missing transitive dependency), and that
+    should surface rather than silently skipping the tests it guards.
+    """
+    import importlib.util
+
+    if importlib.util.find_spec("langchain") is None:
+        return False
+    return importlib.util.find_spec("langchain.agents") is not None
+
+
+#: Skip-marker for tests that build langchain middleware. Lives here because two test modules
+#: had byte-identical copies of it.
+requires_langchain = pytest.mark.skipif(
+    not _langchain_available(), reason="langchain (examples-harness only) not installed"
+)
+
+
+@pytest.fixture
+def broken_model():
+    """An ``SbmlModel`` missing entities the fixed observable/condition tables need, for tests
+    that assert validation rejects it. Built here rather than in the server package: the
+    production build path is ``operations.set_model`` -> ``SbmlModel.from_antimony``, so a
+    text->model helper is a test fixture, not shipped API."""
+    from petab.v1.models.sbml_model import SbmlModel
+
+    return SbmlModel.from_antimony(
+        "model conversion_reaction\n species A = 1;\n k1 = 0.5;\n"
+        " r1: A => ; k1 * A;\nend",
+        model_id="conversion_reaction",
+    )
 
 
 @pytest.fixture

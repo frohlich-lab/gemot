@@ -165,6 +165,7 @@ def fit_reference(
     build_dir: str | Path,
     model_name: str = "reference",
     n_starts: int = 24,
+    n_workers: int | None = None,
     seed: int = 0,
     seed_at_nominal: bool = False,
 ) -> tuple[dict[str, float], float]:
@@ -234,7 +235,7 @@ def fit_reference(
     optimizer = pypesto.optimize.FidesOptimizer(
         verbose=_logging.ERROR, options=fides_maxtime_options())
     result = pypesto.optimize.minimize(
-        pp, optimizer=optimizer, n_starts=n_starts, engine=fit_engine(n_starts),
+        pp, optimizer=optimizer, n_starts=n_starts, engine=fit_engine(n_starts, n_workers),
         progress_bar=False)
     best = result.optimize_result.list[0]
     nll = float(best["fval"])
@@ -360,6 +361,7 @@ def write_reference_from_problem(
     model_name: str,
     path: str | Path,
     n_starts: int = 50,
+    n_workers: int | None = None,
     seed: int = 0,
     seed_at_nominal: bool = True,
 ) -> dict:
@@ -406,7 +408,7 @@ def write_reference_from_problem(
     optimizer = pypesto.optimize.FidesOptimizer(
         verbose=_logging.ERROR, options=fides_maxtime_options())
     result = pypesto.optimize.minimize(
-        pp, optimizer=optimizer, n_starts=n_starts, engine=fit_engine(n_starts),
+        pp, optimizer=optimizer, n_starts=n_starts, engine=fit_engine(n_starts, n_workers),
         progress_bar=False)
     nll = float(result.optimize_result.list[0]["fval"])
 

@@ -183,24 +183,40 @@ def observable_formulas(example: str) -> dict[str, str]:
     return {str(r[OBSERVABLE_ID]): str(r[OBSERVABLE_FORMULA]) for _, r in df.iterrows()}
 
 
-def reference_coupling(example: str) -> tuple[list[list[str]], int]:
-    """The (cached) reference observable-coupling for an example, from its withheld true model
-    ``TRUE_ANT`` in ``generate_data.py``. Returns ``(edges, n_observables)``. This imports the
-    example's generate_data offline — it is an analysis tool, not the agent, so seeing the true
-    structure is fine."""
+def _true_antimony(example: str) -> str:
+    """An example's withheld true model, as Antimony.
+
+    Two conventions are in use and both are searched: the three synthetic demos define
+    ``TRUTH_ANT`` in ``generate_data.py`` (they simulate their own data from it), while the
+    thirteen benchmark examples define ``TRUE_ANT`` in ``run.py`` (their data is published, so
+    they have no generate_data.py at all). Looking only for ``TRUE_ANT`` in ``generate_data.py``
+    — the original behaviour — matched neither group.
+
+    Importing the module offline is fine: this is an analysis tool, not the agent, so seeing the
+    true structure is the point. Both file kinds guard their entry point behind ``__main__``.
+    """
     import importlib.util
 
-    from petab_mcp.model import SbmlModel
+    for filename in ("generate_data.py", "run.py"):
+        path = _EXAMPLES_ROOT / example / filename
+        if not path.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location(f"_truth_{example}_{path.stem}", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        for attr in ("TRUTH_ANT", "TRUE_ANT"):
+            if (ant := getattr(mod, attr, None)):
+                return ant
+    raise ValueError(f"{example}: no TRUTH_ANT/TRUE_ANT in generate_data.py or run.py")
 
-    gd_path = _EXAMPLES_ROOT / example / "generate_data.py"
-    spec = importlib.util.spec_from_file_location(f"_gd_{example}", gd_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    true_ant = getattr(mod, "TRUE_ANT", None)
-    if not true_ant:
-        raise ValueError(f"{example}: no TRUE_ANT in generate_data.py")
+
+def reference_coupling(example: str) -> tuple[list[list[str]], int]:
+    """The (cached) reference observable-coupling for an example, from its withheld true model.
+    Returns ``(edges, n_observables)``."""
+    from petab.v1.models.sbml_model import SbmlModel
+
     obs = observable_formulas(example)
-    sbml = SbmlModel.from_antimony(true_ant, model_id=example).to_sbml_str()
+    sbml = SbmlModel.from_antimony(_true_antimony(example), model_id=example).to_sbml_str()
     return coupling_from_sbml(sbml, obs), len(obs)
 
 
@@ -209,7 +225,7 @@ def evaluate_model_ant(example: str, model_ant: str,
     """Score a candidate ``model.ant`` for ``example`` against the reference structure. Returns
     ``{jaccard, n_observables, candidate_coupling, reference_coupling}`` (jaccard ``None`` when
     < 2 observables). ``ref`` may be passed pre-computed to avoid recomputing it per run."""
-    from petab_mcp.model import SbmlModel
+    from petab.v1.models.sbml_model import SbmlModel
 
     ref_edges, n_obs = ref if ref is not None else reference_coupling(example)
     obs = observable_formulas(example)

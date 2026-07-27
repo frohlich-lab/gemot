@@ -19,8 +19,6 @@ httpx = pytest.importorskip("httpx")
 from petab_harness.agent import circuit_breaker as _breaker  # noqa: E402
 
 
-def _load_agent():
-    return _breaker
 
 
 class _Tool:
@@ -34,7 +32,7 @@ def _degraded_text(result):
 
 
 def test_is_transport_error_matches_real_and_generic():
-    mod = _load_agent()
+    mod = _breaker
     assert mod._is_transport_error(anyio.ClosedResourceError()) is True   # the real class name
     assert mod._is_transport_error(ConnectionError("down")) is True
     # The WHOLE httpx.TransportError family classifies as transport (same surface as the resume
@@ -51,7 +49,7 @@ def test_breaker_degrades_a_transport_error_without_raising_or_3_strikes():
     """A single real ClosedResourceError on an EXTERNAL bio tool (named in transport_disable_names)
     disables it and returns the degraded message on the FIRST failure (no re-raise, no waiting for
     the 3-strike breaker)."""
-    mod = _load_agent()
+    mod = _breaker
     calls = {"n": 0}
 
     async def _coro(runtime=None, **kw):
@@ -76,7 +74,7 @@ def test_transport_error_on_a_core_tool_is_not_auto_disabled():
     """A transport error on a CORE petab tool (NOT in transport_disable_names) must fall through to
     the normal path: re-raise on the first failure and leave the tool ENABLED — a single localhost
     blip must not silently strip `fit` / `set_model` for the rest of the run."""
-    mod = _load_agent()
+    mod = _breaker
 
     async def _coro(runtime=None, **kw):
         raise anyio.ClosedResourceError()
@@ -93,7 +91,7 @@ def test_transport_error_on_a_core_tool_is_not_auto_disabled():
 def test_breaker_still_reraises_a_normal_tool_error():
     """A NORMAL (non-transport) exception is unchanged: it re-raises (the model's retry-feedback
     path) and does not disable the tool on the first failure."""
-    mod = _load_agent()
+    mod = _breaker
 
     async def _coro(runtime=None, **kw):
         raise ValueError("bad args")

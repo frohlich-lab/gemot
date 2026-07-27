@@ -46,9 +46,9 @@ SUBAGENT_NAMES = (*(spec["name"] for spec in ANALYSTS), BIOCURATOR_NAME)
 # pathways + GO biological processes (for latent processes/regulation). Deliberately excluded:
 # free-text literature (europepmc/biorxiv/scholar — also the leak vector), clinical/drug/grants,
 # AlphaFold/PRIDE/PanglaoDB/AntibodyRegistry. These are the exact tool names the BioContextAI
-# server registers (v0.2.x); `--bio-tools` overrides this set, and `--bio-tools all` exposes
-# everything. If NONE of these match the connected server (a different bio server), run_deepagents
-# falls back to exposing all discovered tools with a warning (see below).
+# server registers (v0.2.x). If NONE of these match the connected server (a different bio
+# server), the biocurator runs 'dumb' with a warning (see run_deepagents) rather than being
+# handed every tool the server exposes.
 DEFAULT_BIO_TOOLS = (
     # identity / resolution
     "get_uniprot_id_by_protein_symbol",
@@ -61,7 +61,7 @@ DEFAULT_BIO_TOOLS = (
     "get_string_interactions",
     # pathways (Reactome only; KEGG dropped — its BioContextAI tools fail on the hosted endpoint,
     # consistent with KEGG's academic-only / restricted programmatic access. Add the KEGG tools
-    # back via --bio-tools if you point at a server that has valid KEGG access.)
+    # back to this tuple if you point at a server that has valid KEGG access.)
     "get_reactome_info_by_identifier",
     # function / biological processes (latent processes & regulation)
     "get_go_terms_by_gene",

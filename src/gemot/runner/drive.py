@@ -135,8 +135,8 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
             try:
                 # The biocurator roster/guidance is spliced into the lead prompt INSIDE
                 # run_deepagents, under the SAME guard that actually wires the subagent, so the
-                # prompt can't promise a biocurator that wasn't added. --bio-tools (a curated
-                # allowlist; "" = the curated default set, "all" = everything) passes through.
+                # prompt can't promise a biocurator that wasn't added. Its tools are the
+                # curated agent.DEFAULT_BIO_TOOLS allowlist (+ literature under --bio-literature).
                 agent_out = await run_deepagents(
                     session,
                     model=args.model,
@@ -150,7 +150,6 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                     max_wall_seconds=args.max_wall_seconds,
                     progress_probe=raw_call_tool,
                     bio_sessions=bio_sessions,
-                    bio_tools_spec=getattr(args, "bio_tools", ""),
                     bio_literature=getattr(args, "bio_literature", False),
                     # Hand-curated biological entities for the blinded biocurator (issue #91);
                     # empty for scenarios with no lookupable biology (the abstract toys).

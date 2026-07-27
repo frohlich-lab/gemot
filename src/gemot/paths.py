@@ -60,6 +60,27 @@ def examples_root() -> Path:
     return repo_root() / "examples"
 
 
+#: Synthetic (truth-model) demos: they simulate their own data via their own
+#: ``generate_data.py`` and are NOT materialized from the pinned benchmark collection.
+SYNTHETIC_EXAMPLES = ["enzyme_kinetics", "predator_prey", "repressilator"]
+
+#: Collection-based examples, in rollout order. Each has a ``run.py`` exposing
+#: ``BENCHMARK_NAME`` + ``SHIPPED_PARAM_IDS``.
+#:
+#: THE authoritative list. It used to be copied by hand into ``examples/setup.py``,
+#: ``slurm/make_sweep.py`` and ``slurm/refit_references.sh``, which drifted to 13/15/12
+#: entries — ``fujita`` fell out of two of them, and since ``make_sweep.py`` passes its copy
+#: as argparse ``choices=``, ``--examples fujita`` became a hard error. Add a new example
+#: here and nowhere else.
+BENCHMARK_EXAMPLES = [
+    "perelson", "blasi", "rahman", "crauste", "armistead", "sneyd", "fiedler",
+    "boehm", "brannmark", "schwen", "bruno", "oliveira", "fujita",
+]
+
+#: Every example with a ``run.py``, synthetic demos first (the sweep's rollout order).
+ALL_EXAMPLES = [*SYNTHETIC_EXAMPLES, *BENCHMARK_EXAMPLES]
+
+
 def runs_archive_root() -> Path:
     """``examples/_runs_archive/`` — where every finished run is archived for the explorer."""
     return examples_root() / "_runs_archive"

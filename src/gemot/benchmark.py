@@ -249,6 +249,7 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
 
 
 def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
+                        n_workers: int | None = None,
                         collection: Path | None = None,
                         param_overrides: dict[str, dict] | None = None) -> dict[str, Any]:
     """Regenerate the committed ``reference.json`` (the BIC bar): fit the PRISTINE published PEtab
@@ -275,7 +276,7 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     the reconcile-mirroring #90 warns about, and it cancels shared handicaps instead of measuring
     them. Every use needs an entry in ``examples/BENCHMARK_NOTES.md`` (see oliveira).
     """
-    from _harness.simulate import write_reference_from_problem
+    from .simulate import write_reference_from_problem
 
     problem_dir = Path(example_dir) / "problem"
     # The pristine published problem (shipped SBML + full published parameter table + data),
@@ -299,5 +300,5 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     return write_reference_from_problem(
         problem, build_dir=Path(example_dir) / ".gen_build" / "pristine",
         model_name=f"{name}_pristine", path=problem_dir / "reference.json",
-        n_starts=n_starts,
+        n_starts=n_starts, n_workers=n_workers,
     )

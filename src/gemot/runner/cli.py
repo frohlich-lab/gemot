@@ -69,26 +69,17 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
     p.add_argument("--reference-validation", choices=["required", "best_effort", "off"], default="off",
                    help="Server reference-validation mode (off = no network; default for a hermetic demo).")
     # --- blinded `biocurator` analyst: on the deepagents panel every run (endpoints hardcoded in
-    #     runner.BIO_MCP_URLS). --bio-literature adds EuropePMC/bioRxiv; --bio-tools curates. ---
+    #     runner.BIO_MCP_URLS; tools = the curated agent.DEFAULT_BIO_TOOLS allowlist).
+    #     --bio-literature additionally exposes EuropePMC/bioRxiv. ---
     p.add_argument("--bio-literature", action="store_true",
                    help="Also give the biocurator EuropePMC + bioRxiv LITERATURE search (OFF by "
                         "default). Its structured knowledge (interactions/pathways/ontologies/"
                         "OmniPath) is included by default and is general biology; literature search over a "
                         "benchmark problem's distinctive entity panel could surface its withheld "
                         "source paper, so it is opt-in. Unambiguously useful on NOVEL problems.")
-    p.add_argument("--bio-tools", default=os.environ.get("BIO_MCP_TOOLS", ""),
-                   help="Which bio-server tools the biocurator gets. Default (empty) = the CURATED "
-                        "set (agent.DEFAULT_BIO_TOOLS: identity + domains + interactions + pathways "
-                        "+ GO + ontology + OmniPath), plus EuropePMC/bioRxiv when --bio-literature "
-                        "is set — a deliberate lean set, since the server exposes ~50 tools and "
-                        "every schema is re-sent each turn. Pass a comma-separated list of tool "
-                        "NAMES to choose your own set (overrides --bio-literature), or 'all' to "
-                        "expose every discovered tool. If the curated set matches no tool on the "
-                        "connected server(s), all discovered tools are exposed (warned).")
-    # --- Arize Phoenix agent tracing (on by default; deepagents driver only) ---
     p.add_argument("--no-phoenix", dest="phoenix", action="store_false",
                    help="Disable Arize Phoenix tracing (it is ON by default).")
-    default_project = scenario.phoenix_project or f"petab-mcp-{scenario.name}"
+    default_project = f"petab-mcp-{scenario.name}"
     p.add_argument("--phoenix-project", default=os.environ.get("PHOENIX_PROJECT_NAME", default_project),
                    help="Phoenix project name to group this run's traces under.")
     p.add_argument("--phoenix-keep-alive", action="store_true",

@@ -251,9 +251,11 @@ def run_experiments(
 
     from phoenix.client import Client
 
+    from .tracing import phoenix_base_url
+
     from .runner import _git_sha
 
-    client = Client(base_url=_phoenix_base_url(base_url))
+    client = Client(base_url=phoenix_base_url(base_url))
     prompts_info = register_prompts(client, model_name=model)  # once; prompts are global
     git_sha = _git_sha(scenarios[0].example_dir) if scenarios else None
     metadata = {
@@ -291,14 +293,6 @@ def run_experiments(
     return ran
 
 
-def _phoenix_base_url(url: str) -> str:
-    """Normalize to the Phoenix base (strip a trailing OTLP path) for ``Client`` — see
-    :func:`tracing.phoenix_base_url` (the shared implementation). Kept as a thin LAZY-import
-    wrapper (not a top-level ``from .tracing import``) so this module still loads when imported
-    standalone via ``spec_from_file_location`` (as the tests do), where relative imports at
-    module-load time would fail."""
-    from .tracing import phoenix_base_url
-    return phoenix_base_url(url)
 
 
 # --------------------------------------------------------------------------- sweep report
@@ -382,7 +376,9 @@ def fetch_experiment_rows(base_url: str = "http://localhost:6006") -> list[dict[
     """One flat row per experiment task-run across every ``petab-mcp-repair-*`` dataset."""
     from phoenix.client import Client
 
-    client = Client(base_url=_phoenix_base_url(base_url))
+    from .tracing import phoenix_base_url
+
+    client = Client(base_url=phoenix_base_url(base_url))
     rows: list[dict[str, Any]] = []
     for ds_meta in client.datasets.list():
         name = ds_meta.get("name", "") if isinstance(ds_meta, dict) else getattr(ds_meta, "name", "")

@@ -18,8 +18,6 @@ pytest.importorskip("langchain_core", reason="harness-only dependency")
 from petab_harness.agent import literature as _literature  # noqa: E402
 
 
-def _load_agent_module():
-    return _literature
 
 
 def _core_payload():
@@ -49,7 +47,7 @@ def _core_payload():
 
 
 def test_trim_drops_core_bloat_keeps_signal():
-    mod = _load_agent_module()
+    mod = _literature
     payload = _core_payload()
     slim = mod._trim_europepmc_search(payload)
     assert slim is not None and len(slim) < len(payload)
@@ -79,7 +77,7 @@ def test_trim_drops_core_bloat_keeps_signal():
 
 def test_trim_returns_none_on_unexpected_shape():
     """A non-core / unparseable payload is left untouched (the wrapper then returns it as-is)."""
-    mod = _load_agent_module()
+    mod = _literature
     assert mod._trim_europepmc_search("not json at all") is None
     assert mod._trim_europepmc_search(json.dumps({"foo": "bar"})) is None       # no resultList
     assert mod._trim_europepmc_search(json.dumps({"resultList": {"result": 3}})) is None  # not a list
@@ -90,7 +88,7 @@ def test_wrapper_trims_and_preserves_result_shape():
     trimmed payload, and keep the result's shape — a bare string stays a string, a
     (content, artifact) tuple keeps its artifact tail."""
     import asyncio
-    mod = _load_agent_module()
+    mod = _literature
     payload = _core_payload()
 
     class _FakeTool:

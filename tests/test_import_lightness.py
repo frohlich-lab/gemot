@@ -139,3 +139,115 @@ def test_lazy_facade_resolves_by_getattr():
             continue
         assert getattr(petab_harness, name) is not None
     assert "Scenario" in dir(petab_harness)
+
+
+# --------------------------------------------------------------- the fit-budget duplication
+# `petab_harness.fit_budget` re-implements six things `petab_mcp.fitting` also defines
+# (_env_float/_env_int, the default worker count, FIT_PER_START_TIMEOUT_S, FIT_N_WORKERS,
+# fides_maxtime_options, fit_engine). That duplication looks removable but is NOT: `_HEAVY`
+# above lists `petab_mcp`, so importing ANY petab_mcp module from fit_budget -- including a
+# stdlib-only `constants` -- fails test_import_is_light, because petab_mcp/__init__ eagerly
+# imports session (and so petab + pandas). fit_budget must stay importable from a bare
+# amici+petab environment for simulate.py's offline reference fit.
+#
+# So the copies stay, and this pins them together instead: the drift the dedup would have
+# prevented is what actually matters, and the server + harness computing DIFFERENT fit budgets
+# is exactly the bug the two files' cross-referencing comments warn about.
+def test_fit_budget_matches_the_server():
+    """The harness's fit budget must agree with the server's, or a healthy fit gets killed."""
+    from petab_harness import fit_budget
+
+    from petab_mcp import fitting
+
+    assert fit_budget.FIT_PER_START_TIMEOUT_S == fitting.FIT_PER_START_TIMEOUT_S
+    assert fit_budget.FIT_N_WORKERS == fitting.FIT_N_WORKERS
+    assert fit_budget.fides_maxtime_options() == fitting._fides_maxtime_options()
+
+    # The worker count each side derives for a given multistart, including the edge cases
+    # (0/negative starts, fewer starts than workers) where the two expressions differ in shape.
+    for n_starts in (0, 1, 2, 3, 7, 50, 1000, -5):
+        harness = fit_budget.fit_workers(n_starts)
+        server = max(1, min(fitting.FIT_N_WORKERS, int(n_starts)))
+        assert harness == server, f"n_starts={n_starts}: harness={harness} server={server}"
+
+
+def test_fit_workers_honours_an_explicit_override():
+    """`n_workers` must beat the import-time FIT_N_WORKERS cap.
+
+    The reference refit for a stiff model (fujita, sneyd) has to run SEQUENTIALLY -- a parallel
+    pyPESTO worker hard-crashes with BrokenProcessPool. That used to be requested by setting
+    PETAB_MCP_FIT_N_WORKERS at runtime, which silently did nothing: examples/setup.py imports the
+    example's run.py (binding fit_budget.FIT_N_WORKERS) BEFORE it could set the env var, so the
+    refit kept running in parallel. An argument cannot lose that race; this pins that it is
+    actually plumbed through to the engine.
+    """
+    import os
+
+    from petab_harness import fit_budget
+
+    assert fit_budget.fit_workers(50, 1) == 1
+    assert fit_budget.fit_engine(50, 1) is None          # None == pyPESTO's sequential engine
+    # ...and an override never invents parallelism beyond the number of starts.
+    assert fit_budget.fit_workers(1, 99) == 1
+
+    # Omitting it preserves the default (env-var-or-core-count) behaviour exactly.
+    assert fit_budget.fit_workers(50) == max(1, min(fit_budget.FIT_N_WORKERS, 50))
+
+    # And the env var remains inert once bound, which is the whole reason the argument exists.
+    before = fit_budget.FIT_N_WORKERS
+    os.environ["PETAB_MCP_FIT_N_WORKERS"] = str(before + 7)
+    try:
+        assert fit_budget.FIT_N_WORKERS == before
+    finally:
+        os.environ.pop("PETAB_MCP_FIT_N_WORKERS", None)
+
+
+# ------------------------------------------------------- out-of-tree importers of our packages
+# CI runs pytest, not the scripts under slurm/ and examples/. So when a symbol is deleted from
+# src/, a script that imported it stays broken until someone runs it -- which for a slurm job or
+# a one-off trace-review probe can be a long time, and (for anything AMICI-backed) only after
+# paying for a model compile. This has now happened twice on one branch: `fitting._run_fit(seed=)`
+# and `from petab_mcp.model import SbmlModel`.
+#
+# Resolve every such import statically, against the target module's SOURCE -- no importing, so
+# this stays cheap and needs none of the heavy deps those scripts want.
+#
+# LIMIT, stated plainly: this catches the IMPORT class only. A call site passing a keyword
+# argument that no longer exists (the `seed=` break) still slips through -- checking that would
+# need real signature binding, which needs the imports this test exists to avoid.
+def _repo_scripts():
+    root = Path(__file__).resolve().parents[1]
+    for pattern in ("slurm/**/*.py", "examples/**/*.py"):
+        for path in root.glob(pattern):
+            # skip AMICI's generated SWIG wrappers under <example>/.amici_build/
+            if ".amici_build" not in path.parts and "_runs_archive" not in path.parts:
+                yield root, path
+
+
+def test_scripts_only_import_names_our_packages_actually_define():
+    """`from petab_mcp.X import Y` / `from petab_harness.X import Y` in slurm/ and examples/ must
+    name something module X really binds."""
+    broken = []
+    for root, path in _repo_scripts():
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.ImportFrom) or not node.module:
+                continue
+            if node.level or not node.module.split(".")[0] in ("petab_mcp", "petab_harness"):
+                continue
+            target = root / "src" / Path(node.module.replace(".", "/"))
+            source = (target.with_suffix(".py") if target.with_suffix(".py").is_file()
+                      else target / "__init__.py")
+            if not source.is_file():
+                broken.append(f"{path.relative_to(root)}:{node.lineno} -> no module {node.module}")
+                continue
+            defined = _toplevel_names(source)
+            for alias in node.names:
+                # `from pkg import submodule` is legal without pkg/__init__ binding the name
+                if alias.name == "*" or (source.name == "__init__.py"
+                                         and (source.parent / f"{alias.name}.py").is_file()):
+                    continue
+                if alias.name not in defined:
+                    broken.append(
+                        f"{path.relative_to(root)}:{node.lineno} -> "
+                        f"{node.module} does not define {alias.name!r}")
+    assert not broken, "scripts import names that no longer exist:\n  " + "\n  ".join(broken)

@@ -107,7 +107,6 @@ async def run_deepagents(
     max_wall_seconds: float | None = None,
     progress_probe: Any | None = None,
     bio_sessions: Any | None = None,
-    bio_tools_spec: str = "",
     bio_literature: bool = False,
     curated_entities: "list[str] | None" = None,
 ) -> dict[str, Any]:
@@ -159,23 +158,14 @@ async def run_deepagents(
     bio_tools: list = []
     if bio_sessions:
         petab_names = {n for t in petab_tools if (n := getattr(t, "name", None))}
-        # Resolve the tool selection from the --bio-tools spec (a CURATED allowlist, not a numeric
-        # cap, so we never drop the one tool the biocurator needs):
-        #   ""/None  -> the curated DEFAULT_BIO_TOOLS (a lean, deliberate set spanning the default
-        #               BioContextAI server + OmniPath: identity/domains/interactions/pathways/GO/
-        #               ontology + OmniPath's SQL tool),
-        #   "all"    -> every tool the connected server(s) expose (escape hatch),
-        #   "a,b,c"  -> exactly those names.
-        spec = (bio_tools_spec or "").strip()
-        if spec.lower() == "all":
-            allow = None
-        elif spec:
-            allow = {s.strip() for s in spec.split(",") if s.strip()}
-        else:
-            # Curated default; add the literature tools only when the operator opted in.
-            allow = set(DEFAULT_BIO_TOOLS)
-            if bio_literature:
-                allow |= set(LITERATURE_BIO_TOOLS)
+        # The biocurator's tool selection: the curated DEFAULT_BIO_TOOLS (a lean, deliberate set
+        # spanning the default BioContextAI server + OmniPath: identity/domains/interactions/
+        # pathways/GO/ontology + OmniPath's SQL tool), plus the literature tools when the operator
+        # opted in with --bio-literature. It is an allowlist of NAMES, not a numeric cap, so it can
+        # never drop the one tool the biocurator needs.
+        allow = set(DEFAULT_BIO_TOOLS)
+        if bio_literature:
+            allow |= set(LITERATURE_BIO_TOOLS)
         # Discover tools across ALL bio servers, dropping any whose name COLLIDES with a petab tool
         # (would shadow it in tools_by_name for the lead/analysts) or DUPLICATES one already seen
         # from another bio server (keep the first). Bio tools keep their FULL server descriptions
@@ -210,8 +200,6 @@ async def run_deepagents(
         if not discovered:
             print("[bio] the bio server(s) exposed no tools; the biocurator will run 'dumb' "
                   "(the model's own biology knowledge).")
-        elif allow is None:
-            bio_tools = [t for _, t in discovered]
         else:
             # No all-tools fallback: hand the biocurator ONLY the curated tools that actually
             # resolved on the connected server(s). If none match it still runs (below) — just

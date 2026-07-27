@@ -15,10 +15,8 @@ only an examples-harness dependency (mirrors tests/test_agent_tool_dispatch.py).
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 from pathlib import Path
 
-import pytest
 
 from petab_harness import agent, scenario
 
@@ -113,15 +111,7 @@ def test_every_example_curates_biocurator_entities():
 
 # --------------------------------------------------------------------- _task_arg_guard middleware
 # Building the middleware imports langchain (examples-harness only), so guard these tests.
-def _langchain_available() -> bool:
-    if importlib.util.find_spec("langchain") is None:
-        return False
-    return importlib.util.find_spec("langchain.agents") is not None
-
-
-requires_langchain = pytest.mark.skipif(
-    not _langchain_available(), reason="langchain (examples-harness only) not installed"
-)
+from conftest import requires_langchain  # noqa: E402
 
 
 class _FakeRequest:

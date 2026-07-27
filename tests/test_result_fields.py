@@ -7,9 +7,6 @@ absent."""
 
 from __future__ import annotations
 
-import pytest
-
-pytest.importorskip("petab_mcp", reason="the shared sigma thresholds live there")
 from petab_harness.runner.scoring import (  # noqa: E402
     _NOISE_SIGMA_COLLAPSE_FRACTION,
     _noise_sigma_flag,

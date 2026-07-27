@@ -31,9 +31,14 @@ dependencies = [
     "pandas>=1.5",
     "numpy>=1.23",
     "duckdb>=0.9",
+    # Never imported here: pyPESTO's storage API writes the per-fit pypesto_result.hdf5
+    # (fitting._write_result_hdf5 / provenance's copy-forward) and h5py is what it writes
+    # through. Pinned explicitly so that path can't break on a transitive graph change.
     "h5py>=3",
-    "pydantic>=2",
     "sympy>=1.10",
+    # Imported directly for the chi2 goodness-of-fit p-value (residual_tests, fitting) and by
+    # the harness's judge. Only transitively present via pyPESTO otherwise.
+    "scipy>=1.10",
     "amici>=0.30",
     "pypesto[petab]>=0.5",
     "fides>=0.7",

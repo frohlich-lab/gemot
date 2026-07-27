@@ -17,8 +17,6 @@ import time
 from pathlib import Path
 
 import pytest
-
-pytest.importorskip("mcp", reason="harness-only dependency")
 from petab_harness.runner import (  # noqa: E402
     _NOISE_SIGMA_COLLAPSE_FRACTION,
     _judge,

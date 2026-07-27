@@ -16,8 +16,6 @@ pytest.importorskip("langchain_core", reason="harness-only dependency")
 from petab_harness import agent as _agent  # noqa: E402
 
 
-def _load_agent_module():
-    return _agent
 
 
 class _FakeResult:
@@ -53,7 +51,7 @@ def _tool_for(mod, fit_summary, diagnosis=None, finish_state=None):
 
 @pytest.mark.asyncio
 async def test_finish_refused_without_valid_fit():
-    mod = _load_agent_module()
+    mod = _agent
     tool = _tool_for(mod, {"neg_log_likelihood": None, "bic": None, "version": 0})
     out = await _decide(tool, "finish")
     assert "FINISH REFUSED" in out and "no valid fit" in out
@@ -64,7 +62,7 @@ async def test_no_fit_finish_refuses_then_gives_up_never_accepts():
     """A finish with no valid fit is refused (never accepted as a finish), and after
     _MAX_NO_FIT_FINISH_ATTEMPTS consecutive tries the gate GIVES UP — flags the run for the
     driver to end as no-model-built, still NOT recording an accepted finish."""
-    mod = _load_agent_module()
+    mod = _agent
     fs = {}
     tool = _tool_for(mod, {"neg_log_likelihood": None, "bic": None, "version": 0}, finish_state=fs)
     for _ in range(mod._MAX_NO_FIT_FINISH_ATTEMPTS - 1):
@@ -81,7 +79,7 @@ async def test_no_fit_finish_refuses_then_gives_up_never_accepts():
 @pytest.mark.asyncio
 async def test_no_fit_counter_is_consecutive_and_resets_on_a_fit():
     """The give-up counter is for CONSECUTIVE no-fit attempts: a valid fit appearing resets it."""
-    mod = _load_agent_module()
+    mod = _agent
     session = _FakeSession({"neg_log_likelihood": None, "bic": None, "version": 0})
     tool = mod._decision_tool(session)
     for _ in range(mod._MAX_NO_FIT_FINISH_ATTEMPTS - 1):
@@ -98,7 +96,7 @@ async def test_no_fit_counter_is_consecutive_and_resets_on_a_fit():
 @pytest.mark.asyncio
 async def test_confirmed_finish_records_confirmed_flag():
     """A confirmed finish sets finish_state['confirmed'] so the driver won't bounce it back."""
-    mod = _load_agent_module()
+    mod = _agent
     fs = {}
     tool = _tool_for(mod, {"neg_log_likelihood": 100.0, "bic": 210.0, "version": 5,
                            "has_unfit_edits": False}, finish_state=fs)
@@ -111,7 +109,7 @@ async def test_confirmed_finish_records_confirmed_flag():
 
 @pytest.mark.asyncio
 async def test_finish_refused_with_unfit_edits():
-    mod = _load_agent_module()
+    mod = _agent
     tool = _tool_for(mod, {"neg_log_likelihood": 100.0, "bic": 210.0, "version": 3,
                            "has_unfit_edits": True})
     out = await _decide(tool, "finish")
@@ -121,7 +119,7 @@ async def test_finish_refused_with_unfit_edits():
 
 @pytest.mark.asyncio
 async def test_finish_arms_then_confirms():
-    mod = _load_agent_module()
+    mod = _agent
     diag = {"residual_structure": {"summary": "systematic residual structure in obs_A",
                                    "flagged_observables": ["obs_A"], "low_power": False},
             "per_observable": [{"observable_id": "obs_A", "mean_weighted_residual": 2.0,
@@ -138,7 +136,7 @@ async def test_finish_arms_then_confirms():
 
 @pytest.mark.asyncio
 async def test_finish_rearms_when_version_changes():
-    mod = _load_agent_module()
+    mod = _agent
     session = _FakeSession({"neg_log_likelihood": 100.0, "bic": 210.0, "version": 5,
                             "has_unfit_edits": False})
     tool = mod._decision_tool(session)
@@ -156,7 +154,7 @@ async def test_finish_arms_even_when_version_is_none():
     sim blob carries no version). The gate must STILL arm on the first finish and confirm on the
     second — keying on version alone would make `None != None` False and confirm immediately,
     bypassing the gate on the common rollback->finish path."""
-    mod = _load_agent_module()
+    mod = _agent
     tool = _tool_for(mod, {"neg_log_likelihood": 100.0, "bic": 210.0, "version": None,
                            "has_unfit_edits": False})
     first = await _decide(tool, "finish")
@@ -176,7 +174,7 @@ async def test_finish_refused_on_implausible_sigma_then_relents():
     """A finish on a fit with an inflated (or collapsed) ESTIMATED sigma is REFUSED with the
     fix-the-mechanism advice — but bounded: after _MAX_SIGMA_FINISH_REFUSALS it relents (arms) so a
     model that genuinely can't reach a plausible sigma still terminates at its honest score."""
-    mod = _load_agent_module()
+    mod = _agent
     tool = _tool_for(mod, _fit(noise_sigma_inflated=True,
                                noise_sigma_advice="fix the mechanism, not the noise."))
     for _ in range(mod._MAX_SIGMA_FINISH_REFUSALS):
@@ -190,7 +188,7 @@ async def test_finish_refused_on_implausible_sigma_then_relents():
 
 @pytest.mark.asyncio
 async def test_collapsed_sigma_is_also_refused():
-    mod = _load_agent_module()
+    mod = _agent
     tool = _tool_for(mod, _fit(noise_sigma_collapsed=True,
                                noise_sigma_advice="prefer a simpler mechanism."))
     out = await _decide(tool, "finish")
@@ -201,7 +199,7 @@ async def test_collapsed_sigma_is_also_refused():
 async def test_refusal_names_both_tails_when_both_present():
     """With one observable inflated and another collapsed, the refusal names BOTH tails so the agent
     doesn't fix one and get silently re-blocked on the other."""
-    mod = _load_agent_module()
+    mod = _agent
     tool = _tool_for(mod, _fit(noise_sigma_inflated=True, noise_sigma_collapsed=True,
                                noise_sigma_advice="fix the mechanism."))
     out = await _decide(tool, "finish")
@@ -212,7 +210,7 @@ async def test_refusal_names_both_tails_when_both_present():
 async def test_sigma_block_clears_when_the_fix_makes_sigma_plausible():
     """The refusal counter resets the moment the sigma is plausible again, so a real structural
     fix immediately clears the block (arms normally) rather than staying penalised."""
-    mod = _load_agent_module()
+    mod = _agent
     session = _FakeSession(_fit(noise_sigma_inflated=True, noise_sigma_advice="x"))
     tool = mod._decision_tool(session)
     assert "FINISH REFUSED" in await _decide(tool, "finish")
@@ -224,7 +222,7 @@ async def test_sigma_block_clears_when_the_fix_makes_sigma_plausible():
 @pytest.mark.asyncio
 async def test_plausible_sigma_finish_is_unaffected():
     """A fit with no implausible-sigma flags arms/confirms exactly as before (no regression)."""
-    mod = _load_agent_module()
+    mod = _agent
     tool = _tool_for(mod, _fit(noise_sigma_inflated=False, noise_sigma_collapsed=False))
     assert "FINISH ARMED" in await _decide(tool, "finish")
     assert (await _decide(tool, "finish")).startswith("Recorded: finish")
@@ -232,7 +230,7 @@ async def test_plausible_sigma_finish_is_unaffected():
 
 @pytest.mark.asyncio
 async def test_rollback_disarms_a_pending_finish():
-    mod = _load_agent_module()
+    mod = _agent
     tool = _tool_for(mod, {"neg_log_likelihood": 100.0, "bic": 210.0, "version": 5,
                            "has_unfit_edits": False})
     assert "FINISH ARMED" in await _decide(tool, "finish")
@@ -250,7 +248,7 @@ def _probe_returning(payload):
 
 @pytest.mark.asyncio
 async def test_model_committed_true_when_model_initialized():
-    mod = _load_agent_module()
+    mod = _agent
     assert await mod._model_committed(_probe_returning({"model_initialized": True})) is True
 
 
@@ -258,7 +256,7 @@ async def test_model_committed_true_when_model_initialized():
 async def test_model_committed_false_when_no_model():
     """The no-op case: a run that authored nothing (the lead stopped after only delegating to
     the biocurator) must be detected so the driver can nudge + resume instead of scoring k=0."""
-    mod = _load_agent_module()
+    mod = _agent
     assert await mod._model_committed(_probe_returning({"model_initialized": False})) is False
 
 
@@ -266,7 +264,7 @@ async def test_model_committed_false_when_no_model():
 async def test_model_committed_fails_open():
     """Must never nuke a real run: an absent probe, a raising probe, or a malformed payload all
     return True (assume a model exists) rather than triggering a spurious no-model resume."""
-    mod = _load_agent_module()
+    mod = _agent
     assert await mod._model_committed(None) is True
 
     async def raising(tool, args):
@@ -278,5 +276,5 @@ async def test_model_committed_fails_open():
 
 
 def test_no_model_nudge_text_is_actionable():
-    mod = _load_agent_module()
+    mod = _agent
     assert "set_model" in mod._NO_MODEL_NUDGE and "fit" in mod._NO_MODEL_NUDGE.lower()

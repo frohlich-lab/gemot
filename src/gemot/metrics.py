@@ -62,14 +62,6 @@ def _parse_iso(value: str | None) -> dt.datetime | None:
         return None
 
 
-def _phoenix_base_url(url: str) -> str:
-    """Normalize to the Phoenix base for ``Client(base_url=...)`` — see
-    :func:`tracing.phoenix_base_url` (the shared implementation). Kept as a thin LAZY-import
-    wrapper (not a top-level ``from .tracing import``) so this module still loads when imported
-    standalone via ``spec_from_file_location`` (as the tests do), where relative imports at
-    module-load time would fail."""
-    from .tracing import phoenix_base_url
-    return phoenix_base_url(url)
 
 
 def phoenix_trace_metrics(
@@ -92,6 +84,8 @@ def phoenix_trace_metrics(
     """
     try:
         from phoenix.client import Client
+
+        from .tracing import phoenix_base_url
     except Exception as exc:
         return {"phoenix_note": f"client unavailable: {type(exc).__name__}"}
 
@@ -103,7 +97,7 @@ def phoenix_trace_metrics(
     if end is not None:
         kwargs["end_time"] = end + dt.timedelta(seconds=60)
     try:
-        df = Client(base_url=_phoenix_base_url(base_url)).spans.get_spans_dataframe(**kwargs)
+        df = Client(base_url=phoenix_base_url(base_url)).spans.get_spans_dataframe(**kwargs)
     except Exception as exc:
         return {"phoenix_note": f"query failed: {type(exc).__name__}: {exc}"}
     if df is None or len(df) == 0:

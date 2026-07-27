@@ -29,10 +29,21 @@ The unit tests bind to these helpers with none of those installed
 
 The names re-exported below are package-internal — reachable as ``agent._foo`` because tests and
 the driver have always addressed them that way. ``run_deepagents`` is the only public one.
+
+Re-export ONLY what is actually read through this facade. The block used to list 58 names, 22 of
+which nothing ever reached this way — each had an in-package importer or a test importing its
+defining submodule directly. A name here that no one resolves off the package is not an
+interface, just a line to keep in sync.
+
+Careful when trimming further: several tests bind the package to a local (``mod = _agent``,
+``tests/test_finish_gate.py``) before reaching names off it, so grepping for ``agent.NAME``
+UNDER-counts what is live. The test suite is the only reliable check.
 """
 
 from __future__ import annotations
 
+# Bind the submodules so `agent.dedup` / `agent.literature` resolve as attributes (tests reach
+# them that way). Each touches only stdlib at import time, so this stays import-light.
 from . import (
     biocurator,
     circuit_breaker,
@@ -47,46 +58,38 @@ from . import (
     tools,
 )
 from .biocurator import (
-    BIOCURATOR_NAME,
     DEFAULT_BIO_TOOLS,
     LITERATURE_BIO_TOOLS,
     SUBAGENT_NAMES,
     _build_biocurator_subagent,
 )
 from .circuit_breaker import (
-    _breaker_message,
-    _disabled_tool_filter,
     _is_transport_error,
     _new_breaker_state,
-    _record_error,
-    _result_error,
-    _transport_breaker_message,
     _wrap_tools_with_circuit_breaker,
 )
-from .dedup import _dedupe_raw_tool_calls, _dedupe_tool_calls, _tool_call_key
-from .driver import (
-    _MAX_SILENT_BOUNCES,
-    run_deepagents,
+from .dedup import (
+    _dedupe_raw_tool_calls,
+    _dedupe_tool_calls,
+    _tool_call_key,
 )
+from .driver import _MAX_SILENT_BOUNCES, run_deepagents
 from .finish_gate import (
     _MAX_NO_FIT_FINISH_ATTEMPTS,
     _MAX_SIGMA_FINISH_REFUSALS,
     _decision_tool,
 )
 from .guards import (
-    _MAX_IDLE_MODEL_STEPS,
-    _MAX_TASK_ARG_REJECTIONS,
     _task_arg_guard,
     _task_arg_reject_message,
     _tool_dispatch_guard,
     _unexpected_task_kwargs,
 )
-from .literature import _content_to_text, _trim_europepmc_search, _wrap_literature_recorder
-from .probe import _current_diagnosis, _current_fit, _model_committed, _structured
+from .literature import _trim_europepmc_search, _wrap_literature_recorder
+from .probe import _model_committed
 from .subagents import (
     ANALYSTS,
     _build_subagents,
-    _builtin_tool_filter,
     _disable_general_purpose_subagent,
     _general_purpose_enabled,
     _subagent_prompt_key,
@@ -97,22 +100,14 @@ from .tools import (
     MATHEMATICIAN_TOOLS,
     ORCHESTRATOR_TOOLS,
     SIGNAL_ENGINEER_TOOLS,
-    SYSTEMS_SCIENTIST_TOOLS,
-    _select_tools,
-    _trim_descriptions,
 )
 
 # The prompt constants tests and callers have always read off this module. They live in
 # petab_harness.prompts now; re-exported so `agent.BIOCURATOR_PROMPT` still resolves.
 from ..prompts import (
-    BIOCURATOR_DESCRIPTION,
     BIOCURATOR_PROMPT,
-    MATHEMATICIAN_PROMPT,
-    SIGNAL_ENGINEER_PROMPT,
-    SYSTEMS_SCIENTIST_PROMPT,
     TOOL_DESCRIPTIONS,
     _biocurator_entity_block,
-    _IDLE_NUDGE,
     _NO_MODEL_NUDGE,
     _SILENT_FINISH_NUDGE,
 )

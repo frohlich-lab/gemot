@@ -42,6 +42,8 @@ os.environ.setdefault("PHOENIX_WORKING_DIR", str(paths.phoenix_working_dir()))
 _LAZY = {
     "run_scenario": ".runner",
     "Scenario": ".scenario",
+    "build_true_model": ".scenario",
+    "topology_diagnostics": ".scenario",
     "Diagnostics": ".scenario",
     "Baseline": ".scenario",
     "JudgeContext": ".scenario",
@@ -57,6 +59,7 @@ if TYPE_CHECKING:  # so IDEs / type checkers still resolve the lazy names
     from .runner import run_scenario
     from .scenario import (
         Baseline,
+        build_true_model,
         Diagnostics,
         JudgeContext,
         Scenario,
@@ -66,6 +69,7 @@ if TYPE_CHECKING:  # so IDEs / type checkers still resolve the lazy names
         max_power_in_denominator,
         max_power_in_numerator,
         reaction_rate_law,
+        topology_diagnostics,
     )
 
 
@@ -85,6 +89,8 @@ def __dir__() -> list[str]:
 __all__ = [
     "run_scenario",
     "Scenario",
+    "build_true_model",
+    "topology_diagnostics",
     "Diagnostics",
     "Baseline",
     "JudgeContext",

@@ -13,18 +13,11 @@ is not a dependency of the petab-mcp package (only of the examples harness).
 
 from __future__ import annotations
 
-import importlib.util
 
-import pytest
 
 from petab_harness import agent, scenario
 
 
-def _load_agent_module():
-    """The agent package. `petab_harness.__init__` is lazy (PEP 562) and every agent submodule
-    imports only stdlib at module scope, so this pulls in no langchain / deepagents / petab_mcp
-    / phoenix — the pure helpers below stay testable with none of them installed."""
-    return agent
 
 
 # --------------------------------------------------------------------- pure de-dup helpers
@@ -102,20 +95,7 @@ def test_dedupe_raw_empty_and_none():
 # --------------------------------------------------------------------- middleware end-to-end
 # langchain is an examples-harness dependency, NOT a dependency of the petab-mcp package, so the
 # integration tests below skip cleanly where it is absent; the pure-helper tests above always run.
-def _langchain_available() -> bool:
-    # Treat only the genuine absence of the top-level ``langchain`` package as
-    # "unavailable" (find_spec returns None for a missing top-level module). If
-    # ``langchain`` is installed, probing the submodule may raise
-    # ModuleNotFoundError from a broken install (e.g. a missing transitive
-    # dependency) — let that surface rather than silently skipping the tests.
-    if importlib.util.find_spec("langchain") is None:
-        return False
-    return importlib.util.find_spec("langchain.agents") is not None
-
-
-requires_langchain = pytest.mark.skipif(
-    not _langchain_available(), reason="langchain (examples-harness only) not installed"
-)
+from conftest import requires_langchain  # noqa: E402
 
 
 def _fixtures():
@@ -238,7 +218,7 @@ def test_lead_does_not_carry_get_fit_summary_but_the_analysts_do():
     It must NOT be removed from the server: the analysts never fit, so it is their only score
     read, and the harness's own finish gate and final scoring go through it too.
     """
-    mod = _load_agent_module()
+    mod = agent
     assert "get_fit_summary" not in mod.ORCHESTRATOR_TOOLS
     assert "fit" in mod.ORCHESTRATOR_TOOLS
     # still reachable for everyone who cannot get the score from a fit result
@@ -253,7 +233,7 @@ def test_the_lead_is_never_told_to_call_a_tool_it_does_not_have():
     """A prompt that points the lead at a tool missing from its list burns a step on a call that
     cannot dispatch. Guards the get_fit_summary removal above against the prompt text drifting
     back — the lead's system prompt lives in prompts.py, separately from its tool list."""
-    mod = _load_agent_module()
+    mod = agent
     lead_prompt = scenario.DEFAULT_SYSTEM_PROMPT
     assert "get_fit_diagnosis" in lead_prompt, "sanity: this IS the lead's tool-naming prompt"
 
@@ -278,7 +258,7 @@ def test_get_parameters_description_does_not_contradict_the_parameter_table():
     initial conditions have been estimated by DEFAULT since #90 (only an IC of exactly 0 or 1
     stays fixed), and an estimated noise sigma is the whole premise of the noise-sigma verdict.
     """
-    mod = _load_agent_module()
+    mod = agent
     desc = mod.TOOL_DESCRIPTIONS["get_parameters"]
 
     # it must not assert the fixed-ness that reconcile contradicts

@@ -11,8 +11,6 @@ pytest.importorskip("langchain_core", reason="harness-only dependency")
 from petab_harness.agent import token_usage as _token_usage  # noqa: E402
 
 
-def _load_agent_module():
-    return _token_usage
 
 
 def _resp(usage_list=None, llm_output=None):
@@ -31,7 +29,7 @@ def _um(inp, out, cache=0):
 
 @pytest.mark.asyncio
 async def test_sums_usage_metadata_including_cache_read():
-    acc = _load_agent_module()._token_accountant()
+    acc = _token_usage._token_accountant()
     await acc.on_llm_end(_resp([_um(1000, 50, cache=800)]))
     await acc.on_llm_end(_resp([_um(2000, 40, cache=1500)]))   # accumulates across calls
     t = acc.totals()
@@ -44,7 +42,7 @@ async def test_sums_usage_metadata_including_cache_read():
 
 @pytest.mark.asyncio
 async def test_missing_cache_read_defaults_to_zero():
-    acc = _load_agent_module()._token_accountant()
+    acc = _token_usage._token_accountant()
     await acc.on_llm_end(_resp([{"input_tokens": 500, "output_tokens": 20}]))  # no details
     t = acc.totals()
     assert t["prompt_tokens"] == 500 and t["cache_read_tokens"] == 0
@@ -52,7 +50,7 @@ async def test_missing_cache_read_defaults_to_zero():
 
 @pytest.mark.asyncio
 async def test_falls_back_to_llm_output_when_no_usage_metadata():
-    acc = _load_agent_module()._token_accountant()
+    acc = _token_usage._token_accountant()
     await acc.on_llm_end(_resp(llm_output={"token_usage": {
         "prompt_tokens": 700, "completion_tokens": 30,
         "prompt_tokens_details": {"cached_tokens": 400}}}))
@@ -66,7 +64,7 @@ async def test_no_usage_records_zero_and_no_call():
     """A response with NO usage at all (the streaming-without-usage case) records zero and, in
     particular, does not count as an LLM call — so the run-level n_llm_calls==0 warning can fire
     rather than the zeros passing as a genuinely tiny run."""
-    acc = _load_agent_module()._token_accountant()
+    acc = _token_usage._token_accountant()
     await acc.on_llm_end(_resp([{"input_tokens": 0, "output_tokens": 0}]))  # empty-but-present usage
     await acc.on_llm_end(_resp(llm_output={}))                              # no usage anywhere
     t = acc.totals()
@@ -79,7 +77,7 @@ async def test_no_usage_records_zero_and_no_call():
 async def test_malformed_field_does_not_discard_other_records():
     """A bad value in one usage field must contribute 0 without aborting the rest of the
     response's records — a whole-method try/except would have dropped the good one too."""
-    acc = _load_agent_module()._token_accountant()
+    acc = _token_usage._token_accountant()
     await acc.on_llm_end(_resp([
         {"input_tokens": "oops", "output_tokens": 10},   # bad prompt -> 0, completion still 10
         _um(500, 25, cache=200),                          # fully valid, must still be counted
@@ -93,7 +91,7 @@ async def test_malformed_field_does_not_discard_other_records():
 
 @pytest.mark.asyncio
 async def test_never_raises_on_malformed_response():
-    acc = _load_agent_module()._token_accountant()
+    acc = _token_usage._token_accountant()
     await acc.on_llm_end(_resp(llm_output=None))                 # nothing usable
     await acc.on_llm_end(type("R", (), {"generations": "garbage", "llm_output": 5})())
     assert acc.totals()["total_tokens"] == 0

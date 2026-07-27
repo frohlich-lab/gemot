@@ -98,6 +98,73 @@ def chi2_gof_pvalue(chi2: float | None, dof: int) -> float | None:
         return None
 
 
+async def build_true_model(
+    call: Call,
+    *,
+    antimony: str,
+    justification: str,
+    references: list[str] | None = None,
+    n_starts: int,
+    changes: list[dict] | None = None,
+    change_justification: str = "",
+    min_n_starts: int | None = None,
+) -> None:
+    """The canonical ``scripted_fix`` body: set_model the true structure, optionally re-bound
+    some parameters, then fit once — reporting whatever the server says at each step.
+
+    Every example's ``scripted_fix`` was a copy of this (16 of them, 10 byte-identical). What
+    actually varies is data, so it is passed in: the ``antimony`` to build, its ``justification``
+    / ``references``, and two optional knobs a handful of examples need.
+
+    ``changes`` is a ``change_parameters`` list applied between the build and the fit, for a
+    model whose kinetics need a tighter box than the server's wide default before the multistart
+    can find the true basin. The caller builds the list, because how it is derived is
+    scenario-specific (a flat bound pair, per-parameter bounds, a merged scale+bound entry).
+
+    ``min_n_starts`` floors the multistart count, for a sharp likelihood the default 50 starts
+    cannot reliably close. It only ever raises ``n_starts``, never lowers a caller's request.
+    """
+    if min_n_starts is not None:
+        n_starts = max(int(n_starts), min_n_starts)
+
+    res = await call("set_model", antimony=antimony, justification=justification,
+                     references=references)
+    if isinstance(res, dict) and res.get("applied") is False:
+        print(f"[scripted] set_model rejected: {res.get('error')} / {res.get('issues')}")
+        return
+
+    if changes:
+        await call("change_parameters", changes=changes, justification=change_justification)
+
+    res = await call("fit", n_starts=n_starts)
+    if isinstance(res, dict) and res.get("committed") is False:
+        print(f"[scripted] fit rejected: {res.get('error')} / {res.get('issues')}")
+    elif isinstance(res, dict):
+        print(f"[scripted] built model v{res.get('version')}; nll={res.get('neg_log_likelihood')} "
+              f"fitted={res.get('fitted_parameters')}")
+    else:
+        print(f"[scripted] fit returned: {res}")
+
+
+async def topology_diagnostics(ctx: "JudgeContext") -> tuple[list[str], dict]:
+    """Report-only: how many species and reactions the agent built (success is decided by BIC).
+
+    The default :attr:`Scenario.diagnostics`. Eight examples each defined their own copy of
+    exactly this, differing only in whether the species names were interpolated into the line;
+    they are, here, since the judge already records the full lists either way
+    (``runner.judge`` writes ``species``/``reactions``/``new_species`` into ``result.json``).
+    An example with something real to say about its mechanism overrides this — see the
+    rate-law analysis in the synthetic examples' own hooks.
+    """
+    reactions = ctx.structure.get("reactions", []) or []
+    species = ctx.structure.get("species", []) or []
+    lines = [
+        f"species built:        {len(species)} ({', '.join(map(str, species))})",
+        f"reactions built:      {len(reactions)}",
+    ]
+    return lines, {"n_species_built": len(species), "n_reactions_built": len(reactions)}
+
+
 @dataclass
 class Scenario:
     """A single repair demo. See the module docstring."""
@@ -105,8 +172,11 @@ class Scenario:
     name: str
     problem_dir: Path
     scripted_fix: Callable[[Call, int], Awaitable[None]]
-    # Optional report-only hook describing the repaired mechanism (does NOT gate success).
-    diagnostics: Diagnostics | None = None
+    # Report-only hook describing the repaired mechanism (does NOT gate success). Defaults to the
+    # species/reaction count every benchmark example used to spell out for itself; override it
+    # when the example can say something specific about its own mechanism, or set it to None to
+    # report nothing.
+    diagnostics: Diagnostics | None = topology_diagnostics
     # The orchestrator prompt + task default to the generic, hint-free versions above;
     # scenarios only override them if they truly need to (they don't).
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
@@ -138,7 +208,6 @@ class Scenario:
     bic_threshold: float = 10.0
     # Short human description of the canonical repair (for the scripted driver's log).
     fix_summary: str = ""
-    phoenix_project: str | None = None
     # Example definition version. BUMP THIS whenever you change what the example *is* — its
     # planted bug, data (generate_data.py / problem/), prompts, canonical fix, or judge — so
     # runs of different definitions are not silently pooled. It is independent of the repo

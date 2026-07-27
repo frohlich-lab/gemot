@@ -65,11 +65,8 @@ def test_curated_biocurator_tool_names_resolve_on_live_servers():
     urls = _bio_urls()
     assert urls, "no bio MCP URLs found (constant renamed?)"
 
-    try:
-        import mcp  # noqa: F401
-    except Exception as exc:  # mcp not installed in this env -> can't check
-        pytest.skip(f"mcp not installed: {exc}")
-
+    # No `mcp` availability probe: it is a hard dependency (pyproject [project.dependencies]),
+    # so the skip it guarded could never fire.
     try:
         # All-or-nothing: if ANY server is unreachable/slow the union would be incomplete and give
         # a false 'missing', so treat any connect failure as 'can't check' and skip.

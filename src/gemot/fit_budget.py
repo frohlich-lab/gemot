@@ -102,10 +102,18 @@ FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_workers())
 FIT_BUDGET_MARGIN = _env_float("PETAB_MCP_FIT_BUDGET_MARGIN", 1.4)
 
 
-def fit_workers(n_starts: int) -> int:
+def fit_workers(n_starts: int, n_workers: int | None = None) -> int:
     """Effective parallel workers for an ``n_starts`` multistart — never more than there are starts,
-    always at least one."""
-    return max(1, min(FIT_N_WORKERS, max(1, int(n_starts))))
+    always at least one.
+
+    ``n_workers`` overrides the ``FIT_N_WORKERS`` cap for this call. Pass it when a specific
+    caller needs a specific parallelism — e.g. a stiff model whose reference refit must run
+    SEQUENTIALLY because a parallel pyPESTO worker hard-crashes on it (``BrokenProcessPool``).
+    That used to be done by setting ``PETAB_MCP_FIT_N_WORKERS`` at runtime, which silently did
+    nothing: ``FIT_N_WORKERS`` is bound at import, and importing an example's ``run.py`` already
+    pulls this module in. An argument cannot lose that race."""
+    cap = FIT_N_WORKERS if n_workers is None else max(1, int(n_workers))
+    return max(1, min(cap, max(1, int(n_starts))))
 
 
 def fit_time_budget(n_starts: int) -> float:
@@ -131,11 +139,13 @@ def fides_maxtime_options() -> dict:
         return {}
 
 
-def fit_engine(n_starts: int):
-    """A pyPESTO engine that runs the multistart across ``fit_workers(n_starts)`` worker processes,
-    or ``None`` (pyPESTO's sequential ``SingleCoreEngine``) for a single effective worker or when a
-    parallel engine can't be constructed. Pass to ``pypesto.optimize.minimize(engine=...)``."""
-    workers = fit_workers(n_starts)
+def fit_engine(n_starts: int, n_workers: int | None = None):
+    """A pyPESTO engine that runs the multistart across ``fit_workers(n_starts, n_workers)`` worker
+    processes, or ``None`` (pyPESTO's sequential ``SingleCoreEngine``) for a single effective worker
+    or when a parallel engine can't be constructed. Pass to ``pypesto.optimize.minimize(engine=...)``.
+
+    ``n_workers=1`` is how a caller forces the sequential engine — see :func:`fit_workers`."""
+    workers = fit_workers(n_starts, n_workers)
     if workers < 2:
         return None
     try:

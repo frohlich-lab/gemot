@@ -62,11 +62,21 @@ parameters), so fitting the numbers isn't enough; an independent judge checks th
 **mechanism** by BIC against the true model, not just the fit. Every example also has a
 no-LLM `--driver scripted` self-test.
 
+There are **16** examples. Three are synthetic (they simulate their own data from a withheld
+truth model, so the trap is planted deliberately):
+
 | Example | System | The trap → the true mechanism |
 |---|---|---|
 | [`enzyme_kinetics/`](examples/enzyme_kinetics/) | Two-reaction enzymatic network, two doses | Michaelis–Menten → **substrate inhibition** (`…/(Km+S+S²/Ki)`) |
 | [`predator_prey/`](examples/predator_prey/) | Rosenzweig–MacArthur limit cycle | Lotka–Volterra bilinear → **Holling type-II** saturating response (2 coupled fluxes) |
 | [`repressilator/`](examples/repressilator/) | Three-gene ring oscillator | Non-cooperative Hill `n=1` → **cooperative** `n≥2` (3 symmetric reactions) |
+
+The other thirteen are **real published models** with real experimental data, materialized from
+the pinned PEtab Benchmark-Models collection by `python examples/setup.py` (armistead, blasi,
+boehm, brannmark, bruno, crauste, fiedler, fujita, oliveira, perelson, rahman, schwen, sneyd).
+Each ships model-less, so the agent must build the mechanism from the data; the BIC bar is the
+published model's own fit. See [`examples/BENCHMARK_NOTES.md`](examples/BENCHMARK_NOTES.md).
+The roster lives in one place, `petab_harness.paths` — add a new example there.
 
 See [`examples/README.md`](examples/README.md) for the shared harness (the analyst panel,
 Arize Phoenix tracing, judging, and how to run).
@@ -254,8 +264,8 @@ your own skills; drop another skill directory into `_skills/` to extend the bund
 ## Development
 
 ```bash
-pip install -e '.[dev]'   # AMICI + pyPESTO are core deps; dev adds pytest
-pytest                    # AMICI/pyPESTO fit tests skip if absent; PubMed path is stubbed
+pip install -e '.[dev]'   # AMICI + pyPESTO are core deps; dev adds pytest + the agent stack
+pytest                    # needs the full install (AMICI/pyPESTO are hard deps); PubMed is stubbed
 ```
 
 ## License
