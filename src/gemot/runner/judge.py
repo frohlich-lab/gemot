@@ -22,13 +22,29 @@ from .provenance import _bic_reference, _now_iso
 from ..scenario import Baseline, JudgeContext, Scenario
 from .scoring import _noise_sigma_flag, _reference_sigma_flag, _residual_structure_fields
 
+
+async def _head_version(call) -> "int | None":
+    """The current HEAD version number, read off ``describe_problem``.
+
+    There is no separate ``current_version`` tool: everything it returned (``current_version``,
+    ``has_unfit_edits``, ``n_pending_edits``) is already on ``describe_problem``, so the second
+    tool was a schema in every client's context for no extra capability. ``None`` when the read
+    fails, so a caller can fall back rather than abort.
+    """
+    try:
+        desc = await call("describe_problem")
+    except Exception:  # pragma: no cover - defensive; callers degrade
+        return None
+    return int(desc.get("current_version", 0)) if isinstance(desc, dict) else None
+
+
 async def _restore_best_checkpoint(call) -> None:
     """Make the early-stop chain's best-BIC model the current HEAD before scoring.
 
     Agents wander off their best model and finish worse (verified pass→fail flips on a credit
     abort, e.g. armistead v56 → v66), so the judge must score the BEST fitted version, not the
     last-committed one. The server tracks that checkpoint (``get_progress`` → ``best_version``);
-    ``rollback_to`` restores it as a new HEAD, which every read in :func:`_judge` then sees. This
+    ``restore_version`` restores it as a new HEAD, which every read in :func:`_judge` then sees. This
     runs on ANY termination that reaches the judge (early-stop, wall-time, recursion limit,
     clean finish). Best-effort — a probe/rollback failure just leaves HEAD in place.
 
@@ -60,14 +76,11 @@ async def _restore_best_checkpoint(call) -> None:
                       f"({type(exc).__name__}: {exc})")
         if best is None:
             return
-    try:
-        head = int((await call("current_version")).get("version", 0))
-    except Exception:  # pragma: no cover - defensive
-        head = None
+    head = await _head_version(call)
     if best == head:
         return  # already on the best model
     try:
-        await call("rollback_to", version=best,
+        await call("restore_version", version=best,
                    justification="restore best-BIC checkpoint before scoring")
         print(f"[judge] restored best-BIC checkpoint v{best} (was HEAD v{head}) before scoring")
     except Exception as exc:  # pragma: no cover - score HEAD if the restore fails
@@ -135,7 +148,7 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     except Exception as exc:  # noqa: BLE001 - report-only diagnostic; never fail the judge on it
         print(f"  (residual-structure diagnosis unavailable: {type(exc).__name__}: {exc})")
         residual_structure = None
-    head = int((await call("current_version")).get("version", 0))
+    head = await _head_version(call) or 0
     diff = await call("diff_versions", from_version=0, to_version=head) if head else {}
     errors = await call("get_errors", limit=20)
     # baseline.nll is None for a zero-shot build (no model shipped → nothing to score).

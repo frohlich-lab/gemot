@@ -123,6 +123,12 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
             "model": args.model, "driver": args.driver, "temperature": args.temperature,
             "recursion_limit": args.recursion_limit, "n_starts": args.n_starts,
             "git_sha": git_sha, "run_started_at": run_started_at,
+            # The text the agent was given is an INPUT to the run, like the code sha — so the
+            # trace root carries both, and a Phoenix query can group or split traces on either.
+            # Two numbers rather than one so a change is attributable to the prompts
+            # (prompts.py) or the skills (_skills/), which are edited independently.
+            "prompt_version": base_meta.get("prompt_version"),
+            "skills_version": base_meta.get("skills_version"),
         }
         exit_code, result = 1, {}
         with run_span(tracing, name="model_build_run", attributes=span_attrs) as span:

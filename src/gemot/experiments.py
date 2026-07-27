@@ -16,7 +16,6 @@ records exactly which prompts produced it and prompt changes are visible/attribu
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 # Stable dataset-name prefix. Kept as "...-repair" (the examples' original framing; they are
@@ -30,82 +29,126 @@ DATASET_PREFIX = "petab-mcp-repair"
 def collect_prompts() -> dict[str, str]:
     """The repo's agent-facing prompts, keyed by a stable registry name.
 
-    Source of truth is :mod:`petab_harness.prompts`; this just gathers the text so it can be
-    hashed + mirrored into Phoenix. The analyst persona constants already include the shared
-    report contract.
+    The registry itself lives with the text, in :mod:`petab_harness.prompts` — this is a thin
+    flatten of ``PROMPT_GROUPS`` so callers here need not know the grouping.
 
-    The key set is deliberately NARROWER than the full prompt surface in ``prompts``: the
-    biocurator persona, the tool descriptions, the nudges and the finish-gate refusals are all
-    model-facing but unregistered. That predates the prompt file and is left alone here on
-    purpose — ``prompt_version`` hashes exactly these keys and is stamped into every experiment
-    row, so widening the set would renumber history. Widen it as its own deliberate change.
+    It is the FULL surface: the lead's prompt and task, the analyst personas and the
+    descriptions the lead picks them by, the biocurator, the panel-facing tool descriptions
+    (which REPLACE the server docstrings), the nudges, and the finish gate. It used to be five
+    keys, which left the other ~30 model-facing constants outside ``prompt_version`` entirely;
+    ``tests/test_prompt_tracking.py`` now fails if a prompt escapes the registry.
     """
     from . import prompts as P
 
-    return {
-        "petab-lead-system": P.DEFAULT_SYSTEM_PROMPT,
-        "petab-lead-task": P.DEFAULT_TASK,
-        "petab-analyst-mathematician": P.MATHEMATICIAN_PROMPT,
-        "petab-analyst-systems-scientist": P.SYSTEMS_SCIENTIST_PROMPT,
-        "petab-analyst-signal-engineer": P.SIGNAL_ENGINEER_PROMPT,
-    }
+    return P.all_prompts()
 
 
 # The chat role each prompt plays, so the registry mirrors how the harness actually uses
-# them (lead system prompt + analyst personas are system instructions; the task is a user
-# message). Role is a registration detail — it is NOT part of ``prompt_version`` (which
-# hashes prompt text only), so fixing a role does not churn the version.
+# them: personas and instruction blocks are system text, the lead's task is a user message,
+# and the harness's own messages back to the model (nudges, refusals, tool descriptions) are
+# what the model receives mid-conversation. Role is a registration detail — it is NOT part of
+# ``prompt_version`` (which hashes prompt text only), so fixing a role does not churn it.
 _PROMPT_ROLES = {
     "petab-lead-system": "system",
     "petab-lead-task": "user",
     "petab-analyst-mathematician": "system",
     "petab-analyst-systems-scientist": "system",
     "petab-analyst-signal-engineer": "system",
+    "petab-analyst-descriptions": "system",
+    "petab-biocurator-system": "system",
+    "petab-biocurator-description": "system",
+    "petab-biocurator-entity-block": "user",
+    "petab-tool-descriptions": "system",
+    "petab-make-decision": "system",
+    "petab-finish-gate": "user",
+    "petab-nudges": "user",
+    "petab-guards": "user",
+    # every `petab-skill-*` entry defaults to "system" via the .get() below —
+    # a skill is read as instructions, not as a turn in the conversation.
 }
 
 
 def prompt_version(prompts: dict[str, str] | None = None) -> str:
-    """A stable 12-char content hash over all prompts — the harness's *prompt version*."""
-    prompts = prompts if prompts is not None else collect_prompts()
-    h = hashlib.sha256()
-    for name in sorted(prompts):
-        h.update(name.encode("utf-8"))
-        h.update(b"\x00")
-        h.update(prompts[name].encode("utf-8"))
-        h.update(b"\x00")
-    return h.hexdigest()[:12]
+    """A stable 12-char content hash over all prompts — the harness's *prompt version*.
+
+    Re-exported from :mod:`petab_harness.prompts`, where it lives beside the text it hashes.
+    Kept importable here because every existing caller reaches for it through this module.
+    """
+    from . import prompts as P
+
+    return P.prompt_version(prompts)
+
+
+def prompt_group_versions() -> dict[str, str]:
+    """Per-group prompt hashes — see :func:`petab_harness.prompts.prompt_group_versions`."""
+    from . import prompts as P
+
+    return P.prompt_group_versions()
+
+
+def collect_skills() -> dict[str, str]:
+    """The server's bundled SKILLS, keyed for the registry.
+
+    Skills are agent-facing instructions, not reference docs: the lead is told to read them
+    before authoring (see prompts.DEFAULT_SYSTEM_PROMPT step 0). A change to one therefore
+    changes what the agent is told, so they are registered and versioned like the prompts.
+    """
+    from petab_mcp.skills import skill_texts
+
+    return {f"petab-skill-{name}": text for name, text in skill_texts().items()}
+
+
+def skills_version() -> str:
+    """Content hash over the bundled skills — see :func:`petab_mcp.skills.skills_version`."""
+    from petab_mcp.skills import skills_version as _sv
+
+    return _sv()
 
 
 def register_prompts(client, *, model_name: str) -> dict[str, Any]:
-    """Mirror the repo prompts into Phoenix's Prompt registry (idempotent per content).
+    """Mirror the repo prompts AND skills into Phoenix's Prompt registry (idempotent per
+    content).
 
     Phoenix creates a new version of a named prompt only when its content changes, so
-    calling this every run is cheap and keeps the registry in lock-step with the code.
-    Returns ``{"prompt_version": <hash>, "registered": [...], "errors": [...]}``.
+    calling this every run is cheap and keeps the registry in lock-step with the code. Skills
+    ride here because the panel now READS them — they are instructions, so the registry that
+    records "what was the agent told" is incomplete without them.
+    Returns ``{"prompt_version", "skills_version", "registered", "errors"}``.
     """
     from phoenix.client.types import PromptVersion
 
-    prompts = collect_prompts()
-    version = prompt_version(prompts)
+    # Registered together, hashed SEPARATELY: `prompt_version` must mean the same thing here as
+    # it does in result.json (prompts.py only), or the two would disagree. A skill entry carries
+    # `skills_version` instead.
+    skills = collect_skills()
+    prompts = {**collect_prompts(), **skills}
+    version = prompt_version()
+    skills_v = skills_version()
     registered, errors = [], []
     for name, text in prompts.items():
+        is_skill = name in skills
+        # a skill is instructions the agent READS on demand; a prompt is text it is SENT
+        role = "system" if is_skill else _PROMPT_ROLES.get(name, "user")
+        stamp = f"skills_version={skills_v}" if is_skill else f"prompt_version={version}"
+        kind = "skill" if is_skill else "prompt"
         try:
             client.prompts.create(
                 name=name,
-                prompt_description=f"petab-mcp model-building harness prompt ({name}); "
-                                   f"source of truth is the repo. prompt_version={version}.",
+                prompt_description=f"petab-mcp model-building harness {kind} ({name}); "
+                                   f"source of truth is the repo. {stamp}.",
                 version=PromptVersion(
-                    [{"role": _PROMPT_ROLES.get(name, "user"), "content": text}],
+                    [{"role": role, "content": text}],
                     model_name=model_name,
                     template_format="NONE",  # prompts are literal text, not templates
-                    description=f"prompt_version={version}",
+                    description=stamp,
                 ),
-                prompt_metadata={"prompt_version": version},
+                prompt_metadata={"prompt_version": version, "skills_version": skills_v},
             )
             registered.append(name)
         except Exception as exc:  # registry is best-effort — never fail a run over it
             errors.append(f"{name}: {type(exc).__name__}: {exc}")
-    return {"prompt_version": version, "registered": registered, "errors": errors}
+    return {"prompt_version": version, "skills_version": skills_v,
+            "registered": registered, "errors": errors}
 
 
 # --------------------------------------------------------------------------- dataset
@@ -257,10 +300,21 @@ def run_experiments(
 
     client = Client(base_url=phoenix_base_url(base_url))
     prompts_info = register_prompts(client, model_name=model)  # once; prompts are global
+    # Registration is best-effort, but a SILENT best-effort is worse than none: a partly-failed
+    # registration leaves the Phoenix registry missing prompts while `prompt_version` still
+    # claims to cover them. Print what did not land so the discrepancy is visible.
+    if prompts_info["errors"]:
+        print(f"[prompts] WARNING: {len(prompts_info['errors'])} of "
+              f"{len(prompts_info['errors']) + len(prompts_info['registered'])} prompts failed to "
+              f"register in Phoenix; prompt_version={prompts_info['prompt_version']} still covers "
+              "them, so the registry is INCOMPLETE for this run:")
+        for err in prompts_info["errors"]:
+            print(f"[prompts]   {err}")
     git_sha = _git_sha(scenarios[0].example_dir) if scenarios else None
     metadata = {
         "driver": driver, "model": model, "temperature": temperature,
         "git_sha": git_sha, "prompt_version": prompts_info["prompt_version"],
+        "skills_version": prompts_info["skills_version"],
         "recursion_limit": recursion_limit, "n_starts": n_starts,
     }
 
@@ -302,7 +356,7 @@ def run_experiments(
 # runs that share (example, model, temperature).
 _ROW_FIELDS = ("example", "model", "temperature", "success", "delta_bic",
                "chi2_gof_pvalue", "stop_reason", "n_ops", "n_fits",
-               "prompt_version", "git_sha")
+               "prompt_version", "skills_version", "git_sha")
 
 
 # --------------------------------------------------------------------------- abort triage

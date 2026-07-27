@@ -97,12 +97,28 @@ def _base_meta(scenario: Scenario, args: argparse.Namespace,
     ``run_started_at`` is stamped fresh when not given; ``_main_async`` passes the REAL start
     time it captured before launching the server, so a teardown-time degraded result preserves
     the true start instead of re-stamping it at abort time (which made aborted runs show a
-    zero-length duration)."""
+    zero-length duration).
+
+    ``prompt_version`` rides here, next to ``git_sha``, because the prompts are as much an input
+    to a run as the code is. It used to reach only Phoenix's experiment metadata, so every run
+    outside Phoenix — every ``run.py``, every slurm sweep — recorded no trace of which prompt
+    text produced it. ``prompt_group_versions`` makes a bump attributable to lead vs analysts vs
+    tools vs control instead of one opaque number moving. Imported from ``prompts`` rather than
+    ``experiments`` to keep the runner free of the (heavier, Phoenix-facing) module."""
+    from petab_mcp.skills import skills_version
+
+    from ..prompts import prompt_group_versions, prompt_version
+
     scripted = args.driver == "scripted"
     return {
         "driver": args.driver,
         "model": None if scripted else args.model,
         "git_sha": _git_sha(scenario.example_dir), "example_version": scenario.version,
+        "prompt_version": prompt_version(),
+        "prompt_group_versions": prompt_group_versions(),
+        # the skills are instructions the panel reads (prompts step 0), so they are
+        # part of "what produced this run" just as much as the prompts are.
+        "skills_version": skills_version(),
         "recursion_limit": None if scripted else args.recursion_limit,
         "n_starts": args.n_starts,
         "temperature": None if scripted else args.temperature,

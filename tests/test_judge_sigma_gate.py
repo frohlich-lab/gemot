@@ -60,12 +60,13 @@ class _Baseline:
 
 
 def _make_call(summary):
-    """A fake async MCP `call`: canned per tool name. get_progress/current_version agree on v1 so
-    _restore_best_checkpoint is a no-op (already on the best checkpoint); get_fit_summary carries
-    the nll + noise_sigma_report that drive both gates; everything else is inert."""
+    """A fake async MCP `call`: canned per tool name. get_progress and describe_problem agree on
+    v1 so _restore_best_checkpoint is a no-op (already on the best checkpoint); get_fit_summary
+    carries the nll + noise_sigma_report that drive both gates; everything else is inert."""
     canned = {
         "get_progress": {"best_version": 1},
-        "current_version": {"version": 1},
+        # the HEAD version comes off describe_problem — there is no current_version tool
+        "describe_problem": {"current_version": 1, "model_initialized": True},
         "get_model_structure": {"reactions": [{"id": "r1"}], "species": ["A", "B"]},
         "get_fit_summary": summary,
         "get_parameters": _PARAMS,

@@ -96,11 +96,11 @@ scored.
   re-authors/replaces an existing one, so every structural change (adding or removing a
   reaction, changing a rate law) is one coherent re-author. New species/parameters + parametric
   ICs are reconciled automatically.
-- `change_parameters(changes, justification, references?, fit?, n_starts?)` — batch-edit the
-  bounds and/or scale of one or more parameters in one atomic call. `changes` is a non-empty
+- `change_parameters(parameters, justification, references?, fit?, n_starts?)` — batch-edit
+  the bounds and/or scale of one or more parameters in one atomic call. `parameters` is a non-empty
   list of `{parameter_id, lower_bound?, upper_bound?, scale?}` entries (a bound edit gives
   **both** bounds); one rejected entry reverts the whole batch.
-- read-only: `get_model(format)`, `get_model_structure`, `validate_problem`.
+- read-only: `get_model(format)`, `get_model_structure`.
 
 **Bundling an edit with its fit** — a coherent change that *is* one edit should cost one call:
 `set_model` takes a `parameters=[…]` list (the same entries `change_parameters` takes, applied in
@@ -113,7 +113,7 @@ ignored). The bundled result is the edit result with the whole fit result nested
 Leave the calls separate when one change genuinely spans several edits: edit, edit, then `fit`
 once.
 
-**Parameters** — `get_parameters` (read-only; values are set by the fit), `sync_parameters`.
+**Parameters** — `get_parameters` (read-only; values are set by the fit).
 Parameter *values* are set only by `fit`; adjust the search space with the versioned
 `change_parameters` edit. Every edit returns an `initial_conditions` block reporting, per species,
 whether its declared t=0 is used (fixed), fitted (estimated), or set per-condition.
@@ -179,8 +179,8 @@ it is **SQL over the data** via DuckDB, so you compute the breakdown you want:
   and ill-conditioning — the *numerical* view of the fit, complementing the SQL residual view.
 
 **Provenance, versions & errors** — `get_provenance`, `get_errors`, `list_versions`,
-`get_version`, `diff_versions`, `rollback_to(version)`, `restore_version(version)`,
-`current_version`, `reset`.
+`get_version`, `diff_versions`, `restore_version(version)`, `get_progress`, `reset`. (The HEAD
+version and whether it has unfit edits come from `describe_problem`.)
 
 **Skills** — `list_skills`, `get_skill(name, file?)`. The server ships tool-usage
 documentation as [agent skills](https://modelcontextprotocol.io) bundled under
@@ -242,7 +242,7 @@ your own skills; drop another skill directory into `_skills/` to extend the bund
   rejected operations / failed tool calls (surfaced via `get_errors`); `.petab_mcp/petab_mcp.log`
   is a human-readable log (including a concise per-fit summary), and
   `.petab_mcp/pypesto.log` captures pyPESTO's own multistart optimizer report for each fit.
-  `rollback_to` restores a prior version as a new, auditable version — including its fit
+  `restore_version` restores a prior version as a new, auditable version — including its fit
   artifacts (simulation + optimization traces + result file), copied forward. A version is
   exactly a fit snapshot: edits append `edit` events, `fit` creates the version that scores them.
 - **One version per coherent change + comparison.** `fit` records its objective and how it

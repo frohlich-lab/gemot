@@ -134,7 +134,7 @@ async def build_true_model(
         return
 
     if changes:
-        await call("change_parameters", changes=changes, justification=change_justification)
+        await call("change_parameters", parameters=changes, justification=change_justification)
 
     res = await call("fit", n_starts=n_starts)
     if isinstance(res, dict) and res.get("committed") is False:

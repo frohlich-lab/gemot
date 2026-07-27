@@ -20,7 +20,10 @@ from typing import Any
 # Provenance -> W&B run config (the sweep axes + reproducibility).
 _CONFIG_KEYS = (
     "scenario", "model", "driver", "temperature", "recursion_limit", "n_starts",
-    "example_version", "git_sha", "phoenix_project", "phoenix_trace_id", "stop_reason",
+    # `prompt_version` is a run INPUT, like git_sha — config, not a summary metric. Without it
+    # a W&B sweep cannot group or filter runs by the prompt text that produced them.
+    "example_version", "git_sha", "prompt_version", "skills_version",
+    "phoenix_project", "phoenix_trace_id", "stop_reason",
 )
 # Outcome -> W&B summary metrics.
 _METRIC_KEYS = (

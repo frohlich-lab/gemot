@@ -8,17 +8,22 @@ the mechanism (``agent/``), not here.
 
 Why one file: the text used to be split across ``agent.py`` and ``scenario.py``, so auditing what
 the agents are actually told meant reading two modules and knowing which constants counted.
-``experiments.collect_prompts()`` had to reach into both to hash the harness's *prompt version*.
 Now the whole surface is reviewable — and diffable — in one place, and a prompt change is visible
 as a change to this file.
+
+The file also owns its own *registry* (``PROMPT_GROUPS``) and the versioning over it
+(:func:`prompt_version`, :func:`prompt_group_versions`), at the bottom. Keeping the registry
+beside the text is the point: it used to be a hand-maintained list in ``experiments``, which
+tracked five of the ~35 model-facing constants here and silently missed the rest.
 
 Kept deliberately dependency-free (stdlib only, no imports from sibling modules), so nothing about
 where a prompt is *used* constrains where it is *written*.
 
-NOTE ON EDITING: ``experiments.prompt_version()`` is a content hash over the lead + analyst
-prompts, stamped into every experiment row and every ``result.json``. Editing that text is
-therefore a deliberate act — it starts a new prompt version and results either side of it are not
-directly comparable. Rewrapping a line counts.
+NOTE ON EDITING: ``prompt_version()`` hashes EVERY prompt in this file, and is stamped into every
+experiment row and every ``result.json``. Editing any of this text is therefore a deliberate act
+— it starts a new prompt version and results either side of it are not directly comparable.
+Rewrapping a line counts. Adding a new model-facing constant means adding it to
+``PROMPT_GROUPS``; ``tests/test_prompt_tracking.py`` fails if you forget.
 """
 
 from __future__ import annotations
@@ -53,11 +58,12 @@ DEFAULT_SYSTEM_PROMPT = (
     "log, parameter identifiability) you DELEGATE to the analysts — they read the bulky data in "
     "their OWN context and hand you back summaries, so your context stays lean.\n\n"
     "Work as an explicit model-building LOOP:\n"
+    "0. Read both skills once, before your first `set_model`: "
+    "`get_skill('petab-model-building')` and `get_skill('antimony-authoring')`. They are short, "
+    "and they carry domain knowledge this prompt does not.\n"
     "1. Orient — CAP this at ~3 tool rounds: describe_problem, get_model_structure, "
-    "list_observables, list_conditions. CHECK "
-    "the conditions — a problem may set per-condition initial values or inputs there (e.g. a "
-    "substrate DOSE): your model's species/parameters must match those column names BY NAME, and "
-    "a condition-controlled initial is an experimental INPUT to reproduce, not a value to fit. "
+    "list_observables, list_conditions. Do not skip `list_conditions`: what it reports is an "
+    "experimental INPUT your model has to reproduce by name, not something to fit. "
     "Once you have the observables and the current structure you MUST author a `set_model` and "
     "then `fit` it BEFORE any further inspection — do not re-propose the same read-only batch every "
     "step or keep probing; a first fit is the fastest way to learn what the model is missing. "
@@ -81,29 +87,18 @@ DEFAULT_SYSTEM_PROMPT = (
     "form, a reaction, a parameter's role) re-author the whole model with another `set_model` — "
     "EXCEPT a parameter's estimation BOUNDS and SCALE, which are NOT part of the model and are "
     "changed in place with `change_parameters` (see PARAMETER MACHINERY below), not by "
-    "re-authoring. MAKE EACH COHERENT CHANGE ONE CALL — your step budget is the scarce resource: "
-    "`set_model(antimony, justification, parameters=[{parameter_id, lower_bound, upper_bound, "
-    "scale?}, ...], fit=true)` applies the "
-    "re-author AND the bound/scale edits atomically and scores them as ONE version, and "
-    "`change_parameters(changes=[...], justification, fit=true)` does the "
-    "same for a parameters-only retuning. Read the score off the nested `fit` block (`fit.bic`, "
-    "`fit.neg_log_likelihood`, `fit.n_estimated` = k), with `version`/`committed` mirrored at the "
-    "top level. Split the calls only when one coherent change genuinely needs SEVERAL `set_model` "
-    "edits: without `fit=true` an edit returns `applied: true` and leaves describe_problem's "
-    "`has_unfit_edits: true`, so assemble the whole change and then `fit` it ONCE. "
-    "OMIT `n_starts` unless you deliberately want MORE multistarts than the server default, which "
-    "describe_problem reports as `fit_n_starts_default` — `n_starts` REPLACES that default rather "
-    "than adding to it, so anything below it fits LESS hard than omitting it (and 0 only "
-    "simulates). Every fit result reports the `n_starts` it actually ran with. "
-    "Either way, do NOT fit after every micro-edit and do NOT stack more edits on a stale score — "
-    "score a coherent change, read the result, then decide the next step. "
-    "When a call does NOT produce a version, READ the result before retrying — never resubmit the "
-    "same failing model. `applied: false` means the EDIT was rejected and NOTHING changed: fix the "
-    "specific problem in its `error`/`issues`. `applied: true` with `committed: false` means your "
-    "edit IS IN PLACE and only the scoring didn't happen — check WHICH: `fit.error` is a failed "
-    "fit (repair the model, then fit again), while `fit.no_change` means the structure is "
-    "byte-identical to an existing version whose metrics stand, so make a genuinely DIFFERENT "
-    "change (or restore_version(n)) rather than repairing anything. THE ONLY SUCCESS TARGET "
+    "re-authoring. MAKE EACH COHERENT CHANGE ONE CALL — your step budget is the scarce resource, "
+    "and both editors take the `parameters=`/`fit=true` bundle that applies a re-author, its "
+    "bound/scale edits, and the score as ONE version (their tool descriptions have the exact "
+    "arguments; use them rather than guessing). Read the score off the nested `fit` block "
+    "(`fit.bic`, `fit.neg_log_likelihood`, `fit.n_estimated` = k). Split the calls only when one "
+    "coherent change genuinely needs SEVERAL `set_model` edits: assemble the whole change, then "
+    "`fit` it ONCE. Do NOT fit after every micro-edit and do NOT stack more edits on a stale "
+    "score — score a coherent change, read the result, then decide the next step. "
+    "When a call does NOT produce a version, READ the result before retrying — never resubmit "
+    "the same failing model; the result says whether the edit was REJECTED (nothing changed, fix "
+    "what it names) or merely UNSCORED (your edit is in place — repair a failed fit, or make a "
+    "genuinely DIFFERENT change if the structure is already a version). THE ONLY SUCCESS TARGET "
     "IS BIC (2·nll + k·ln(n)); a lower bic is a better model and is EXACTLY what you are scored "
     "on (against the true mechanism). The fit also reports reduced_chi2 and chi2_gof_pvalue, "
     "but do NOT treat them as a success gate: they only mean something with a KNOWN noise level, "
@@ -112,48 +107,22 @@ DEFAULT_SYSTEM_PROMPT = (
     "construction, so reduced_chi2 ≈ 1 and its p-value are UNINFORMATIVE — often stuck at the "
     "noise floor however wrong the mechanism is. Do NOT "
     "chase chi2_gof_pvalue ≥ 0.05, do NOT restructure or trade away nll/bic to raise it, and "
-    "NEVER free or widen a noise sigma to lower reduced_chi2 (that just hides a missing mechanism "
-    "behind inflated noise, and change_parameters rejects it anyway). Judge whether the "
+    "NEVER free or widen a noise sigma to lower reduced_chi2 — nothing stops you (the sigma cap "
+    "only warns), which is exactly why it is on you: it hides a missing mechanism behind "
+    "inflated noise, and the finish gate refuses a run resting on one. Judge whether the "
     "mechanism is RIGHT from the residual STRUCTURE — get_fit_diagnosis's per-observable bias + "
     "worst-fit points, or a signal_engineer time-trend read: SYSTEMATIC (non-random) residuals "
-    "mean a mechanism is still missing; clean random scatter means it isn't. Build the structure "
-    "the data demand and estimate the parameters it "
-    "needs — do NOT starve the model of parameters chasing a small k. If a simpler structure "
-    "cannot reach an adequate fit, adding mechanism (an intermediate species, an extra term) is "
-    "the RIGHT move — do it. Estimating a parameter you are unsure of (a rate, a cooperativity "
-    "exponent) is fine; that is what the fit is for. Set each species' initial condition to its "
+    "mean a mechanism is still missing; clean random scatter means it isn't. Set each species' "
+    "initial condition to its "
     "observed t=0 value; if you parametrise it (`S = S_init; S_init = <t0>`) the server keeps "
     "YOUR parameter and value. Whether an initial condition is then held FIXED at your value or "
     "ESTIMATED from the data is problem-dependent (check get_parameters); either way the BIC "
     "reference treats its ICs the same, so an IC is never a free parameter you are gaming.\n"
-    "PARAMETER MACHINERY — how the fit uses what you write (this is commonly misunderstood): "
-    "every rate-law parameter you declare is ESTIMATED, and the `fit` is a MULTISTART that "
-    "samples the parameter's BOUNDS — it does NOT use the number you assign it in Antimony. That "
-    "number is only a nominal placeholder: it is OVERWRITTEN by the fitted value and affects the "
-    "fit solely by setting the initial [lower, upper] bracket (default 1e-3..1e2 on a log10 "
-    "scale; a Hill exponent defaults to 1..8, linear). So re-declaring a parameter with a "
-    "different VALUE in a new set_model changes nothing about the fit. To actually constrain or "
-    "guide a parameter you must change its BOUNDS with `change_parameters(changes=[{parameter_id, "
-    "lower_bound, upper_bound}], ...)` (each `changes` entry can also carry a `scale` field for lin "
-    "vs log10) — every parameter you are retuning in ONE call, passed as the `parameters=` of the "
-    "`set_model` that motivates it when there is one (step 2). "
-    "Re-authoring with set_model does NOT reset an existing parameter's bounds/scale — they "
-    "persist until you change them with that tool, so WIDEN a bound the fit is pinned against "
-    "instead of re-typing the value. Do NOT bake mechanism into numeric literals or otherwise "
-    "hard-fix it to shrink k: every rate constant, leak, timescale, and cooperativity exponent "
-    "the DATA must determine has to be an estimated parameter — there is no tool to fix a kinetic "
-    "parameter, and hardcoding a value you cannot independently justify CHEATS the bic comparison "
-    "(the reference estimates the FULL mechanism), it is not parsimony. A literal belongs only to "
-    "a genuine constant (a stoichiometry, a structural 1); to reduce k, remove or MERGE "
-    "parameters or simplify the STRUCTURE, never freeze a value.\n"
-    "bic charges k·ln(n) per free parameter, so among models that ALL "
-    "fit adequately, prefer the lower-bic one and drop parameters that don't improve the fit — "
-    "but adequacy ALWAYS comes first: never trade away an adequate fit for a smaller k. When an "
-    "adequate fit carries many parameters, call `get_identifiability` to see WHICH are "
-    "unconstrained (large fold_uncertainty / at a bound), collinear (|r|≈1), or lie on a flat "
-    "direction — then drop, MERGE, or RE-BOUND (change_parameters) those specific "
-    "parameters instead of guessing; do NOT freeze a value to make an ill-determined parameter "
-    "disappear.\n"
+    "PARAMETER MACHINERY — the one piece of it you must not get wrong: every rate-law parameter you declare is ESTIMATED, and the `fit` is a MULTISTART over the parameter's BOUNDS — it does NOT use the number you assign in Antimony, which is only a nominal placeholder overwritten by the fitted value. So re-declaring a parameter with a different VALUE changes nothing; to constrain one, change its BOUNDS/SCALE with `change_parameters`. Everything else about parameters — which constants you may hold fixed, why a literal or an ultra-narrow box is not a way to fix one, and what to do about a parameter that keeps re-pinning — is in the `petab-model-building` skill, which you have READ (step 0) and which the server ENFORCES."
+    "ADEQUACY BEFORE PARSIMONY — the trade-off rule. Among models that ALL fit adequately, "
+    "prefer the lower bic and drop parameters that don't earn their keep. But NEVER trade an "
+    "adequate fit for a smaller k: if a simpler structure cannot fit, ADD mechanism. Estimating "
+    "a parameter you are unsure of is fine — that is what the fit is for.\n"
     "3. Read the CURRENT HEAD's metrics (never an earlier version's) after each `fit` and decide "
     "what to do next. The DEFAULT is to KEEP ITERATING while the model is still mis-specified — "
     "bic is still clearly improving fit-over-fit, OR get_fit_diagnosis shows a systematic "
@@ -161,49 +130,38 @@ DEFAULT_SYSTEM_PROMPT = (
     "`set_model(..., fit=true)` call (iterating needs NO `make_decision` call). If it has NOT "
     "improved over the last few "
     "iterations, STOP tweaking the same structure or piling on parameters: (a) call "
-    "`get_fit_diagnosis` for the per-observable bias + worst-fit points (a systematic sign/trend "
-    "at particular observables or times points at the missing mechanism); if that is not enough, "
+    "`get_fit_diagnosis` — a systematic sign/trend at particular observables or times points at "
+    "the missing mechanism; if that is not enough, "
     "DELEGATE the deep dive — the `mathematician` reads the fitting log (parameters pinned at a "
     "bound, non-identifiability, optimizer convergence) and the `signal_engineer` gives a full "
     "residual breakdown — then act on it (widen a binding bound with change_parameters, or "
-    "drop/merge an ill-determined free parameter — never freeze its value), and (b) try a "
+    "drop/merge an ill-determined free parameter), and (b) try a "
     "genuinely DIFFERENT structure — a different rate-law form or topology. If a LARGER model "
     "fits but a smaller one won't, the smaller one is usually "
     "MIS-PARAMETERISED (wrong fixed/free split, bad bounds, or wrong initial conditions), not "
     "too simple — fix that instead of keeping the bloat. Call `make_decision` only for the two "
     "non-default moves:\n"
     "   - `rollback` — a change did not help; find the best-bic prior version with "
-    "`list_versions` and bring it back with `restore_version(v)` — do NOT re-author it with "
-    "`set_model`. Re-authoring an earlier model recompiles and refits to the SAME result and "
-    "appends a byte-identical duplicate; `restore_version` reuses its stored fit, and `set_model` "
-    "warns on — then refuses — a structure it has already seen. Then continue;\n"
+    "`list_versions` and bring it back with `restore_version(v)`, never by re-authoring it. Then "
+    "continue;\n"
     "   - `finish` — the residuals show NO systematic structure (get_fit_diagnosis bias ≈ 0, no "
     "time-trend) AND bic has bottomed out — you cannot lower it further by adding, dropping, or "
-    "re-forming mechanism. Finish on the LOWEST-bic such model. Do NOT keep restructuring to "
-    "chase chi2_gof_pvalue — it is uninformative whenever the noise sigmas are estimated, so a fit "
-    "with a good bic and structure-free residuals is done even if that p-value never reaches "
-    "0.05.\n"
-    "Repeat until you call `make_decision` with `finish`. Aim for a correct, adequate fit that is not needlessly "
-    "over-parameterized — a lower bic among adequate models is better, but a correct model with "
-    "a few honest parameters beats a minimal one that doesn't fit. When you finish, report the "
+    "re-forming mechanism. Finish on the LOWEST-bic such model.\n"
+    "Repeat until you call `make_decision` with `finish`. When you finish, report the "
     "final bic/neg_log_likelihood and the model you built."
 )
 
+# The TASK, not a second copy of the loop: the system prompt above owns how to work, so this
+# states only what this particular problem is and what "done" looks like.
 DEFAULT_TASK = (
     "This PEtab problem ships WITHOUT a model — you have the measured data, the observables, "
     "and the conditions, but no reactions yet (describe_problem reports "
-    "model_initialized: false). Build a mechanistic ODE model that explains the data: author "
-    "the whole model in one `set_model(..., fit=true)` call, then refine it by "
-    "RE-AUTHORING with `set_model`, one call per coherent change — calling `make_decision` with "
-    "`rollback` to return to a "
-    "better prior version and with `finish` when you are done — until you reach the lowest-bic "
-    "model whose residuals show no systematic structure (BIC is the only success target; the χ² "
-    "goodness-of-fit p-value is uninformative when the noise sigmas are estimated). Then "
-    "report the model you built and its fit."
+    "model_initialized: false). Build a mechanistic ODE model that explains the data, working "
+    "the loop above until you reach the lowest-bic model whose residuals show no systematic "
+    "structure, then report the model you built and its fit."
 )
 
 
-# ---------------------------------------------------------- analyst personas
 # ---------------------------------------------------------------- analyst personas
 # System prompts for the three analysts. Each is a focused expert that INSPECTS (it has no
 # editing tools) and returns a concise written report ending in a concrete recommendation
@@ -293,7 +251,6 @@ SIGNAL_ENGINEER_DESCRIPTION = (
 )
 
 
-# ------------------------------------------------------------ the biocurator
 # ---------------------------------------------------------------- biocurator (optional)
 # A FOURTH analyst, added for the deepagents driver whenever a bio-knowledge server is reachable. Unlike
 # the three above — which reason over THIS problem's model/data through the petab-mcp tools —
@@ -320,20 +277,14 @@ SIGNAL_ENGINEER_DESCRIPTION = (
 # onto. The lead is told to pass it only neutral entity/observable NAMES (see
 # scenario.DEFAULT_SYSTEM_PROMPT). What it returns is the domain knowledge a modeller brings, not the
 # withheld mechanism.
+# The FORM of the report only. What to report is the persona's three bullets above — this used
+# to restate all three, so the two drifted and the persona was effectively stated twice.
 _BIOCURATOR_REPORT_CONTRACT = (
-    "\n\nIf you have lookup tools, ALWAYS call at least one before you conclude rather than "
-    "answering from the request alone; if you have none, answer from your own knowledge and flag "
-    "it as such. Then return a SHORT report: (1) what each named entity "
-    "is; (2) the known interactions AMONG the named entities — direction and type of each "
-    "(activates, inhibits, binds, phosphorylates, is a substrate of, …), with a PMID/DOI where "
-    "one grounds the claim; (3) other entities and processes known to connect or act on them "
-    "that are NOT in the list you were given — intermediates between them, and regulators or "
-    "fluxes (an upstream activator, a feedback inhibitor, a phosphatase, production, "
-    "degradation, transport between compartments) — each flagged as not in the given list; and "
-    "(4) which claims are well-established vs speculative. Flag if an entity is unknown to you "
-    "or the evidence is thin. NEVER return an empty message. Keep strictly to the biology of the "
-    "entities — their identities, their interactions, and the wider set of entities and "
-    "processes they belong to."
+    "\n\nReturn a SHORT report with one section per bullet above, in that order, plus a final "
+    "note on which claims are well-established vs speculative. Cite a PMID/DOI wherever one "
+    "grounds a claim, and mark every entity from the third bullet as NOT in the list you were "
+    "given. Flag an entity you do not know, or evidence that is thin. NEVER return an empty "
+    "message."
 )
 
 BIOCURATOR_PROMPT = (
@@ -357,9 +308,8 @@ BIOCURATOR_PROMPT = (
     "specific mechanistic question, so a few targeted searches beat many broad ones, and read "
     "titles/abstracts to judge fit before relying on a paper. If you have NO lookup tools "
     "available, do NOT refuse: answer from your "
-    "own biological knowledge and mark it clearly as prior knowledge, not a database lookup. Report "
-    "ONLY the biology of these entities: their identities, "
-    "their interactions, and the wider set of entities and processes they are part of. Some "
+    "own biological knowledge and mark it clearly as prior knowledge, not a database lookup. "
+    "Report ONLY the three things above, nothing else. Some "
     "names you are given may not be biological entities at all — they may be abstract "
     "quantities, compartments, or population labels; if a name is not something you can look up "
     "(a gene, protein, metabolite, cell type, disease, or biological process), say so plainly "
@@ -381,6 +331,15 @@ BIOCURATOR_DESCRIPTION = (
     "PMID/DOI it returns in the `set_model` references."
 )
 
+# Held as a module constant rather than a literal inside the function below so it is part of
+# the tracked surface like every other prompt string (PROMPT_GROUPS at the end of this file);
+# text buried in a function body is exactly what escapes a registry.
+BIOCURATOR_ENTITY_BLOCK_TMPL = (
+    "\n\nThe biological entities to report on for this request are: {names}. Report on these "
+    "entities; if the request names additional entities, include those too."
+)
+
+
 def _biocurator_entity_block(names: "list[str]") -> str:
     """A blind-preserving prompt suffix that hands the biocurator the entity NAMES directly.
 
@@ -393,12 +352,7 @@ def _biocurator_entity_block(names: "list[str]") -> str:
     persona is preserved (see BIOCURATOR_PROMPT). Empty -> "" (prompt unchanged)."""
     if not names:
         return ""
-    return (
-        "\n\nThe biological entities to report on for this request are: "
-        + ", ".join(str(n) for n in names)
-        + ". Report on these entities; if the request names additional entities, include those "
-        "too."
-    )
+    return BIOCURATOR_ENTITY_BLOCK_TMPL.format(names=", ".join(str(n) for n in names))
 
 
 # -------------------------------------------- panel-facing tool descriptions
@@ -406,8 +360,14 @@ def _biocurator_entity_block(names: "list[str]") -> str:
 # verbose (they double as the human/agent tool reference and drive the skill docs), but that
 # full text is re-sent to the model on EVERY turn — the single largest fixed slice of the
 # input-token cost. We override the description of each loaded MCP tool with a one-liner for
-# the panel only; the server (and any other client) keeps its canonical docs. Anything not
-# listed keeps (a truncated form of) its original description.
+# the panel only; the server (and any other client) keeps its canonical docs.
+#
+# EVERY tool in agent.tools.ALLOWED_TOOLS needs an entry here (a test enforces it): anything
+# unlisted silently falls back to a truncated server docstring, which puts that tool's
+# panel-facing text outside this file and outside the tracked prompt surface.
+#
+# Each cross-tool rule is stated in ONE entry and pointed at from the others — a rule repeated
+# across four entries is four places to update and the reason several of them disagreed.
 TOOL_DESCRIPTIONS = {
     "set_model": ("Author the WHOLE model from ONE Antimony string (compartments, species with "
                   "initial conditions, parameters, reactions). BUILDS the first model when none "
@@ -422,19 +382,23 @@ TOOL_DESCRIPTIONS = {
                   "edit applies but nothing is scored (applied: true, committed: false) the edit "
                   "STAYS in place — `fit.error` = a failed fit (repair it, don't re-apply); "
                   "`fit.no_change` = this structure already IS a version (change something else). "
+                  "REJECTS a re-author that drops a shipped-FIXED constant, or brings one back "
+                  "estimated, or leaves a condition-table target unused, or wires an "
+                  "observation-model symbol (a scaling factor / noise sigma) into a rate law. "
                   "Warns if a "
                   "previously-estimated parameter is dropped. To go BACK to a model use "
-                  "restore_version(n), not set_model. Args: antimony, justification, references?, "
+                  "restore_version, never this. Args: antimony, justification, references?, "
                   "parameters?, fit?, n_starts?."),
     "change_parameters": ("Batch-edit the estimation BOUNDS and/or SCALE of parameters in ONE "
-                          "atomic call — the search space, never a parameter's value. changes is a "
+                          "atomic call — the search space, never a parameter's value. parameters is a "
                           "non-empty list of {parameter_id, lower_bound?, upper_bound?, scale?} "
                           "entries (a bound edit gives BOTH bounds; scale is 'lin'|'log'|'log10'); "
                           "one rejected entry reverts the whole batch. Takes fit=/n_starts= like "
                           "set_model; pass these entries as set_model's parameters= when they "
-                          "belong with a re-author. REJECTS widening an estimated noise sigma past "
-                          "its data-driven cap, and a 3rd widening of a still-pinned parameter. "
-                          "Args: changes, justification, references?, fit?, n_starts?."),
+                          "belong with a re-author. WARNS (does not reject) when an estimated "
+                          "noise sigma is widened past its data-driven cap; REJECTS a 3rd "
+                          "widening of a still-pinned parameter. "
+                          "Args: parameters, justification, references?, fit?, n_starts?."),
     "fit": ("Fit the current working model and snapshot a version. Needed "
             "on its own only when a coherent change spans SEVERAL edits: without fit=true they "
             "leave the model UNFIT (describe_problem -> has_unfit_edits: true), so make the edits, "
@@ -449,7 +413,12 @@ TOOL_DESCRIPTIONS = {
             "current version (no_change: true). Args: n_starts? (REPLACES the server's default "
             "multistart count — describe_problem's fit_n_starts_default — so omit it unless you "
             "want MORE than that; below it fits LESS hard, 0 only simulates. The result's n_starts "
-            "is what actually ran), justification?."),
+            "is what actually ran. Means the same on a bundled edit), justification?."),
+    "list_conditions": ("The fixed conditions and what each one perturbs. A condition column sets "
+                        "a model quantity PER CONDITION (a dose, an input level, a switch), so "
+                        "your model must reference it BY NAME — a target the model never uses is "
+                        "a rejected edit, and a condition-set initial is an experimental input to "
+                        "reproduce, not a value to fit."),
     "describe_problem": "Orientation: whether a model exists (model_initialized), table/entity counts, current version, whether the working model has unfit edits (has_unfit_edits), and the multistart count a fit uses by default (fit_n_starts_default). Cheap.",
     "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law) — empty until a model is built.",
     "get_parameters": ("Parameter table, one row per parameter: id, bounds, scale, nominalValue "
@@ -460,7 +429,9 @@ TOOL_DESCRIPTIONS = {
                        "kinetics, and must never appear in a rate law — whether or not it is "
                        "estimated. Read `status` before adding parameters: every ESTIMATED one "
                        "counts toward k and inflates bic however tight its bounds, and a symbol "
-                       "you introduce is added estimated. Do NOT assume sigma_* or *_init are "
+                       "you introduce is added estimated. The rows whose `status` is `fixed` are "
+                       "the COMPLETE set of constants you may treat as known. Do NOT assume "
+                       "sigma_* or *_init are "
                        "fixed — noise sigmas are often estimated, and initial conditions are "
                        "estimated by DEFAULT (only an IC of exactly 0 or 1 stays fixed)."),
     "get_fit_summary": "Current fit metrics only (neg_log_likelihood, chi2, n_data_points) — a cheap score check.",
@@ -475,19 +446,26 @@ TOOL_DESCRIPTIONS = {
                             "FIM eigen-directions (non-identifiable parameter COMBINATIONS), and "
                             "multistart spread — with a ranked `candidates` list. Tells you WHICH "
                             "estimated parameters are superfluous when the model is too complex "
-                            "(high bic / many params): fix, drop, or MERGE a collinear pair. Use it "
-                            "BEFORE adding parameters and to prune toward parsimony. Arg: top_n."),
-    "list_versions": ("List every model version (each a fit snapshot) with its kind, label, and fit "
-                      "metrics (neg_log_likelihood, bic, is_new_best) — use it to find the "
-                      "best-scoring version, then restore_version(v) to go back to it."),
-    "get_version": ("Read a prior version's Antimony model + parameter table (to inspect it). To "
-                    "GO BACK to an earlier model, call restore_version(v) — do NOT re-author it "
-                    "with set_model. Arg: version."),
-    "restore_version": ("Go BACK to an earlier model: restores version v's model + its stored fit "
-                        "as the working state WITHOUT recompiling or refitting, and appends a new "
-                        "version. Use this instead of re-authoring an earlier model with set_model "
-                        "(that refits to the same result and makes a duplicate). Pick the target "
-                        "with list_versions (lowest bic). Arg: version."),
+                            "(high bic / many params), and the remedies IN ORDER: (1) drop the term; "
+                            "(2) take its limiting form (irreversible / quasi-steady-state); "
+                            "(3) MERGE a collinear pair into the combination the data do "
+                            "constrain (k_cat*E_tot -> one Vmax) — preferred, the survivor is "
+                            "interpretable; (4) LAST RESORT, for a pure scale degeneracy where "
+                            "every value fits equally well, pin one member to 1.0 by "
+                            "re-authoring the literal into the rate law — NOT via bounds (see "
+                            "PARAMETER MACHINERY) — then REFIT: unchanged nll with bic better by one "
+                            "parameter confirms it, a WORSE fit means revert. If none applies, "
+                            "leave it. Use BEFORE adding parameters. Arg: top_n."),
+    "list_versions": ("Every model version (each a fit snapshot) with its kind, label, and fit "
+                      "metrics (neg_log_likelihood, bic, is_new_best) — how you find the "
+                      "lowest-bic version to restore."),
+    "get_version": "Read a prior version's Antimony model + parameter table, to INSPECT it. Arg: version.",
+    "restore_version": ("Go BACK to an earlier model — the ONLY correct way. Restores version v's "
+                        "model + its stored fit as the working state WITHOUT recompiling or "
+                        "refitting, and appends a new version. Re-authoring an earlier model with "
+                        "set_model instead costs a recompile + refit, reaches the SAME result, and "
+                        "appends a duplicate (fit warns, then refuses). Pick the target with "
+                        "list_versions (lowest bic). Arg: version."),
     "get_fitting_log": "Tail of the pyPESTO/Fides multistart optimizer log (convergence, bound-pinning, ill-conditioning). Arg: tail_lines.",
     "list_observables": "The observables being fitted: id, formula, and noise model.",
     "get_measurements": ("Measurement data. Default returns a COMPACT SUMMARY (per observable×"
@@ -499,6 +477,8 @@ TOOL_DESCRIPTIONS = {
                    "residual, residual_weighted, noise), optimization_starts, optimization_trace. "
                    "Prefer aggregations; rows capped at max_rows (default 50 — raise it only if you "
                    "truly need many rows). Args: sql, max_rows."),
+    "list_skills": "Available skills: each name with a description of what it covers.",
+    "get_skill": "Read a skill in full. Args: name, file?.",
     "get_errors": "Recent rejected operations / failed tool calls. Arg: limit.",
 }
 
@@ -535,8 +515,10 @@ _IDLE_NUDGE = (
 
 
 # --------------------------------------------------- circuit-breaker notices
-# Where to send the agent when a specific tool is disabled (its result already carries the
-# server's own hint; this is the panel-facing fallback). Anything unlisted gets the generic one.
+# What the agent is told IN PLACE of a disabled tool's result, and where to go instead. The
+# hints and the templates that interpolate them are one unit — they were two sections apart,
+# which is how the pair drifted out of sight of each other. Anything unlisted gets the
+# generic hint.
 _DISABLED_TOOL_HINTS = {
     "query_data": ("Use `get_measurements` for the raw measurement data, or `list_data_tables` "
                    "for the available tables and their columns."),
@@ -544,6 +526,17 @@ _DISABLED_TOOL_HINTS = {
 
 _DISABLED_TOOL_HINT_DEFAULT = (
     "Use a different tool (or `get_errors` to review the failure) and continue without it."
+)
+
+TOOL_DISABLED_REPEATED_TMPL = (
+    "TOOL DISABLED: `{name}` failed repeatedly with the same error and is disabled for the "
+    "rest of this run. Do NOT call it again — {hint}"
+)
+
+# A transport error disables on the FIRST failure, so "failed repeatedly" would misdescribe it.
+TOOL_DISABLED_TRANSPORT_TMPL = (
+    "TOOL DISABLED: `{name}`'s server is unreachable or closed (transport error) and it is "
+    "disabled for the rest of this run. Do NOT call it again — {hint}"
 )
 
 
@@ -558,11 +551,9 @@ MAKE_DECISION_DESCRIPTION = (
     "call this to keep iterating — to iterate, just make the next set_model edit. Call it "
     "only for `action`: 'rollback' (the last change didn't help — go back to the LOWEST-bic "
     "prior version with restore_version) or 'finish' (residuals show no systematic "
-    "structure AND bic has bottomed out). BIC is the ONLY success target; chi2_gof_pvalue "
-    "/ reduced_chi2 are UNINFORMATIVE when the noise sigmas are estimated — do NOT keep "
-    "iterating just to chase chi2_gof_pvalue ≥ 0.05; use the sign_test / runs_test in "
-    "get_fit_diagnosis (they read residual SIGNS, so they still detect bias/time-trend "
-    "when chi2 is flat). 'finish' takes TWO calls: the first ARMS it and shows you the "
+    "structure AND bic has bottomed out). Judge that structure with the sign_test / runs_test "
+    "in get_fit_diagnosis — they read residual SIGNS, so they still detect a bias or "
+    "time-trend when chi2 is flat. 'finish' takes TWO calls: the first ARMS it and shows you the "
     "current bic and residual-structure diagnosis; review it, then call 'finish' AGAIN to "
     "confirm and end. 'finish' is refused when there is no valid fit yet (no model built / "
     "no finite bic) OR the model has edits since its last fit (call fit first — the "
@@ -640,21 +631,6 @@ FINISH_CHI2_UNAVAILABLE_NOTE = (
 )
 
 
-# ------------------------------------------------------------------ circuit-breaker notices
-# The content block returned in PLACE of a disabled tool's result. `hint` comes from
-# _DISABLED_TOOL_HINTS above.
-TOOL_DISABLED_REPEATED_TMPL = (
-    "TOOL DISABLED: `{name}` failed repeatedly with the same error and is disabled for the "
-    "rest of this run. Do NOT call it again — {hint}"
-)
-
-# A transport error disables on the FIRST failure, so "failed repeatedly" would misdescribe it.
-TOOL_DISABLED_TRANSPORT_TMPL = (
-    "TOOL DISABLED: `{name}`'s server is unreachable or closed (transport error) and it is "
-    "disabled for the rest of this run. Do NOT call it again — {hint}"
-)
-
-
 # --------------------------------------------------------------------- the task-arg guard
 TASK_ARG_REJECT_TMPL = (
     "TASK CALL REJECTED — `task` accepts ONLY `description` and `subagent_type`; it received "
@@ -662,3 +638,166 @@ TASK_ARG_REJECT_TMPL = (
     "`description` string is the subagent's ENTIRE input — there is no `prompt` or message "
     "parameter. Re-call `task` with your full request folded into `description`."
 )
+
+
+# ============================================================ the tracked prompt surface
+# The registry, and the versioning over it. It lives HERE, next to the text, because the
+# alternative — a hand-maintained list in ``experiments`` — is how 30 of this file's ~35
+# model-facing constants went untracked: ``collect_prompts()`` registered five, and everything
+# else (the tool descriptions the panel actually reads, the biocurator, the subagent
+# descriptions, the nudges, the whole finish gate) was invisible to ``prompt_version``.
+#
+# Every model-facing string in this module belongs to exactly one group below;
+# ``tests/test_prompt_tracking.py`` introspects this module and fails on any that does not, so
+# a prompt added without tracking is a red test rather than a silent gap.
+#
+# A registry entry is either one prompt string or a nested dict of them — a multi-entry table
+# (the tool descriptions, the finish-gate messages) registers as ONE bundled document, so the
+# registry stays readable while the hash still covers every character.
+#
+# The entries below hold the LEAVES, not a pre-rendered bundle. Two reasons, both learned the
+# hard way:
+#   * bundling and hashing want DIFFERENT separators (see _bundle vs _hash), and baking the
+#     bundle in forced one separator to serve both — which put NUL bytes into the text sent to
+#     Phoenix;
+#   * a pre-rendered bundle is unparseable, so the completeness guard could only ask "is this
+#     constant a SUBSTRING of the registry", which passes for a string that merely happens to
+#     sit inside a tracked one. With leaves it asks for exact membership.
+
+# Bundling: a readable document, because this is PROMPT TEXT — it is registered in Phoenix and
+# read by humans. It must contain nothing a text column would reject.
+def _bundle(entry: "str | dict") -> str:
+    """A registry entry as one deterministic document (sorted by key, recursively)."""
+    if isinstance(entry, str):
+        return entry
+    return "\n\n".join(f"# {name}\n{_bundle(entry[name])}" for name in sorted(entry))
+
+
+# Hashing: an unambiguous framing, which NUL is exactly right for — no prompt contains one
+# (`test_prompt_tracking` enforces that), so no value can forge a field boundary.
+_HASH_SEP = "\x00"
+
+
+def _hash_input(entries: "dict[str, str]") -> str:
+    return "".join(f"{n}{_HASH_SEP}{entries[n]}{_HASH_SEP}" for n in sorted(entries))
+
+
+PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
+    # What the modeling lead is told.
+    "lead": {
+        "petab-lead-system": DEFAULT_SYSTEM_PROMPT,
+        "petab-lead-task": DEFAULT_TASK,
+    },
+    # The three analyst personas, plus the one-liners the LEAD reads when picking one.
+    "analysts": {
+        "petab-analyst-mathematician": MATHEMATICIAN_PROMPT,
+        "petab-analyst-systems-scientist": SYSTEMS_SCIENTIST_PROMPT,
+        "petab-analyst-signal-engineer": SIGNAL_ENGINEER_PROMPT,
+        "petab-analyst-descriptions": {
+            "mathematician": MATHEMATICIAN_DESCRIPTION,
+            "systems_scientist": SYSTEMS_SCIENTIST_DESCRIPTION,
+            "signal_engineer": SIGNAL_ENGINEER_DESCRIPTION,
+        },
+    },
+    # The blinded fourth analyst. Its blind is a property of this TEXT, so a change to it is
+    # exactly the kind of thing a prompt version needs to record.
+    "biocurator": {
+        "petab-biocurator-system": BIOCURATOR_PROMPT,
+        "petab-biocurator-description": BIOCURATOR_DESCRIPTION,
+        "petab-biocurator-entity-block": BIOCURATOR_ENTITY_BLOCK_TMPL,
+    },
+    # The panel-facing tool descriptions, which REPLACE the server docstrings — the largest
+    # block of model-facing text outside the lead prompt, and previously untracked entirely.
+    "tools": {
+        "petab-tool-descriptions": TOOL_DESCRIPTIONS,
+    },
+    # Everything the harness itself says back to the model: the finish gate, the run-loop
+    # nudges, the circuit breaker, the task-arg guard.
+    "control": {
+        "petab-make-decision": MAKE_DECISION_DESCRIPTION,
+        "petab-finish-gate": {
+            "decision_guidance": DECISION_GUIDANCE,
+            "decision_unknown_action": DECISION_UNKNOWN_ACTION,
+            "refused_no_fit": FINISH_REFUSED_NO_FIT,
+            "gave_up_no_fit": FINISH_GAVE_UP_NO_FIT_TMPL,
+            "refused_unfit_edits": FINISH_REFUSED_UNFIT_EDITS,
+            "refused_sigma": FINISH_REFUSED_SIGMA_TMPL,
+            "sigma_fallback_advice": FINISH_SIGMA_FALLBACK_ADVICE,
+            "armed": FINISH_ARMED_TMPL,
+            "armed_worst": FINISH_ARMED_WORST_TMPL,
+            "struct_unavailable": FINISH_STRUCT_UNAVAILABLE,
+            "confirmed": FINISH_CONFIRMED_TMPL,
+            "chi2_unavailable_note": FINISH_CHI2_UNAVAILABLE_NOTE,
+        },
+        "petab-nudges": {
+            "no_model": _NO_MODEL_NUDGE,
+            "silent_finish": _SILENT_FINISH_NUDGE,
+            "idle": _IDLE_NUDGE,
+        },
+        "petab-guards": {
+            "task_arg_reject": TASK_ARG_REJECT_TMPL,
+            "tool_disabled_repeated": TOOL_DISABLED_REPEATED_TMPL,
+            "tool_disabled_transport": TOOL_DISABLED_TRANSPORT_TMPL,
+            "disabled_tool_hint_default": _DISABLED_TOOL_HINT_DEFAULT,
+            "disabled_tool_hints": _DISABLED_TOOL_HINTS,
+        },
+    },
+}
+
+
+def all_prompts() -> "dict[str, str]":
+    """The whole tracked surface, flattened to ``{registry name: text}``.
+
+    Bundled entries are rendered here rather than stored rendered, so the text handed to a
+    caller (Phoenix, the hash, a reader) is always a readable document.
+    """
+    return {
+        name: _bundle(entry)
+        for group in PROMPT_GROUPS.values()
+        for name, entry in group.items()
+    }
+
+
+def tracked_leaves() -> "set[str]":
+    """Every individual prompt string in the registry, unbundled.
+
+    What ``all_prompts`` returns is a *document* per registry entry, which cannot be checked
+    for exact membership — the completeness guard could only ask whether a constant is a
+    SUBSTRING of it, and a string that happens to sit inside a tracked one passes that while
+    being untracked itself. These are the leaves, so the guard can ask for equality.
+    """
+    def walk(entry) -> "list[str]":
+        return [entry] if isinstance(entry, str) else [
+            leaf for value in entry.values() for leaf in walk(value)
+        ]
+
+    return {leaf for group in PROMPT_GROUPS.values()
+            for entry in group.values() for leaf in walk(entry)}
+
+
+def _hash(entries: "dict[str, str]") -> str:
+    import hashlib
+
+    return hashlib.sha256(_hash_input(entries).encode("utf-8")).hexdigest()[:12]
+
+
+def prompt_version(prompts: "dict[str, str] | None" = None) -> str:
+    """A stable 12-char content hash over the whole prompt surface — the *prompt version*.
+
+    Stamped into every experiment row and every ``result.json``, so a run records exactly which
+    text produced it. Changing ANY tracked prompt moves this: that is the point, and it is why
+    editing them is a deliberate act (results either side are not directly comparable).
+    """
+    return _hash(all_prompts() if prompts is None else prompts)
+
+
+def prompt_group_versions() -> "dict[str, str]":
+    """Per-group hashes, so a version bump is *attributable*.
+
+    One opaque number moving cannot distinguish a finish-gate wording tweak from a lead-prompt
+    rewrite; these can. Recorded alongside ``prompt_version`` in every result.
+    """
+    return {
+        group: _hash({name: _bundle(entry) for name, entry in entries.items()})
+        for group, entries in PROMPT_GROUPS.items()
+    }

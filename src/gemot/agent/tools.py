@@ -1,11 +1,15 @@
 """Which petab-mcp tools each agent on the panel can see.
 
-Per-persona curation, not a filter for safety: every tool's JSON schema is re-sent to the model
+Per-persona curation, not a filter for safety. Every tool's JSON schema is re-sent to the model
 on EVERY turn, so the tool set is the biggest single lever on the (input-dominated) token cost —
-and a lean set also keeps each analyst in character. ``ALLOWED_TOOLS`` (the union) is all the
-panel ever sees; ``_select_tools`` resolves it against what the server actually offers, and
-``_trim_descriptions`` swaps each tool's verbose server docstring for the panel-facing one-liner
-in :mod:`petab_harness.prompts`.
+and a lean set also keeps each analyst in character: the signal engineer reasons about
+residuals, not equations; the systems scientist about mechanism, not optimizer internals. That
+one rationale governs every list below and is not repeated at each of them.
+
+``ALLOWED_TOOLS`` (the union) is all the panel ever sees; ``_select_tools`` resolves it against
+what the server actually offers, and ``_trim_descriptions`` swaps each tool's verbose server
+docstring for the panel-facing one-liner in :mod:`petab_harness.prompts` — which is therefore
+the text the panel actually reads, and the reason every tool here needs an entry there.
 """
 
 from __future__ import annotations
@@ -13,15 +17,9 @@ from __future__ import annotations
 from ..prompts import TOOL_DESCRIPTIONS
 
 # ---------------------------------------------------------------- tool exposure
-# Each analyst persona sees ONLY the tools its lens needs. Curating per-persona (rather
-# than handing every agent the full tool surface) keeps each context small and keeps the
-# analyst in character: the signal engineer reasons about residuals, not equations; the
-# systems scientist about mechanism, not optimizer internals; and so on.
-
-# Each analyst's tool set is kept as SMALL as its lens allows: every tool's JSON schema is
-# re-sent to the model on every turn, so a lean set is the biggest lever on the (input-
-# dominated) token cost. A tool the analyst can do without is dropped, not kept "just in
-# case" — the union below is also all the panel ever sees.
+# Per the module docstring: each persona's set is as SMALL as its lens allows, and a tool it
+# can do without is dropped rather than kept "just in case". The comments below say only WHY
+# each persona gets the tools it does.
 
 # Mathematician: structural capability + estimation numerics. The reaction network (rate
 # laws) + the parameter search space + the fit metrics + — uniquely — the pyPESTO/Fides log.
@@ -108,6 +106,14 @@ ORCHESTRATOR_TOOLS = [
     # so it grows with the model — the only lead tool not strictly size-bounded, kept because
     # change_parameters without it is an edit made blind.
     "get_parameters",
+    # The two SKILLS: short, reusable PEtab/Antimony domain knowledge (what the tables mean,
+    # what makes a rate law fittable) — NOT a manual for these tools. How this server behaves
+    # is the prompt's and each tool description's job, so the two never overlap by subject
+    # matter rather than by discipline.
+    # This costs tokens rather than saving them: nothing prunes history, so a fetched skill is
+    # re-sent every subsequent turn. Both skills are kept short for exactly that reason.
+    "list_skills",
+    "get_skill",
     # NOTE: the UNBOUNDED data/diagnostic tools (get_measurements, query_data, get_fitting_log,
     # list_data_tables) are deliberately NOT here — they belong to the analyst subagents, since
     # their large results would pile up in the lead's re-sent history (the input-token cost). The

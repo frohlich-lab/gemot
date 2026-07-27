@@ -39,6 +39,13 @@ _RESULT_FIELDS = (
     "wall_seconds", "compute_seconds", "llm_seconds",
     "compile_seconds", "fit_seconds", "n_compiles", "n_fits",
     "git_sha", "recursion_limit", "n_starts", "temperature",
+    # The prompts are as much an input to a run as the code is, so the version rides beside
+    # git_sha. Without it a sweep spanning a prompt edit pools both versions into one cell with
+    # no column to split them on (and `DictWriter(extrasaction="ignore")` below drops silently,
+    # so a missing column looks like a missing value). `prompt_group_versions` deliberately does
+    # NOT get a column: a flat key is what you group a sweep BY, and the per-group hashes answer
+    # the follow-up question — which group moved — which is read from result.json.
+    "prompt_version", "skills_version",
     "run_started_at", "run_ended_at",
     "phoenix_project", "phoenix_trace_id",
 )
@@ -193,12 +200,23 @@ def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HIST
     """Append rows to the append-only history CSV (writing the header if it is new)."""
     history_path = Path(history_path)
     is_new = not history_path.exists()
+    # Append against the EXISTING header, not HISTORY_FIELDS. The history is append-only and
+    # long-lived, so a field added (or inserted) between runs would otherwise write rows in the
+    # new order under the old header — silently shifting every column after the insertion point
+    # for the rest of the file. An older file keeps its own schema; new columns are dropped for
+    # it (extrasaction="ignore") until the file is rotated.
+    fields = HISTORY_FIELDS
+    if not is_new:
+        with history_path.open(newline="") as fh:
+            existing = next(csv.reader(fh), None)
+        if existing:
+            fields = tuple(existing)
     with history_path.open("a", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=HISTORY_FIELDS, extrasaction="ignore")
+        writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         if is_new:
             writer.writeheader()
         for row in rows:
-            writer.writerow({k: row.get(k) for k in HISTORY_FIELDS})
+            writer.writerow({k: row.get(k) for k in fields})
     return history_path
 
 

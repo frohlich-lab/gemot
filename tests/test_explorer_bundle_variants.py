@@ -96,7 +96,7 @@ def test_bundled_change_parameters_span_produces_a_variant():
          "attributes.input.value": json.dumps({"antimony": _ANT, "fit": True}),
          "attributes.output.value": _span_output(_bundled_result(1))},
         {"attributes.tool.name": "change_parameters", "start_time": 2,
-         "attributes.input.value": json.dumps({"changes": [], "fit": True}),
+         "attributes.input.value": json.dumps({"parameters": [], "fit": True}),
          "attributes.output.value": _span_output(_bundled_result(2, nll=-9.5))},
     ])
     variants = B.load_variants_from_spans(df, n_default=6)
