@@ -273,6 +273,14 @@ def _effective_reference_sigmas(problem, raw: dict) -> dict:
     proportional: fiedler's sd is ``per-gel scale * sigma``, so a candidate predicting a different
     amplitude can trade scale against sigma and land on an IDENTICAL sd while its raw sigma differs
     several-fold — judging raw values fails a model whose noise level equals the truth's.
+
+    Caveat worth knowing before relying on this for a composite formula: the value is taken in the
+    AMPLITUDE-NORMALISED coordinate (see ``reconcile.sigma_effective_value``), because with one
+    sigma shared across gels of differing gain there is no single sd in measurement units to report.
+    That fixes the summarisability problem, not the scale-degeneracy one — a candidate that splits
+    the same fit differently between gain and sigma still lands on a different number. The judge's
+    tolerance is a generous ratio band, so a moderate split difference is absorbed; a large one
+    is not. For fiedler the gain divides the formula exactly, so this equals the raw sigma.
     """
     from petab_mcp import reconcile as _reconcile
 
