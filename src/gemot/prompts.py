@@ -51,21 +51,21 @@ DEFAULT_SYSTEM_PROMPT = (
     "any framing THERE; `task` takes no other content argument. (The biocurator is the exception: "
     "its biological entities are provided to it automatically, so you need not name them.) You "
     "directly "
-    "read only the model, its SCORES (which `fit` itself returns — metrics, bic, the noise-sigma "
+    "read only the model, its SCORES (which `make_changes` itself returns — metrics, bic, the noise-sigma "
     "verdict and the residual_structure verdict), and a COMPACT fit diagnosis (describe_problem, "
     "get_model_structure, list_observables, get_fit_diagnosis, list_versions); "
     "for the raw DATA and any DEEP diagnosis (a full residual breakdown, the optimizer/fitting "
     "log, parameter identifiability) you DELEGATE to the analysts — they read the bulky data in "
     "their OWN context and hand you back summaries, so your context stays lean.\n\n"
     "Work as an explicit model-building LOOP:\n"
-    "0. Read both skills once, before your first `set_model`: "
+    "0. Read both skills once, before your first `make_changes`: "
     "`get_skill('petab-model-building')` and `get_skill('antimony-authoring')`. They are short, "
     "and they carry domain knowledge this prompt does not.\n"
     "1. Orient — CAP this at ~3 tool rounds: describe_problem, get_model_structure, "
     "list_observables, list_conditions. Do not skip `list_conditions`: what it reports is an "
     "experimental INPUT your model has to reproduce by name, not something to fit. "
-    "Once you have the observables and the current structure you MUST author a `set_model` and "
-    "then `fit` it BEFORE any further inspection — do not re-propose the same read-only batch every "
+    "Once you have the observables and the current structure you MUST call `make_changes` "
+    "BEFORE any further inspection — do not re-propose the same read-only batch every "
     "step or keep probing; a first fit is the fastest way to learn what the model is missing. "
     "On the first round, delegate to all three analysts to characterise the DATA — its dynamics, "
     "the plausible mechanism, and the signal structure — giving each only the objective facts "
@@ -81,24 +81,19 @@ DEFAULT_SYSTEM_PROMPT = (
     "not swallow a single analyst's number uncritically: if a claim contradicts the others or "
     "is physically impossible, sanity-check it (a fitted parameter is a LINEAR value — check it "
     "against its reported bounds/scale before treating it as pathological).\n"
-    "2. Build the WHOLE model in ONE `set_model` call: declare the "
+    "2. Build the WHOLE model in ONE `make_changes` call: declare the "
     "compartments, species (with their initial conditions), parameters, and reactions in "
-    "Antimony. `set_model` is the ONLY way to change the model — to change anything (a rate-law "
-    "form, a reaction, a parameter's role) re-author the whole model with another `set_model` — "
-    "EXCEPT a parameter's estimation BOUNDS and SCALE, which are NOT part of the model and are "
-    "changed in place with `change_parameters` (see PARAMETER MACHINERY below), not by "
-    "re-authoring. MAKE EACH COHERENT CHANGE ONE CALL — your step budget is the scarce resource, "
-    "and both editors take the `parameters=`/`fit=true` bundle that applies a re-author, its "
-    "bound/scale edits, and the score as ONE version (their tool descriptions have the exact "
-    "arguments; use them rather than guessing). Read the score off the nested `fit` block "
-    "(`fit.bic`, `fit.neg_log_likelihood`, `fit.n_estimated` = k). Split the calls only when one "
-    "coherent change genuinely needs SEVERAL `set_model` edits: assemble the whole change, then "
-    "`fit` it ONCE. Do NOT fit after every micro-edit and do NOT stack more edits on a stale "
-    "score — score a coherent change, read the result, then decide the next step. "
+    "Antimony. `make_changes` is the ONLY way to change anything — a rate-law form, a reaction, "
+    "a parameter's bounds or scale — and it ALWAYS fits, so one call is one coherent change "
+    "scored as ONE version. Give `antimony` to re-author, `parameters` to retune the search "
+    "space, or BOTH when a structural change needs bounds; at least one is required. Your step "
+    "budget is the scarce resource, so put a whole coherent change in one call rather than "
+    "dribbling it out. The result IS the fit (`bic`, `neg_log_likelihood`, `n_estimated` = k). "
     "When a call does NOT produce a version, READ the result before retrying — never resubmit "
-    "the same failing model; the result says whether the edit was REJECTED (nothing changed, fix "
-    "what it names) or merely UNSCORED (your edit is in place — repair a failed fit, or make a "
-    "genuinely DIFFERENT change if the structure is already a version). THE ONLY SUCCESS TARGET "
+    "the same failing model; the result says whether the change is GONE (`applied: false` — "
+    "rejected, or reverted because it could not be scored, so fix what the error names) or in "
+    "place but unscored because this structure already IS a version (make a "
+    "genuinely DIFFERENT change). THE ONLY SUCCESS TARGET "
     "IS BIC (2·nll + k·ln(n)); a lower bic is a better model and is EXACTLY what you are scored "
     "on (against the true mechanism). The fit also reports reduced_chi2 and chi2_gof_pvalue, "
     "but do NOT treat them as a success gate: they only mean something with a KNOWN noise level, "
@@ -118,23 +113,23 @@ DEFAULT_SYSTEM_PROMPT = (
     "YOUR parameter and value. Whether an initial condition is then held FIXED at your value or "
     "ESTIMATED from the data is problem-dependent (check get_parameters); either way the BIC "
     "reference treats its ICs the same, so an IC is never a free parameter you are gaming.\n"
-    "PARAMETER MACHINERY — the one piece of it you must not get wrong: every rate-law parameter you declare is ESTIMATED, and the `fit` is a MULTISTART over the parameter's BOUNDS — it does NOT use the number you assign in Antimony, which is only a nominal placeholder overwritten by the fitted value. So re-declaring a parameter with a different VALUE changes nothing; to constrain one, change its BOUNDS/SCALE with `change_parameters`. Everything else about parameters — which constants you may hold fixed, why a literal or an ultra-narrow box is not a way to fix one, and what to do about a parameter that keeps re-pinning — is in the `petab-model-building` skill, which you have READ (step 0) and which the server ENFORCES."
+    "PARAMETER MACHINERY — the one piece of it you must not get wrong: every rate-law parameter you declare is ESTIMATED, and the fit is a MULTISTART over the parameter's BOUNDS — it does NOT use the number you assign in Antimony, which is only a nominal placeholder overwritten by the fitted value. So re-declaring a parameter with a different VALUE changes nothing; to constrain one, change its BOUNDS/SCALE with `make_changes`. Everything else about parameters — which constants you may hold fixed, why a literal or an ultra-narrow box is not a way to fix one, and what to do about a parameter that keeps re-pinning — is in the `petab-model-building` skill, which you have READ (step 0) and which the server ENFORCES."
     "ADEQUACY BEFORE PARSIMONY — the trade-off rule. Among models that ALL fit adequately, "
     "prefer the lower bic and drop parameters that don't earn their keep. But NEVER trade an "
     "adequate fit for a smaller k: if a simpler structure cannot fit, ADD mechanism. Estimating "
     "a parameter you are unsure of is fine — that is what the fit is for.\n"
-    "3. Read the CURRENT HEAD's metrics (never an earlier version's) after each `fit` and decide "
+    "3. Read the CURRENT HEAD's metrics (never an earlier version's) after each `make_changes` and decide "
     "what to do next. The DEFAULT is to KEEP ITERATING while the model is still mis-specified — "
     "bic is still clearly improving fit-over-fit, OR get_fit_diagnosis shows a systematic "
     "per-observable bias / a residual time-trend: just make the next justified "
-    "`set_model(..., fit=true)` call (iterating needs NO `make_decision` call). If it has NOT "
+    "`make_changes` call (iterating needs NO `make_decision` call). If it has NOT "
     "improved over the last few "
     "iterations, STOP tweaking the same structure or piling on parameters: (a) call "
     "`get_fit_diagnosis` — a systematic sign/trend at particular observables or times points at "
     "the missing mechanism; if that is not enough, "
     "DELEGATE the deep dive — the `mathematician` reads the fitting log (parameters pinned at a "
     "bound, non-identifiability, optimizer convergence) and the `signal_engineer` gives a full "
-    "residual breakdown — then act on it (widen a binding bound with change_parameters, or "
+    "residual breakdown — then act on it (widen a binding bound with make_changes, or "
     "drop/merge an ill-determined free parameter), and (b) try a "
     "genuinely DIFFERENT structure — a different rate-law form or topology. If a LARGER model "
     "fits but a smaller one won't, the smaller one is usually "
@@ -328,7 +323,7 @@ BIOCURATOR_DESCRIPTION = (
     "candidate hidden species/processes you may be missing. Its biological entities are handed to "
     "it AUTOMATICALLY — you do NOT supply them, and it is blind by design, so tell it NOTHING about "
     "what you are doing. Consult it when proposing or altering the model's structure, and cite any "
-    "PMID/DOI it returns in the `set_model` references."
+    "PMID/DOI it returns in the `make_changes` references."
 )
 
 # Held as a module constant rather than a literal inside the function below so it is part of
@@ -369,57 +364,36 @@ def _biocurator_entity_block(names: "list[str]") -> str:
 # Each cross-tool rule is stated in ONE entry and pointed at from the others — a rule repeated
 # across four entries is four places to update and the reason several of them disagreed.
 TOOL_DESCRIPTIONS = {
-    "set_model": ("Author the WHOLE model from ONE Antimony string (compartments, species with "
-                  "initial conditions, parameters, reactions). BUILDS the first model when none "
-                  "exists (model_initialized: false) AND re-authors/replaces an existing one. Use "
-                  "for the initial build and for any coupled/symmetric or multi-reaction STRUCTURAL "
-                  "change in one coherent step; reconciles + lints, reverts on failure. PREFER THE "
-                  "ONE-CALL FORM: parameters=[{parameter_id, lower_bound?, upper_bound?, scale?}, "
-                  "...] applies those bound/scale edits atomically with the re-author (they may "
-                  "target a parameter it introduces), and fit=true "
-                  "scores them as ONE version — returned nested under `fit`, with "
-                  "version/committed mirrored on top. Without fit= it is a fit-free EDIT. If the "
-                  "edit applies but nothing is scored (applied: true, committed: false) the edit "
-                  "STAYS in place — `fit.error` = a failed fit (repair it, don't re-apply); "
-                  "`fit.no_change` = this structure already IS a version (change something else). "
-                  "REJECTS a re-author that drops a shipped-FIXED constant, or brings one back "
-                  "estimated, or leaves a condition-table target unused, or wires an "
-                  "observation-model symbol (a scaling factor / noise sigma) into a rate law. "
-                  "Warns if a "
-                  "previously-estimated parameter is dropped. To go BACK to a model use "
-                  "restore_version, never this. Args: antimony, justification, references?, "
-                  "parameters?, fit?, n_starts?."),
-    "change_parameters": ("Batch-edit the estimation BOUNDS and/or SCALE of parameters in ONE "
-                          "atomic call — the search space, never a parameter's value. parameters is a "
-                          "non-empty list of {parameter_id, lower_bound?, upper_bound?, scale?} "
-                          "entries (a bound edit gives BOTH bounds; scale is 'lin'|'log'|'log10'); "
-                          "one rejected entry reverts the whole batch. Takes fit=/n_starts= like "
-                          "set_model; pass these entries as set_model's parameters= when they "
-                          "belong with a re-author. WARNS (does not reject) when an estimated "
-                          "noise sigma is widened past its data-driven cap; REJECTS a 3rd "
-                          "widening of a still-pinned parameter. "
-                          "Args: parameters, justification, references?, fit?, n_starts?."),
-    "fit": ("Fit the current working model and snapshot a version. Needed "
-            "on its own only when a coherent change spans SEVERAL edits: without fit=true they "
-            "leave the model UNFIT (describe_problem -> has_unfit_edits: true), so make the edits, "
-            "then call fit ONCE to score them together — a one-edit change is cheaper as "
-            "set_model(..., fit=true), which runs this same fit. "
-            "Fits the free parameters (pyPESTO multistart), simulates, and returns the fit block "
-            "(neg_log_likelihood, chi2, bic, improvement, is_new_best) + a progress block + "
-            "residual_structure (flagged_observables + summary: whether the model's FORM is still "
-            "incomplete — read it HERE, do not spend a get_fit_diagnosis call to ask) + the "
-            "noise-sigma verdict (noise_sigma_report/_inflated/_collapsed + advice) + the new "
-            "version. Skips the refit and returns stored metrics if the model is identical to the "
-            "current version (no_change: true). Args: n_starts? (REPLACES the server's default "
-            "multistart count — describe_problem's fit_n_starts_default — so omit it unless you "
-            "want MORE than that; below it fits LESS hard, 0 only simulates. The result's n_starts "
-            "is what actually ran. Means the same on a bundled edit), justification?."),
+    "make_changes": ("THE editor, and it always FITS. Pass `antimony` to author the WHOLE model "
+                     "(builds the first one when model_initialized: false, and re-authors an "
+                     "existing one wholesale — every structural change is a whole-model "
+                     "re-author), and/or `parameters` = [{parameter_id, lower_bound?, "
+                     "upper_bound?, scale?}, ...] to set the estimation BOUNDS/SCALE (never a "
+                     "value). At least ONE is required; give both when a structural change needs "
+                     "bounds — they apply atomically, after the reconcile, so an entry may target "
+                     "a parameter this call introduces. One call is one coherent change and ONE "
+                     "version. ALL-OR-NOTHING: a change that cannot be scored is REVERTED, so the "
+                     "working model is always a scored one. The result IS the fit, flat: read "
+                     "`applied` (is the change in place?) then `committed` -> `bic`. "
+                     "`applied: false` -> nothing moved: either rejected outright or reverted "
+                     "because the fit failed; `error`/`issues` says which, act on THAT. "
+                     "`committed: false` with `no_change` -> the change applied but this structure "
+                     "already IS a version, so change something else or restore_version(n). "
+                     "REJECTS dropping (or re-estimating) a shipped-fixed "
+                     "constant, an unused condition target, and an observation-model symbol used "
+                     "in a rate law; rejects a 3rd widening of a still-pinned parameter (that is "
+                     "unidentifiability — see get_identifiability, not a bounds problem); WARNS "
+                     "on widening an estimated noise sigma past its data-driven cap. To go BACK "
+                     "use restore_version, never a re-author. Args: justification, antimony?, "
+                     "parameters?, references?, n_starts? (REPLACES the server default — "
+                     "describe_problem's fit_n_starts_default — so omit it unless you want MORE; "
+                     "below it fits LESS hard; the minimum is 1)."),
     "list_conditions": ("The fixed conditions and what each one perturbs. A condition column sets "
                         "a model quantity PER CONDITION (a dose, an input level, a switch), so "
                         "your model must reference it BY NAME — a target the model never uses is "
-                        "a rejected edit, and a condition-set initial is an experimental input to "
-                        "reproduce, not a value to fit."),
-    "describe_problem": "Orientation: whether a model exists (model_initialized), table/entity counts, current version, whether the working model has unfit edits (has_unfit_edits), and the multistart count a fit uses by default (fit_n_starts_default). Cheap.",
+                        "a rejected change, and a condition-set initial is an experimental input "
+                        "to reproduce, not a value to fit."),
+    "describe_problem": "Orientation: whether a model exists (model_initialized), table/entity counts, current version, and the multistart count a fit uses by default (fit_n_starts_default). Cheap.",
     "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law) — empty until a model is built.",
     "get_parameters": ("Parameter table, one row per parameter: id, bounds, scale, nominalValue "
                        "(the fitted value), estimate flag, plus `role` (kinetic / noise_sigma / "
@@ -463,7 +437,7 @@ TOOL_DESCRIPTIONS = {
     "restore_version": ("Go BACK to an earlier model — the ONLY correct way. Restores version v's "
                         "model + its stored fit as the working state WITHOUT recompiling or "
                         "refitting, and appends a new version. Re-authoring an earlier model with "
-                        "set_model instead costs a recompile + refit, reaches the SAME result, and "
+                        "make_changes instead costs a recompile + refit, reaches the SAME result, and "
                         "appends a duplicate (fit warns, then refuses). Pick the target with "
                         "list_versions (lowest bic). Arg: version."),
     "get_fitting_log": "Tail of the pyPESTO/Fides multistart optimizer log (convergence, bound-pinning, ill-conditioning). Arg: tail_lines.",
@@ -489,9 +463,10 @@ TOOL_DESCRIPTIONS = {
 # repeating the silent stop.
 _NO_MODEL_NUDGE = (
     "You ended the run without authoring a model — nothing was built, so there is nothing to "
-    "score. The task is to BUILD a kinetic model of this system: call set_model with an Antimony "
+    "score. The task is to BUILD a kinetic model of this system: call make_changes with an Antimony "
     "model (reactions + rate laws for the observed species, plus any latent/unobserved driver "
-    "state the data imply), then fit it. Do that now — do not stop until a fitted model exists."
+    "state the data imply) — that call fits it too. Do that now — do not stop until a fitted "
+    "model exists."
 )
 
 # Injected when a run with a built model ended WITHOUT finishing through make_decision — a silent
@@ -500,17 +475,17 @@ _NO_MODEL_NUDGE = (
 # before it will confirm.
 _SILENT_FINISH_NUDGE = (
     "You ended the run without finishing it. A run is ONLY complete when you finish through "
-    "make_decision('finish') — a silent stop is not accepted. Your model must have a CURRENT fit: "
-    "if you have edited it since the last fit, call fit first. Then call make_decision('finish') "
-    "— you will be shown the fit's diagnosis and asked to confirm. If the fit is inadequate, keep "
-    "improving the model instead. Do not stop until you have finished through make_decision."
+    "make_decision('finish') — a silent stop is not accepted. Call make_decision('finish') and "
+    "you will be shown your current fit's diagnosis and asked to confirm. If that fit is "
+    "inadequate, keep improving the model instead. Do not stop until you have finished through "
+    "make_decision."
 )
 
 _IDLE_NUDGE = (
     "Your last message proposed NO tool call, so nothing happened. You cannot make progress by "
     "reasoning in prose — you must ACT through the tools. Emit a tool call now: start by orienting "
     "with describe_problem / get_model_structure, delegate data characterisation with the `task` "
-    "tool, or author the model with set_model. Do not reply with text alone."
+    "tool, or author the model with make_changes. Do not reply with text alone."
 )
 
 
@@ -548,7 +523,7 @@ TOOL_DISABLED_TRANSPORT_TMPL = (
 MAKE_DECISION_DESCRIPTION = (
     "Record a control decision after reading the CURRENT HEAD's fit metrics "
     "(bic / neg_log_likelihood / is_new_best — never an earlier version's). You do NOT "
-    "call this to keep iterating — to iterate, just make the next set_model edit. Call it "
+    "call this to keep iterating — to iterate, just make the next make_changes call. Call it "
     "only for `action`: 'rollback' (the last change didn't help — go back to the LOWEST-bic "
     "prior version with restore_version) or 'finish' (residuals show no systematic "
     "structure AND bic has bottomed out). Judge that structure with the sign_test / runs_test "
@@ -556,8 +531,7 @@ MAKE_DECISION_DESCRIPTION = (
     "time-trend when chi2 is flat. 'finish' takes TWO calls: the first ARMS it and shows you the "
     "current bic and residual-structure diagnosis; review it, then call 'finish' AGAIN to "
     "confirm and end. 'finish' is refused when there is no valid fit yet (no model built / "
-    "no finite bic) OR the model has edits since its last fit (call fit first — the "
-    "reported bic is stale otherwise). Prefer the FEWEST free parameters that fit "
+    "no finite bic). Prefer the FEWEST free parameters that fit "
     "(lower bic wins). Give a one-line `rationale`."
 )
 
@@ -565,7 +539,7 @@ MAKE_DECISION_DESCRIPTION = (
 DECISION_GUIDANCE = {
     "rollback": "Recorded: rollback. Find the BEST-scoring prior version with list_versions "
                 "(LOWEST bic / is_new_best, not just the previous one) and bring it back with "
-                "restore_version(v) — do NOT re-author it with set_model (that refits to the "
+                "restore_version(v) — do NOT re-author it with make_changes (that refits to the "
                 "same result and makes a duplicate). Then continue from there.",
 }
 
@@ -585,12 +559,6 @@ FINISH_GAVE_UP_NO_FIT_TMPL = (
     "No fittable model after {attempts} finish attempts — "
     "this run has no scoreable result and is being ended as no-model-built. "
     "Stop now."
-)
-
-FINISH_REFUSED_UNFIT_EDITS = (
-    "FINISH REFUSED — the working model has edits made SINCE the last fit, so "
-    "the reported bic belongs to the previous structure, not this one. Call fit "
-    "to score the current model, then finish on its bic."
 )
 
 # `which` names the tail(s) in play ("inflated", "collapsed", or "inflated and collapsed") so a
@@ -720,7 +688,6 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "decision_unknown_action": DECISION_UNKNOWN_ACTION,
             "refused_no_fit": FINISH_REFUSED_NO_FIT,
             "gave_up_no_fit": FINISH_GAVE_UP_NO_FIT_TMPL,
-            "refused_unfit_edits": FINISH_REFUSED_UNFIT_EDITS,
             "refused_sigma": FINISH_REFUSED_SIGMA_TMPL,
             "sigma_fallback_advice": FINISH_SIGMA_FALLBACK_ADVICE,
             "armed": FINISH_ARMED_TMPL,

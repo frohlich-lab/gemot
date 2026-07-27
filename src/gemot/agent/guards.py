@@ -36,7 +36,7 @@ from .dedup import _dedupe_raw_tool_calls, _dedupe_tool_calls
 #      run is labelled ``no_tools_executed`` (see run_deepagents) — a degenerate run that is
 #      EXCLUDED as such rather than left as an ambiguous, silent early "completion".
 # The nudge fires ONLY while zero tools have executed, so it can never interfere with a genuine
-# finish (which always comes AFTER set_model + fits have run).
+# finish (which always comes AFTER make_changes has run).
 _MAX_IDLE_MODEL_STEPS = 3   # consecutive no-tool turns to push back on before giving up
 
 

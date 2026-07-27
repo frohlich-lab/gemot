@@ -77,26 +77,10 @@ ORCHESTRATOR_TOOLS = [
     # dominant sweep waste of re-encoding already-visited structures (see issue #59).
     "restore_version",      # restore a prior version's model + fit as the working state (no refit)
     "get_errors",
-    # author the whole model in one step. `set_model` is the SINGLE model editor (issue #82): every
-    # structural change is a whole-model re-author — the incremental editors (add_reaction /
-    # change_rate_law / remove_reaction) were removed. `restore_version` (above) IS included:
-    # "going back" via re-authoring the old model wastes a recompile+refit and appends a duplicate
-    # (the top sweep waste — issue #59), so the lead is given the cheap restore instead.
-    # It also carries the OPTIONAL bundle (issue #114): `parameters=[...]` applies the bound/scale
-    # edits atomically with the re-author and `fit=true` scores them, so the dominant
-    # set_model -> change_parameters -> fit cycle (55% of the lead's calls) costs ONE step.
-    "set_model",            # build the first model AND re-author it wholesale in one step
-    # score the assembled model. Edits are fit-free by default (issue #81): set_model /
-    # change_parameters mutate the working model but do NOT fit unless asked — `fit` is the single
-    # tool that fits + snapshots a version, and is still what the lead calls when a coherent change
-    # spans SEVERAL edits (assemble, then fit once).
-    "fit",
-    # change parameters' ESTIMATION in place — the prompt tells the lead to WIDEN a binding
-    # bound (or switch scale) rather than re-typing a value the multistart fit ignores. ONE batched
-    # editor: bundle every bound/scale change of a coherent retuning into a single call (with
-    # fit=true to score it), or pass them to set_model(parameters=[...]) when they belong with a
-    # re-author.
-    "change_parameters",
+    # THE editor. One call authors the whole model (antimony=), sets estimation bounds/scale
+    # (parameters=), or both — and always fits, snapshotting one version. It replaces the
+    # set_model -> change_parameters -> fit cycle that was 55% of the lead's calls.
+    "make_changes",
     # ...and READ them, so the lead can see what it is changing: id, bounds, scale, nominalValue,
     # plus each row's `role` (kinetic / noise_sigma / observable_scaling / initial_condition /
     # exponent / constant) and `status` (estimated / fixed). The prompt directs the lead here to
@@ -104,7 +88,7 @@ ORCHESTRATOR_TOOLS = [
     # honest: a symbol introduced is added ESTIMATED and counts toward k however tight its bounds,
     # and an observation-model factor must never be wired into a rate law. One row per parameter,
     # so it grows with the model — the only lead tool not strictly size-bounded, kept because
-    # change_parameters without it is an edit made blind.
+    # a bounds edit without it is made blind.
     "get_parameters",
     # The two SKILLS: short, reusable PEtab/Antimony domain knowledge (what the tables mean,
     # what makes a rate law fittable) — NOT a manual for these tools. How this server behaves

@@ -108,13 +108,18 @@ async def test_confirmed_finish_records_confirmed_flag():
 
 
 @pytest.mark.asyncio
-async def test_finish_refused_with_unfit_edits():
+async def test_finish_is_not_blocked_on_unfit_edits_because_there_cannot_be_any():
+    """The gate used to refuse a finish whose metrics were stale — a model edited since its last
+    fit. `make_changes` cannot leave that state (a change that fails to fit is reverted), so the
+    branch is gone; had it stayed, its instruction ("call fit first") named a deleted tool and
+    would have blocked the finish with no way out. The flag is still reported by
+    describe_problem, so a real regression shows up there rather than as a wedged run."""
     mod = _agent
     tool = _tool_for(mod, {"neg_log_likelihood": 100.0, "bic": 210.0, "version": 3,
                            "has_unfit_edits": True})
     out = await _decide(tool, "finish")
-    assert "FINISH REFUSED" in out and "since the last fit" in out.lower()
-    assert "call fit" in out.lower()
+    assert "FINISH ARMED" in out
+    assert "call fit" not in out.lower()
 
 
 @pytest.mark.asyncio
@@ -277,4 +282,4 @@ async def test_model_committed_fails_open():
 
 def test_no_model_nudge_text_is_actionable():
     mod = _agent
-    assert "set_model" in mod._NO_MODEL_NUDGE and "fit" in mod._NO_MODEL_NUDGE.lower()
+    assert "make_changes" in mod._NO_MODEL_NUDGE and "fit" in mod._NO_MODEL_NUDGE.lower()

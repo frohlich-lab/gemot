@@ -22,8 +22,8 @@ from petab_harness import agent, scenario
 
 # --------------------------------------------------------------------- pure de-dup helpers
 def test_tool_call_key_ignores_id_and_arg_order():
-    a = {"name": "set_model", "args": {"antimony": "x", "n_starts": 5}, "id": "call_1"}
-    b = {"name": "set_model", "args": {"n_starts": 5, "antimony": "x"}, "id": "call_2"}
+    a = {"name": "make_changes", "args": {"antimony": "x", "n_starts": 5}, "id": "call_1"}
+    b = {"name": "make_changes", "args": {"n_starts": 5, "antimony": "x"}, "id": "call_2"}
     assert agent._tool_call_key(a) == agent._tool_call_key(b)
 
 
@@ -210,7 +210,7 @@ def test_dedupe_also_collapses_the_raw_additional_kwargs_copy():
 
 # -- the lead's curated tool surface (issue #113 follow-up) -------------------
 def test_lead_does_not_carry_get_fit_summary_but_the_analysts_do():
-    """`fit` returns the whole fit block — metrics, bic, the noise-sigma verdict, the
+    """`make_changes` returns the whole fit block — metrics, bic, the noise-sigma verdict, the
     residual_structure verdict — so for the LEAD, the only agent that fits, get_fit_summary reads
     back what it was just handed (9 calls against 451 fits in the measured sweep). It is dropped
     from its list, since every tool's schema is re-sent every turn.
@@ -220,7 +220,7 @@ def test_lead_does_not_carry_get_fit_summary_but_the_analysts_do():
     """
     mod = agent
     assert "get_fit_summary" not in mod.ORCHESTRATOR_TOOLS
-    assert "fit" in mod.ORCHESTRATOR_TOOLS
+    assert "make_changes" in mod.ORCHESTRATOR_TOOLS
     # still reachable for everyone who cannot get the score from a fit result
     assert "get_fit_summary" in mod.MATHEMATICIAN_TOOLS
     assert "get_fit_summary" in mod.SIGNAL_ENGINEER_TOOLS
@@ -246,8 +246,8 @@ def test_the_lead_is_never_told_to_call_a_tool_it_does_not_have():
     named = [t for t in not_the_leads if t in lead_prompt]
     assert named == [], f"lead prompt names tools it cannot call: {named}"
 
-    # the panel-facing override for `fit` is lead-facing too
-    assert "get_fit_summary" not in mod.TOOL_DESCRIPTIONS["fit"]
+    # the panel-facing override for the editor is lead-facing too
+    assert "get_fit_summary" not in mod.TOOL_DESCRIPTIONS["make_changes"]
     # (the harness's OWN internal polls still call get_fit_summary — see _current_fit — which is
     # why this checks the lead-facing text rather than the module source.)
 

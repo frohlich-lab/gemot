@@ -78,7 +78,7 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
     try:
         _wait_until_listening(host, port, proc, server_log_path)
         url = f"http://{host}:{port}/mcp"
-        # A single set_model commit fits the model with an n_starts multistart that streams nothing
+        # A single make_changes commit fits the model with an n_starts multistart that streams nothing
         # back for its whole duration; the client's default sse_read_timeout (300s) would drop that
         # response and hang the call. Size it to the worst-case fit (n_starts * Fides per-start cap
         # + compile margin), the SAME budget the stall watchdog uses, so a slow-but-healthy fit

@@ -140,7 +140,7 @@ def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
     breaker. This is scoped to the EXTERNAL, optional bio tools (flaky hosted servers the model
     can't fix); a transport error on a CORE petab tool (the local server) instead falls through to
     the normal 3-strike / re-raise path, so one localhost blip can't silently strip ``fit`` /
-    ``set_model`` for the rest of the run.
+    ``make_changes`` for the rest of the run.
     """
     import inspect
     from functools import wraps
@@ -170,7 +170,7 @@ def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
                     # isolation that already handles connect/discovery failures.) A transport error
                     # on a CORE petab tool is NOT auto-disabled here: it falls through to the normal
                     # 3-strike / re-raise path, so a single localhost blip can't strip `fit` or
-                    # `set_model` for the rest of the run.
+                    # `make_changes` for the rest of the run.
                     if name in transport_disable and _is_transport_error(exc):
                         state["disabled"].add(name)
                         return (_transport_breaker_message(name, hint), None)

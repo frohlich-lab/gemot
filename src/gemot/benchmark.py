@@ -120,7 +120,7 @@ def _write_problem_yaml(problem_dir: Path) -> None:
 # The model id stamped on the shipped empty SBML. It surfaces to the agent via describe_problem
 # (`model_id`), so it must NOT be the benchmark name — `Brannmark_JBC2010` etc. would hand the agent
 # the paper (author + journal + year) and defeat the zero-shot rediscovery. A neutral placeholder;
-# the agent's own set_model replaces it with its own id anyway.
+# the agent's own re-author replaces it with its own id anyway.
 ANON_MODEL_ID = "zero_shot_problem"
 
 
@@ -133,7 +133,7 @@ def _write_empty_sbml(problem_dir: Path) -> None:
     m.setMetaId(ANON_MODEL_ID)
     libsbml.writeSBMLToFile(doc, str(problem_dir / "model.xml"))
     (problem_dir / "model.ant").write_text(
-        "// Zero-shot problem: ships without a model — the agent builds it via set_model.\n"
+        "// Zero-shot problem: ships without a model — the agent builds it via make_changes.\n"
         f"model {ANON_MODEL_ID}\nend\n")
 
 

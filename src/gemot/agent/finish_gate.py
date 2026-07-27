@@ -38,7 +38,7 @@ def _decision_tool(session, finish_state=None, probe=None):
     get_fit_summary / get_fit_diagnosis polls go through it so they don't inflate the run's
     tool_calls / compute_seconds (falling back to the timed ``session`` handle when absent).
 
-    Plain iteration needs no call — to keep going the lead simply makes the next ``set_model``
+    Plain iteration needs no call — to keep going the lead simply makes the next ``make_changes``
     edit — so the tool exists only to record a rollback or to gate a finish.
 
     ``finish`` is the ONLY legitimate way to end a run: a run that silently stops (a no-tool
@@ -122,14 +122,11 @@ def _decision_tool(session, finish_state=None, probe=None):
                 return prompts.FINISH_REFUSED_NO_FIT
             # A valid fit exists -> reset the no-fit give-up counter.
             state["no_fit_refusals"] = 0
-            # A model edited since the last fit has STALE metrics: the bic above belongs to the
-            # previous structure, not the working one, so finishing now would score the wrong
-            # model. Refuse until it is refitted. Naturally escapable (call fit) and version-
-            # tracked, so it cannot loop indefinitely.
-            if fit.get("has_unfit_edits"):
-                state["armed_token"] = None
-                print("[finish BLOCKED] unfit edits since last fit — metrics are stale")
-                return prompts.FINISH_REFUSED_UNFIT_EDITS
+            # There used to be a third gate here, for a model edited since its last fit: the bic
+            # would belong to the previous structure. `make_changes` cannot leave that state — a
+            # change that fails to fit is reverted — so the gate had nothing left to catch, and
+            # its instruction ("call fit first") named a tool that no longer exists, which would
+            # have blocked the finish with no way out.
             # HARD STOP on a gamed noise model: an inflated/collapsed ESTIMATED sigma makes the
             # good-looking bic rest on an implausible noise model (the judge fails those). Refuse the
             # finish with the fix-the-mechanism advice so the agent addresses the FORM, not the noise

@@ -139,7 +139,7 @@ def test_the_surface_covers_every_kind_of_prompt():
     assert set(P.PROMPT_GROUPS) == {"lead", "analysts", "biocurator", "tools", "control"}
     # the previously-untracked ones, named explicitly so a regression is legible
     tracked = P.all_prompts()
-    assert P.TOOL_DESCRIPTIONS["fit"] in tracked["petab-tool-descriptions"]
+    assert P.TOOL_DESCRIPTIONS["make_changes"] in tracked["petab-tool-descriptions"]
     assert P.BIOCURATOR_PROMPT == tracked["petab-biocurator-system"]
     assert P.MAKE_DECISION_DESCRIPTION == tracked["petab-make-decision"]
     assert P._IDLE_NUDGE in tracked["petab-nudges"]

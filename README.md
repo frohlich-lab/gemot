@@ -6,26 +6,25 @@ building into a **disciplined, auditable** workflow — the loop behind model-bu
 assistants such as [petabgpt](https://github.com/frohlich-lab/petabgpt).
 
 - The experimental design (**measurements, conditions, observables**) is read-only.
-- The **model is authored and edited only in Antimony**, through constrained, justified
-  operations: **`set_model` is the single model editor** — every structural change is a
-  whole-model re-author — plus a parameter's **scale/bounds** (`change_parameters`), never
-  free-form.
+- The **model is authored and edited only in Antimony**, through one constrained, justified
+  operation: **`make_changes` is the single editor** — it authors the whole model (every
+  structural change is a whole-model re-author) and/or sets a parameter's **scale/bounds**,
+  never free-form.
 - Every operation **must cite a justification**; references are **optional** (validated
   against **PubMed** when provided).
 - Operations **auto-maintain SBML↔PEtab consistency**: new symbols become model
   parameters or species, orphans are pruned, and **every species uses a parametric
   initial condition** (`S = S_init`), so the parameter table always matches the model.
-- **Fitting is always explicit.** An edit mutates the working model but carries no score until a
-  fit is asked for — by passing `fit=true` to the editor, or by calling the **`fit`** tool. Either
-  way the same fit runs, and it is what snapshots the version. So a coherent single-step change is
-  one call, and a multi-part one is assembled through several edits and scored **once** at the end.
+- **Every change is scored.** `make_changes` fits and snapshots a version on every call — there
+  is no fit-free edit and no standalone fit, so a change and its score cannot come apart. One
+  coherent change is one call.
 - Every change is **versioned and logged** (provenance): each version records the fitted
   parameters, fit metrics, and simulation dataframe; alterations and rollbacks are
   persisted to disk with full metadata.
 
 Simulation/objective use [AMICI](https://github.com/AMICI-dev/AMICI); optimization uses
 [pyPESTO](https://github.com/ICB-DCM/pyPESTO) with the [Fides](https://github.com/fides-dev/fides)
-trust-region optimizer. All are **required** — `fit` is not optional machinery.
+trust-region optimizer. All are **required** — fitting is not optional machinery.
 
 ## Install
 
@@ -46,7 +45,7 @@ petab-mcp --petab-yaml path/to/problem.yaml
 The canonical model is Antimony: if a `model.ant` sits next to the YAML it is the
 source of truth. A problem may also ship **without** a model (an empty SBML skeleton and
 no `model.ant`); the agent then zero-shots the whole model once from Antimony with
-`set_model` (see below). Provenance is written to `<problem_dir>/.petab_mcp/` by default
+`make_changes` (see below). Provenance is written to `<problem_dir>/.petab_mcp/` by default
 and is **durable** — restarting resumes the latest version. A ready toy problem (reversible
 conversion reaction A⇌B) lives at `tests/data/toy_v1/`.
 
@@ -56,7 +55,7 @@ conversion reaction A⇌B) lives at `tests/data/toy_v1/`.
 OpenRouter-hosted LLM, driving a panel of three specialist analyst subagents (via
 [`deepagents`](https://github.com/langchain-ai/deepagents)) through these tools, is handed a
 PEtab problem that **ships without a model** (an empty SBML) and has to **build** the
-mechanism from the data — one `set_model(…, fit=true)` call, then refinement. Each has an obvious
+mechanism from the data — one `make_changes(antimony=…)` call, then refinement. Each has an obvious
 **trap** (a linear/bilinear/first-order rate law that can't reproduce the dynamics for any
 parameters), so fitting the numbers isn't enough; an independent judge checks the built
 **mechanism** by BIC against the true model, not just the fit. Every example also has a
@@ -86,39 +85,31 @@ Arize Phoenix tracing, judging, and how to run).
 **Read-only (the fixed design)** — `describe_problem`, `list_observables`,
 `list_conditions`, `get_measurements(condition_id?, observable_id?)`.
 
-**Edits** (each requires a `justification`; `references` are optional) — an edit mutates the
-working model but does **not** fit and does **not** create a version, unless you ask it to with
-`fit=true` (see below). `describe_problem` reports `has_unfit_edits: true` until the change is
-scored.
-- `set_model(antimony, justification, references?, parameters?, fit?, n_starts?)` — set the
-  whole model from an Antimony string, the **single model editor**: it builds the first model
-  when none is initialized yet (`describe_problem` → `model_initialized: false`) and
-  re-authors/replaces an existing one, so every structural change (adding or removing a
-  reaction, changing a rate law) is one coherent re-author. New species/parameters + parametric
-  ICs are reconciled automatically.
-- `change_parameters(parameters, justification, references?, fit?, n_starts?)` — batch-edit
-  the bounds and/or scale of one or more parameters in one atomic call. `parameters` is a non-empty
-  list of `{parameter_id, lower_bound?, upper_bound?, scale?}` entries (a bound edit gives
-  **both** bounds); one rejected entry reverts the whole batch.
-- read-only: `get_model(format)`, `get_model_structure`.
+**The editor** — `make_changes(justification, antimony?, parameters?, references?, n_starts?)` is
+the **single** tool that changes anything, and it always fits:
+- `antimony` sets the whole model from an Antimony string. It builds the first model when none is
+  initialized yet (`describe_problem` → `model_initialized: false`) and re-authors/replaces an
+  existing one, so every structural change (adding or removing a reaction, changing a rate law) is
+  one coherent re-author. New species/parameters + parametric ICs are reconciled automatically.
+- `parameters` batch-edits the bounds and/or scale of one or more parameters: a non-empty list of
+  `{parameter_id, lower_bound?, upper_bound?, scale?}` entries (a bound edit gives **both**
+  bounds).
+- Give either, or both — but not neither. Both land in the **same transaction**, applied after the
+  reconcile, so an entry may target a parameter the re-author introduces, and one rejected entry
+  reverts the whole call.
+- read-only companions: `get_model(format)`, `get_model_structure`.
 
-**Bundling an edit with its fit** — a coherent change that *is* one edit should cost one call:
-`set_model` takes a `parameters=[…]` list (the same entries `change_parameters` takes, applied in
-the **same transaction** as the re-author, after the reconcile — so an entry may target a
-parameter that re-author introduces, and a rejected entry reverts the re-author too), and both
-editors take `fit=true` (+ optional `n_starts`, which is *rejected* without `fit=true` rather than
-ignored). The bundled result is the edit result with the whole fit result nested under `fit`, and
-`version`/`committed` mirrored at the top level. If the edit applies but the fit fails, the edit
-**stays in place** (`applied: true`, `committed: false`, `fit.error`) — nothing is half-applied.
-Leave the calls separate when one change genuinely spans several edits: edit, edit, then `fit`
-once.
+Every call then fits and snapshots exactly one version, so a change and its score cannot come
+apart. The result **is** the fit — the same field names `get_fit_summary` uses — plus `applied`
+(is the change in the model?) and `committed` (did it make a version?). If the edit applies but
+the fit fails, the edit is **reverted** (`applied: false` + `error`) — nothing is left half-done.
 
 **Parameters** — `get_parameters` (read-only; values are set by the fit).
-Parameter *values* are set only by `fit`; adjust the search space with the versioned
-`change_parameters` edit. Every edit returns an `initial_conditions` block reporting, per species,
+Parameter *values* are set only by the fit; adjust the search space with `make_changes`'
+`parameters` list. Every call returns an `initial_conditions` block reporting, per species,
 whether its declared t=0 is used (fixed), fitted (estimated), or set per-condition.
 
-**Fit + simulation** — `fit(n_starts?, justification?)` is the **only** tool that fits: it fits
+**The fit** — every `make_changes` call fits
 the free parameters (pyPESTO multistart), simulates, and snapshots a single version carrying the
 fitted parameters, the fit metrics (`neg_log_likelihood`, `chi2`, `bic`), improvement metrics
 (`objective_before`, `self_improvement`, `improvement_vs_best_prior`, `is_new_best` — so
@@ -130,9 +121,9 @@ streak, best-BIC `best_version`, best-BIC gain over the last N ops) that backs a
 once the score stops moving — see `get_progress`. `n_starts` **replaces** the server's configured
 multistart count (`create_server(auto_fit_starts=…)`, which the examples harness sets from its own
 `--n-starts`; the standalone CLI uses the built-in default), so pass it only to go *above* that
-default — a smaller value fits less hard, and `0` simulates without fitting. Neither the number nor
+default — a smaller value fits less hard, and the minimum is `1`. Neither the number nor
 its effect has to be guessed: `describe_problem` reports the default as `fit_n_starts_default` and
-every fit result reports the `n_starts` it actually ran with. `fit` de-duplicates: a model
+every fit result reports the `n_starts` it actually ran with. The fit de-duplicates: a model
 byte-identical to the current
 version returns the stored metrics without refitting (`committed: false, no_change: true`), a
 structure already elsewhere in the history is fit but **warns** to use `restore_version(n)`
@@ -180,7 +171,7 @@ it is **SQL over the data** via DuckDB, so you compute the breakdown you want:
 
 **Provenance, versions & errors** — `get_provenance`, `get_errors`, `list_versions`,
 `get_version`, `diff_versions`, `restore_version(version)`, `get_progress`, `reset`. (The HEAD
-version and whether it has unfit edits come from `describe_problem`.)
+version comes from `describe_problem`.)
 
 **Skills** — `list_skills`, `get_skill(name, file?)`. The server ships tool-usage
 documentation as [agent skills](https://modelcontextprotocol.io) bundled under
@@ -199,7 +190,7 @@ how to use this server's tools — in the standard agent-skill layout (a directo
 skill with a `SKILL.md` frontmatter header plus supporting files). Bundling them inside
 the package means they resolve identically from a source checkout and an installed
 wheel. The `petab-model-building` skill documents the disciplined edit→fit→audit
-workflow (and `antimony-authoring` covers writing the model text `set_model` takes).
+workflow (and `antimony-authoring` covers writing the model text `make_changes` takes).
 
 Skills are exposed to MCP clients as:
 
@@ -216,8 +207,8 @@ your own skills; drop another skill directory into `_skills/` to extend the bund
 - **Constrained, justified editing.** There is no free-form SBML-input tool. Each edit runs
   one pipeline: validate references → apply to a model copy → reconcile SBML↔PEtab → lint →
   apply or revert → log. An edit that breaks a fixed observable/condition is rejected, and
-  because the revert covers the model *and* the parameter table, a bundled
-  `set_model(parameters=[…])` is atomic across both.
+  because the revert covers the model *and* the parameter table, a call that carries both an
+  `antimony` re-author and a `parameters` list is atomic across both.
 - **Parametric initial conditions.** `reconcile` guarantees every species `S` has an
   `initialAssignment(S := S_init)` with `S_init` in the parameter table, so initial conditions are
   first-class parameters. They are **estimated by default** — a declared t=0 is only a guess and
@@ -244,11 +235,12 @@ your own skills; drop another skill directory into `_skills/` to extend the bund
   `.petab_mcp/pypesto.log` captures pyPESTO's own multistart optimizer report for each fit.
   `restore_version` restores a prior version as a new, auditable version — including its fit
   artifacts (simulation + optimization traces + result file), copied forward. A version is
-  exactly a fit snapshot: edits append `edit` events, `fit` creates the version that scores them.
-- **One version per coherent change + comparison.** `fit` records its objective and how it
+  exactly a fit snapshot: a call appends an `edit` event and the fit it runs creates the version
+  that scores it.
+- **One version per coherent change + comparison.** Each fit records its objective and how it
   compares to the best prior version, so competing model versions can be ranked by fit
-  without a separate optimize step — and because edits are fit-free, a multi-part change is
-  scored once instead of appending a version per micro-edit.
+  without a separate optimize step — and because a whole change (re-author + bounds) is one
+  call, it is scored once instead of appending a version per micro-edit.
 - **Cheap parameter edits, cached compilation.** AMICI models are cached by SBML hash;
   a structural change recompiles, parameter edits do not.
 - **Fit reuse (cache).** Every fit is cached under its *estimation-problem* identity — the
@@ -258,7 +250,7 @@ your own skills; drop another skill directory into `_skills/` to extend the bund
   was already fit reuses the stored fit (fitted parameters + traces + pyPESTO result) and
   skips the expensive optimization; the model is still simulated, so the simulation dataframe
   and metrics are always current. The result is otherwise identical, so this is transparent.
-  Above that, `fit` itself de-duplicates on model *structure*: an unchanged model isn't refit at
+  Above that, the fit itself de-duplicates on model *structure*: an unchanged model isn't refit at
   all, and a structure already in the version history points you at `restore_version(n)`.
 
 ## Development

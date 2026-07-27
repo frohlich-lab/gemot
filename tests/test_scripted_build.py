@@ -1,5 +1,5 @@
-"""`build_true_model` is the shared scripted_fix body — and the only caller of
-`change_parameters` outside the panel.
+"""`build_true_model` is the shared scripted_fix body — and the only non-panel caller of the
+editor's `parameters` argument.
 
 The examples that pass `changes` (armistead, bruno, fujita) all fetch their PEtab problems
 externally, so no test or smoke run exercises this path; a wrong kwarg here surfaces only in a
@@ -18,12 +18,12 @@ def _recorder():
 
     async def call(name, **kwargs):
         calls.append((name, kwargs))
-        return {"applied": True, "committed": True, "version": 1}
+        return {"applied": True, "committed": True, "version": 1, "fit": {}}
 
     return calls, call
 
 
-def test_change_parameters_is_called_with_the_tool_s_argument_name():
+def test_the_whole_build_is_one_call_with_the_tool_s_argument_names():
     entries = [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}]
     calls, call = _recorder()
     asyncio.run(build_true_model(
@@ -31,12 +31,17 @@ def test_change_parameters_is_called_with_the_tool_s_argument_name():
         changes=entries, change_justification="tighten",
     ))
 
-    name, kwargs = next(c for c in calls if c[0] == "change_parameters")
+    assert [n for n, _ in calls] == ["make_changes"]
+    kwargs = calls[0][1]
+    assert kwargs["antimony"] == "model m end"
     assert kwargs["parameters"] == entries
-    assert "changes" not in kwargs, "the tool takes `parameters`, the same name set_model takes"
+    assert kwargs["n_starts"] == 5
+    assert "changes" not in kwargs, "the tool takes `parameters`"
 
 
-def test_no_parameter_call_when_there_is_nothing_to_retune():
+def test_the_parameters_argument_is_omitted_when_there_is_nothing_to_retune():
+    """`None`, not `[]`: an empty list is a malformed `parameters` argument, not "no edit"."""
     calls, call = _recorder()
     asyncio.run(build_true_model(call, antimony="model m end", justification="j", n_starts=5))
-    assert [n for n, _ in calls] == ["set_model", "fit"]
+    assert [n for n, _ in calls] == ["make_changes"]
+    assert calls[0][1]["parameters"] is None

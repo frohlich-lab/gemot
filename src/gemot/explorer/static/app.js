@@ -110,7 +110,7 @@ const mk = (t, a) => { const e = document.createElementNS(NS, t); for (const k i
 const kfmt = (n) => n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(Math.round(n));
 
 // Dual-axis chart over the TURN timeline: left = score (ΔBIC/nll) as a step line marked at each
-// set_model, right = cumulative token sum, plus a vertical cursor at the scrolled turn.
+// make_changes, right = cumulative token sum, plus a vertical cursor at the scrolled turn.
 function renderChart(container, turns, variants, metric, bicRef, activeTurn, onPickTurn) {
   container.innerHTML = "";
   const byIdx = Object.fromEntries(variants.map(v => [v.index, v]));
@@ -141,7 +141,7 @@ function renderChart(container, turns, variants, metric, bicRef, activeTurn, onP
   const score = turns.map(t => scoreOf(byIdx[t.active_variant]));
   let run = 0; const toks = turns.map(t => (run += turnTokens(t)));
   const setmodelTurns = turns.filter(t => t.variant_index != null).map(t => t.i);
-  // committed variants that no turn produced (a dropped set_model span) — shown as gap markers
+  // committed variants that no turn produced (a dropped make_changes span) — shown as gap markers
   // rather than silently dropped. Prefer the server's `no_turn` flag; fall back to deriving it.
   const mappedIdx = new Set(turns.filter(t => t.variant_index != null).map(t => t.variant_index));
   const orphans = variants.filter(v => v.nll != null
@@ -177,7 +177,7 @@ function renderChart(container, turns, variants, metric, bicRef, activeTurn, onP
     let d = "", started = false;
     score.forEach((v, i) => { if (v == null) return; d += `${started ? "L" : "M"}${xs(i)} ${ly(v)} `; started = true; });
     svg.append(mk("path", { d, fill: "none", stroke: "var(--accent)", "stroke-width": "2" }));
-    // dots at set_model turns
+    // dots at make_changes turns
     for (const ti of setmodelTurns) {
       const v = byIdx[turns[ti].variant_index];
       const sv = scoreOf(v); if (sv == null) continue;
@@ -283,7 +283,8 @@ function toolCallEl(tc) {
   return kvTool(tc);
 }
 function kvTool(tc) {
-  const isSet = tc.name === "set_model";
+  // `set_model` is the pre-consolidation name; traces recorded before the collapse still use it.
+  const isSet = tc.name === "make_changes" || tc.name === "set_model";
   const det = el("details", { class: "toolcall" + (isSet ? " setmodel" : "") },
     el("summary", {}, el("span", { class: "tool-name", text: tc.name || "tool" })));
   const body = el("div", { class: "kv" });

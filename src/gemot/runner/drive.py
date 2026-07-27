@@ -83,7 +83,7 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
             print(f"[preflight] baseline neg_log_likelihood = {_bl_disp}")
         else:
             # Zero-shot: the problem ships without a model — nothing to score until the agent
-            # builds one via set_model. The judge compares to the true-model reference, not a
+            # builds one via make_changes. The judge compares to the true-model reference, not a
             # baseline, so a None baseline is fine.
             print("[preflight] no model shipped — zero-shot build (no baseline to score)")
             baseline = Baseline(nll=None, species=baseline_species, structure=baseline_structure)

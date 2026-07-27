@@ -14,9 +14,8 @@
 The conversation (turns/tokens/analyst sub-agents) comes from Phoenix — queried by the indexed
 ``trace_id`` (fast; unfiltered pulls time out). The model-variant + score trajectory comes from the
 run's ``.petab_mcp/`` version store. BIC-per-variant is recomputed (``2·nll + k·ln(n)``) since only
-the final BIC is persisted. The two are stitched by aligning each fitting tool span — the
-standalone ``fit``, or an editor called with ``fit=true`` (issue #114) — with the version it
-produced.
+the final BIC is persisted. The two are stitched by aligning each fitting tool span (see
+``_FITTING_TOOLS``) with the version it produced.
 """
 
 from __future__ import annotations
@@ -460,37 +459,55 @@ def _tool_result(output_value) -> dict | None:
         return None
 
 
-# The tools whose result can carry a committed version: the standalone `fit`, and either editor
-# called with `fit=true` (issue #114 — a bundled call is one span, so a run that always bundles
-# emits NO `fit` span at all and a fit-only filter would see an empty trajectory).
-_FITTING_TOOLS = ("fit", "set_model", "change_parameters")
+# Tool spans whose result can carry a committed version. `make_changes` always fits, so a variant
+# is one span. The other three are the pre-consolidation surface (a fit-free `set_model` /
+# `change_parameters` plus a standalone `fit`); they stay listed because the explorer's job is
+# reading traces that already exist, and a sweep recorded before the collapse would otherwise
+# rebuild an empty trajectory and flag every variant `no_turn`.
+_FITTING_TOOLS = ("make_changes", "set_model", "change_parameters", "fit")
+
+# Spans whose INPUT carries the model text, so a later fit-only span inherits it.
+_AUTHORING_TOOLS = ("make_changes", "set_model")
 
 
 def _fit_block(res: dict) -> dict:
-    """The part of a tool result carrying the fit scalars. A bundled edit nests the whole fit
-    result under ``fit``; a standalone ``fit`` carries them at the top level."""
+    """The part of a tool result carrying the fit scalars.
+
+    ``make_changes`` carries them at the top level (as the standalone ``fit`` tool did before it);
+    the intermediate `fit=true` bundle nested them under ``fit``, which some recorded traces still
+    have."""
     nested = res.get("fit")
     return nested if isinstance(nested, dict) else res
 
 
 def load_variants_from_spans(df, n_default: int | None) -> list[dict]:
     """Reconstruct the model-variant trajectory from the trace's fitting tool spans — the
-    fallback when the on-disk version store has been wiped. Since issue #81 the fit block + version
-    live on whichever call fitted (edits are fit-free unless bundled), so a variant is any committed
-    ``fit`` / ``set_model(fit=true)`` / ``change_parameters(fit=true)``; its Antimony is taken from
-    that call's own input when it re-authored, else from the most recent preceding ``set_model``."""
+    fallback when the on-disk version store has been wiped. A variant is any span in
+    :data:`_FITTING_TOOLS` whose result reports ``committed``; its Antimony is taken from that
+    call's own input when it re-authored, else from the most recent preceding one that did (which
+    is what makes a pre-consolidation standalone ``fit`` span resolve to a model)."""
     tool_c = "attributes.tool.name"
     if tool_c not in df.columns:
         return []
     spans = df[df[tool_c].isin(_FITTING_TOOLS)].sort_values("start_time")
     variants: list[dict] = []
     last_ant: str | None = None
+    last_justif: str | None = None
     for _, r in spans.iterrows():
-        if r.get(tool_c) == "set_model":
+        if r.get(tool_c) in _AUTHORING_TOOLS:
             try:
-                last_ant = (json.loads(r.get("attributes.input.value")) or {}).get("antimony")
+                args = json.loads(r.get("attributes.input.value")) or {}
             except Exception:
-                pass
+                args = {}
+            ant = args.get("antimony")
+            # The justification is read from the call's INPUT, not its result: the result no
+            # longer echoes it back (a `make_changes` result is the fit and nothing else).
+            last_justif = args.get("justification") or last_justif
+            # Only a call that actually re-authored replaces the running model. `antimony` is
+            # optional on `make_changes`, so a bounds-only call carries none — assigning it
+            # unconditionally would blank the model out for that variant and every later one.
+            if ant:
+                last_ant = ant
         res = _tool_result(r.get("attributes.output.value"))
         # No version unless something actually fitted: an unbundled edit, and a rejected or
         # skipped fit, all report committed falsy.
@@ -508,15 +525,14 @@ def load_variants_from_spans(df, n_default: int | None) -> list[dict]:
             "k": fit.get("n_estimated"),
             "n": fit.get("n_data_points") or n_default,
             "is_new_best": improvement.get("is_new_best"),
-            # The FIT's timestamp, not the edit's: a variant IS a fit snapshot, and that is what
-            # the on-disk version store is keyed on. On a bundled call `res.event_timestamp` is
-            # the (earlier) edit event, so preferring it would skew time-based ordering against
-            # the version store. `_fit_block` returns `res` itself for a standalone fit, so this
-            # reads the right field in both shapes.
+            # The FIT's timestamp — a variant IS a fit snapshot, and that is what the on-disk
+            # version store is keyed on. In the nested (pre-flattening) trace shape
+            # `res.event_timestamp` is the earlier EDIT event, so preferring it would skew
+            # time-based ordering against the version store.
             "timestamp": fit.get("event_timestamp") or res.get("event_timestamp"),
             "antimony": last_ant,
             "params": [],
-            "justification": res.get("justification"),
+            "justification": res.get("justification") or last_justif,
         })
     return variants
 
@@ -553,8 +569,7 @@ def _vnum_of(x) -> int | None:
 
 def _map_variants_to_turns(turns: list[dict], variants: list[dict]) -> None:
     """Tag each turn with the model variant it produced, matched by the **committed version
-    number** in that turn's fitting result — the standalone ``fit`` or an editor called with
-    ``fit=true`` (issue #114) — not by position.
+    number** in that turn's fitting result — any span in :data:`_FITTING_TOOLS` — not by position.
 
     Positional pairing (j-th fit turn ↔ j-th fitted variant) silently mis-labels every
     variant whenever the counts diverge, which they routinely do: *rejected* / no-op ``fit`` calls
@@ -583,7 +598,7 @@ def _map_variants_to_turns(turns: list[dict], variants: list[dict]) -> None:
             produced_by_turn[t["i"]] = last_v
             t["variant_index"] = last_v["index"]
 
-    # A fitted variant no turn produced (e.g. its set_model span was dropped from the trace):
+    # A fitted variant no turn produced (e.g. its make_changes span was dropped from the trace):
     # flag it so the chart marks the gap rather than pretending it never happened.
     for v in variants:
         if v.get("nll") is not None:

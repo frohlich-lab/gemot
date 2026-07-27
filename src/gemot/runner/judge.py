@@ -48,9 +48,11 @@ async def _restore_best_checkpoint(call) -> None:
     runs on ANY termination that reaches the judge (early-stop, wall-time, recursion limit,
     clean finish). Best-effort — a probe/rollback failure just leaves HEAD in place.
 
-    Edits are fit-free (issue #81), so an agent can assemble a model yet never ``fit`` it — leaving
-    no checkpoint and an unfit working model. The judge must never score an edited-but-unfit model,
-    so when there is no checkpoint but a model exists, fit it once here before scoring.
+    No checkpoint means no ``make_changes`` call ever produced a fitted version — the agent built
+    nothing, or every fit failed. There is nothing to score either way, so the judge scores HEAD
+    and the run is reported on its own (empty or unfit) merits. It used to auto-fit here, because
+    edits were fit-free (#81) and a model could sit assembled-but-unscored; ``make_changes``
+    always fits, so that state no longer arises from an agent simply forgetting to score.
     """
     try:
         progress = await call("get_progress")
@@ -58,24 +60,7 @@ async def _restore_best_checkpoint(call) -> None:
         return
     best = progress.get("best_version") if isinstance(progress, dict) else None
     if best is None:
-        # No fitted checkpoint yet. If a model was assembled but never fit, score it fitted:
-        # fit once now (issue #81's "auto-fit on finish"), then adopt the resulting checkpoint.
-        try:
-            desc = await call("describe_problem")
-        except Exception:  # pragma: no cover - defensive
-            desc = {}
-        if isinstance(desc, dict) and desc.get("model_initialized"):
-            try:
-                await call("fit", justification="score the assembled model before judging")
-                progress = await call("get_progress")
-                best = progress.get("best_version") if isinstance(progress, dict) else None
-                if best is not None:
-                    print(f"[judge] fit the unscored working model -> checkpoint v{best} before scoring")
-            except Exception as exc:  # pragma: no cover - fall through to scoring HEAD
-                print(f"[judge] could not fit the working model before scoring "
-                      f"({type(exc).__name__}: {exc})")
-        if best is None:
-            return
+        return
     head = await _head_version(call)
     if best == head:
         return  # already on the best model

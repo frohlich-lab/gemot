@@ -18,7 +18,9 @@ import pytest
 
 from petab_harness import agent
 
-_EDITORS = ("set_model", "fit", "change_parameters")
+# The one editor. It authors the model AND fits, so "who may change the model" and "who may
+# score it" are now the same question — and the answer is still: the lead alone.
+_EDITORS = ("make_changes",)
 
 
 class _FakeTool:

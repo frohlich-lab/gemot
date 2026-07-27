@@ -28,7 +28,7 @@ from typing import Any, Awaitable, Callable
 # Phoenix prompt registry) have always read them off this module.
 from .prompts import DEFAULT_SYSTEM_PROMPT, DEFAULT_TASK
 
-# A bound MCP caller: ``await call("get_fit_summary")`` / ``await call("set_model",
+# A bound MCP caller: ``await call("get_fit_summary")`` / ``await call("make_changes",
 # antimony=..., justification=..., references=[...])``.
 Call = Callable[..., Awaitable[Any]]
 
@@ -109,41 +109,42 @@ async def build_true_model(
     change_justification: str = "",
     min_n_starts: int | None = None,
 ) -> None:
-    """The canonical ``scripted_fix`` body: set_model the true structure, optionally re-bound
+    """The canonical ``scripted_fix`` body: author the true structure, optionally re-bound
     some parameters, then fit once — reporting whatever the server says at each step.
 
     Every example's ``scripted_fix`` was a copy of this (16 of them, 10 byte-identical). What
     actually varies is data, so it is passed in: the ``antimony`` to build, its ``justification``
     / ``references``, and two optional knobs a handful of examples need.
 
-    ``changes`` is a ``change_parameters`` list applied between the build and the fit, for a
-    model whose kinetics need a tighter box than the server's wide default before the multistart
-    can find the true basin. The caller builds the list, because how it is derived is
+    ``changes`` is a ``parameters`` list applied in the same call, for a model whose kinetics
+    need a tighter box than the server's wide default before the multistart can find the true
+    basin. The caller builds the list, because how it is derived is
     scenario-specific (a flat bound pair, per-parameter bounds, a merged scale+bound entry).
+    ``change_justification`` is why those bounds were narrowed; the structure and the bounds are
+    one call now and therefore share one justification, so it is APPENDED rather than sent
+    separately — dropping it would file the re-bounding under the model-build rationale.
 
     ``min_n_starts`` floors the multistart count, for a sharp likelihood the default 50 starts
     cannot reliably close. It only ever raises ``n_starts``, never lowers a caller's request.
     """
     if min_n_starts is not None:
         n_starts = max(int(n_starts), min_n_starts)
+    if changes and change_justification.strip():
+        justification = f"{justification} Bounds: {change_justification}"
 
-    res = await call("set_model", antimony=antimony, justification=justification,
-                     references=references)
-    if isinstance(res, dict) and res.get("applied") is False:
-        print(f"[scripted] set_model rejected: {res.get('error')} / {res.get('issues')}")
-        return
-
-    if changes:
-        await call("change_parameters", parameters=changes, justification=change_justification)
-
-    res = await call("fit", n_starts=n_starts)
-    if isinstance(res, dict) and res.get("committed") is False:
-        print(f"[scripted] fit rejected: {res.get('error')} / {res.get('issues')}")
-    elif isinstance(res, dict):
-        print(f"[scripted] built model v{res.get('version')}; nll={res.get('neg_log_likelihood')} "
-              f"fitted={res.get('fitted_parameters')}")
+    res = await call("make_changes", antimony=antimony, justification=justification,
+                     references=references, parameters=changes or None, n_starts=n_starts)
+    if not isinstance(res, dict):
+        print(f"[scripted] make_changes returned: {res}")
+    elif not res.get("applied"):
+        # Either rejected before it applied, or applied and then reverted when the fit failed —
+        # both leave the model untouched, and the error says which.
+        print(f"[scripted] make_changes did not stick: {res.get('error')} / {res.get('issues')}")
+    elif not res.get("committed"):
+        print(f"[scripted] no version created: {res.get('message')}")
     else:
-        print(f"[scripted] fit returned: {res}")
+        print(f"[scripted] built model v{res.get('version')}; "
+              f"nll={res.get('neg_log_likelihood')} fitted={res.get('fitted_parameters')}")
 
 
 async def topology_diagnostics(ctx: "JudgeContext") -> tuple[list[str], dict]:

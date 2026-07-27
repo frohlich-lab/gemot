@@ -378,7 +378,7 @@ async def run_deepagents(
     # abandoning the run, up to _RUN_RESUME_ATTEMPTS times. A non-transient error (e.g.
     # GraphRecursionError = step budget exhausted) is NOT retried; the judge assesses the model as
     # it stands. We consume the stream only to drive the loop; Phoenix spans are the record.
-    # The longest single super-step is a lead commit whose set_model runs an n_starts multistart
+    # The longest single super-step is a lead commit whose make_changes runs an n_starts multistart
     # fit (astream emits nothing until it returns), so the stall window must exceed one whole fit
     # or a slow-but-healthy fit trips the watchdog. Size it to the same fit budget the transport's
     # sse_read_timeout uses (fit_budget.py), floored at _STEP_STALL_TIMEOUT_S for the non-fit steps
