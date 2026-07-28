@@ -113,7 +113,7 @@ def _fixtures():
     @tool
     def describe_problem() -> str:
         """Orient: whether a model exists."""
-        return "model_initialized: false"
+        return "model_authored: false"
 
     def run(scripted_msgs, *, max_idle_steps=3, return_messages=False):
         stats = {"tools_executed": 0, "dropped_dup_tool_calls": 0,

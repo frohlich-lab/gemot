@@ -66,7 +66,7 @@ def _make_call(summary):
     canned = {
         "get_progress": {"best_version": 1},
         # the HEAD version comes off describe_problem — there is no current_version tool
-        "describe_problem": {"current_version": 1, "model_initialized": True},
+        "describe_problem": {"current_version": 1, "model_authored": True},
         "get_model_structure": {"reactions": [{"id": "r1"}], "species": ["A", "B"]},
         "get_fit_summary": summary,
         "get_parameters": _PARAMS,

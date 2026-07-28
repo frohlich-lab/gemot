@@ -133,7 +133,10 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     except Exception as exc:  # noqa: BLE001 - report-only diagnostic; never fail the judge on it
         print(f"  (residual-structure diagnosis unavailable: {type(exc).__name__}: {exc})")
         residual_structure = None
-    head = await _head_version(call) or 0
+    # NOT `or 0`: a legitimate HEAD of v0 is falsy, so coercing made an unreadable probe and a
+    # run still sitting on v0 indistinguishable in `head_version`. Keep None as None; `if head`
+    # then skips the diff for both, which is right — a v0-to-v0 diff is empty anyway.
+    head = await _head_version(call)
     diff = await call("diff_versions", from_version=0, to_version=head) if head else {}
     errors = await call("get_errors", limit=20)
     # baseline.nll is None for a zero-shot build (no model shipped → nothing to score).

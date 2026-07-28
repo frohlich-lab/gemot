@@ -62,7 +62,7 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
         baseline_structure = await call("get_model_structure")
         baseline_species = set(baseline_structure.get("species", []) or [])
 
-        if desc.get("model_initialized", True):
+        if desc.get("model_authored", True):
             print("[preflight] scoring baseline (first AMICI compile is slow)...")
             baseline_fit = await call("get_fit_summary")
             # Guard the baseline scoring float(): a shipped model whose FIRST fit fails returns

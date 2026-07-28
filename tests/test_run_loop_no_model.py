@@ -40,11 +40,11 @@ def _load_agent_module():
 class _Probe:
     """Fake un-timed progress_probe: model never authored, run never asked to early-stop."""
 
-    def __init__(self, model_initialized=False):
-        self.model_initialized = model_initialized
+    def __init__(self, model_authored=False):
+        self.model_authored = model_authored
 
     async def __call__(self, tool, args):
-        payload = ({"model_initialized": self.model_initialized} if tool == "describe_problem"
+        payload = ({"model_authored": self.model_authored} if tool == "describe_problem"
                    else {"should_stop": False})
         return type("R", (), {"structuredContent": payload})()
 
@@ -120,7 +120,7 @@ def test_no_model_silent_stop_bounces_with_build_nudge(monkeypatch):
     _MAX_SILENT_BOUNCES, then relabelled 'no_model_built'. The fake never confirms a finish, so
     it is treated as a silent stop every time."""
     mod = _load_agent_module()
-    result, fake_agent = _run(mod, monkeypatch, _Probe(model_initialized=False))
+    result, fake_agent = _run(mod, monkeypatch, _Probe(model_authored=False))
 
     assert result["stop_reason"] == "no_model_built"
     assert len(fake_agent.inputs) == 1 + mod._MAX_SILENT_BOUNCES  # initial drive + N bounces
@@ -134,7 +134,7 @@ def test_model_silent_stop_bounces_into_the_gate(monkeypatch):
     """A silent stop WITH a model (no finish through make_decision) is bounced with the FINISH
     nudge — the gate cannot be sidestepped — and relabelled 'silent_stop', not 'completed'."""
     mod = _load_agent_module()
-    result, fake_agent = _run(mod, monkeypatch, _Probe(model_initialized=True))
+    result, fake_agent = _run(mod, monkeypatch, _Probe(model_authored=True))
 
     assert result["stop_reason"] == "silent_stop"                # not an accepted finish
     assert len(fake_agent.inputs) == 1 + mod._MAX_SILENT_BOUNCES
@@ -149,7 +149,7 @@ def test_confirmed_finish_is_not_bounced(monkeypatch):
     as 'completed' the moment the confirm lands, not re-driven."""
     mod = _load_agent_module()
     # First turn stops silently -> one bounce; on the 2nd turn the model "confirms" -> done.
-    result, fake_agent = _run(mod, monkeypatch, _Probe(model_initialized=True), confirm_after=2)
+    result, fake_agent = _run(mod, monkeypatch, _Probe(model_authored=True), confirm_after=2)
     # A confirmed finish is respected: NOT relabelled as a bypassed gate, and NOT re-bounced.
     # (The exact label may be the orthogonal pre-existing "no_tools_executed" — the faked graph
     # runs no real tools — but never our silent-stop labels.)

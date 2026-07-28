@@ -121,12 +121,30 @@ def _state_successors(de) -> dict[str, set[str]]:
 
 
 def _observable_states(de) -> dict[str, set[str]]:
-    """Each observable → the set of model states it reads, from AMICI's ``dydx`` (layout
-    ``(n_states, n_observables)``: observable ``o`` reads state ``i`` iff ``dydx[i, o] ≠ 0``)."""
+    """Each observable → the set of model states it reads, from AMICI's ``dydx``.
+
+    The layout is resolved from the matrix SHAPE rather than assumed. Every other equation this
+    module reads follows AMICI's ``∂a/∂b`` → rows-are-``a`` convention (``dxdotdw`` is
+    ``nx × nw``, ``dwdx`` is ``nw × nx``), under which ``dydx`` would be ``ny × nx`` — but it was
+    indexed here as ``nx × ny``. On a model with ``nx == ny`` the two are indistinguishable and a
+    wrong guess silently transposes the couplings; otherwise it is an index error. Checking the
+    shape is exact in both cases, and keeps working if AMICI's storage order changes.
+    """
     states = [str(s) for s in de.sym("x")]
     obs = [str(o) for o in de.sym("y")]
     dydx = de.eq("dydx")
-    return {obs[o]: {states[i] for i in range(len(states)) if _nonzero(dydx, i, o)}
+    shape = (dydx.rows, dydx.cols)
+    if shape == (len(obs), len(states)):
+        def reads(o: int, i: int) -> bool:
+            return _nonzero(dydx, o, i)
+    elif shape == (len(states), len(obs)):
+        def reads(o: int, i: int) -> bool:
+            return _nonzero(dydx, i, o)
+    else:
+        raise ValueError(
+            f"dydx has shape {shape}, which matches neither (n_observables, n_states) "
+            f"{(len(obs), len(states))} nor its transpose")
+    return {obs[o]: {states[i] for i in range(len(states)) if reads(o, i)}
             for o in range(len(obs))}
 
 

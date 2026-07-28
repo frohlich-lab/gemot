@@ -12,7 +12,7 @@ by copying the REAL published tables **verbatim**:
   * conditions — verbatim, including columns that are model PARAMETERS (per-condition overrides);
     the server keeps those out of the parameter table (reconcile.condition_column_symbols), so no
     rewriting onto species is needed;
-  * an EMPTY SBML (so ``describe_problem`` reports model_initialized: false — the agent rebuilds it);
+  * an EMPTY SBML (so ``describe_problem`` reports model_authored: false — the agent rebuilds it);
   * a SUBSET ``parameters.tsv`` — only the KNOWN shipped parameters (observation scalings/noise,
     known fixed constants, estimated ICs); the agent introduces the estimated kinetics itself.
 

@@ -252,9 +252,9 @@ def _probe_returning(payload):
 
 
 @pytest.mark.asyncio
-async def test_model_committed_true_when_model_initialized():
+async def test_model_committed_true_when_model_authored():
     mod = _agent
-    assert await mod._model_committed(_probe_returning({"model_initialized": True})) is True
+    assert await mod._model_committed(_probe_returning({"model_authored": True})) is True
 
 
 @pytest.mark.asyncio
@@ -262,7 +262,7 @@ async def test_model_committed_false_when_no_model():
     """The no-op case: a run that authored nothing (the lead stopped after only delegating to
     the biocurator) must be detected so the driver can nudge + resume instead of scoring k=0."""
     mod = _agent
-    assert await mod._model_committed(_probe_returning({"model_initialized": False})) is False
+    assert await mod._model_committed(_probe_returning({"model_authored": False})) is False
 
 
 @pytest.mark.asyncio

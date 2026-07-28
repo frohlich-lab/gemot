@@ -55,7 +55,7 @@ ORCHESTRATOR_TOOLS = [
     # orient — SMALL reads only. The measured DATA itself is never read into the lead's
     # context; the analysts characterize it and hand back summaries (see run_deepagents:
     # the lead's tool list is restricted to exactly this set).
-    "describe_problem",     # model_initialized flag, sizes, current version — cheap orientation
+    "describe_problem",     # model_authored flag, sizes, current version — cheap orientation
     "get_model_structure",  # the current model (empty until built)
     "list_observables",     # what is measured (observable -> species) — needed to name species
     "list_conditions",      # per-condition inputs/doses set in the condition table (match by name)

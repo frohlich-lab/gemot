@@ -52,7 +52,7 @@ async def _current_diagnosis(call_tool) -> dict[str, Any]:
 
 
 async def _model_committed(probe) -> bool:
-    """Whether the run has authored a model (``describe_problem.model_initialized``).
+    """Whether the run has authored a model (``describe_problem.model_authored``).
 
     The driver uses this to catch a run that ended cleanly having built nothing: the lead
     emitted a no-tool turn and the deepagents graph terminated WITHOUT going through the finish
@@ -65,11 +65,14 @@ async def _model_committed(probe) -> bool:
         return True
     try:
         data = _structured(await probe("describe_problem", {}))
-        # Only a payload that EXPLICITLY reports model_initialized decides the answer; a
+        # Only a payload that EXPLICITLY reports model_authored decides the answer; a
         # malformed/partial payload (key absent) falls through to fail-open True, so an
-        # unexpected response shape never triggers a spurious no-model resume.
-        if isinstance(data, dict) and "model_initialized" in data:
-            return bool(data["model_initialized"])
+        # unexpected response shape never triggers a spurious no-model resume. NOTE this is
+        # `model_authored` (has a MECHANISM been built?), not the old `model_initialized`: a
+        # model-less problem is now seeded with a content-free initial model, so "there is a
+        # model object" is true from the start and would never flag an empty run.
+        if isinstance(data, dict) and "model_authored" in data:
+            return bool(data["model_authored"])
     except Exception:  # pragma: no cover - never let the check break the run
         pass
     return True

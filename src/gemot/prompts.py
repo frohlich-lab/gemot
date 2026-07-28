@@ -151,7 +151,7 @@ DEFAULT_SYSTEM_PROMPT = (
 DEFAULT_TASK = (
     "This PEtab problem ships WITHOUT a model — you have the measured data, the observables, "
     "and the conditions, but no reactions yet (describe_problem reports "
-    "model_initialized: false). Build a mechanistic ODE model that explains the data, working "
+    "model_authored: false). Build a mechanistic ODE model that explains the data, working "
     "the loop above until you reach the lowest-bic model whose residuals show no systematic "
     "structure, then report the model you built and its fit."
 )
@@ -365,7 +365,7 @@ def _biocurator_entity_block(names: "list[str]") -> str:
 # across four entries is four places to update and the reason several of them disagreed.
 TOOL_DESCRIPTIONS = {
     "make_changes": ("THE editor, and it always FITS. Pass `antimony` to author the WHOLE model "
-                     "(builds the first one when model_initialized: false, and re-authors an "
+                     "(builds the first one when model_authored: false, and re-authors an "
                      "existing one wholesale — every structural change is a whole-model "
                      "re-author), and/or `parameters` = [{parameter_id, lower_bound?, "
                      "upper_bound?, scale?}, ...] to set the estimation BOUNDS/SCALE (never a "
@@ -393,7 +393,7 @@ TOOL_DESCRIPTIONS = {
                         "your model must reference it BY NAME — a target the model never uses is "
                         "a rejected change, and a condition-set initial is an experimental input "
                         "to reproduce, not a value to fit."),
-    "describe_problem": "Orientation: whether a model exists (model_initialized), table/entity counts, current version, and the multistart count a fit uses by default (fit_n_starts_default). Cheap.",
+    "describe_problem": "Orientation: whether a mechanism has been authored (model_authored), table/entity counts, current version, and the multistart count a fit uses by default (fit_n_starts_default). Cheap.",
     "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law) — empty until a model is built.",
     "get_parameters": ("Parameter table, one row per parameter: id, bounds, scale, nominalValue "
                        "(the fitted value), estimate flag, plus `role` (kinetic / noise_sigma / "
@@ -407,7 +407,13 @@ TOOL_DESCRIPTIONS = {
                        "the COMPLETE set of constants you may treat as known. Do NOT assume "
                        "sigma_* or *_init are "
                        "fixed — noise sigmas are often estimated, and initial conditions are "
-                       "estimated by DEFAULT (only an IC of exactly 0 or 1 stays fixed)."),
+                       "estimated by DEFAULT (only an IC of exactly 0 or 1 stays fixed). "
+                       "`in_model: false` marks a parameter the PROBLEM ships that your model "
+                       "does not declare yet — before you author anything that is every shipped "
+                       "kinetic / initial-condition parameter. Those are yours to build on: use "
+                       "the name in your Antimony and the row comes back exactly as shown "
+                       "(bounds, scale, fixed/estimated, any prior), so a shipped constant costs "
+                       "you nothing to adopt and a shipped-FIXED one must stay declared."),
     "get_fit_summary": "Current fit metrics only (neg_log_likelihood, chi2, n_data_points) — a cheap score check.",
     "get_fit_diagnosis": ("The DETAIL behind the residual_structure verdict fit already gave you: "
                           "per-observable weighted chi2 + mean_weighted_residual (bias) + sign/runs "

@@ -44,8 +44,10 @@ petab-mcp --petab-yaml path/to/problem.yaml
 
 The canonical model is Antimony: if a `model.ant` sits next to the YAML it is the
 source of truth. A problem may also ship **without** a model (an empty SBML skeleton and
-no `model.ant`); the agent then zero-shots the whole model once from Antimony with
-`make_changes` (see below). Provenance is written to `<problem_dir>/.petab_mcp/` by default
+no `model.ant`); it is seeded with a **content-free initial model** — one species per identifier
+the fixed observable/condition tables already name, no reactions — so v0 is a valid, simulatable,
+restorable version rather than a broken empty skeleton, and `describe_problem` reports
+`model_authored: false` until the agent zero-shots the mechanism with `make_changes` (see below). Provenance is written to `<problem_dir>/.petab_mcp/` by default
 and is **durable** — restarting resumes the latest version. A ready toy problem (reversible
 conversion reaction A⇌B) lives at `tests/data/toy_v1/`.
 
@@ -88,7 +90,7 @@ Arize Phoenix tracing, judging, and how to run).
 **The editor** — `make_changes(justification, antimony?, parameters?, references?, n_starts?)` is
 the **single** tool that changes anything, and it always fits:
 - `antimony` sets the whole model from an Antimony string. It builds the first model when none is
-  initialized yet (`describe_problem` → `model_initialized: false`) and re-authors/replaces an
+  initialized yet (`describe_problem` → `model_authored: false`) and re-authors/replaces an
   existing one, so every structural change (adding or removing a reaction, changing a rate law) is
   one coherent re-author. New species/parameters + parametric ICs are reconciled automatically.
 - `parameters` batch-edits the bounds and/or scale of one or more parameters: a non-empty list of
@@ -106,8 +108,8 @@ the fit fails, the edit is **reverted** (`applied: false` + `error`) — nothing
 
 **Parameters** — `get_parameters` (read-only; values are set by the fit).
 Parameter *values* are set only by the fit; adjust the search space with `make_changes`'
-`parameters` list. Every call returns an `initial_conditions` block reporting, per species,
-whether its declared t=0 is used (fixed), fitted (estimated), or set per-condition.
+`parameters` list. `get_model_structure` carries the per-species `initial_conditions` account —
+whether each declared t=0 is used (fixed), fitted (estimated), or set per-condition.
 
 **The fit** — every `make_changes` call fits
 the free parameters (pyPESTO multistart), simulates, and snapshots a single version carrying the
@@ -216,8 +218,8 @@ your own skills; drop another skill directory into `_skills/` to extend the bund
   Two leak-free *value conventions* stay **fixed** instead: an IC of exactly `0` (an empty pool,
   fixed at 0) and an IC of exactly `1` (a unit normalization — e.g. a conserved-total set to 1 —
   fixed by value, so it names no species). To keep any other IC fixed, ship it as a fixed parameter
-  row (reconcile never re-touches existing rows). Each edit's `initial_conditions` block reports
-  each species' actual mode.
+  row (reconcile never re-touches existing rows). `get_model_structure`'s `initial_conditions`
+  block reports each species' actual mode.
 - **PubMed validation.** References are **optional** on every operation (only a non-empty
   `justification` is required); when given, they are resolved via NCBI E-utilities (no extra
   dependency). The mode governs how strictly a *supplied* reference is validated: `required`

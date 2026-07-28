@@ -35,13 +35,23 @@ def _token_accountant():
         async def on_llm_end(self, response, **kwargs):  # noqa: D401 - LangChain hook
             try:
                 found = False
+                # `generations` is List[List[Generation]]: the OUTER list is one entry per
+                # PROMPT, the inner one per candidate when n > 1. A call is a prompt, so
+                # n_calls advances once per outer entry that carried usage — not once per
+                # candidate, which counted a single n=2 response as two calls and inflated the
+                # metric the driver reads to decide whether usage was captured at all. The
+                # token sums stay per-record: those really do add up.
                 for gens in getattr(response, "generations", None) or []:
+                    counted = False
                     for gen in gens or []:
                         msg = getattr(gen, "message", None)
                         um = getattr(msg, "usage_metadata", None) if msg is not None else None
                         if not um:
                             continue
                         found = True
+                        if not counted:
+                            counted = True
+                            self.n_calls += 1
                         # Per-field coercion (not one int() over the whole record): a bad value
                         # in one field contributes 0 but does not discard the other fields, the
                         # other generations, or the llm_output fallback below.
@@ -49,7 +59,6 @@ def _token_accountant():
                         self.completion += _as_int(um.get("output_tokens"))
                         self.cache_read += _as_int(
                             (um.get("input_token_details") or {}).get("cache_read"))
-                        self.n_calls += 1
                 if not found:
                     # Older/non-usage_metadata responses carry an aggregate in llm_output.
                     tu = (getattr(response, "llm_output", None) or {}).get("token_usage") or {}
