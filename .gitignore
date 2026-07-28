@@ -44,6 +44,7 @@ slurm/logs/
 slurm/runs/
 slurm/phoenix_data/
 slurm/explorer_data/
+slurm/refit_logs/
 
 # Local Phoenix working dir for the example harness (petab_harness/paths.py) --
 # ephemeral trace data for locally-launched Phoenix apps / clients. Generated.
@@ -55,6 +56,17 @@ slurm/trace_review/provenance/
 slurm/trace_review/llm/
 slurm/trace_review/*.log
 slurm/trace_review/*.jobid
+# Ad-hoc per-investigation working sets under trace_review/. Ignore the GENERATED artifacts by
+# extension, not the directories: these dirs mix generated output with hand-written scripts
+# (refit_exp/ holds refit.py + run_refit.sh next to its refit_*.out logs), and a directory-level
+# ignore silently refuses `git add` on the scripts -- the one kind of loss git never warns about.
+slurm/trace_review/*_deepdive/*.md
+slurm/trace_review/*_deepdive/*.out
+slurm/trace_review/*_deepdive/*.json
+slurm/trace_review/*_fullsweep/*.md
+slurm/trace_review/*_fullsweep/*.out
+slurm/trace_review/*_fullsweep/*.json
+slurm/trace_review/refit_exp/*.out
 
 # Zero-shot benchmark PEtab problems are materialized from the pinned Benchmark-Models-PEtab
 # collection by `python examples/setup.py` — NOT vendored. Only reference.json (the committed

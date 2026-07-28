@@ -298,6 +298,9 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         "n_compiles": n_compiles,
         "n_fits": n_fits,
         "tool_calls": clock.calls,
+        # Rejected edits are SUCCESSFUL tool calls returning applied=false, so
+        # n_tool_errors never sees them (see _ToolClock.note_result).
+        "edit_rejects": clock.reject_summary(),
         "run_ended_at": _now_iso(),
         **diag_fields,
     }

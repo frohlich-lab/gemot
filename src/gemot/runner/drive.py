@@ -209,7 +209,7 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                     raise
                 rc = server_proc.poll() if server_proc is not None else None
                 result = _write_degraded_result(work, base_meta, scenario, _summarize_exc(exc),
-                                                server_returncode=rc)
+                                                server_returncode=rc, clock=clock)
                 exit_code = 1
                 with contextlib.suppress(Exception):
                     record_run_result(span, result)  # span still live inside the `with`

@@ -251,3 +251,26 @@ def test_scripts_only_import_names_our_packages_actually_define():
                         f"{path.relative_to(root)}:{node.lineno} -> "
                         f"{node.module} does not define {alias.name!r}")
     assert not broken, "scripts import names that no longer exist:\n  " + "\n  ".join(broken)
+
+
+def test_simulate_does_not_need_the_server_package():
+    """``simulate.py`` may import ``petab``/``amici`` — it is a simulation module — but NOT
+    ``petab_mcp``.
+
+    Its docstring promises "only ``amici`` + ``petab`` (not the petab-mcp server package), so data
+    can be regenerated from a bare simulation environment", and the ``fit_budget`` duplication above
+    is justified by that same promise. Nothing checked it, so a change that replaced simulate's
+    self-contained build-env helper with an import of ``petab_mcp.engine`` broke the contract while
+    every test stayed green. This pins the one module the ``_HEAVY`` list cannot cover, because
+    simulate legitimately imports petab at module scope and so can never be "light" wholesale.
+    """
+    probe = (
+        "import sys\n"
+        "from petab_harness import simulate\n"
+        "simulate._ensure_swig_on_path()\n"   # the path that regressed: exercise it, not just import
+        "leaked = [m for m in sys.modules if m.split('.')[0] == 'petab_mcp']\n"
+        "sys.exit('leaked petab_mcp: ' + ', '.join(sorted(leaked)[:3]) if leaked else 0)\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+    assert proc.returncode == 0, (
+        "petab_harness.simulate must not pull in the server package:\n" + proc.stderr)

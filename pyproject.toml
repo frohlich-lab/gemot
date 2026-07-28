@@ -24,7 +24,11 @@ classifiers = [
 # run automatically on every model commit, so the server assumes they are present.
 # Installing therefore needs a C++ toolchain, CMake/Ninja, and swig (see README).
 dependencies = [
-    "mcp>=1.2",
+    # Upper-bounded: mcp 2.0.0 moved FastMCP OUT of the SDK, so `from mcp.server.fastmcp import
+    # FastMCP` (server.py) is gone there and CI died at COLLECTION -- every test module importing
+    # create_server errored before a single test ran. The bound is not a preference: server.py is
+    # built on the 1.x FastMCP API, so 2.x needs a port, not a version bump.
+    "mcp>=1.2,<2",
     "petab>=0.5",
     "python-libsbml>=5.19",
     "antimony>=2.12",

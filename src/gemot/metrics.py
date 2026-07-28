@@ -36,6 +36,12 @@ _RESULT_FIELDS = (
     "chi2", "chi2_dof", "chi2_gof_pvalue",
     "k", "n", "bic", "bic_reference", "delta_bic", "bic_threshold",
     "head_version", "n_errors", "n_tool_errors", "tool_calls",
+    # Edits the server REFUSED. Flat columns, not the nested `edit_rejects` dict from result.json:
+    # DictWriter has no representation for a dict (it would stringify), and a name missing from
+    # this tuple is dropped SILENTLY by extrasaction="ignore" below — which is exactly how this
+    # metric was invisible in the history despite being written to every result.json.
+    "edits_attempted", "edits_rejected", "edits_fit_reverted", "edit_reject_rate",
+    "edit_reject_top_cause",
     "wall_seconds", "compute_seconds", "llm_seconds",
     "compile_seconds", "fit_seconds", "n_compiles", "n_fits",
     "git_sha", "recursion_limit", "n_starts", "temperature",
@@ -196,6 +202,26 @@ def build_row(result: dict[str, Any], *, phoenix_base_url: str | None = None) ->
     return row
 
 
+def _flatten_edit_rejects(row: dict) -> dict:
+    """Expand result.json's nested ``edit_rejects`` into the flat history columns.
+
+    Kept as a transform at write time rather than changing the result.json shape: the nested form
+    is the readable one for a single run, and the CSV needs columns you can group a sweep by.
+    A row without the key passes through untouched (older runs, and aborts that predate a session).
+    """
+    rejects = row.get("edit_rejects")
+    if not isinstance(rejects, dict):
+        return row
+    causes = rejects.get("by_cause") or {}
+    top = max(causes, key=causes.get) if causes else None
+    return {**row,
+            "edits_attempted": rejects.get("attempted"),
+            "edits_rejected": rejects.get("rejected"),
+            "edits_fit_reverted": rejects.get("fit_reverted"),
+            "edit_reject_rate": rejects.get("reject_rate"),
+            "edit_reject_top_cause": top}
+
+
 def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HISTORY) -> Path:
     """Append rows to the append-only history CSV (writing the header if it is new)."""
     history_path = Path(history_path)
@@ -216,6 +242,7 @@ def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HIST
         if is_new:
             writer.writeheader()
         for row in rows:
+            row = _flatten_edit_rejects(row)
             writer.writerow({k: row.get(k) for k in fields})
     return history_path
 
