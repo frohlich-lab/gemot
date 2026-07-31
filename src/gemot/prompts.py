@@ -107,12 +107,17 @@ DEFAULT_SYSTEM_PROMPT = (
     "inflated noise, and the finish gate refuses a run resting on one. Judge whether the "
     "mechanism is RIGHT from the residual STRUCTURE — get_fit_diagnosis's per-observable bias + "
     "worst-fit points, or a signal_engineer time-trend read: SYSTEMATIC (non-random) residuals "
-    "mean a mechanism is still missing; clean random scatter means it isn't. Set each species' "
-    "initial condition to its "
-    "observed t=0 value; if you parametrise it (`S = S_init; S_init = <t0>`) the server keeps "
-    "YOUR parameter and value. Whether an initial condition is then held FIXED at your value or "
-    "ESTIMATED from the data is problem-dependent (check get_parameters); either way the BIC "
-    "reference treats its ICs the same, so an IC is never a free parameter you are gaming.\n"
+    "mean a mechanism is still missing; clean random scatter means it isn't. INITIAL CONDITIONS "
+    "— the server AUTO-GENERATES an `<species>_init` parameter for EVERY species you declare, "
+    "ESTIMATED by default, whether or not you write one: every species you add silently adds a "
+    "free IC parameter to k. The only initials it keeps FIXED are a value of exactly 0 (an empty "
+    "pool) or exactly 1 (a unit normalization); any other declared initial is turned into an "
+    "estimated `<species>_init`. So an estimated IC the DATA CANNOT CONSTRAIN — a starting state "
+    "the measurement does not depend on — is a non-identifiable free parameter inflating k for no "
+    "gain in fit (and the finish gate REFUSES a rank-deficient fit on exactly these). It is on YOU "
+    "to decide which initials the experiment actually pins: set a known/irrelevant initial to its "
+    "value (0 or 1 are held fixed) so the server does not estimate it, and check get_parameters to "
+    "see which `<species>_init` are still free.\n"
     "PARAMETER MACHINERY — the one piece of it you must not get wrong: every rate-law parameter you declare is ESTIMATED, and the fit is a MULTISTART over the parameter's BOUNDS — it does NOT use the number you assign in Antimony, which is only a nominal placeholder overwritten by the fitted value. So re-declaring a parameter with a different VALUE changes nothing; to constrain one, change its BOUNDS/SCALE with `make_changes`. Everything else about parameters — which constants you may hold fixed, why a literal or an ultra-narrow box is not a way to fix one, and what to do about a parameter that keeps re-pinning — is in the `petab-model-building` skill, which you have READ (step 0) and which the server ENFORCES."
     "ADEQUACY BEFORE PARSIMONY — the trade-off rule. Among models that ALL fit adequately, "
     "prefer the lower bic and drop parameters that don't earn their keep. But NEVER trade an "
@@ -586,6 +591,26 @@ FINISH_REFUSED_SIGMA_TMPL = (
 
 FINISH_SIGMA_FALLBACK_ADVICE = "the estimated noise sigma is implausible."
 
+# The PARSIMONY / identifiability gate. `directions` renders the actual near-flat FIM
+# eigen-directions as `id·weight` groups (see finish_gate._render_flat_directions), so the agent
+# sees WHICH parameters trade off TOGETHER — the collinear structure, not just a list of names —
+# and can pick the right simplification. The GENERAL fix menu is baked in (no dynamic advice source
+# exists for parsimony, unlike the sigma gate's server-computed advice); the SPECIFIC fix — which
+# term to drop, which value the experiment sets — is the agent's to reason out, never shipped here.
+FINISH_REFUSED_PARSIMONY_TMPL = (
+    "FINISH REFUSED — this fit's bic rests on parameters the data cannot "
+    "constrain. The Fisher-information matrix at the optimum is RANK-DEFICIENT: "
+    "the near-flat eigen-directions below are parameter combinations that trade "
+    "off freely with no effect on the fit (each term as id·weight; parameters "
+    "sharing a direction move together). {directions}. Estimating a combination "
+    "the data cannot pin inflates k for no gain, and a bic resting on "
+    "non-identifiable parameters is not accepted. Simplify the model FORM and "
+    "refit — remove the term, take its limiting (irreversible/instantaneous) form, "
+    "merge a collinear pair into one parameter, or fix a value the experiment sets "
+    "— do not just re-fit the same structure. (get_identifiability has the full "
+    "flat_directions and ranked candidates.)"
+)
+
 FINISH_ARMED_TMPL = (
     "FINISH ARMED — review before confirming. Current fit: bic={bic:.6g}, "
     "neg_log_likelihood={nll:.6g}. Residual structure: {struct}{worst_line} "
@@ -724,6 +749,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "gave_up_no_fit": FINISH_GAVE_UP_NO_FIT_TMPL,
             "refused_sigma": FINISH_REFUSED_SIGMA_TMPL,
             "sigma_fallback_advice": FINISH_SIGMA_FALLBACK_ADVICE,
+            "refused_parsimony": FINISH_REFUSED_PARSIMONY_TMPL,
             "armed": FINISH_ARMED_TMPL,
             "armed_worst": FINISH_ARMED_WORST_TMPL,
             "struct_unavailable": FINISH_STRUCT_UNAVAILABLE,

@@ -51,6 +51,25 @@ async def _current_diagnosis(call_tool) -> dict[str, Any]:
     return {}
 
 
+async def _current_identifiability(call_tool) -> dict[str, Any]:
+    """The current fit's parameter-identifiability diagnosis (``get_identifiability``), or {} if
+    unreadable. ``call_tool`` is an ``await call_tool(name, args)`` handle (the finish gate passes
+    the un-timed probe so this internal poll doesn't inflate the tool clock / tool_calls metric).
+
+    Used by the finish gate's PARSIMONY branch to catch a finish whose bic rests on parameters the
+    data cannot constrain (a flat FIM direction / rank-deficient FIM inflating k — the sigma gate
+    is structurally blind to this). FAILS OPEN, like ``_current_fit``/``_current_diagnosis``:
+    returns {} on any error or when the diagnosis is unavailable, so the gate never refuses a
+    finish merely because identifiability could not be computed."""
+    try:
+        data = _structured(await call_tool("get_identifiability", {}))
+        if isinstance(data, dict):
+            return data
+    except Exception:  # pragma: no cover - never let the check break the run
+        pass
+    return {}
+
+
 async def _model_committed(probe) -> bool:
     """Whether the run has authored a model (``describe_problem.model_authored``).
 

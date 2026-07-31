@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 
 from .. import prompts
-from .probe import _current_diagnosis, _current_fit
+from .probe import _current_diagnosis, _current_fit, _current_identifiability
 
 # After this many CONSECUTIVE finish attempts with no valid fit, the gate gives up: it flags the
 # run (finish_state["gave_up"]) so the driver ends it promptly as no-model-built, rather than
@@ -29,6 +29,47 @@ _MAX_NO_FIT_FINISH_ATTEMPTS = 5
 # it relents (lets the finish through) so a model that genuinely can't reach a plausible sigma still
 # terminates cleanly at its honest — losing — score, instead of spamming finish to the step limit.
 _MAX_SIGMA_FINISH_REFUSALS = 3
+
+# A finish on an OVER-parameterised model — one whose bic rests on a parameter combination the data
+# cannot constrain, so the FIM at the optimum is RANK-DEFICIENT (rank < n_estimated) — is REFUSED
+# with GENERAL identifiability advice, so the agent doesn't submit a good-looking bic inflated by
+# free parameters the experiment can't pin (the judge fails those, and bic should have penalised
+# them). This is the sigma gate's structural blind spot: extra free parameters keep the per-point
+# fit — and thus the ESTIMATED sigma — tight, so the sigma gate passes while k is padded (the
+# issue-driving case: a steady-state fit that freely estimated all 16 initial conditions,
+# non-identifiable because equilibrium is IC-independent, finished at a great BIC with the sigma
+# gate none the wiser — and a rank-deficient FIM). The gate keys on rank deficiency ALONE, NOT on
+# the mere presence of a near-flat eigen-direction: calibration across the reference structures
+# showed the latter over-refuses legitimate, identifiable fits (a parameter at a bound, or a
+# correlated-but-full-rank group, routinely produces a flat_direction while the FIM stays full
+# rank). Bounded exactly like the sigma gate: after this many consecutive refusals it RELENTS, so a
+# model that genuinely cannot be made identifiable still terminates at its honest score instead of
+# spamming finish. An identifiable (full-rank) fit RESETS the counter. FAILS OPEN — an unavailable
+# identifiability diagnosis (no FIM, or the probe returned {}) never refuses a finish. The advice is
+# deliberately GENERAL (name the flat-direction params, point at the simplification menu); the
+# specific fix is the agent's to reason out, not the gate's to hand over.
+_MAX_PARSIMONY_FINISH_REFUSALS = 3
+
+
+def _render_flat_directions(flat_directions, *, max_dirs: int = 4, max_parts: int = 4) -> str:
+    """The FIM's near-flat (non-identifiable) eigen-directions rendered for the refusal text — as
+    `id·weight` groups, one bracket per direction, so the agent sees WHICH parameters trade off
+    TOGETHER (the collinear structure), not just a flattened list of names. A direction dominated
+    by a single high-weight id is one unconstrained parameter; a direction spreading weight across
+    several is a collinear group to merge. Bounded: at most ``max_dirs`` directions (the smallest
+    eigenvalues, which get_identifiability already sorts first) and ``max_parts`` participants each,
+    with a trailing marker when more were dropped — a wholesale-unidentifiable model (every initial
+    condition free) shows a handful rather than a wall."""
+    groups: list[str] = []
+    for d in (flat_directions or [])[:max_dirs]:
+        terms = [f"{p.get('id')}·{p.get('weight')}"
+                 for p in (d.get("participants") or [])[:max_parts] if p.get("id")]
+        if terms:
+            groups.append("[" + ", ".join(terms) + "]")
+    if not groups:
+        # rank_deficient can be flagged with no bounded flat-direction participants to name.
+        return "(see get_identifiability for the flat directions)"
+    return "; ".join(groups) + ("; …" if len(flat_directions) > max_dirs else "")
 
 
 def _decision_tool(session, finish_state=None, probe=None):
@@ -80,7 +121,8 @@ def _decision_tool(session, finish_state=None, probe=None):
     # `None != None` would then skip arming and confirm on the first call — bypassing the gate on
     # the common rollback→finish path. bic+nll identify the scored fit whether or not a version
     # is attached.
-    state = {"armed_token": None, "no_fit_refusals": 0, "sigma_refusals": 0}
+    state = {"armed_token": None, "no_fit_refusals": 0, "sigma_refusals": 0,
+             "parsimony_refusals": 0}
 
     def _finite(x):
         return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
@@ -153,6 +195,47 @@ def _decision_tool(session, finish_state=None, probe=None):
                       f"{state['sigma_refusals']} refusals — allowing finish at its honest score")
             else:
                 state["sigma_refusals"] = 0
+            # HARD STOP on an OVER-parameterised model: a finish whose good-looking bic rests on
+            # parameters the data cannot constrain — a RANK-DEFICIENT Fisher-information matrix (a
+            # non-identifiable parameter COMBINATION get_identifiability surfaces as a near-flat
+            # eigen-direction). The sigma gate above is structurally blind to this: extra free parameters
+            # keep the per-point fit — and the estimated sigma — tight, so sigma passes while k is
+            # padded. Refuse with GENERAL identifiability advice (name the flat-direction params;
+            # do NOT hand over the specific fix — the agent must reason the simplification itself),
+            # bounded like the sigma gate so a model that genuinely can't be made identifiable still
+            # terminates at its honest score. An identifiable fit resets the counter. FAIL OPEN: an
+            # unavailable diagnosis (available False, no fim, or the probe returned {}) never
+            # refuses — identifiability is best-effort, not a gate a finish can be held hostage to
+            # when it can't be computed. Costs a FIM per finish attempt (a few per run) by design.
+            ident = await _current_identifiability(reader)
+            fim_info = ident.get("fim")
+            if ident.get("available") and isinstance(fim_info, dict):
+                # Gate on RANK DEFICIENCY only (rank < n_estimated), NOT on the mere presence of a
+                # flat_direction. Calibration across the reference structures showed the latter
+                # over-refuses: a legitimate, identifiable fit routinely carries a flat_direction
+                # from ill-conditioning — a parameter pinned at a bound (zero-curvature axis) or a
+                # merely correlated group — while its FIM stays full rank (enzyme_kinetics: rank
+                # 5/5, two flat directions, correct model). A rank-deficient FIM is the structural
+                # signal: a parameter combination the data cannot constrain AT ALL (blasi's 16 free
+                # initial conditions on steady-state data, where equilibrium is IC-independent, drop
+                # the rank exactly). flat_directions is still used below — to NAME the offending
+                # params — but only rank deficiency triggers the refusal.
+                rank_deficient = bool(fim_info.get("rank_deficient"))
+                flat_dirs = ident.get("flat_directions") or []
+                if rank_deficient:
+                    if state["parsimony_refusals"] < _MAX_PARSIMONY_FINISH_REFUSALS:
+                        state["armed_token"] = None
+                        state["parsimony_refusals"] += 1
+                        directions = _render_flat_directions(flat_dirs)
+                        print(f"[finish BLOCKED {state['parsimony_refusals']}/"
+                              f"{_MAX_PARSIMONY_FINISH_REFUSALS}] rank-deficient FIM, flat "
+                              f"directions {directions} — refusing finish on an over-parameterised model")
+                        return prompts.FINISH_REFUSED_PARSIMONY_TMPL.format(directions=directions)
+                    print(f"[finish RELENTED] parameters still non-identifiable after "
+                          f"{state['parsimony_refusals']} refusals — allowing finish at its "
+                          "honest score")
+                else:
+                    state["parsimony_refusals"] = 0
             # Valid, fitted model. First finish call ARMS: show the residual diagnosis and
             # require a confirming second finish. This forces the finish to be a considered call
             # on the fit's residual STRUCTURE (sign/runs tests — the signal that survives

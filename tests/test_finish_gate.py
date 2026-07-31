@@ -23,21 +23,46 @@ class _FakeResult:
         self.structuredContent = payload
 
 
-class _FakeSession:
-    """Serves canned get_fit_summary / get_fit_diagnosis payloads to the decision tool."""
+# An identifiability payload the PARSIMONY gate reads as CLEAN (identifiable): available, a full-
+# rank FIM, no flat directions. The default so existing tests exercise the gate's fail-through,
+# not its refusal. `_ident(...)` builds the non-identifiable variants the parsimony tests need.
+_IDENTIFIABLE = {"available": True, "method": "fim+multistart",
+                 "fim": {"rank": 3, "n_estimated": 3, "condition": 12.0,
+                         "rank_deficient": False},
+                 "flat_directions": []}
 
-    def __init__(self, fit_summary, diagnosis=None):
+
+def _ident(*, flat_directions=None, rank_deficient=False, available=True, fim=True):
+    """A get_identifiability payload for the parsimony gate. ``fim=False`` / ``available=False``
+    build the FAIL-OPEN shapes (no FIM was computable)."""
+    return {
+        "available": available,
+        "method": "fim+multistart" if fim else "multistart",
+        "fim": ({"rank": 2, "n_estimated": 3, "condition": 1e12,
+                 "rank_deficient": rank_deficient} if fim else None),
+        "flat_directions": flat_directions or [],
+    }
+
+
+class _FakeSession:
+    """Serves canned get_fit_summary / get_fit_diagnosis / get_identifiability payloads."""
+
+    def __init__(self, fit_summary, diagnosis=None, identifiability=None):
         self.fit_summary = fit_summary
         self.diagnosis = diagnosis or {"residual_structure": {"summary": "looks fine",
                                                               "flagged_observables": [],
                                                               "low_power": False},
                                        "per_observable": []}
+        # Default CLEAN so a test that doesn't care about parsimony is unaffected by the gate.
+        self.identifiability = identifiability if identifiability is not None else _IDENTIFIABLE
 
     async def call_tool(self, name, args):
         if name == "get_fit_summary":
             return _FakeResult(self.fit_summary)
         if name == "get_fit_diagnosis":
             return _FakeResult(self.diagnosis)
+        if name == "get_identifiability":
+            return _FakeResult(self.identifiability)
         raise AssertionError(f"unexpected tool {name}")
 
 
@@ -45,8 +70,9 @@ async def _decide(tool, action):
     return await tool.ainvoke({"action": action, "rationale": "test"})
 
 
-def _tool_for(mod, fit_summary, diagnosis=None, finish_state=None):
-    return mod._decision_tool(_FakeSession(fit_summary, diagnosis), finish_state)
+def _tool_for(mod, fit_summary, diagnosis=None, finish_state=None, identifiability=None):
+    return mod._decision_tool(
+        _FakeSession(fit_summary, diagnosis, identifiability), finish_state)
 
 
 @pytest.mark.asyncio
@@ -231,6 +257,110 @@ async def test_plausible_sigma_finish_is_unaffected():
     tool = _tool_for(mod, _fit(noise_sigma_inflated=False, noise_sigma_collapsed=False))
     assert "FINISH ARMED" in await _decide(tool, "finish")
     assert (await _decide(tool, "finish")).startswith("Recorded: finish")
+
+
+# --- the PARSIMONY / identifiability gate ----------------------------------------------------
+_FLAT_16_ICS = _ident(
+    rank_deficient=True,
+    flat_directions=[{"eigenvalue": 1e-9, "rel": 1e-8,
+                      "participants": [{"id": f"ic_{i}", "weight": 0.9} for i in range(4)]}
+                     for _ in range(2)],
+)
+
+
+@pytest.mark.asyncio
+async def test_finish_refused_on_non_identifiable_then_relents():
+    """A finish on a fit whose FIM is rank-deficient / has flat directions (over-parameterised,
+    the parameters unconstrained by the data) is REFUSED with GENERAL simplification advice — but
+    bounded: after _MAX_PARSIMONY_FINISH_REFUSALS it relents (arms) so a model that genuinely
+    can't be made identifiable still terminates at its honest score. Mirrors the sigma gate."""
+    mod = _agent
+    tool = _tool_for(mod, _fit(), identifiability=_FLAT_16_ICS)
+    for _ in range(mod._MAX_PARSIMONY_FINISH_REFUSALS):
+        out = await _decide(tool, "finish")
+        assert "FINISH REFUSED" in out and "cannot constrain" in out
+        assert "rank-deficient" in out.lower()
+        # the flat directions are rendered as id·weight groups, not a flat name list
+        assert "ic_0·0.9" in out
+        assert "simplify" in out.lower()                          # GENERAL fix menu, not the answer
+        assert "initial condition" not in out.lower()             # never ships the specific fix
+        assert not out.startswith("Recorded: finish")
+    # Bounded: the next attempt relents and ARMS instead of refusing forever.
+    assert "FINISH ARMED" in await _decide(tool, "finish")
+
+
+@pytest.mark.asyncio
+async def test_rank_deficient_alone_refuses_even_without_named_flat_directions():
+    """`rank_deficient` True is sufficient to refuse; with no bounded flat-direction participants
+    to name, the refusal falls back to a generic phrasing rather than crashing."""
+    mod = _agent
+    tool = _tool_for(mod, _fit(), identifiability=_ident(rank_deficient=True, flat_directions=[]))
+    out = await _decide(tool, "finish")
+    assert "FINISH REFUSED" in out and "rank-deficient" in out.lower()
+    assert "get_identifiability" in out                       # points to the full diagnosis
+
+
+@pytest.mark.asyncio
+async def test_flat_direction_without_rank_deficiency_does_NOT_refuse():
+    """The calibration guard against over-refusal. A full-rank FIM that merely carries a near-flat
+    eigen-direction (ill-conditioning: a parameter at a bound, or a correlated-but-identifiable
+    group) is NOT refused — this is the enzyme_kinetics reference structure (rank 5/5, two flat
+    directions, correct model). Only RANK DEFICIENCY triggers the gate; the finish arms normally."""
+    mod = _agent
+    ident = _ident(rank_deficient=False,
+                   flat_directions=[{"eigenvalue": 1e-7, "rel": 1e-7,
+                                     "participants": [{"id": "Km", "weight": 0.6},
+                                                      {"id": "Ki", "weight": 0.6},
+                                                      {"id": "Vmax", "weight": 0.5}]}])
+    tool = _tool_for(mod, _fit(), identifiability=ident)
+    assert "FINISH ARMED" in await _decide(tool, "finish")
+    assert (await _decide(tool, "finish")).startswith("Recorded: finish")
+
+
+@pytest.mark.asyncio
+async def test_parsimony_gate_fails_open_when_identifiability_unavailable():
+    """FAIL OPEN: an unavailable diagnosis (available False, no FIM, or the probe returning {})
+    must NOT refuse — identifiability is best-effort and cannot hold a finish hostage. The finish
+    arms/confirms normally."""
+    mod = _agent
+    for ident in (_ident(available=False), _ident(fim=False), {}):
+        tool = _tool_for(mod, _fit(), identifiability=ident)
+        assert "FINISH ARMED" in await _decide(tool, "finish")
+        assert (await _decide(tool, "finish")).startswith("Recorded: finish")
+
+
+@pytest.mark.asyncio
+async def test_identifiable_fit_resets_the_parsimony_counter():
+    """An identifiable fit RESETS the refusal counter, so a real simplification immediately clears
+    the block (arms normally) rather than staying penalised — and a clean payload arms/confirms."""
+    mod = _agent
+    session = _FakeSession(_fit(), identifiability=_FLAT_16_ICS)
+    tool = mod._decision_tool(session)
+    assert "FINISH REFUSED" in await _decide(tool, "finish")     # refusal #1
+    # Agent simplifies the FORM -> FIM now full-rank, no flat directions -> counter resets, arms.
+    session.identifiability = _IDENTIFIABLE
+    assert "FINISH ARMED" in await _decide(tool, "finish")
+    assert (await _decide(tool, "finish")).startswith("Recorded: finish")
+
+
+@pytest.mark.asyncio
+async def test_clean_identifiable_finish_is_unaffected():
+    """A fit with a full-rank FIM and no flat directions arms/confirms exactly as before."""
+    mod = _agent
+    tool = _tool_for(mod, _fit(), identifiability=_IDENTIFIABLE)
+    assert "FINISH ARMED" in await _decide(tool, "finish")
+    assert (await _decide(tool, "finish")).startswith("Recorded: finish")
+
+
+@pytest.mark.asyncio
+async def test_parsimony_and_sigma_gates_compose():
+    """The sigma gate runs FIRST: an implausible sigma is refused before the (expensive) FIM probe
+    is even consulted, so a model with both problems is not double-charged in one call."""
+    mod = _agent
+    tool = _tool_for(mod, _fit(noise_sigma_inflated=True, noise_sigma_advice="fix the mechanism."),
+                     identifiability=_FLAT_16_ICS)
+    out = await _decide(tool, "finish")
+    assert "FINISH REFUSED" in out and "implausible noise model" in out   # sigma wins this call
 
 
 @pytest.mark.asyncio
