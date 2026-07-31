@@ -24,11 +24,21 @@ classifiers = [
 # run automatically on every model commit, so the server assumes they are present.
 # Installing therefore needs a C++ toolchain, CMake/Ninja, and swig (see README).
 dependencies = [
-    # Upper-bounded: mcp 2.0.0 moved FastMCP OUT of the SDK, so `from mcp.server.fastmcp import
-    # FastMCP` (server.py) is gone there and CI died at COLLECTION -- every test module importing
-    # create_server errored before a single test ran. The bound is not a preference: server.py is
-    # built on the 1.x FastMCP API, so 2.x needs a port, not a version bump.
-    "mcp>=1.2,<2",
+    # The MCP server framework. server.py builds on the STANDALONE `fastmcp` package -- the
+    # maintained continuation of the FastMCP that once shipped inside the `mcp` SDK and was
+    # removed there in mcp 2.0.0. `from fastmcp import FastMCP` replaces the old
+    # `from mcp.server.fastmcp import FastMCP`; the tool/resource decorators, the
+    # `FastMCP(name, instructions=...)` constructor, and `run(transport=...)` are unchanged.
+    # fastmcp 3.x pulls a compatible `mcp` (1.x) in transitively, which is what the harness's MCP
+    # *client* code (runner/*, bio_sessions) imports -- so no separate `mcp` pin is needed here.
+    # Held below 4 deliberately: fastmcp 4.x pulls in the mcp 2.0 SDK, and the AGENT STACK cannot
+    # run on mcp 2.0 yet -- `langchain-mcp-adapters` (the load_mcp_tools bridge the deepagents
+    # driver needs) hard-imports the `mcp.server.fastmcp` module that mcp 2.0 deleted, in every
+    # released version (through 0.3.1), so merely importing it crashes under mcp 2.0. mcp 2.0 also
+    # reworks the client API the harness uses directly (streamablehttp_client -> streamable_http_client
+    # with a new signature; CallToolResult/Tool fields went snake_case). Revisit once
+    # langchain-mcp-adapters ships mcp 2.0 support.
+    "fastmcp>=3,<4",
     "petab>=0.5",
     "python-libsbml>=5.19",
     "antimony>=2.12",
@@ -61,10 +71,12 @@ dev = ["pytest>=7", "pytest-asyncio>=0.23", "petab-mcp[agent]"]
 # harness the test suite exercises. Split out from `harness` so `dev` can depend on exactly this
 # much, and so the version pins have ONE home.
 agent = [
-    # deepagents 0.6.12 requires the langchain 1.x line (langchain-core>=1.4.8), so
-    # langchain-openai must also be on 1.x -- the old 0.3.0 pin caps langchain-core at <0.4
-    # and makes the set unresolvable / import-broken (langgraph 1.x expects langchain-core 1.x).
-    "deepagents==0.6.12",
+    # deepagents 0.7.x runs on the langchain 1.x line (langchain-core 1.5, langgraph 1.2), so
+    # langchain-openai must also be on 1.x. create_deep_agent still exposes the
+    # `system_prompt` / `subagents` / `middleware` / `checkpointer` kwargs the driver adapts to
+    # (see agent/driver.py), and the SubAgent spec + HarnessProfile containment APIs
+    # (agent/subagents.py) are unchanged -- so this is a pin bump, not a port.
+    "deepagents==0.7.1",
     # The MCP<->langchain bridge (load_mcp_tools). Not a dependency of either package above, so
     # it has to be named: tests/test_run_loop_no_model.py's guard requires it, and without it
     # that file -- the only coverage of run_deepagents' run loop -- skips in CI too.
@@ -86,10 +98,10 @@ harness = [
     # Traces every LLM + MCP tool call the agent makes as OpenTelemetry spans viewable in the
     # Phoenix UI. arize-phoenix-otel + the LangChain instrumentor EXPORT the spans; the full
     # `arize-phoenix` package provides the local in-process UI the runner launches when no
-    # PHOENIX_COLLECTOR_ENDPOINT is set, and >=18 provides the run_experiment / Datasets /
+    # PHOENIX_COLLECTOR_ENDPOINT is set, and >=19 provides the run_experiment / Datasets /
     # Prompt-registry API that examples/run_experiments.py uses.
-    "arize-phoenix>=18",
-    "arize-phoenix-otel>=0.6",
+    "arize-phoenix>=19",
+    "arize-phoenix-otel>=0.16",
     "openinference-instrumentation-langchain>=0.1",
     # Weights & Biases metrics logging for the model x temperature sweep (opt-in via run.py
     # --wandb). Cluster-friendly alternative analysis UI to Phoenix Experiments; logs one
