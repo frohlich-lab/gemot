@@ -40,7 +40,7 @@ from .circuit_breaker import (
     _wrap_tools_with_circuit_breaker,
 )
 from .finish_gate import _decision_tool
-from .guards import _task_arg_guard, _tool_dispatch_guard
+from .guards import _empty_report_guard, _task_arg_guard, _tool_dispatch_guard
 from .literature import _wrap_literature_recorder
 from .probe import _model_committed, _structured
 from .subagents import (
@@ -130,9 +130,10 @@ async def run_deepagents(
 
     The model is served by OpenRouter via its OpenAI-compatible API (``base_url`` +
     ``api_key``). Returns ``{"stop_reason": ..., "n_tool_errors": ..., "disabled_tools": ...,
-    **guard_stats}`` — the stop reason, the circuit breaker's error tallies, and the
-    tool-dispatch guard's counters (``tools_executed``, ``dropped_dup_tool_calls``,
-    ``idle_nudges``, ``gave_up_no_tools``); the caller reads ``stop_reason`` and may ignore the
+    **guard_stats}`` — the stop reason, the circuit breaker's error tallies, and the guard
+    counters (``tools_executed``, ``dropped_dup_tool_calls``, ``idle_nudges``, ``gave_up_no_tools``,
+    and the empty-report guard's ``empty_subagent_reports`` / ``empty_subagent_retries`` /
+    ``empty_subagent_markers``); the caller reads ``stop_reason`` and may ignore the
     rest. The orchestrator's messages, its ``task`` delegations, the analysts' private tool
     calls, and token usage are recorded by Phoenix tracing (set up by the runner), so this
     function just drives the loop to completion.
@@ -326,6 +327,8 @@ async def run_deepagents(
     guard_stats: dict[str, Any] = {"tools_executed": 0, "dropped_dup_tool_calls": 0,
                                    "idle_nudges": 0, "gave_up_no_tools": False,
                                    "unexpected_task_kwargs": [], "task_arg_rejections": 0,
+                                   "empty_subagent_reports": 0, "empty_subagent_retries": 0,
+                                   "empty_subagent_markers": 0,
                                    "subagent_names": [], "general_purpose_subagent": None}
     guard_installed = "middleware" in params
     if guard_installed:
@@ -335,7 +338,11 @@ async def run_deepagents(
             # tool-call wrapper) so a REJECTED `task` call short-circuits before the dispatch guard
             # counts it — a bounced call never dispatched a subagent, so it must not inflate
             # tools_executed (which gates the no_tools_executed relabel / idle-nudge logic).
+            # _empty_report_guard is placed INNERMOST (last) so its ONE-shot re-dispatch of a
+            # subagent that returned "" hits the real tool directly, without re-entering
+            # _tool_dispatch_guard and double-counting tools_executed for a single `task` call.
             _task_arg_guard(guard_stats), _tool_dispatch_guard(guard_stats),
+            _empty_report_guard(guard_stats),
         ]
     else:  # pragma: no cover - guards against a deepagents API drift
         print("[agent] WARNING: installed deepagents has no `middleware` parameter; "

@@ -1,14 +1,18 @@
 """Lead-only middleware that keeps the agent loop honest.
 
-Two guards, both operating on the tool calls the model proposes rather than on their results
-(that is the circuit breaker's job in :mod:`.circuit_breaker`):
+Three guards:
 
 * the **tool-dispatch guard** collapses duplicate calls within a batch and pushes back on
   no-tool turns, so a run cannot silently end having executed nothing;
 * the **task-arg guard** rejects a ``task`` call carrying kwargs the deepagents tool would
-  silently drop, so a subagent is never dispatched on truncated input.
+  silently drop, so a subagent is never dispatched on truncated input;
+* the **empty-report guard** catches a ``task`` subagent that returns an empty/whitespace report
+  (its final completion was empty), re-dispatching it once and then marking the loss visibly, so
+  the lead is never silently handed ``""`` in place of an analyst's work.
 
-Both mutate a caller-owned ``stats`` dict the driver reads after the run.
+The first two operate on the tool calls the model PROPOSES; the empty-report guard operates on the
+``task`` RESULT (repeated *tool errors* remain the circuit breaker's job in :mod:`.circuit_breaker`).
+All three mutate a caller-owned ``stats`` dict the driver reads after the run.
 """
 
 from __future__ import annotations
@@ -192,3 +196,141 @@ def _task_arg_guard(stats: dict[str, Any], *, max_rejections: int = _MAX_TASK_AR
             return rejection if rejection is not None else await handler(request)
 
     return _TaskArgGuard()
+
+
+# --- empty-report guard: don't hand the lead a subagent's "" as if it were a report ------------
+# A subagent's whole output to the lead is the deepagents `task` tool's ToolMessage, whose content
+# is the subagent's LAST non-empty assistant text. When a subagent's final turn is an empty
+# completion (finish_reason=stop, no content) with no earlier turn carrying text either — seen live
+# on a blasi run where signal_engineer did 27 tool-calling turns of residual analysis, then stopped
+# with empty content (len 0) — that content is "". deepagents forwards the "" and the lead silently
+# receives nothing: the whole subagent run is wasted, and a "" may read to the lead as "the analyst
+# found nothing to report". It is intermittent — the same analyst returned full reports at other
+# steps — so this cannot be fixed in the persona; it needs a guard on the RETURN. On a blank `task`
+# return this middleware re-dispatches the subagent ONCE with a corrective nudge (the deepagents
+# `execute` handler is documented as re-invokable for exactly this retry pattern); if the retry is
+# ALSO blank it substitutes a visible marker, so the loss is legible rather than a silent "".
+_MAX_EMPTY_REPORT_RETRIES = 1   # re-dispatch a subagent that returned an empty report at most once
+
+
+def _report_text(content: Any) -> str:
+    """A ToolMessage's ``content`` flattened to plain text. Content is normally a ``str``, but
+    langchain also permits a list of blocks (a bare ``str`` or a ``{"type": "text", "text": ...}``
+    dict); concatenate the text of those. Pure — unit-testable without langchain."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text") or ""))
+        return "".join(parts)
+    return str(content)
+
+
+def _is_blank_report(content: Any) -> bool:
+    """True iff a subagent's returned report is empty or whitespace-only (see the guard above).
+    Pure — unit-testable without langchain, like :func:`_unexpected_task_kwargs`."""
+    return not _report_text(content).strip()
+
+
+def _empty_report_guard(stats: dict[str, Any], *, retries: int = _MAX_EMPTY_REPORT_RETRIES):
+    """Lead-only middleware: catch a ``task`` subagent that returns an empty/whitespace report.
+
+    ``stats`` is a caller-owned dict the middleware mutates so run_deepagents can report the
+    outcome in result.json: ``empty_subagent_reports`` (blank ``task`` returns detected),
+    ``empty_subagent_retries`` (subagents re-dispatched over one), and ``empty_subagent_markers``
+    (blank results replaced with the visible marker because the retry was also blank, or the retry
+    budget was zero). It wraps the tool call so it can invoke the handler AGAIN — on a blank return
+    it re-dispatches once with a corrective nudge folded into ``description`` and, failing that,
+    substitutes the marker. It is placed INNERMOST (see run_deepagents) so a re-dispatch does not
+    re-enter the tool-dispatch guard and double-count ``tools_executed``. Defined lazily so
+    importing this module doesn't require langchain — only the deepagents driver does.
+    """
+    from langchain.agents.middleware.types import AgentMiddleware
+    from langchain_core.messages import ToolMessage
+    from langgraph.types import Command
+
+    def _tool_message(result):
+        """The ToolMessage a ``task`` call returned — whether wrapped in a ``Command`` (the normal
+        case) or returned bare. ``None`` for anything else (e.g. the tool's plain-``str``
+        'subagent does not exist' error), which the guard leaves untouched."""
+        if isinstance(result, Command):
+            update = result.update if isinstance(result.update, dict) else {}
+            for msg in reversed(update.get("messages") or []):
+                if isinstance(msg, ToolMessage):
+                    return msg
+            return None
+        return result if isinstance(result, ToolMessage) else None
+
+    def _with_marker(result, tm):
+        """``result`` with the blank ToolMessage ``tm`` swapped for the visible marker, preserving
+        the ``Command`` wrapper and its other state updates and the original ``tool_call_id``."""
+        stats["empty_subagent_markers"] = stats.get("empty_subagent_markers", 0) + 1
+        print("[empty-report guard] report still empty — substituting the visible marker "
+              f"{prompts.SUBAGENT_EMPTY_REPORT_MARKER!r}")
+        marked = ToolMessage(prompts.SUBAGENT_EMPTY_REPORT_MARKER, tool_call_id=tm.tool_call_id)
+        if isinstance(result, Command):
+            update = dict(result.update)
+            update["messages"] = [marked if m is tm else m for m in (update.get("messages") or [])]
+            return Command(update=update)
+        return marked
+
+    def _nudged(tc):
+        """A copy of the ``task`` tool call with the corrective nudge appended to ``description``."""
+        args = dict(tc.get("args") or {})
+        desc = str(args.get("description") or "")
+        args["description"] = f"{desc}\n\n{prompts.SUBAGENT_EMPTY_REPORT_NUDGE}".strip()
+        return {**tc, "args": args}
+
+    def _is_blank_task(request, result):
+        """The ToolMessage to act on if this is a ``task`` call that came back blank, else None."""
+        tc = getattr(request, "tool_call", None) or {}
+        if tc.get("name") != "task":
+            return None
+        tm = _tool_message(result)
+        if tm is None or not _is_blank_report(tm.content):
+            return None
+        stats["empty_subagent_reports"] = stats.get("empty_subagent_reports", 0) + 1
+        subagent = (tc.get("args") or {}).get("subagent_type")
+        print(f"[empty-report guard] subagent {subagent!r} returned an empty report")
+        return tm
+
+    class _EmptyReportGuard(AgentMiddleware):
+        def wrap_tool_call(self, request, handler):
+            result = handler(request)
+            tm = _is_blank_task(request, result)
+            if tm is None:
+                return result
+            if retries > 0:
+                stats["empty_subagent_retries"] = stats.get("empty_subagent_retries", 0) + 1
+                tc = request.tool_call
+                print(f"[empty-report guard] re-dispatching {(tc.get('args') or {}).get('subagent_type')!r} "
+                      "once with a corrective nudge")
+                result = handler(request.override(tool_call=_nudged(tc)))
+                tm = _tool_message(result)
+                if tm is None or not _is_blank_report(tm.content):
+                    return result  # the nudge produced a real report — forward it
+            return _with_marker(result, tm)
+
+        async def awrap_tool_call(self, request, handler):
+            result = await handler(request)
+            tm = _is_blank_task(request, result)
+            if tm is None:
+                return result
+            if retries > 0:
+                stats["empty_subagent_retries"] = stats.get("empty_subagent_retries", 0) + 1
+                tc = request.tool_call
+                print(f"[empty-report guard] re-dispatching {(tc.get('args') or {}).get('subagent_type')!r} "
+                      "once with a corrective nudge")
+                result = await handler(request.override(tool_call=_nudged(tc)))
+                tm = _tool_message(result)
+                if tm is None or not _is_blank_report(tm.content):
+                    return result  # the nudge produced a real report — forward it
+            return _with_marker(result, tm)
+
+    return _EmptyReportGuard()

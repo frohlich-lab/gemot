@@ -622,6 +622,26 @@ TASK_ARG_REJECT_TMPL = (
 )
 
 
+# --------------------------------------------------------------------- the empty-report guard
+# A subagent's whole output to the lead is the deepagents `task` tool's ToolMessage, whose content
+# is the subagent's LAST non-empty assistant text. When a subagent's final turn is an empty
+# completion (finish_reason=stop, no content) and no earlier turn carried text either — seen live
+# on a blasi run where signal_engineer did 27 tool-calling turns of residual analysis then stopped
+# with empty content — that content is "" and the lead silently receives nothing. The empty-report
+# guard (agent/guards.py) re-dispatches the subagent ONCE with this nudge folded into `description`.
+SUBAGENT_EMPTY_REPORT_NUDGE = (
+    "Your previous turn ended WITHOUT a written report — your final message was empty, so the lead "
+    "received nothing and your analysis was discarded. Write your findings NOW as your final "
+    "message: plain prose, not a tool call. This text is your ENTIRE report back to the lead; if it "
+    "is empty again your whole analysis is lost."
+)
+
+# If the re-dispatch above is ALSO blank (or the retry budget is spent), the guard substitutes this
+# marker for the empty content, so the lead sees that a report was lost rather than a "" it might
+# read as "the analyst found nothing".
+SUBAGENT_EMPTY_REPORT_MARKER = "[analyst returned no report]"
+
+
 # ============================================================ the tracked prompt surface
 # The registry, and the versioning over it. It lives HERE, next to the text, because the
 # alternative — a hand-maintained list in ``experiments`` — is how 30 of this file's ~35
@@ -717,6 +737,8 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
         },
         "petab-guards": {
             "task_arg_reject": TASK_ARG_REJECT_TMPL,
+            "empty_report_nudge": SUBAGENT_EMPTY_REPORT_NUDGE,
+            "empty_report_marker": SUBAGENT_EMPTY_REPORT_MARKER,
             "tool_disabled_repeated": TOOL_DISABLED_REPEATED_TMPL,
             "tool_disabled_transport": TOOL_DISABLED_TRANSPORT_TMPL,
             "disabled_tool_hint_default": _DISABLED_TOOL_HINT_DEFAULT,

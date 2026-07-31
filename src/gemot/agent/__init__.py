@@ -80,6 +80,9 @@ from .finish_gate import (
     _decision_tool,
 )
 from .guards import (
+    _empty_report_guard,
+    _is_blank_report,
+    _report_text,
     _task_arg_guard,
     _task_arg_reject_message,
     _tool_dispatch_guard,
@@ -106,6 +109,8 @@ from .tools import (
 # petab_harness.prompts now; re-exported so `agent.BIOCURATOR_PROMPT` still resolves.
 from ..prompts import (
     BIOCURATOR_PROMPT,
+    SUBAGENT_EMPTY_REPORT_MARKER,
+    SUBAGENT_EMPTY_REPORT_NUDGE,
     TOOL_DESCRIPTIONS,
     _biocurator_entity_block,
     _NO_MODEL_NUDGE,

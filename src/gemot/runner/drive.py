@@ -180,6 +180,14 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                         # biocurator was actually handed its entities and catch a relapse.
                         "biocurator_entities": agent_out.get("biocurator_entities", []),
                         "unexpected_task_kwargs": agent_out.get("unexpected_task_kwargs", []),
+                        # Subagent `task` calls whose returned report was empty/whitespace (the
+                        # analyst's final completion was blank, so deepagents would have forwarded
+                        # "" to the lead). The guard re-dispatches once (`_retries`) and, if still
+                        # blank, substitutes a visible marker (`_markers`) — recorded so a sweep can
+                        # see discarded analyst work rather than silently losing it.
+                        "empty_subagent_reports": agent_out.get("empty_subagent_reports", 0),
+                        "empty_subagent_retries": agent_out.get("empty_subagent_retries", 0),
+                        "empty_subagent_markers": agent_out.get("empty_subagent_markers", 0),
                         # The panel the lead could delegate to, and whether deepagents' uncurated
                         # `general-purpose` subagent was confirmed off (false = confirmed off;
                         # true/null = contaminated or unverified — issue #112). Recorded so a
