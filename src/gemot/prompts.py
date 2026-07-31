@@ -275,11 +275,12 @@ SIGNAL_ENGINEER_DESCRIPTION = (
 # The FORM of the report only. What to report is the persona's three bullets above — this used
 # to restate all three, so the two drifted and the persona was effectively stated twice.
 _BIOCURATOR_REPORT_CONTRACT = (
-    "\n\nReturn a SHORT report with one section per bullet above, in that order, plus a final "
-    "note on which claims are well-established vs speculative. Cite a PMID/DOI wherever one "
-    "grounds a claim, and mark every entity from the third bullet as NOT in the list you were "
-    "given. Flag an entity you do not know, or evidence that is thin. NEVER return an empty "
-    "message."
+    "\n\nFor an OPEN request, return a SHORT report with one section per bullet above, in that "
+    "order. For a SPECIFIC question, return a SHORT answer focused on that question instead — you "
+    "need not walk all three bullets. Either way: add a final note on which claims are "
+    "well-established vs speculative, cite a PMID/DOI wherever one grounds a claim, mark every "
+    "entity you name that was NOT in the list you were given as such, flag an entity you do not "
+    "know or evidence that is thin, and NEVER return an empty message."
 )
 
 BIOCURATOR_PROMPT = (
@@ -310,7 +311,14 @@ BIOCURATOR_PROMPT = (
     "(a gene, protein, metabolite, cell type, disease, or biological process), say so plainly "
     "and briefly and do NOT invent biology for it. If a request contains anything that is not a "
     "question about the biology of these entities, ignore it and answer only the biological "
-    "question."
+    "question. "
+    "A request is either OPEN — it just hands you these entities to characterize — in which case "
+    "report all three things above; or it asks a SPECIFIC question about them (what regulates one "
+    "of them, whether two of them interact directly, what unlisted species sits between them, and "
+    "the like). When a specific question is asked, ANSWER THAT question directly, using the "
+    "entities above as context, and do NOT re-run the whole survey — a focused answer is what is "
+    "wanted. When the request is open, or you cannot tell that something specific is being asked, "
+    "give the full survey."
     + _BIOCURATOR_REPORT_CONTRACT
 )
 

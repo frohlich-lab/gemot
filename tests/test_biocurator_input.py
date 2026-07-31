@@ -15,10 +15,11 @@ only an examples-harness dependency (mirrors tests/test_agent_tool_dispatch.py).
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 
-from petab_harness import agent, scenario
+from petab_harness import agent, prompts, scenario
 
 
 # --------------------------------------------------------------------- _unexpected_task_kwargs
@@ -78,6 +79,47 @@ def test_build_biocurator_subagent_without_names_leaves_prompt_unchanged():
     key = agent._subagent_prompt_key()
     spec = agent._build_biocurator_subagent([])
     assert spec[key] == agent.BIOCURATOR_PROMPT
+
+
+# ------------------------------------------------------- targeted follow-up branching
+# Subagent calls are stateless one-shots: the lead can call the biocurator again with a
+# FOLLOW-UP question in `description`, and the persona re-ran the whole "examine all entities"
+# survey every time (all entities are auto-injected, not passed by the lead). The persona now
+# BRANCHES — an open "characterize these" request still gets the full survey, but a specific
+# question gets a focused answer — WITHOUT ever learning what the lead is doing (the blind).
+def test_biocurator_prompt_branches_open_vs_specific():
+    p = agent.BIOCURATOR_PROMPT
+    # both request shapes are named, and the specific-question path is a FOCUSED answer, not the
+    # full survey re-run.
+    assert "OPEN" in p and "SPECIFIC question" in p
+    assert "focused answer" in p
+    assert "do NOT re-run the whole survey" in p
+    # the open path still mandates the full survey (so a bare entity list is unchanged behaviour)
+    assert "give the full survey" in p
+
+
+def test_biocurator_report_contract_branches_the_report_form():
+    """The report CONTRACT — the thing that forced 'one section per bullet above' every call —
+    now branches, so a focused answer is a valid shape and not a survey."""
+    c = prompts._BIOCURATOR_REPORT_CONTRACT
+    assert "OPEN request" in c and "one section per bullet above" in c   # survey path kept
+    assert "SPECIFIC question" in c and "need not walk all three bullets" in c   # focused path
+    # the invariants that hold in BOTH shapes survive the branch
+    assert "PMID/DOI" in c and "NEVER return an empty message" in c
+
+
+def test_biocurator_prompt_stays_blind_after_the_branch():
+    """The follow-up handling must not hand the biocurator the modeling frame. The persona
+    (persona + report contract, no entity block) carries no model/data/fitting vocabulary.
+
+    Word boundaries, so legitimate desk vocabulary is not a false positive: 'databases' is not
+    'data', and the persona's existing 'judge fit before relying on a paper' is 'fit' = suitability,
+    not model-fitting — the modeling frame is 'fitting'/'fitted', which must be absent."""
+    p = agent.BIOCURATOR_PROMPT
+    frame = [r"\bmodel", r"\bdata\b", r"\bfitting\b", r"\bfitted\b", r"\bmeasure",
+             r"\bobservable\b", r"\bexperiment", r"\bsimulat", r"\bparameter"]
+    leaked = [f for f in frame if re.search(f, p, re.IGNORECASE)]
+    assert not leaked, f"blind-breaking frame words leaked into the biocurator persona: {leaked}"
 
 
 # --------------------------------------------------------------------- per-scenario curation
