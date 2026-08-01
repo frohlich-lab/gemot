@@ -141,9 +141,11 @@ DEFAULT_SYSTEM_PROMPT = (
     "MIS-PARAMETERISED (wrong fixed/free split, bad bounds, or wrong initial conditions), not "
     "too simple — fix that instead of keeping the bloat. Call `make_decision` only for the two "
     "non-default moves:\n"
-    "   - `rollback` — a change did not help; find the best-bic prior version with "
-    "`list_versions` and bring it back with `restore_version(v)`, never by re-authoring it. Then "
-    "continue;\n"
+    "   - `rollback` — a change did not help. You do NOT return to an earlier version manually: "
+    "every fitted version is kept and the run is scored on your BEST-bic one regardless of where "
+    "you end (`list_versions` shows it), so a worse change never loses your best. Just make a "
+    "genuinely DIFFERENT change from here (a different rate-law form or topology) — not a rewrite "
+    "of a version you already have;\n"
     "   - `finish` — the residuals show NO systematic structure (get_fit_diagnosis bias ≈ 0, no "
     "time-trend) AND bic has bottomed out — you cannot lower it further by adding, dropping, or "
     "re-forming mechanism. Finish on the LOWEST-bic such model.\n"
@@ -391,13 +393,13 @@ TOOL_DESCRIPTIONS = {
                      "`applied: false` -> nothing moved: either rejected outright or reverted "
                      "because the fit failed; `error`/`issues` says which, act on THAT. "
                      "`committed: false` with `no_change` -> the change applied but this structure "
-                     "already IS a version, so change something else or restore_version(n). "
+                     "already IS a version, so make a genuinely different change (a version you "
+                     "already have is kept and stays scorable — no need to return to it). "
                      "REJECTS dropping (or re-estimating) a shipped-fixed "
                      "constant, an unused condition target, and an observation-model symbol used "
                      "in a rate law; rejects a 3rd widening of a still-pinned parameter (that is "
                      "unidentifiability — see get_identifiability, not a bounds problem); WARNS "
-                     "on widening an estimated noise sigma past its data-driven cap. To go BACK "
-                     "use restore_version, never a re-author. Args: justification, antimony?, "
+                     "on widening an estimated noise sigma past its data-driven cap. Args: justification, antimony?, "
                      "parameters?, references?, n_starts? (REPLACES the server default — "
                      "describe_problem's fit_n_starts_default — so omit it unless you want MORE; "
                      "below it fits LESS hard; the minimum is 1)."),
@@ -450,15 +452,10 @@ TOOL_DESCRIPTIONS = {
                             "parameter confirms it, a WORSE fit means revert. If none applies, "
                             "leave it. Use BEFORE adding parameters. Arg: top_n."),
     "list_versions": ("Every model version (each a fit snapshot) with its kind, label, and fit "
-                      "metrics (neg_log_likelihood, bic, is_new_best) — how you find the "
-                      "lowest-bic version to restore."),
+                      "metrics (neg_log_likelihood, bic, is_new_best) — how you track which "
+                      "structures you have tried and their scores. Your best-bic version is kept "
+                      "and is what the run is scored on, so you never need to return to it."),
     "get_version": "Read a prior version's Antimony model + parameter table, to INSPECT it. Arg: version.",
-    "restore_version": ("Go BACK to an earlier model — the ONLY correct way. Restores version v's "
-                        "model + its stored fit as the working state WITHOUT recompiling or "
-                        "refitting, and appends a new version. Re-authoring an earlier model with "
-                        "make_changes instead costs a recompile + refit, reaches the SAME result, and "
-                        "appends a duplicate (fit warns, then refuses). Pick the target with "
-                        "list_versions (lowest bic). Arg: version."),
     "get_fitting_log": "Tail of the pyPESTO/Fides multistart optimizer log (convergence, bound-pinning, ill-conditioning). Arg: tail_lines.",
     "list_observables": "The observables being fitted: id, formula, and noise model.",
     "get_measurements": ("Measurement data. Default returns a COMPACT SUMMARY (per observable×"
@@ -543,8 +540,8 @@ MAKE_DECISION_DESCRIPTION = (
     "Record a control decision after reading the CURRENT HEAD's fit metrics "
     "(bic / neg_log_likelihood / is_new_best — never an earlier version's). You do NOT "
     "call this to keep iterating — to iterate, just make the next make_changes call. Call it "
-    "only for `action`: 'rollback' (the last change didn't help — go back to the LOWEST-bic "
-    "prior version with restore_version) or 'finish' (residuals show no systematic "
+    "only for `action`: 'rollback' (the last change didn't help — the harness keeps your best-bic "
+    "version regardless of where you end, so just try a genuinely different structure) or 'finish' (residuals show no systematic "
     "structure AND bic has bottomed out). Judge that structure with the sign_test / runs_test "
     "in get_fit_diagnosis — they read residual SIGNS, so they still detect a bias or "
     "time-trend when chi2 is flat. 'finish' takes TWO calls: the first ARMS it and shows you the "
@@ -556,10 +553,10 @@ MAKE_DECISION_DESCRIPTION = (
 
 # Keyed by `action`. `finish` never reaches this table -- every path in the finish branch returns.
 DECISION_GUIDANCE = {
-    "rollback": "Recorded: rollback. Find the BEST-scoring prior version with list_versions "
-                "(LOWEST bic / is_new_best, not just the previous one) and bring it back with "
-                "restore_version(v) — do NOT re-author it with make_changes (that refits to the "
-                "same result and makes a duplicate). Then continue from there.",
+    "rollback": "Recorded: rollback. You do not need to return to the earlier version: every "
+                "fitted version is kept and the run is scored on your BEST-bic one regardless of "
+                "where you end (list_versions shows it). So don't re-author to get back to it — "
+                "make a genuinely DIFFERENT change from here (a new rate-law form or topology).",
 }
 
 DECISION_UNKNOWN_ACTION = "Unknown action — use one of: rollback, finish."

@@ -69,13 +69,16 @@ ORCHESTRATOR_TOOLS = [
     # final scoring all read the score through it. `describe_problem` covers has_unfit_edits.
     "get_fit_diagnosis",    # per-observable bias/chi2 + worst-N points — bounded residual read
     "get_identifiability",  # FIM SE/correlations + multistart spread — WHICH params to cut/merge
-    "list_versions",        # scored version history — pick the BEST version to go back to
-    "get_version",          # read a prior version's Antimony + params (to inspect it)
-    # go BACK to an earlier model the cheap way: restore its stored fit instead of re-authoring
-    # it (a re-author recompiles/refits to the same result and appends a duplicate — `fit` now
-    # warns on, then refuses, a structure it has already seen). This is the fix for the
-    # dominant sweep waste of re-encoding already-visited structures (see issue #59).
-    "restore_version",      # restore a prior version's model + fit as the working state (no refit)
+    "list_versions",        # scored version history — track which structures were tried + scores
+    "get_version",          # read a prior version's Antimony + params (to inspect / re-author from)
+    # NOTE: restore_version is deliberately NOT a lead tool. It sets HEAD to a prior version, but
+    # make_changes with `antimony=` re-authors the whole model and IGNORES HEAD — so a restore
+    # immediately followed by a wholesale re-author (the lead's dominant use: 7 of 9 restores in
+    # trace analysis of the current tooling, project petab-mcp-blasi) discarded the restore, a
+    # wasted super-step. The lead does not need it: the judge scores the BEST-bic version regardless
+    # of HEAD (runner/judge.py restores it before scoring), so a worse change never loses the best
+    # model. restore_version REMAINS a server tool — the judge itself calls it — it is just not
+    # exposed to the lead. Same reasoning that dropped get_fit_summary from this list.
     "get_errors",
     # THE editor. One call authors the whole model (antimony=), sets estimation bounds/scale
     # (parameters=), or both — and always fits, snapshotting one version. It replaces the
