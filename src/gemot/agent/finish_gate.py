@@ -243,7 +243,8 @@ def _decision_tool(session, finish_state=None, probe=None):
                     state["parsimony_refusals"] = 0
             # Valid, fitted model. First finish call ARMS: show the residual diagnosis and
             # require a confirming second finish. This forces the finish to be a considered call
-            # on the fit's residual STRUCTURE (sign/runs tests — the signal that survives
+            # on the fit's residual STRUCTURE (the sign/runs tests plus the replicate lack-of-fit
+            # test — the signals that survive
             # estimated sigmas) rather than a reflex. The token identifies THIS fit (bic+nll,
             # plus version as a tiebreak) so an edit + refit — or a rollback, which leaves
             # version None but changes bic/nll — re-arms rather than confirming a stale diagnosis.

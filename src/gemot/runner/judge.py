@@ -122,7 +122,7 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     k = sum(1 for p in params if p.get("estimate")) if isinstance(params, list) else 0
     chi2 = final.get("chi2") if isinstance(final, dict) else None
     chi2 = float(chi2) if chi2 is not None else None
-    # Residual-structure tests (sign / runs) of the SCORED model — the checkpoint was already
+    # Residual-structure tests (sign, runs, replicate lack-of-fit) of the SCORED model — the checkpoint was already
     # restored above, so this is the fit that gets judged. Recorded for post-hoc analysis: e.g.
     # whether runs that passed the BIC gate also had structure-free residuals, and whether the
     # tests were underpowered. Report-only: a diagnosis failure must never fail the run (which
