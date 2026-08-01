@@ -100,7 +100,7 @@ harness = [
     # `arize-phoenix` package provides the local in-process UI the runner launches when no
     # PHOENIX_COLLECTOR_ENDPOINT is set, and >=19 provides the run_experiment / Datasets /
     # Prompt-registry API that examples/run_experiments.py uses.
-    "arize-phoenix>=19",
+    "arize-phoenix>=19.13",
     "arize-phoenix-otel>=0.16",
     "openinference-instrumentation-langchain>=0.1",
     # Weights & Biases metrics logging for the model x temperature sweep (opt-in via run.py
