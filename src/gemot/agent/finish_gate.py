@@ -263,10 +263,22 @@ def _decision_tool(session, finish_state=None, probe=None):
                     worst_line = prompts.FINISH_ARMED_WORST_TMPL.format(
                         observable_id=worst.get("observable_id"),
                         sign_p=st.get("p"), runs_p=rtst.get("p"))
+                # The run's OUTSTANDING invalid "does adding structure help?" experiment, if any:
+                # a variant that gained parameters yet fit WORSE than its parent, which a nested
+                # model cannot do (the server flags it at commit time — see petab_mcp.nesting —
+                # and keeps it until a VALID additive experiment supersedes it, so it survives the
+                # rollback that usually follows). Shown here rather than made a refusal: a
+                # non-nested variant is legitimate to explore, and the run may have plenty of
+                # other grounds to finish. What must not happen is finishing BECAUSE of it.
+                invalid = fit.get("invalid_comparison")
+                invalid_line = (
+                    prompts.FINISH_ARMED_INVALID_COMPARISON_TMPL.format(advisory=invalid)
+                    if invalid else "")
                 print(f"[finish ARMED v={version}] bic={bic:.6g} — presented diagnosis, "
                       "awaiting confirming finish")
                 return prompts.FINISH_ARMED_TMPL.format(
-                    bic=bic, nll=nll, struct=struct, worst_line=worst_line)
+                    bic=bic, nll=nll, struct=struct, worst_line=worst_line,
+                    invalid_line=invalid_line)
             # Second finish on the same fit -> confirmed. Record it so the driver does not bounce
             # a legitimately-finished run back into the gate.
             state["armed_token"] = None

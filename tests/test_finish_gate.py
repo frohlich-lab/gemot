@@ -413,3 +413,42 @@ async def test_model_committed_fails_open():
 def test_no_model_nudge_text_is_actionable():
     mod = _agent
     assert "make_changes" in mod._NO_MODEL_NUDGE and "fit" in mod._NO_MODEL_NUDGE.lower()
+
+
+# --- the invalid-comparison note on the ARM (petab_mcp.nesting) ----------------------------
+# The failure this addresses is real: blasi run 80ccf20efcbc020dc2becda41d14c62e, where the panel's
+# ONLY "does adding structure help?" experiment (v3 -> v4) was a botched non-additive edit — k rose
+# 6 -> 7 structural while the nll got 3.984 WORSE, because the new c816 factor REPLACED the c81216
+# already in `r5_12_16_8` — and the lead read the worse score as evidence the model was complete,
+# then finished at 4 fitted ops on 5% of its budget. The server flags that at commit time and keeps
+# the flag across the rollback that followed; the gate must put it in front of the lead before it
+# is allowed to confirm. It is a NOTE, not a refusal: exploring a non-nested variant is legitimate,
+# and the run may have other grounds to finish.
+_BLASI_ADVISORY = (
+    "INVALID COMPARISON vs v3: k rose 7->8 but neg_log_likelihood got WORSE by 3.98381 — a model "
+    "nested in its parent cannot fit worse. Either the edit was not additive (c81216 now appears "
+    "in 8 places, was 9), or the fit under-converged."
+)
+
+
+@pytest.mark.asyncio
+async def test_arm_surfaces_an_outstanding_invalid_comparison():
+    mod = _agent
+    tool = _tool_for(mod, _fit(invalid_comparison=_BLASI_ADVISORY))
+    armed = await _decide(tool, "finish")
+    assert "FINISH ARMED" in armed
+    # the server's advisory is quoted verbatim, so the displaced parameter is named to the lead
+    assert "c81216 now appears in 8 places, was 9" in armed
+    # ...and the gate says what it means for the finish it is about to confirm
+    assert "INVALID" in armed and "adding structure fails to help" in armed
+    # NOTE, not refusal: a second finish still confirms.
+    assert "Recorded: finish" in await _decide(tool, "finish")
+
+
+@pytest.mark.asyncio
+async def test_arm_is_silent_when_no_invalid_comparison_is_outstanding():
+    """The key is ABSENT from get_fit_summary when the run has no outstanding invalid experiment
+    (or the server predates the check), and the ARM text must then read exactly as before."""
+    mod = _agent
+    armed = await _decide(_tool_for(mod, _fit()), "finish")
+    assert "FINISH ARMED" in armed and "INVALID" not in armed

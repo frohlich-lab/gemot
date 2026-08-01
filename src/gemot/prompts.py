@@ -620,7 +620,8 @@ FINISH_REFUSED_PARSIMONY_TMPL = (
 
 FINISH_ARMED_TMPL = (
     "FINISH ARMED — review before confirming. Current fit: bic={bic:.6g}, "
-    "neg_log_likelihood={nll:.6g}. Residual structure: {struct}{worst_line} "
+    "neg_log_likelihood={nll:.6g}. Residual structure: {struct}{worst_line}"
+    "{invalid_line} "
     "If systematic structure is flagged, the model's FORM is still missing "
     "something — keep improving BIC instead of finishing. If you have genuinely "
     "bottomed out BIC and are satisfied with the residuals, call finish AGAIN to "
@@ -629,6 +630,18 @@ FINISH_ARMED_TMPL = (
 
 FINISH_ARMED_WORST_TMPL = (
     " Worst observable {observable_id}: sign-test p={sign_p}, runs-test p={runs_p}."
+)
+
+# Appended to the ARM text when the run's last "does adding structure help?" experiment was
+# INVALID — a variant that gained parameters yet fit WORSE than its parent, which a nested model
+# cannot do (see petab_mcp.nesting). The failure this addresses (blasi, run 80ccf20e): the panel's
+# ONLY structure-adding test was a botched non-additive edit, it read the worse score as "the
+# model is complete", and finished at 4 fitted ops on 5% of its budget. The server's advisory
+# ({advisory}) already names the cause; this line says what it means for the finish.
+FINISH_ARMED_INVALID_COMPARISON_TMPL = (
+    " NOTE — your last structure-adding experiment was INVALID: {advisory} So you do NOT "
+    "currently have evidence that adding structure fails to help; do not finish on that "
+    "reasoning. Redo it as a strictly additive edit (or re-fit with more starts) first."
 )
 
 FINISH_STRUCT_UNAVAILABLE = "residual-structure tests unavailable."
@@ -759,6 +772,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "refused_parsimony": FINISH_REFUSED_PARSIMONY_TMPL,
             "armed": FINISH_ARMED_TMPL,
             "armed_worst": FINISH_ARMED_WORST_TMPL,
+            "armed_invalid_comparison": FINISH_ARMED_INVALID_COMPARISON_TMPL,
             "struct_unavailable": FINISH_STRUCT_UNAVAILABLE,
             "confirmed": FINISH_CONFIRMED_TMPL,
             "chi2_unavailable_note": FINISH_CHI2_UNAVAILABLE_NOTE,
