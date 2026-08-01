@@ -50,6 +50,32 @@ _MAX_SIGMA_FINISH_REFUSALS = 3
 # specific fix is the agent's to reason out, not the gate's to hand over.
 _MAX_PARSIMONY_FINISH_REFUSALS = 3
 
+# A finish on a model the REPLICATE LACK-OF-FIT arm condemns is REFUSED. This carries what the
+# sigma-ratio arm used to: a fitted sigma several-fold above the pure-error floor was an averaged,
+# thresholded proxy for "the predictions miss design points by more than their own replicate scatter
+# allows", which this arm measures directly and per point. Without it here that whole class of run
+# loses its refusal — the arm's verdict would only be DISPLAYED at arm time, which a second finish
+# call clears (blasi's dBIC +437 run: Holm p 1.5e-18, sigma under the data-std cap, FIM full rank at
+# k=6, so neither of the gates above sees it).
+#
+# The replicate arm ONLY. The sign/runs tests share `flagged_observables` with it but are advisory by
+# design (residual_tests: low power at these sample sizes, so a flag is weak evidence), and gating on
+# them would refuse far beyond what this replaces. The replicate arm is the powered one: Holm-adjusted
+# at REPLICATE_LOF_ALPHA, and it reports NO EVIDENCE (available False) rather than a flag wherever the
+# floor is thin, the family too small, or the model flexible enough to make the test vacuous — so it
+# FAILS OPEN on its own. Bounded and reset exactly like the two gates above.
+_MAX_STRUCTURE_FINISH_REFUSALS = 3
+
+
+def _render_lof_points(points, *, max_points: int = 4) -> str:
+    """The condemned design points rendered for the refusal text, as ``label (z, Holm p)`` — the
+    server already caps this list (REPLICATE_LOF_MAX_REPORTED_POINTS) and orders it worst-first, so
+    the agent sees WHERE the form fails, not just that it does."""
+    named = [p for p in (points or []) if isinstance(p, dict)][:max_points]
+    if not named:
+        return "(see get_fit_diagnosis for the condemned points)"
+    return ", ".join(f"{p.get('label')} (z={p.get('z')}, Holm p={p.get('p_holm')})" for p in named)
+
 
 def _render_flat_directions(flat_directions, *, max_dirs: int = 4, max_parts: int = 4) -> str:
     """The FIM's near-flat (non-identifiable) eigen-directions rendered for the refusal text — as
@@ -122,7 +148,7 @@ def _decision_tool(session, finish_state=None, probe=None):
     # the common rollback→finish path. bic+nll identify the scored fit whether or not a version
     # is attached.
     state = {"armed_token": None, "no_fit_refusals": 0, "sigma_refusals": 0,
-             "parsimony_refusals": 0}
+             "parsimony_refusals": 0, "structure_refusals": 0}
 
     def _finite(x):
         return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
@@ -195,6 +221,28 @@ def _decision_tool(session, finish_state=None, probe=None):
                       f"{state['sigma_refusals']} refusals — allowing finish at its honest score")
             else:
                 state["sigma_refusals"] = 0
+            # HARD STOP on a REPLICATE LACK-OF-FIT: the predictions miss design points by more than
+            # those points' OWN replicate scatter allows, which no parameter value can fix — missing
+            # STRUCTURE, and the class of run the deleted sigma-ratio arm used to catch by proxy.
+            # Keys on the replicate arm alone (never the advisory sign/runs tests) and on its own
+            # `available`, so a vacuous / too-thin / untestable verdict never refuses. See
+            # _MAX_STRUCTURE_FINISH_REFUSALS.
+            lof = ((fit.get("residual_structure") or {}).get("replicate_lack_of_fit") or {})
+            if lof.get("available") and lof.get("n_flagged"):
+                if state["structure_refusals"] < _MAX_STRUCTURE_FINISH_REFUSALS:
+                    state["armed_token"] = None
+                    state["structure_refusals"] += 1
+                    print(f"[finish BLOCKED {state['structure_refusals']}/"
+                          f"{_MAX_STRUCTURE_FINISH_REFUSALS}] replicate lack-of-fit at "
+                          f"{lof.get('n_flagged')} design point(s) — refusing finish on a model the "
+                          "data's own replicates rule out")
+                    return prompts.FINISH_REFUSED_REPLICATE_LOF_TMPL.format(
+                        n_flagged=lof.get("n_flagged"), n_points=lof.get("n_points"),
+                        points=_render_lof_points(lof.get("points")))
+                print(f"[finish RELENTED] replicate lack-of-fit still flagged after "
+                      f"{state['structure_refusals']} refusals — allowing finish at its honest score")
+            else:
+                state["structure_refusals"] = 0
             # HARD STOP on an OVER-parameterised model: a finish whose good-looking bic rests on
             # parameters the data cannot constrain — a RANK-DEFICIENT Fisher-information matrix (a
             # non-identifiable parameter COMBINATION get_identifiability surfaces as a near-flat

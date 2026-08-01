@@ -33,6 +33,20 @@ _COLLAPSE_FRAC = _NOISE_SIGMA_COLLAPSE_FRACTION / 2     # well below the collaps
 _PLAUSIBLE = {"sigma": _sigma_entry(0.08, 0.1, 0.4)}   # below its cap, above the collapse floor
 _INFLATED = {"sigma": _sigma_entry(0.5, 0.1, 2.5)}     # past the data-driven cap (absorbs misfit)
 _COLLAPSED = {"sigma": _sigma_entry(_COLLAPSE_FRAC, 0.5, _COLLAPSE_FRAC)}  # overfits the noise
+# schwen's shape: comfortably under its data-std cap, but 7.83x a MEASURED pure-error replicate floor
+# — schwen's own published reference. #140 vetoed exactly this; that arm is now gone (a ratio of two
+# point estimates discards the floor's uncertainty, and schwen's n_i = 2 technical duplicates make
+# the floor ~8x too low). The judge must NOT veto on it.
+_HIGH_PURE_ERROR_RATIO = {"sigma": {**_sigma_entry(0.187, 1.19, 0.117),
+                                    "effective_sigma": 0.187,
+                                    # schwen's REAL numbers, self-consistently: 0.187/1.592 = 0.117
+                                    # and the cap is 0.75 x 1.592 = 1.19. A predicate that recomputes
+                                    # the fraction from effective_sigma/data_std must land on the
+                                    # same entry this pins, not on _sigma_entry's placeholder 1.0.
+                                    "data_std": 1.592,
+                                    "data_noise_estimate": 0.0238,
+                                    "data_noise_method": "replicate",
+                                    "fitted_over_data_noise": 7.83}}
 
 # k = 3 estimated params (the estimate=0 row is the fixed noise sigma), n = 50 data points. The
 # reference carries the SAME (nll, k, n) as the passing candidate, so a candidate nll of 100 gives
@@ -111,6 +125,18 @@ def test_good_bic_collapsed_sigma_fails(tmp_path):
     assert result["delta_bic"] == pytest.approx(0.0)        # BIC still passes ...
     assert result["noise_sigma_flag"]["collapsed"] is True  # ... but sigma has collapsed ...
     assert result["success"] is False and code == 1         # ... so the run does NOT count.
+
+
+def test_good_bic_survives_a_high_pure_error_ratio(tmp_path):
+    """The hidden gate must not veto a passing BIC on the pure-error RATIO alone: that number is a
+    reference-quality diagnostic, not a verdict, and on schwen it condemns the data-generating model
+    itself. The cap arm is unaffected (test_good_bic_implausible_sigma_fails), and the sharp replicate
+    evidence now enters through the per-design-point lack-of-fit test instead."""
+    code, result = _run_judge(tmp_path, 100.0, _HIGH_PURE_ERROR_RATIO)
+    assert result["delta_bic"] == pytest.approx(0.0)                      # BIC passes ...
+    assert result["noise_sigma_flag"]["inflated"] is False                # ... 7.83x is not a veto
+    assert result["noise_sigma_flag"]["collapsed"] is False
+    assert result["success"] is True and code == 0
 
 
 def test_bad_bic_fails_despite_plausible_sigma(tmp_path):

@@ -78,6 +78,7 @@ from .finish_gate import (
     _MAX_NO_FIT_FINISH_ATTEMPTS,
     _MAX_PARSIMONY_FINISH_REFUSALS,
     _MAX_SIGMA_FINISH_REFUSALS,
+    _MAX_STRUCTURE_FINISH_REFUSALS,
     _decision_tool,
 )
 from .guards import (

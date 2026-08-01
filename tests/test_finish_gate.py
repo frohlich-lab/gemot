@@ -259,6 +259,71 @@ async def test_plausible_sigma_finish_is_unaffected():
     assert (await _decide(tool, "finish")).startswith("Recorded: finish")
 
 
+# --- the REPLICATE LACK-OF-FIT gate -----------------------------------------------------------
+def _lof(*, available=True, n_flagged=1, n_points=15, status="flagged"):
+    """A get_fit_summary residual_structure carrying the replicate arm's verdict, in the shape
+    data_access._lof_reported puts on a fit result."""
+    return {"residual_structure": {
+        "summary": "systematic residual structure", "flagged_observables": ["observable_k5"],
+        "low_power": False,
+        "replicate_lack_of_fit": {
+            "available": available, "status": status, "n_points": n_points, "alpha": 0.01,
+            "n_flagged": n_flagged, "max_abs_z": 48.847, "min_p_holm": 1.51e-18,
+            "points": [{"label": "observable_k5", "n": 18, "z": -48.847, "p_holm": 1.51e-18}]}}}
+
+
+@pytest.mark.asyncio
+async def test_finish_refused_on_replicate_lack_of_fit_then_relents():
+    """The gate that carries what the deleted sigma-RATIO arm used to: blasi's dBIC +437 run sits
+    under its data-std cap with a full-rank FIM, so neither the sigma nor the parsimony gate sees
+    it, while the replicate arm condemns it at Holm p 1.5e-18. Bounded like the others."""
+    mod = _agent
+    tool = _tool_for(mod, _fit(**_lof()))
+    for _ in range(mod._MAX_STRUCTURE_FINISH_REFUSALS):
+        out = await _decide(tool, "finish")
+        assert "FINISH REFUSED" in out and "REPLICATES rule this model out" in out
+        assert "observable_k5" in out                 # names WHERE the form fails
+        assert not out.startswith("Recorded: finish")
+    assert "FINISH ARMED" in await _decide(tool, "finish")
+
+
+@pytest.mark.asyncio
+async def test_replicate_lack_of_fit_block_clears_on_a_structural_fix():
+    mod = _agent
+    session = _FakeSession(_fit(**_lof()))
+    tool = mod._decision_tool(session)
+    assert "FINISH REFUSED" in await _decide(tool, "finish")
+    session.fit_summary = _fit(**_lof(n_flagged=0, status="pass"))
+    assert "FINISH ARMED" in await _decide(tool, "finish")
+
+
+@pytest.mark.asyncio
+async def test_an_unavailable_replicate_verdict_never_refuses():
+    """FAILS OPEN on the arm's own availability: a vacuous (over-parameterised), too-thin or
+    untestable verdict reports NO EVIDENCE, which must not read as a condemnation. The
+    over-parameterised case is the parsimony gate's, not this one's."""
+    mod = _agent
+    for verdict in (_lof(available=False, status="vacuous", n_flagged=0),
+                    _lof(available=False, status="replicates_too_thin", n_flagged=0),
+                    {"residual_structure": {"summary": "s", "flagged_observables": []}},  # no arm
+                    {}):                                                    # no verdict at all
+        assert "FINISH ARMED" in await _decide(_tool_for(mod, _fit(**verdict)), "finish")
+
+
+@pytest.mark.asyncio
+async def test_sign_runs_flags_alone_do_not_refuse():
+    """Only the POWERED replicate arm gates. The sign/runs tests share flagged_observables with it
+    but are advisory by design (low power at these sample sizes), so a flag from them alone must
+    still arm — gating on it would refuse far beyond what this gate replaces."""
+    mod = _agent
+    sign_runs_only = {"residual_structure": {
+        "summary": "sign-test bias in observable_k5", "flagged_observables": ["observable_k5"],
+        "low_power": False,
+        "replicate_lack_of_fit": {"available": False, "status": "no_replicated_points",
+                                  "n_points": 0, "alpha": 0.01, "n_flagged": 0, "points": []}}}
+    assert "FINISH ARMED" in await _decide(_tool_for(mod, _fit(**sign_runs_only)), "finish")
+
+
 # --- the PARSIMONY / identifiability gate ----------------------------------------------------
 _FLAT_16_ICS = _ident(
     rank_deficient=True,

@@ -602,6 +602,23 @@ FINISH_REFUSED_SIGMA_TMPL = (
 
 FINISH_SIGMA_FALLBACK_ADVICE = "the estimated noise sigma is implausible."
 
+# The REPLICATE LACK-OF-FIT gate. `points` renders the condemned design points as
+# `label (z, Holm p)` (see finish_gate._render_lof_points), so the agent sees WHICH observables the
+# model cannot reach. Deliberately states the evidence is model-free and parameter-independent: the
+# scale is the point's own replicate scatter, so unlike a chi2 or a sigma-based score there is no
+# refitting or re-noising that can make it go away — only a change of FORM.
+FINISH_REFUSED_REPLICATE_LOF_TMPL = (
+    "FINISH REFUSED — the data's own REPLICATES rule this model out. At "
+    "{n_flagged} of {n_points} repeatedly-measured design points the prediction "
+    "sits further from the replicate mean than that point's OWN measurement "
+    "scatter allows: {points}. That scale comes from repeated measurements, not "
+    "from the fitted sigma, so no parameter value and no noise level can close "
+    "the gap — the model's FORM is missing something at those observables. "
+    "Change the mechanism and refit; a finish on a fit the replicates contradict "
+    "is not accepted. (get_fit_diagnosis's residual_structure has the full "
+    "replicate_lack_of_fit verdict.)"
+)
+
 # The PARSIMONY / identifiability gate. `directions` renders the actual near-flat FIM
 # eigen-directions as `id·weight` groups (see finish_gate._render_flat_directions), so the agent
 # sees WHICH parameters trade off TOGETHER — the collinear structure, not just a list of names —
@@ -773,6 +790,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "gave_up_no_fit": FINISH_GAVE_UP_NO_FIT_TMPL,
             "refused_sigma": FINISH_REFUSED_SIGMA_TMPL,
             "sigma_fallback_advice": FINISH_SIGMA_FALLBACK_ADVICE,
+            "refused_replicate_lof": FINISH_REFUSED_REPLICATE_LOF_TMPL,
             "refused_parsimony": FINISH_REFUSED_PARSIMONY_TMPL,
             "armed": FINISH_ARMED_TMPL,
             "armed_worst": FINISH_ARMED_WORST_TMPL,
