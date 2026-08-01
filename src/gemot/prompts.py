@@ -70,7 +70,11 @@ DEFAULT_SYSTEM_PROMPT = (
     "On the first round, delegate to all three analysts to characterise the DATA — its dynamics, "
     "the plausible mechanism, and the signal structure — giving each only the objective facts "
     "(the observables and that measured data exist), NOT your own hypothesis, so their reads stay "
-    "independent. Do this regardless of how many conditions the problem has: condition count "
+    "independent. And for a molecular/biochemical problem, consult the biocurator on this SAME "
+    "first round for the KNOWN biology — the interactions, cooperativity, and unmeasured "
+    "regulators/intermediates among the entities — and treat what it reports as the mechanism's "
+    "expected TOPOLOGY, to be built unless the data contradict it. "
+    "Do this regardless of how many conditions the problem has: condition count "
     "reflects experimental DESIGN, not mechanistic difficulty, and a single-condition problem can "
     "still be a multi-species, non-monotonic time course that needs the mechanism + numerics reads "
     "as much as any multi-condition one.\n"
@@ -255,7 +259,7 @@ SIGNAL_ENGINEER_DESCRIPTION = (
 )
 
 
-# ---------------------------------------------------------------- biocurator (optional)
+# -------------------------------------------- biocurator (required for a molecular mechanism)
 # A FOURTH analyst, added for the deepagents driver whenever a bio-knowledge server is reachable. Unlike
 # the three above — which reason over THIS problem's model/data through the petab-mcp tools —
 # the biocurator reaches OUTSIDE the problem, into curated biomedical knowledge bases served by
@@ -339,7 +343,10 @@ BIOCURATOR_DESCRIPTION = (
     "phosphatase, degradation, translocation) — with citable PMIDs/DOIs. Use it to surface "
     "candidate hidden species/processes you may be missing. Its biological entities are handed to "
     "it AUTOMATICALLY — you do NOT supply them, and it is blind by design, so tell it NOTHING about "
-    "what you are doing. Consult it when proposing or altering the model's structure, and cite any "
+    "what you are doing. For a molecular or biochemical mechanism (proteins, metabolites, modified "
+    "residues, genes, complexes) consulting it is REQUIRED, not optional: do so BEFORE you build the "
+    "structure and again before any structural change — its documented interactions, cooperativity, "
+    "and hidden regulators are primary evidence for the mechanism's TOPOLOGY, not a nicety. Cite any "
     "PMID/DOI it returns in the `make_changes` references."
 )
 
