@@ -96,7 +96,7 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
             return await _judge(scenario, call, baseline, work, meta, clock, t0)
 
         # --- deepagents driver: the LLM panel diagnoses + repairs --------------------------
-        # Arize Phoenix tracing (on by default; disable with --no-phoenix): instrument the
+        # Arize Phoenix tracing (mandatory — always on, no off switch): instrument the
         # LangChain stack BEFORE the agent runs so every LLM + tool-call span is captured.
         if args.phoenix:
             from ..tracing import setup_phoenix_tracing

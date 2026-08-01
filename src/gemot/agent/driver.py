@@ -52,6 +52,7 @@ from .subagents import (
 from .token_usage import _token_accountant
 from .tools import ORCHESTRATOR_TOOLS, _select_tools, _trim_descriptions
 from ..prompts import _NO_MODEL_NUDGE, _SILENT_FINISH_NUDGE
+from .. import models
 
 # --- guards on the (input-dominated, occasionally-hanging) LLM loop -----------------------
 # Transient provider failures (connection drops, malformed/non-JSON bodies, 5xx/429, hung
@@ -279,6 +280,11 @@ async def run_deepagents(
         # Whether it takes effect is provider-dependent (OpenRouter -> the served model) and
         # not guaranteed; it is harmless when ignored.
         model_kwargs={"prompt_cache_key": "petab-mcp-agent"},
+        # OpenRouter provider routing: for a model mirrored across providers (e.g. Luna is also on
+        # Bedrock/Azure at ~2-11x) this excludes the pricey copies so the request stays on OpenAI's
+        # standard tier. Sent verbatim in the request body via extra_body; included ONLY when the
+        # model needs pinning (models.provider_routing returns None otherwise). See models.py.
+        extra_body=({"provider": _pr} if (_pr := models.provider_routing(model)) else {}),
     )
     # Transient provider errors that should RESUME the run (below) rather than end it, when they
     # escape the OpenAI client's own retries — e.g. a malformed non-JSON body the client won't

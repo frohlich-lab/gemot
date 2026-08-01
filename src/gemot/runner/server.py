@@ -39,9 +39,9 @@ _SERVER_BOOTSTRAP = (
     # default (5), too few for the harder several-parameter oscillator fits.
     "srv = create_server(yaml_path, build_root=build_root, reference_mode=ref_mode,\n"
     "                    auto_fit_starts=int(n_starts))\n"
-    "srv.settings.host = host\n"
-    "srv.settings.port = int(port)\n"
-    "srv.run(transport='streamable-http')\n"
+    # fastmcp >=3.4 dropped `srv.settings`; host/port are passed to run() (forwarded to the
+    # streamable-http transport's run_http_async(host=, port=)).
+    "srv.run(transport='streamable-http', host=host, port=int(port))\n"
 )
 
 

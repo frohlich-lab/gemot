@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import models
+
 # Stable dataset-name prefix. Kept as "...-repair" (the examples' original framing; they are
 # now zero-shot BUILDS) on purpose: it is a Phoenix dataset *identifier*, so renaming it would
 # orphan every existing dataset/experiment rather than describe them better. User-visible
@@ -254,7 +256,7 @@ def run_scripted_selftest(scenarios: list, *, n_starts: int = 50) -> list:
     results = []
     for s in scenarios:
         cmd = [sys.executable, str(s.example_dir / "run.py"), "--driver", "scripted",
-               "--no-phoenix", "--n-starts", str(n_starts)]
+               "--n-starts", str(n_starts)]
         rc = subprocess.run(cmd, check=False).returncode
         rp = s.example_dir / "work" / "result.json"
         res = json.loads(rp.read_text()) if rp.is_file() else {"success": rc == 0}
@@ -269,7 +271,7 @@ def run_experiments(
     *,
     base_url: str = "http://localhost:6006",
     driver: str = "deepagents",
-    model: str = "deepseek/deepseek-v4-pro",
+    model: str = models.DEFAULT,
     temperature: float = 0.0,
     n_starts: int = 50,
     recursion_limit: int = 250,

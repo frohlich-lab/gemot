@@ -84,7 +84,7 @@ def _default_workers() -> int:
 # it should only ever truncate a genuinely stuck start, never a start that is still converging
 # (Fides returns its best-so-far for a capped start, so too tight a cap silently degrades fit
 # quality / ΔBIC). Override with PETAB_MCP_FIT_PER_START_TIMEOUT.
-FIT_PER_START_TIMEOUT_S = _env_float("PETAB_MCP_FIT_PER_START_TIMEOUT", 60.0)
+FIT_PER_START_TIMEOUT_S = _env_float("PETAB_MCP_FIT_PER_START_TIMEOUT", 180.0)
 # Slack added on top of the pure fitting time to cover the one-time AMICI/pyPESTO compile on the
 # first build of a structure plus simulation/serialization — none of which Fides MAXTIME bounds.
 # Override with PETAB_MCP_FIT_COMPILE_MARGIN.

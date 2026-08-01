@@ -6,10 +6,9 @@ module wires OpenTelemetry tracing into the LangChain / LangGraph stack that
 captured as a span and is inspectable in the Phoenix UI (prompts, completions, tool
 arguments, token counts, latency, and the full agent trace tree).
 
-Tracing is **on by default** — the Phoenix packages are declared dependencies of the
-deepagents driver — and can be turned off with ``run.py --no-phoenix``. The function
-still degrades gracefully (a clear message, never a crash) if the tracing packages happen
-to be missing.
+Tracing is **mandatory** — the Phoenix packages are declared dependencies of the deepagents
+driver and there is no flag to turn it off. The function still degrades gracefully (a clear
+message, never a crash) if the tracing packages happen to be missing.
 
 Two ways to collect the spans:
 
@@ -130,9 +129,8 @@ def setup_phoenix_tracing(
     except ImportError:
         print(
             "[phoenix] `arize-phoenix-otel` is not installed; running without tracing.\n"
-            "  Install the runner requirements, or:\n"
-            "    pip install arize-phoenix arize-phoenix-otel openinference-instrumentation-langchain\n"
-            "  (or pass --no-phoenix to silence this)."
+            "  Install the runner requirements to enable it, or:\n"
+            "    pip install arize-phoenix arize-phoenix-otel openinference-instrumentation-langchain"
         )
         return None
 

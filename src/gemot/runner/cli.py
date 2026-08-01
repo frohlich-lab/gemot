@@ -33,6 +33,7 @@ import os
 from .failure import _should_reraise, _summarize_exc
 from .main import _main_async
 from ..scenario import Scenario
+from .. import models
 
 def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -41,10 +42,13 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
     )
     p.add_argument("--driver", choices=["deepagents", "scripted"], default="deepagents",
                    help="deepagents: drive an OpenRouter model; scripted: deterministic repair, no LLM.")
-    p.add_argument("--model", default="deepseek/deepseek-v4-pro",
-                   help="OpenRouter model id (deepagents driver). Default v4-pro: on the "
-                        "repressilator it passes 2/3 near-parsimoniously vs v4-flash's lucky "
-                        "1/5, at ~$0.58/run (it thrashes less).")
+    p.add_argument("--model", default=models.DEFAULT,
+                   help="OpenRouter model id, or a go-to alias (deepagents driver). Aliases: "
+                        f"{', '.join(models.MODELS)} (see petab_harness/models.py). Default "
+                        f"'{models.DEFAULT}' = {models.resolve(models.DEFAULT)}: $0.10/M prompt, "
+                        "$0.60/M completion, 1M-token context. The Luna family is pinned to "
+                        "OpenAI (Bedrock/Azure copies excluded) so it serves at the documented "
+                        "$0.10/M standard tier.")
     p.add_argument("--base-url", default="https://openrouter.ai/api/v1",
                    help="OpenAI-compatible base URL for the LLM provider (default: OpenRouter).")
     p.add_argument("--api-key", default=None,
@@ -77,8 +81,8 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
                         "OmniPath) is included by default and is general biology; literature search over a "
                         "benchmark problem's distinctive entity panel could surface its withheld "
                         "source paper, so it is opt-in. Unambiguously useful on NOVEL problems.")
-    p.add_argument("--no-phoenix", dest="phoenix", action="store_false",
-                   help="Disable Arize Phoenix tracing (it is ON by default).")
+    # Phoenix tracing is MANDATORY — every run must be traced, so there is deliberately no flag to
+    # disable it (the --phoenix-* options below only configure it, they never turn it off).
     default_project = f"petab-mcp-{scenario.name}"
     p.add_argument("--phoenix-project", default=os.environ.get("PHOENIX_PROJECT_NAME", default_project),
                    help="Phoenix project name to group this run's traces under.")
@@ -99,6 +103,7 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
 def run_scenario(scenario: Scenario, argv: list[str] | None = None) -> int:
     """Parse args, run the pipeline for ``scenario``, and return a process exit code."""
     args = build_parser(scenario).parse_args(argv)
+    args.model = models.resolve(args.model)  # go-to alias (e.g. "luna") -> OpenRouter id
     result: dict = {}
     try:
         exit_code, result = asyncio.run(_main_async(scenario, args))
