@@ -215,10 +215,15 @@ def _decision_tool(session, finish_state=None, probe=None):
                 # over-refuses: a legitimate, identifiable fit routinely carries a flat_direction
                 # from ill-conditioning — a parameter pinned at a bound (zero-curvature axis) or a
                 # merely correlated group — while its FIM stays full rank (enzyme_kinetics: rank
-                # 5/5, two flat directions, correct model). A rank-deficient FIM is the structural
+                # 5/5, two flat directions, correct model). A rank-deficient FIM is the STRONGER
                 # signal: a parameter combination the data cannot constrain AT ALL (blasi's 16 free
                 # initial conditions on steady-state data, where equilibrium is IC-independent, drop
-                # the rank exactly). flat_directions is still used below — to NAME the offending
+                # the rank exactly). It is NOT clean either, though — several reference structures
+                # are themselves rank-deficient and DO trip this gate (armistead / brannmark / bruno
+                # / crauste: parameters pinned at bounds, or genuine collinearity). That is
+                # tolerable ONLY because the gate RELENTS after _MAX_PARSIMONY_FINISH_REFUSALS; do
+                # NOT drop the relent believing rank deficiency is false-positive-free.
+                # flat_directions is still used below — to NAME the offending
                 # params — but only rank deficiency triggers the refusal.
                 rank_deficient = bool(fim_info.get("rank_deficient"))
                 flat_dirs = ident.get("flat_directions") or []
