@@ -30,6 +30,7 @@ MATHEMATICIAN_TOOLS = [
     "get_parameters",       # scales, bounds — identifiability / conditioning
     "get_fit_summary",
     "get_fitting_log",      # pyPESTO/Fides log: multistart spread, convergence, bounds
+    "get_skill",            # PEtab semantics behind the read (steady-state identifiability, etc.)
 ]
 
 # Systems scientist: is the mechanism real? The mechanism as written, what was measured
@@ -39,6 +40,7 @@ SYSTEMS_SCIENTIST_TOOLS = [
     "list_observables",     # what quantity is measured
     "get_measurements",     # the actual data / dynamic behaviour
     "get_parameters",       # are the rate magnitudes plausible?
+    "get_skill",            # PEtab semantics behind the read (steady-state identifiability, etc.)
 ]
 
 # Signal-processing engineer: residuals as signals, entirely via SQL over the data.
@@ -46,6 +48,7 @@ SIGNAL_ENGINEER_TOOLS = [
     "list_data_tables",     # the queryable tables (simulations, residuals, ...) + columns
     "query_data",           # SQL over measured-vs-simulated points + residual breakdowns
     "get_fit_summary",
+    "get_skill",            # PEtab semantics behind the read (e.g. all times inf = steady state)
 ]
 
 # The orchestrator ("modeling lead") orients, delegates analysis to the three analysts, and

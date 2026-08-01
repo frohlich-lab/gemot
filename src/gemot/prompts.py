@@ -177,7 +177,8 @@ DEFAULT_TASK = (
 _REPORT_CONTRACT = (
     "\n\nYou cannot edit the model — you only inspect and advise. ALWAYS call at least one of "
     "your tools to inspect the actual problem before you conclude — do not answer from the "
-    "task description alone. Then return a SHORT report: (1) what you found, (2) the single "
+    "task description alone. Consult the `petab-model-building` skill (`get_skill`) for the PEtab "
+    "semantics behind your read. Then return a SHORT report: (1) what you found, (2) the single "
     "most likely explanation from your perspective, (3) a concrete recommendation for the "
     "modeling lead (name the operation and, if you can, the exact reaction and rate law). "
     "Flag explicitly if the evidence is ambiguous or outside your expertise. NEVER return an "
