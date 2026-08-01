@@ -107,6 +107,27 @@ table.runs tbody tr:hover { background:var(--panel); }
 .assistant-text .md-pre code { background:none; border:0; padding:0; font-size:.9em; white-space:pre; }
 .assistant-text blockquote { margin:.5em 0; padding:.1em .8em; border-left:3px solid var(--line); color:var(--muted); }
 .assistant-text hr { border:0; border-top:1px solid var(--line); margin:.7em 0; }
+/* LaTeX math, rendered as MathML. Display math gets its own scroll box (the .md-pre pattern):
+   .turn is overflow:hidden, so a wide equation would otherwise be silently clipped. MathML
+   inherits currentColor, so the themes need nothing here. */
+.assistant-text .md-math { margin:.5em 0; max-width:100%; overflow-x:auto; overflow-y:hidden; }
+.assistant-text .md-math, .assistant-text math { word-break:normal; }
+.assistant-text math mtext { white-space:pre-wrap; }        /* \text{state } keeps its space */
+/* text-align is load-bearing (Chromium ignores the legacy columnalign attribute), but do NOT set
+   padding on mtd: that collapses <mtable> row heights in Chromium and the rows print on top of
+   each other. Column spacing comes from the UA stylesheet. */
+.assistant-text math mtd { text-align:center; }
+.assistant-text math .md-math-rl mtd { text-align:left; }   /* \begin{aligned}: right & left */
+.assistant-text math .md-math-rl mtd.md-math-r { text-align:right; }
+.assistant-text math .md-math-box { padding:.1em .3em; border:1px solid var(--line); border-radius:4px; }
+/* an unsupported command, or a formula the converter couldn't parse, shows its LaTeX source —
+   marked, so the reader can tell raw source from a rendered formula. pre-wrap because the whole-
+   formula fallback is a <code>, and a multi-line display formula (or a ```math fence, which used
+   to land in a whitespace-preserving <pre>) would otherwise collapse onto one line — unreadable
+   as the source it is there to show. The in-formula <mtext> marker gets the same above. */
+.assistant-text .md-math-raw { font-family:var(--mono); font-size:.92em; color:var(--warn);
+  background:none; border:0; padding:0; text-decoration:underline dotted; text-underline-offset:2px;
+  white-space:pre-wrap; }
 
 .toolcall { margin-top:8px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
 .toolcall > summary { cursor:pointer; padding:6px 10px; list-style:none; display:flex; align-items:center; gap:8px; font-size:12.5px; }
@@ -115,8 +136,14 @@ table.runs tbody tr:hover { background:var(--panel); }
 .tool-name::before{ content:"⛭ "; opacity:.6; }
 .setmodel .tool-name{ color:var(--best); } .setmodel .tool-name::before{ content:"✎ "; }
 .kv { padding:4px 10px 10px; }
+/* Tool payloads WRAP rather than scroll sideways: a <pre> defaults to white-space:pre, so one long
+   value (a rate law, an advice string, a 60-parameter list) pushed the whole panel into a horizontal
+   scrollbar and the rest of the payload out of view. pre-wrap keeps the YAML's own line structure
+   and folds only what overflows; anywhere is for a single unbroken token — a hash, a long id — that
+   pre-wrap alone would still let overhang. Vertical scrolling stays, capped by max-height. */
 .kv pre { margin:6px 0 0; background:var(--panel2); border:1px solid var(--line); border-radius:6px;
-  padding:8px; overflow:auto; max-height:340px; font-size:12px; }
+  padding:8px; overflow:auto; max-height:340px; font-size:12px;
+  white-space:pre-wrap; overflow-wrap:anywhere; }
 .kv .lbl { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
 
 /* analyst delegation */
@@ -169,3 +196,13 @@ table.runs tbody tr:hover { background:var(--panel); }
 .ant-key{ color:var(--k-key); font-weight:600; } .ant-rxn{ color:var(--k-rxn); font-weight:600; }
 .ant-num{ color:var(--k-num); } .ant-com{ color:var(--k-com); font-style:italic; }
 .ant-op{ color:var(--k-op); } .ant-str{ color:var(--ok); }
+
+/* GFM pipe tables. The wrapper scrolls (like .md-math) only when folding is not enough: cells wrap
+   first, so the common case is a table that fits the panel instead of one that runs off it. */
+.assistant-text .md-table-wrap { margin:.5em 0; max-width:100%; overflow-x:auto; }
+.assistant-text .md-table { border-collapse:collapse; font-size:.95em; }
+.assistant-text .md-table th, .assistant-text .md-table td { border:1px solid var(--line);
+  padding:.2em .5em; text-align:left; vertical-align:top; overflow-wrap:anywhere; }
+.assistant-text .md-table th { font-weight:650; background:var(--panel2); white-space:nowrap; }
+.assistant-text .md-table .md-t-c { text-align:center; }
+.assistant-text .md-table .md-t-r { text-align:right; }

@@ -87,5 +87,14 @@ jobs:
           print(f"SWIG_LIB={lib_dirs[-1]}")
           PY
 
+      # tests/test_explorer_math.py runs the explorer's LaTeX->MathML converter in `node` (app.js
+      # is a plain browser script, so the only way to test it is to evaluate it). That test skips
+      # where node is absent; pin one here so the skip never happens silently in CI, for the same
+      # reason the SWIG install above is explicit.
+      - name: Set up Node (runs the explorer's JS through pytest)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Run tests
         run: python -m pytest -v
