@@ -36,6 +36,14 @@ def _residual_structure_fields(diagnosis) -> dict | None:
     Keeps the rolled-up verdict (which observables show significant sign-test bias or runs-test
     time trend, and whether the tests were underpowered) plus one row per observable with the
     two p-values and the bias magnitude — enough to analyse a sweep without the per-point data.
+
+    ``replicate_lack_of_fit`` is carried through verbatim: it is already the bounded projection the
+    fit result rides on (a verdict plus at most REPLICATE_LOF_MAX_REPORTED_POINTS named points), and
+    without it a sweep cannot tell whether the arm FLAGGED, PASSED (and on how many lack-of-fit
+    degrees of freedom — ``weak``) or never ran. Without it a sweep cannot tell those apart
+    from its result.json — establishing that the arm had fired at all meant going to the Phoenix
+    trace, which does not scale to a series. ``metrics._flatten_replicate_lof`` takes it the last
+    step, into the flat ``lof_*`` columns of the history CSV a sweep is actually grouped by.
     """
     if not isinstance(diagnosis, dict):
         return None
@@ -43,6 +51,12 @@ def _residual_structure_fields(diagnosis) -> dict | None:
     per = diagnosis.get("per_observable")
     if not isinstance(rolled, dict) and not isinstance(per, list):
         return None
+    # NARROWED once, here, not `(rolled or {})` at each use: the guard above is satisfied by `per`
+    # alone, so a truthy NON-dict `residual_structure` (a status string from a degraded payload) got
+    # past it and `.get` raised AttributeError — which judge.py catches by setting the whole block to
+    # None, losing the per-observable rows too. This is the projection that makes a run readable from
+    # result.json; it must degrade, not vanish.
+    rolled = rolled if isinstance(rolled, dict) else {}
     per_obs = []
     for o in (per or []):
         if not isinstance(o, dict):
@@ -56,11 +70,15 @@ def _residual_structure_fields(diagnosis) -> dict | None:
             "mean_weighted_residual": o.get("mean_weighted_residual"),
             "low_power": bool(o.get("structure_low_power")),
         })
-    return {
-        "flagged_observables": (rolled or {}).get("flagged_observables", []),
-        "low_power": bool((rolled or {}).get("low_power")),
+    out = {
+        "flagged_observables": rolled.get("flagged_observables", []),
+        "low_power": bool(rolled.get("low_power")),
         "per_observable": per_obs,
     }
+    lof = rolled.get("replicate_lack_of_fit")
+    if isinstance(lof, dict):
+        out["replicate_lack_of_fit"] = lof
+    return out
 
 
 def _reference_sigma_flag(report, reference) -> dict | None:

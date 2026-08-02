@@ -56,13 +56,25 @@ _RESULT_FIELDS = (
     "phoenix_project", "phoenix_trace_id",
 )
 
+# The replicate lack-of-fit verdict, flattened out of the nested `residual_structure` block for the
+# same reason the edit rejects are: a sweep groups by flat columns. `lof_weak` is the one this exists
+# for — "the arm passed" and "the arm passed on too few lack-of-fit degrees of freedom to mean it" are
+# different runs, and without a flat column telling them apart means reading traces.
+_LOF_FIELDS = ("lof_status", "lof_weak", "lof_df")
+
+# result.json keys whose value is a NESTED dict, carried into the row so the write-time flatteners
+# below can expand them. build_row copies only the flat _RESULT_FIELDS, so without this the flatteners
+# saw nothing on the collect() path and every column derived from a nested block stayed empty —
+# silently, which is the failure mode the _RESULT_FIELDS comment above warns about.
+_NESTED_SOURCE_FIELDS = ("edit_rejects", "residual_structure")
+
 # Columns derived from the Phoenix trace (token usage + span breakdown).
 _PHOENIX_FIELDS = (
     "n_spans", "n_llm_calls", "n_tool_spans", "n_agent_spans", "n_span_errors",
     "tokens_prompt", "tokens_completion", "tokens_total", "trace_model", "phoenix_note",
 )
 
-HISTORY_FIELDS = _RESULT_FIELDS + _PHOENIX_FIELDS
+HISTORY_FIELDS = _RESULT_FIELDS + _LOF_FIELDS + _PHOENIX_FIELDS
 DEFAULT_HISTORY = paths.metrics_history()
 
 
@@ -190,6 +202,7 @@ def phoenix_trace_metrics(
 def build_row(result: dict[str, Any], *, phoenix_base_url: str | None = None) -> dict[str, Any]:
     """One flat metrics row from a result.json dict, enriched with Phoenix usage if reachable."""
     row: dict[str, Any] = {k: result.get(k) for k in _RESULT_FIELDS}
+    row.update({k: result.get(k) for k in _NESTED_SOURCE_FIELDS})
     row.update({k: None for k in _PHOENIX_FIELDS})
     project = result.get("phoenix_project")
     if phoenix_base_url and project:
@@ -222,6 +235,27 @@ def _flatten_edit_rejects(row: dict) -> dict:
             "edit_reject_top_cause": top}
 
 
+def _flatten_replicate_lof(row: dict) -> dict:
+    """Expand the replicate lack-of-fit verdict nested under ``residual_structure`` into the flat
+    ``lof_*`` history columns. Same transform-at-write-time shape as :func:`_flatten_edit_rejects`,
+    and a row without the block passes through untouched — model-less runs and every run that
+    predates the column. Runs that HAVE the block always carry it, including the 13 of 16 examples
+    whose problems have no replicated design points: there the block says ``available: false`` and
+    ``lof_status`` records which kind of no-evidence it was."""
+    rolled = row.get("residual_structure")
+    lof = rolled.get("replicate_lack_of_fit") if isinstance(rolled, dict) else None
+    if not isinstance(lof, dict):
+        return row
+    # `weak` and `lof_df` are OMITTED from the verdict when they say nothing (see
+    # data_access._LOF_OMIT_WHEN_EMPTY_KEYS). `lof_weak` is written only where there IS a counted df
+    # to qualify: coercing an absent one to False would record "the arm ran and its pass was solid"
+    # for an arm that never ran, or whose structural count could not be taken — the same over-claim
+    # data_access.residual_flag refuses when it reports None rather than False for an untested arm.
+    lof_df = lof.get("lof_df")
+    return {**row, "lof_status": lof.get("status"), "lof_df": lof_df,
+            "lof_weak": None if lof_df is None else bool(lof.get("weak"))}
+
+
 def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HISTORY) -> Path:
     """Append rows to the append-only history CSV (writing the header if it is new)."""
     history_path = Path(history_path)
@@ -242,7 +276,7 @@ def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HIST
         if is_new:
             writer.writeheader()
         for row in rows:
-            row = _flatten_edit_rejects(row)
+            row = _flatten_replicate_lof(_flatten_edit_rejects(row))
             writer.writerow({k: row.get(k) for k in fields})
     return history_path
 

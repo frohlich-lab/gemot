@@ -60,10 +60,14 @@ _MAX_PARSIMONY_FINISH_REFUSALS = 3
 #
 # The replicate arm ONLY. The sign/runs tests share `flagged_observables` with it but are advisory by
 # design (residual_tests: low power at these sample sizes, so a flag is weak evidence), and gating on
-# them would refuse far beyond what this replaces. The replicate arm is the powered one: Holm-adjusted
-# at REPLICATE_LOF_ALPHA, and it reports NO EVIDENCE (available False) rather than a flag wherever the
-# floor is thin, the family too small, or the model flexible enough to make the test vacuous — so it
-# FAILS OPEN on its own. Bounded and reset exactly like the two gates above.
+# them would refuse far beyond what this replaces. What this gate reads is the arm's FLAG, which is
+# the part with power at any lack-of-fit df: Holm-adjusted at REPLICATE_LOF_ALPHA against each point's
+# own replicate scatter, and reported as NO EVIDENCE (available False) rather than as a flag wherever
+# the floor is thin, the family too small, or the pooled df <= 0 — so it FAILS OPEN on its own. Its
+# PASS is the qualified half (`weak`, `lof_df`: constants.REPLICATE_LOF_MIN_LOF_DF), and nothing here
+# reads that — a weak pass clears this gate exactly as a powered one does, deliberately; it reaches
+# the lead as prose, in the armed message's `residual_structure.summary`. Bounded and reset exactly
+# like the two gates above.
 _MAX_STRUCTURE_FINISH_REFUSALS = 3
 
 
