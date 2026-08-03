@@ -462,9 +462,11 @@ def fetch_experiment_rows(base_url: str = "http://localhost:6006") -> list[dict[
                     "chi2_gof_pvalue": out.get("chi2_gof_pvalue"),
                     "stop_reason": out.get("stop_reason"),
                     # Modeling-work signals used to tell an instant infrastructure abort from a
-                    # late-abort partial (see summarize_sweep): n_ops = committed model versions
-                    # (head_version); n_fits = number of fits run. Both zero ⇒ no work was done.
-                    "n_ops": out.get("head_version"),
+                    # late-abort partial (see summarize_sweep): n_ops = committed model versions;
+                    # n_fits = number of fits run. Both zero ⇒ no work was done. head_version is
+                    # 0-based and -1 when nothing was fit, so the COUNT is head_version + 1.
+                    "n_ops": (None if out.get("head_version") is None
+                              else int(out["head_version"]) + 1),
                     "n_fits": out.get("n_fits"),
                     "prompt_version": md.get("prompt_version"),
                     "git_sha": md.get("git_sha"),

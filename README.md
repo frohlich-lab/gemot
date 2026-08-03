@@ -172,7 +172,7 @@ it is **SQL over the data** via DuckDB, so you compute the breakdown you want:
   and ill-conditioning — the *numerical* view of the fit, complementing the SQL residual view.
 
 **Provenance, versions & errors** — `get_provenance`, `get_errors`, `list_versions`,
-`get_version`, `diff_versions`, `restore_version(version)`, `get_progress`, `reset`. (The HEAD
+`get_version`, `diff_versions`, `restore_version(version)`, `get_progress`. (The HEAD
 version comes from `describe_problem`.)
 
 **Skills** — `list_skills`, `get_skill(name, file?)`. The server ships tool-usage

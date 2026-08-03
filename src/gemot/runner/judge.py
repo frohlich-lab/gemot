@@ -26,16 +26,15 @@ from .scoring import _noise_sigma_flag, _reference_sigma_flag, _residual_structu
 async def _head_version(call) -> "int | None":
     """The current HEAD version number, read off ``describe_problem``.
 
-    There is no separate ``current_version`` tool: everything it returned (``current_version``,
-    ``has_unfit_edits``, ``n_pending_edits``) is already on ``describe_problem``, so the second
-    tool was a schema in every client's context for no extra capability. ``None`` when the read
-    fails, so a caller can fall back rather than abort.
+    There is no separate ``current_version`` tool — ``describe_problem`` carries it. ``None`` when
+    the read fails, so a caller can fall back rather than abort. ``-1`` means nothing has been
+    fit: versions only exist for scored models.
     """
     try:
         desc = await call("describe_problem")
     except Exception:  # pragma: no cover - defensive; callers degrade
         return None
-    return int(desc.get("current_version", 0)) if isinstance(desc, dict) else None
+    return int(desc.get("current_version", -1)) if isinstance(desc, dict) else None
 
 
 async def _restore_best_checkpoint(call) -> None:
@@ -133,11 +132,11 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     except Exception as exc:  # noqa: BLE001 - report-only diagnostic; never fail the judge on it
         print(f"  (residual-structure diagnosis unavailable: {type(exc).__name__}: {exc})")
         residual_structure = None
-    # NOT `or 0`: a legitimate HEAD of v0 is falsy, so coercing made an unreadable probe and a
-    # run still sitting on v0 indistinguishable in `head_version`. Keep None as None; `if head`
-    # then skips the diff for both, which is right — a v0-to-v0 diff is empty anyway.
+    # Keep None as None (an unreadable probe), distinct from -1 (nothing fit). A diff needs two
+    # versions, so it is skipped unless HEAD is at least v1.
     head = await _head_version(call)
-    diff = await call("diff_versions", from_version=0, to_version=head) if head else {}
+    diff = (await call("diff_versions", from_version=0, to_version=head)
+            if head is not None and head > 0 else {})
     errors = await call("get_errors", limit=20)
     # baseline.nll is None for a zero-shot build (no model shipped → nothing to score).
     delta = (baseline.nll - final_nll) if (baseline.nll is not None and final_nll is not None) else None
