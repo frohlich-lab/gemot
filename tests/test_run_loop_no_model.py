@@ -4,7 +4,7 @@ test_finish_gate.py unit-tests the _model_committed helper; this drives run_deep
 with a fake agent whose graph "completes" without ever authoring a model, asserting the loop
 (1) injects the build nudge and resumes, decrementing the resume budget, and (2) relabels the
 run "no_model_built" once the budget is exhausted — the behaviour the finish gate cannot reach
-because a no-tool turn ends the graph without calling make_decision.
+because a no-tool turn ends the graph without calling the `finish` tool.
 
 Heavy examples-harness deps (deepagents, langchain_openai, langchain_mcp_adapters, openai) are
 monkeypatched/needed; skip cleanly where absent.
@@ -53,11 +53,11 @@ class _FakeAgent:
     """Graph stub whose astream yields ONE super-step then ends — a clean 'completed' with
     whatever the probe reports as the model state. Records each astream input so the test can
     see the resume nudge. If ``confirm_after`` is set, it flips the captured finish_state to
-    confirmed on that astream call, simulating the model finishing through make_decision."""
+    confirmed on that astream call, simulating the model finishing through the gate."""
 
     def __init__(self):
         self.inputs = []
-        self.captured = {}          # {"fs": finish_state} populated by the capturing _decision_tool
+        self.captured = {}          # {"fs": finish_state} populated by the capturing _finish_tool
         self.confirm_after = None
 
     def astream(self, stream_input, config=None, stream_mode=None):
@@ -77,15 +77,15 @@ def _run(mod, monkeypatch, probe, confirm_after=None):
     fake_agent = _FakeAgent()
     fake_agent.confirm_after = confirm_after
 
-    # Capture the finish_state the driver hands the decision tool, so the fake agent can flip it
-    # to confirmed (a fake astream can't itself call make_decision).
-    _real_decision_tool = mod._decision_tool
+    # Capture the finish_state the driver hands the finish tool, so the fake agent can flip it
+    # to confirmed (a fake astream can't itself call `finish`).
+    _real_finish_tool = mod._finish_tool
 
-    def _capturing_decision_tool(session, finish_state=None, probe=None):
+    def _capturing_finish_tool(session, finish_state=None, probe=None):
         fake_agent.captured["fs"] = finish_state
-        return _real_decision_tool(session, finish_state, probe=probe)
+        return _real_finish_tool(session, finish_state, probe=probe)
 
-    monkeypatch.setattr(mod.driver, "_decision_tool", _capturing_decision_tool)
+    monkeypatch.setattr(mod.driver, "_finish_tool", _capturing_finish_tool)
 
     # Real (inert) tool objects named per ALLOWED_TOOLS so _select_tools' curation passes; the
     # faked create_deep_agent ignores them, so they are never actually invoked.
@@ -131,7 +131,7 @@ def test_no_model_silent_stop_bounces_with_build_nudge(monkeypatch):
 
 @requires_harness
 def test_model_silent_stop_bounces_into_the_gate(monkeypatch):
-    """A silent stop WITH a model (no finish through make_decision) is bounced with the FINISH
+    """A silent stop WITH a model (no finish through the gate) is bounced with the FINISH
     nudge — the gate cannot be sidestepped — and relabelled 'silent_stop', not 'completed'."""
     mod = _load_agent_module()
     result, fake_agent = _run(mod, monkeypatch, _Probe(model_authored=True))

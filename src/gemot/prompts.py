@@ -133,7 +133,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "what to do next. The DEFAULT is to KEEP ITERATING while the model is still mis-specified — "
     "bic is still clearly improving fit-over-fit, OR get_fit_diagnosis shows a systematic "
     "per-observable bias / a residual time-trend: just make the next justified "
-    "`make_changes` call (iterating needs NO `make_decision` call). If it has NOT "
+    "`make_changes` call (iterating needs NO control call). If it has NOT "
     "improved over the last few "
     "iterations, STOP tweaking the same structure or piling on parameters: (a) call "
     "`get_fit_diagnosis` — a systematic sign/trend at particular observables or times points at "
@@ -145,17 +145,15 @@ DEFAULT_SYSTEM_PROMPT = (
     "genuinely DIFFERENT structure — a different rate-law form or topology. If a LARGER model "
     "fits but a smaller one won't, the smaller one is usually "
     "MIS-PARAMETERISED (wrong fixed/free split, bad bounds, or wrong initial conditions), not "
-    "too simple — fix that instead of keeping the bloat. Call `make_decision` only for the two "
-    "non-default moves:\n"
-    "   - `rollback` — a change did not help. You do NOT return to an earlier version manually: "
-    "every fitted version is kept and the run is scored on your BEST-bic one regardless of where "
-    "you end (`list_versions` shows it), so a worse change never loses your best. Just make a "
-    "genuinely DIFFERENT change from here (a different rate-law form or topology) — not a rewrite "
-    "of a version you already have;\n"
-    "   - `finish` — the residuals show NO systematic structure (get_fit_diagnosis bias ≈ 0, no "
-    "time-trend) AND bic has bottomed out — you cannot lower it further by adding, dropping, or "
-    "re-forming mechanism. Finish on the LOWEST-bic such model.\n"
-    "Repeat until you call `make_decision` with `finish`. When you finish, report the "
+    "too simple — fix that instead of keeping the bloat. A change that did NOT help costs you "
+    "nothing and needs no control call: every fitted version is kept and the run is scored on "
+    "your BEST-bic one regardless of where you end (`list_versions` shows it), so never re-author "
+    "a version you already have — just make a genuinely DIFFERENT change from here (a different "
+    "rate-law form or topology).\n"
+    "Call `finish` — the ONE control call — when the residuals show NO systematic structure "
+    "(get_fit_diagnosis bias ≈ 0, no time-trend) AND bic has bottomed out: you cannot lower it "
+    "further by adding, dropping, or re-forming mechanism. Finish on the LOWEST-bic such model.\n"
+    "Repeat until you call `finish`. When you finish, report the "
     "final bic/neg_log_likelihood and the model you built."
 )
 
@@ -509,16 +507,16 @@ _NO_MODEL_NUDGE = (
     "model exists."
 )
 
-# Injected when a run with a built model ended WITHOUT finishing through make_decision — a silent
+# Injected when a run with a built model ended WITHOUT finishing through the gate — a silent
 # stop is not an accepted exit. Bare enforcement of the protocol (no coaching on what to fix): it
 # points the model at the finish gate, which then requires a fitted model and shows the diagnosis
 # before it will confirm.
 _SILENT_FINISH_NUDGE = (
-    "You ended the run without finishing it. A run is ONLY complete when you finish through "
-    "make_decision('finish') — a silent stop is not accepted. Call make_decision('finish') and "
+    "You ended the run without finishing it. A run is ONLY complete when you finish through the "
+    "`finish` tool — a silent stop is not accepted. Call `finish` and "
     "you will be shown your current fit's diagnosis and asked to confirm. If that fit is "
     "inadequate, keep improving the model instead. Do not stop until you have finished through "
-    "make_decision."
+    "`finish`."
 )
 
 _IDLE_NUDGE = (
@@ -555,39 +553,31 @@ TOOL_DISABLED_TRANSPORT_TMPL = (
 )
 
 
-# ------------------------------------------------------- the lead's finish gate (make_decision)
+# ------------------------------------------------------------- the lead's finish gate (`finish`)
 # What the gate RETURNS to the model. The gate's own logic -- what it reads, what it counts, when
 # it relents -- is agent/finish_gate.py; only the text is here. The `_TMPL` entries are .format()ed
 # with the values named in their fields; everything else is sent verbatim.
 
-MAKE_DECISION_DESCRIPTION = (
-    "Record a control decision after reading the CURRENT HEAD's fit metrics "
+FINISH_DESCRIPTION = (
+    "Ends the run. Call it only after reading the CURRENT HEAD's fit metrics "
     "(bic / neg_log_likelihood / is_new_best — never an earlier version's). You do NOT "
-    "call this to keep iterating — to iterate, just make the next make_changes call. Call it "
-    "only for `action`: 'rollback' (the last change didn't help — the harness keeps your best-bic "
-    "version regardless of where you end, so just try a genuinely different structure) or 'finish' (residuals show no systematic "
-    "structure AND bic has bottomed out). Judge that structure with the residual_structure verdict "
+    "call this to keep iterating — to iterate, just make the next make_changes call — and a change "
+    "that did not help needs no call either: the harness keeps your best-bic version regardless of "
+    "where you end, so just try a genuinely different structure. Call this ONLY when the residuals "
+    "show no systematic structure AND bic has bottomed out. "
+    "Judge that structure with the residual_structure verdict "
     "the fit already returned, not with chi2: its sign_test / runs_test read residual SIGNS, and "
     "where design points REPEAT its replicate_lack_of_fit measures each prediction against that "
     "point's own replicate scatter — a flagged point there means no parameter value in your current "
     "form can reach it, so the form is what has to change. Its PASS is worth only its lof_df "
     "(replicated points minus your estimated structural parameters): a pass carrying weak: true, or "
-    "carrying no lof_df at all, does not show the form is right. 'finish' takes TWO calls: the first ARMS it and shows you the "
-    "current bic and residual-structure diagnosis; review it, then call 'finish' AGAIN to "
-    "confirm and end. 'finish' is refused when there is no valid fit yet (no model built / "
+    "carrying no lof_df at all, does not show the form is right. Finishing takes TWO calls: the "
+    "first ARMS it and shows you the "
+    "current bic and residual-structure diagnosis; review it, then call `finish` AGAIN to "
+    "confirm and end. It is refused when there is no valid fit yet (no model built / "
     "no finite bic). Prefer the FEWEST free parameters that fit "
-    "(lower bic wins). Give a one-line `rationale`."
+    "(lower bic wins). `rationale` is REQUIRED: one line on why this model is done."
 )
-
-# Keyed by `action`. `finish` never reaches this table -- every path in the finish branch returns.
-DECISION_GUIDANCE = {
-    "rollback": "Recorded: rollback. You do not need to return to the earlier version: every "
-                "fitted version is kept and the run is scored on your BEST-bic one regardless of "
-                "where you end (list_versions shows it). So don't re-author to get back to it — "
-                "make a genuinely DIFFERENT change from here (a new rate-law form or topology).",
-}
-
-DECISION_UNKNOWN_ACTION = "Unknown action — use one of: rollback, finish."
 
 # No fittable model. Refused every time -- the harness never records an unfitted model as
 # finished -- but bounded: after _MAX_NO_FIT_FINISH_ATTEMPTS the run is ended as no-model-built
@@ -796,10 +786,8 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
     # Everything the harness itself says back to the model: the finish gate, the run-loop
     # nudges, the circuit breaker, the task-arg guard.
     "control": {
-        "petab-make-decision": MAKE_DECISION_DESCRIPTION,
+        "petab-finish-description": FINISH_DESCRIPTION,
         "petab-finish-gate": {
-            "decision_guidance": DECISION_GUIDANCE,
-            "decision_unknown_action": DECISION_UNKNOWN_ACTION,
             "refused_no_fit": FINISH_REFUSED_NO_FIT,
             "gave_up_no_fit": FINISH_GAVE_UP_NO_FIT_TMPL,
             "refused_sigma": FINISH_REFUSED_SIGMA_TMPL,

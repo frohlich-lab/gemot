@@ -63,7 +63,7 @@ ORCHESTRATOR_TOOLS = [
     "list_observables",     # what is measured (observable -> species) — needed to name species
     "list_conditions",      # per-condition inputs/doses set in the condition table (match by name)
     # score / diagnose (both COMPACT + bounded) / history
-    # NOTE: get_fit_summary is deliberately NOT here. `fit` (and rollback/restore) already return
+    # NOTE: get_fit_summary is deliberately NOT here. `make_changes` already returns
     # the whole fit block — metrics, bic, parameters_at_bound, the noise-sigma verdict + advice,
     # and the residual_structure verdict — so for the LEAD, which is the only agent that fits, a
     # summary call reads back what it was just handed. Trace analysis of sweep 50751606 measured 9

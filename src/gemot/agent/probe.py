@@ -75,7 +75,7 @@ async def _model_committed(probe) -> bool:
 
     The driver uses this to catch a run that ended cleanly having built nothing: the lead
     emitted a no-tool turn and the deepagents graph terminated WITHOUT going through the finish
-    gate (which only guards ``make_decision('finish')``) — so neither the finish gate nor the
+    gate (which only guards the ``finish`` tool) — so neither the finish gate nor the
     zero-tools relabel (a `task` delegation to the biocurator counts as a tool) sees it, and it
     would otherwise score as an empty k=0 "completed" run. Probes via the un-timed
     ``progress_probe`` so the check doesn't inflate the tool clock. Fails OPEN (returns True)

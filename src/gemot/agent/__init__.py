@@ -12,7 +12,7 @@ report. The lead synthesizes the reports and is the only agent that edits the mo
   :mod:`.biocurator`       the blinded bio-knowledge analyst, assembled from runtime-discovered tools
   :mod:`.literature`       provenance for what the biocurator read, and the EuropePMC trim
   :mod:`.probe`            reading the server's CURRENT state through a bare call handle
-  :mod:`.finish_gate`      ``make_decision`` — the only legitimate way to end a run
+  :mod:`.finish_gate`      ``finish`` — the only legitimate way to end a run
   :mod:`.token_usage`      per-run token accounting across the lead and its subagents
   :mod:`.circuit_breaker`  cut a tool that keeps failing, or whose server has gone away
   :mod:`.dedup`            pure identity/de-dup for proposed tool calls
@@ -79,7 +79,7 @@ from .finish_gate import (
     _MAX_PARSIMONY_FINISH_REFUSALS,
     _MAX_SIGMA_FINISH_REFUSALS,
     _MAX_STRUCTURE_FINISH_REFUSALS,
-    _decision_tool,
+    _finish_tool,
 )
 from .guards import (
     _empty_report_guard,

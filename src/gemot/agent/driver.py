@@ -39,7 +39,7 @@ from .circuit_breaker import (
     _new_breaker_state,
     _wrap_tools_with_circuit_breaker,
 )
-from .finish_gate import _decision_tool
+from .finish_gate import _finish_tool
 from .guards import _empty_report_guard, _task_arg_guard, _tool_dispatch_guard
 from .literature import _wrap_literature_recorder
 from .probe import _model_committed, _structured
@@ -248,7 +248,7 @@ async def run_deepagents(
              else " (none resolved — running on the model's own knowledge)"))
     print(f"[agent] biocurator handed {len(biocurator_entities)} entity name(s)"
           + (f": {biocurator_entities}" if biocurator_entities else " (none curated)"))
-    # The LEAD gets ONLY the orchestrator tools (+ its decision tool) — NOT the analysts'
+    # The LEAD gets ONLY the orchestrator tools (+ the finish gate) — NOT the analysts'
     # data/diagnostic tools (query_data, get_fitting_log, get_measurements, ...). Those heavy
     # reads run INSIDE analyst subagents, whose verbose results live in their own transient
     # contexts and never enter the lead's every-turn re-sent history — which is where this
@@ -257,11 +257,11 @@ async def run_deepagents(
     # querying data itself. deepagents' subagents hold their own resolved tool objects, so a
     # restricted top-level tool list does not starve them.
     lead_tools = [tools_by_name[n] for n in ORCHESTRATOR_TOOLS if n in tools_by_name]
-    # Shared with the driver loop: the decision tool sets finish_state["confirmed"] on a
+    # Shared with the driver loop: the finish tool sets finish_state["confirmed"] on a
     # confirmed finish (so a legitimately-finished run is NOT bounced back), and "gave_up" after
     # too many no-fit finish attempts (so the driver ends the run promptly, not at recursion).
     finish_state = {"confirmed": False, "gave_up": False}
-    lead_tools = [*lead_tools, _decision_tool(session, finish_state, probe=progress_probe)]
+    lead_tools = [*lead_tools, _finish_tool(session, finish_state, probe=progress_probe)]
 
     llm = ChatOpenAI(
         model=model,
@@ -496,7 +496,7 @@ async def run_deepagents(
             break
         if retriable is None:
             # Clean graph termination. A "completed" that did NOT pass the finish gate is a SILENT
-            # STOP — the lead ended on a no-tool turn, sidestepping make_decision. A silent stop is
+            # STOP — the lead ended on a no-tool turn, sidestepping the finish gate. A silent stop is
             # not an accepted exit: bounce it back into the gate so the run only ends by finishing
             # properly (a fitted model, diagnosis shown, confirmed) — with no coaching on WHAT to
             # fix, just enforcement of the protocol. Bounded (_MAX_SILENT_BOUNCES) so a genuinely
@@ -547,7 +547,7 @@ async def run_deepagents(
     #     are not trustworthy). This must come first: gave_up_no_tools implies no model, so it
     #     would otherwise be swallowed by the no_model_built branch below.
     #   * no_model_built — nothing was authored;
-    #   * silent_stop — a model exists but the run never finished through make_decision.
+    #   * silent_stop — a model exists but the run never finished through the finish gate.
     # A confirmed finish keeps "completed". Reuses the intercept's probe (model_committed): a
     # "completed" stop_reason here means the final iteration ran the intercept, which refreshed it
     # — no second describe_problem call.

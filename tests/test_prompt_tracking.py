@@ -141,7 +141,7 @@ def test_the_surface_covers_every_kind_of_prompt():
     tracked = P.all_prompts()
     assert P.TOOL_DESCRIPTIONS["make_changes"] in tracked["petab-tool-descriptions"]
     assert P.BIOCURATOR_PROMPT == tracked["petab-biocurator-system"]
-    assert P.MAKE_DECISION_DESCRIPTION == tracked["petab-make-decision"]
+    assert P.FINISH_DESCRIPTION == tracked["petab-finish-description"]
     assert P._IDLE_NUDGE in tracked["petab-nudges"]
     assert P.FINISH_REFUSED_NO_FIT in tracked["petab-finish-gate"]
 
@@ -180,7 +180,7 @@ def test_group_versions_isolate_the_change(monkeypatch):
     """A bump is attributable: only the edited group's hash moves."""
     before = P.prompt_group_versions()
     patched = dict(P.PROMPT_GROUPS)
-    patched["control"] = {**patched["control"], "petab-make-decision": "different text"}
+    patched["control"] = {**patched["control"], "petab-finish-description": "different text"}
     monkeypatch.setattr(P, "PROMPT_GROUPS", patched)
     after = P.prompt_group_versions()
     assert after["control"] != before["control"]

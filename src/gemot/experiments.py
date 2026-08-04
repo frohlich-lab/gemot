@@ -61,7 +61,7 @@ _PROMPT_ROLES = {
     "petab-biocurator-description": "system",
     "petab-biocurator-entity-block": "user",
     "petab-tool-descriptions": "system",
-    "petab-make-decision": "system",
+    "petab-finish-description": "system",
     "petab-finish-gate": "user",
     "petab-nudges": "user",
     "petab-guards": "user",
