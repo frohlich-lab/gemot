@@ -1,9 +1,10 @@
 """Test the residual-structure block the judge writes into result.json
 (petab_harness.runner.scoring `_residual_structure_fields`).
 
-Pure projection of a get_fit_diagnosis payload. ``runner.scoring`` shares its thresholds with
-the server's own adequacy gate, so it needs `petab_mcp` — but not `mcp`; skip where that is
-absent."""
+Pure projection of TWO payloads — the fit's own rolled-up ``residual_structure`` verdict (which only
+``get_fit_summary`` reports) and the ``get_fit_diagnosis`` per-observable rows. ``runner.scoring``
+shares its thresholds with the server's own adequacy gate, so it needs `petab_mcp` — but not `mcp`;
+skip where that is absent."""
 
 from __future__ import annotations
 
@@ -15,8 +16,9 @@ from petab_harness.runner.scoring import (  # noqa: E402
 
 
 def test_extracts_verdict_and_per_observable():
+    """The verdict comes from the FIT (`rollup`), the rows from the diagnosis — and the block reads
+    the same as when both arrived in one payload."""
     diag = {
-        "residual_structure": {"flagged_observables": ["obs_A"], "low_power": False},
         "per_observable": [
             {"observable_id": "obs_A", "mean_weighted_residual": 2.0,
              "structure_low_power": False, "sign_test": {"p": 0.002}, "runs_test": {"p": 0.3}},
@@ -24,7 +26,8 @@ def test_extracts_verdict_and_per_observable():
              "structure_low_power": True, "sign_test": {"p": 0.8}, "runs_test": {"p": None}},
         ],
     }
-    out = _residual_structure_fields(diag)
+    out = _residual_structure_fields(
+        diag, {"flagged_observables": ["obs_A"], "low_power": False})
     assert out["flagged_observables"] == ["obs_A"]
     assert out["low_power"] is False
     rows = {r["observable_id"]: r for r in out["per_observable"]}
@@ -33,12 +36,59 @@ def test_extracts_verdict_and_per_observable():
 
 
 def test_none_when_no_diagnosis():
-    # model-less / no-simulation run: get_fit_diagnosis returns a status-only payload
+    # model-less / no-simulation run: get_fit_diagnosis returns a status-only payload and
+    # get_fit_summary has no verdict to roll up
     assert _residual_structure_fields(None) is None
     assert _residual_structure_fields({}) is None
-    assert _residual_structure_fields({"status": "no simulation yet",
-                                       "per_observable": [], "worst_points": []}) == {
-        "flagged_observables": [], "low_power": False, "per_observable": []}
+    # the diagnosis alone no longer carries the verdict, so a rollup-only call is a valid one
+    assert _residual_structure_fields(None, {"flagged_observables": ["obs_A"],
+                                             "low_power": False}) == {
+        "rollup_status": "read", "rows_status": "unavailable",
+        "flagged_observables": ["obs_A"], "low_power": False, "per_observable": []}
+
+
+def test_a_missing_verdict_is_unknown_never_clean_and_powered():
+    """REGRESSION: the verdict and the rows come from two calls now, and a rollup that could not be
+    read defaulted to `flagged_observables: []` + `low_power: False` — result.json then asserted "no
+    observable flagged, and the tests were powered" for a run whose verdict was never read. A sweep
+    grouped on those columns cannot tell that from a genuine clean pass, so the keys are OMITTED and
+    a status says which half was read."""
+    rows_only = _residual_structure_fields({"status": "no simulation yet",
+                                            "per_observable": [], "worst_points": []})
+    assert rows_only == {"rollup_status": "unavailable", "rows_status": "read",
+                         "per_observable": []}
+    assert "flagged_observables" not in rows_only and "low_power" not in rows_only
+    # every shape the score read can degrade to, and none of them is a clean bill: a non-dict, an
+    # {ok: false} envelope, and a dict that simply does not carry a verdict
+    for shape in ("a string", {"ok": False, "error": "boom"}, {"chi2": 1.0}, {}, None):
+        degraded = _residual_structure_fields({"per_observable": []}, shape)
+        assert degraded["rollup_status"] == "unavailable", shape
+        assert "flagged_observables" not in degraded and "low_power" not in degraded
+    # ...and the ROWS half gets the same treatment, since `per_observable: []` on an unreadable
+    # diagnosis is otherwise byte-identical to a genuinely empty one
+    verdict_only = _residual_structure_fields("not a payload at all",
+                                              {"flagged_observables": [], "low_power": False})
+    assert verdict_only["rows_status"] == "unavailable" and verdict_only["per_observable"] == []
+
+
+def test_an_unread_verdict_reaches_the_history_csv_as_unknown():
+    """result.json distinguishing UNKNOWN from a clean pass is only half of it: the sweep is grouped
+    on the FLAT history columns, and omitting `replicate_lack_of_fit` blanked `lof_status`/`lof_weak`/
+    `lof_df` exactly as a model-less run does. A run that HAS the block but could not read its verdict
+    says so."""
+    from petab_harness.metrics import _flatten_replicate_lof
+
+    clean = _flatten_replicate_lof({"residual_structure": {
+        "rollup_status": "read",
+        "replicate_lack_of_fit": {"status": "passed", "weak": False, "lof_df": 7}}})
+    assert (clean["lof_status"], clean["lof_weak"], clean["lof_df"]) == ("passed", False, 7)
+
+    unread = _flatten_replicate_lof({"residual_structure": {
+        "rollup_status": "unavailable", "per_observable": []}})
+    assert unread["lof_status"] == "unknown"
+    assert "lof_weak" not in unread and "lof_df" not in unread
+    # ...and a run with no block at all still passes straight through, so "no model" stays its own row
+    assert _flatten_replicate_lof({"scenario": "toy"}) == {"scenario": "toy"}
 
 
 # --- noise-sigma plausibility flag (the hidden success gate) ------------------------------
@@ -91,17 +141,13 @@ def test_result_json_carries_the_replicate_lack_of_fit_verdict():
     from petab_harness.runner.scoring import _residual_structure_fields
 
     lof = {"available": True, "status": "flagged", "n_points": 15, "max_abs_z": 54.0}
-    out = _residual_structure_fields({
-        "residual_structure": {"flagged_observables": ["obs_A"], "low_power": False,
-                               "replicate_lack_of_fit": lof},
-        "per_observable": [],
-    })
+    out = _residual_structure_fields(
+        {"per_observable": []},
+        {"flagged_observables": ["obs_A"], "low_power": False, "replicate_lack_of_fit": lof})
     assert out["replicate_lack_of_fit"] == lof
     # ... and an arm that could not run is absent rather than a fabricated pass
-    out = _residual_structure_fields({
-        "residual_structure": {"flagged_observables": [], "low_power": True},
-        "per_observable": [],
-    })
+    out = _residual_structure_fields({"per_observable": []},
+                                     {"flagged_observables": [], "low_power": True})
     assert "replicate_lack_of_fit" not in out
 
 
@@ -110,14 +156,14 @@ def test_a_non_dict_residual_structure_degrades_instead_of_losing_the_block():
     isinstance guard above it is satisfied by `per_observable` alone. judge.py catches that and sets
     residual_structure to None, so result.json lost the WHOLE block — including the per-observable rows
     that were fine — which is the sweep-unreadability this projection exists to close."""
-    out = _residual_structure_fields({
-        "residual_structure": "residual-structure tests unavailable",
-        "per_observable": [{"observable_id": "obs_A", "mean_weighted_residual": 0.2,
-                            "sign_test": {"p": 0.4}, "runs_test": {"p": None}}],
-    })
-    assert out["flagged_observables"] == [] and out["low_power"] is False
+    out = _residual_structure_fields(
+        {"per_observable": [{"observable_id": "obs_A", "mean_weighted_residual": 0.2,
+                             "sign_test": {"p": 0.4}, "runs_test": {"p": None}}]},
+        "residual-structure tests unavailable")
     assert [r["observable_id"] for r in out["per_observable"]] == ["obs_A"]
-    assert "replicate_lack_of_fit" not in out
+    # ...and the unreadable verdict is reported as such, not as a clean one
+    assert out["rollup_status"] == "unavailable"
+    assert "flagged_observables" not in out and "replicate_lack_of_fit" not in out
 
 
 def test_the_history_csv_has_a_column_for_the_replicate_arm(tmp_path):

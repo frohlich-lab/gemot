@@ -73,7 +73,17 @@ class _Baseline:
     species = {"A", "B"}
 
 
-def _make_call(summary):
+@pytest.fixture
+def judge_calls():
+    """Every ``(tool, kwargs)`` one judge run asked for, so a test can assert what it REQUESTED and
+    not only what it did with the answer.
+
+    Function-scoped, and passed in: as a module global cleared inside the runner this was
+    order-dependent and broke under pytest-xdist (or any other caller of ``_make_call``)."""
+    return []
+
+
+def _make_call(summary, calls=None):
     """A fake async MCP `call`: canned per tool name. get_progress and describe_problem agree on
     v1 so _restore_best_checkpoint is a no-op (already on the best checkpoint); get_fit_summary
     carries the nll + noise_sigma_report that drive both gates; everything else is inert."""
@@ -91,16 +101,39 @@ def _make_call(summary):
     }
 
     async def call(name, **kwargs):
+        if calls is not None:
+            calls.append((name, kwargs))
         return canned.get(name, {})
 
     return call
 
 
-def _run_judge(work: Path, nll: float, sigma_report):
+def _run_judge(work: Path, nll: float, sigma_report, calls=None):
     summary = {"neg_log_likelihood": nll, "n_data_points": 50, "chi2": 45.0,
                "noise_sigma_report": sigma_report}
-    return asyncio.run(_judge(_Scenario(work), _make_call(summary), _Baseline(),
+    return asyncio.run(_judge(_Scenario(work), _make_call(summary, calls), _Baseline(),
                               work, {}, _ToolClock(), time.monotonic()))
+
+
+def test_the_judge_asks_the_diagnosis_for_the_residual_section_only(tmp_path, judge_calls):
+    """The projection into result.json reads `per_observable` and nothing else, so it asks for the
+    residual section only — the parameter half would be several kB the projection discards."""
+    _run_judge(tmp_path, 100.0, _PLAUSIBLE, calls=judge_calls)
+    asked = [kwargs for name, kwargs in judge_calls if name == "get_fit_diagnosis"]
+    assert asked == [{"sections": "residuals"}]
+
+
+def test_each_run_records_only_its_own_calls(tmp_path, judge_calls):
+    """The recorder is per-test state, so an exact-contents assertion says something. As a module
+    global cleared inside the runner it was order-dependent: any other caller appending to it
+    changed what a later assertion saw."""
+    other: list[tuple[str, dict]] = []
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()        # _judge writes result.json into the work dir
+    _run_judge(tmp_path / "a", 100.0, _PLAUSIBLE, calls=judge_calls)
+    _run_judge(tmp_path / "b", 100.0, _PLAUSIBLE, calls=other)
+    # each recorder holds exactly one run's calls — the same ones, since the runs are identical
+    assert judge_calls and other == judge_calls
 
 
 def test_good_bic_plausible_sigma_succeeds(tmp_path):

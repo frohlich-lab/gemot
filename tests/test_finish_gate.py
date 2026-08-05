@@ -4,7 +4,8 @@ The gate must: refuse a finish when there is no valid fit; refuse when the worki
 edits since its last fit (stale metrics); and otherwise require TWO finish calls — the first
 ARMS and presents the residual diagnosis, the second CONFIRMS — re-arming if the model changed
 in between. Driven against a fake MCP session (canned get_fit_summary / get_fit_diagnosis
-payloads); langchain_core is a harness dep, so skip where it is absent.
+payloads — the diagnosis carries BOTH sections, its parameter geometry under `identifiability`);
+langchain_core is a harness dep, so skip where it is absent.
 """
 
 from __future__ import annotations
@@ -14,8 +15,6 @@ import pytest
 pytest.importorskip("langchain_core", reason="harness-only dependency")
 
 from petab_harness import agent as _agent  # noqa: E402
-
-
 
 
 class _FakeResult:
@@ -33,8 +32,8 @@ _IDENTIFIABLE = {"available": True, "method": "fim+multistart",
 
 
 def _ident(*, flat_directions=None, rank_deficient=False, available=True, fim=True):
-    """A get_identifiability payload for the parsimony gate. ``fim=False`` / ``available=False``
-    build the FAIL-OPEN shapes (no FIM was computable)."""
+    """The `identifiability` SECTION of a get_fit_diagnosis payload, for the parsimony gate.
+    ``fim=False`` / ``available=False`` build the FAIL-OPEN shapes (no FIM was computable)."""
     return {
         "available": available,
         "method": "fim+multistart" if fim else "multistart",
@@ -45,24 +44,26 @@ def _ident(*, flat_directions=None, rank_deficient=False, available=True, fim=Tr
 
 
 class _FakeSession:
-    """Serves canned get_fit_summary / get_fit_diagnosis / get_identifiability payloads."""
+    """Serves canned get_fit_summary / get_fit_diagnosis payloads, and RECORDS the calls.
+
+    The rolled-up residual verdict lives on the fit summary (the server reports it nowhere else) and
+    the parameter geometry is a section of the one diagnosis call, so `identifiability` is spliced
+    into the diagnosis payload rather than served as a second tool. Any other tool name is an
+    assertion failure: the gate must not reach for one that no longer exists."""
 
     def __init__(self, fit_summary, diagnosis=None, identifiability=None):
         self.fit_summary = fit_summary
-        self.diagnosis = diagnosis or {"residual_structure": {"summary": "looks fine",
-                                                              "flagged_observables": [],
-                                                              "low_power": False},
-                                       "per_observable": []}
+        self.diagnosis = diagnosis or {"per_observable": []}
         # Default CLEAN so a test that doesn't care about parsimony is unaffected by the gate.
         self.identifiability = identifiability if identifiability is not None else _IDENTIFIABLE
+        self.calls: list[str] = []
 
     async def call_tool(self, name, args):
+        self.calls.append(name)
         if name == "get_fit_summary":
             return _FakeResult(self.fit_summary)
         if name == "get_fit_diagnosis":
-            return _FakeResult(self.diagnosis)
-        if name == "get_identifiability":
-            return _FakeResult(self.identifiability)
+            return _FakeResult({**self.diagnosis, "identifiability": self.identifiability})
         raise AssertionError(f"unexpected tool {name}")
 
 
@@ -151,15 +152,18 @@ async def test_finish_is_not_blocked_on_unfit_edits_because_there_cannot_be_any(
 @pytest.mark.asyncio
 async def test_finish_arms_then_confirms():
     mod = _agent
-    diag = {"residual_structure": {"summary": "systematic residual structure in obs_A",
-                                   "flagged_observables": ["obs_A"], "low_power": False},
-            "per_observable": [{"observable_id": "obs_A", "mean_weighted_residual": 2.0,
+    diag = {"per_observable": [{"observable_id": "obs_A", "mean_weighted_residual": 2.0,
                                 "sign_test": {"p": 0.002}, "runs_test": {"p": 0.3}}]}
+    # The rolled-up verdict rides on the FIT — the diagnosis does not repeat it — so the armed
+    # message has to read the summary from there and the worst-observable row from the diagnosis.
     tool = _tool_for(mod, {"neg_log_likelihood": 100.0, "bic": 210.0, "version": 5,
-                           "has_unfit_edits": False}, diag)
+                           "has_unfit_edits": False,
+                           "residual_structure": {
+                               "summary": "systematic residual structure in obs_A",
+                               "flagged_observables": ["obs_A"], "low_power": False}}, diag)
     first = await _finish(tool)
     assert "FINISH ARMED" in first
-    assert "systematic residual structure in obs_A" in first  # diagnosis shown
+    assert "systematic residual structure in obs_A" in first  # verdict off the fit result
     assert "obs_A" in first and "0.002" in first               # worst-observable line
     second = await _finish(tool)
     assert second.startswith("Recorded: finish") and "bic=210" in second
@@ -361,7 +365,7 @@ async def test_rank_deficient_alone_refuses_even_without_named_flat_directions()
     tool = _tool_for(mod, _fit(), identifiability=_ident(rank_deficient=True, flat_directions=[]))
     out = await _finish(tool)
     assert "FINISH REFUSED" in out and "rank-deficient" in out.lower()
-    assert "get_identifiability" in out                       # points to the full diagnosis
+    assert "get_fit_diagnosis" in out                         # points to the full diagnosis
 
 
 @pytest.mark.asyncio
@@ -414,6 +418,81 @@ async def test_clean_identifiable_finish_is_unaffected():
     tool = _tool_for(mod, _fit(), identifiability=_IDENTIFIABLE)
     assert "FINISH ARMED" in await _finish(tool)
     assert (await _finish(tool)).startswith("Recorded: finish")
+
+
+@pytest.mark.asyncio
+async def test_one_diagnosis_call_serves_both_the_parsimony_gate_and_the_arm():
+    """The residual detail and the FIM are two sections of ONE tool, so an armed finish costs one
+    diagnosis probe, not two — and the gate must never reach for the deleted second tool (the fake
+    raises on any other name)."""
+    mod = _agent
+    session = _FakeSession(_fit())
+    tool = mod._finish_tool(session)
+    assert "FINISH ARMED" in await _finish(tool)
+    assert session.calls.count("get_fit_diagnosis") == 1
+    assert set(session.calls) == {"get_fit_summary", "get_fit_diagnosis"}
+
+
+#: A `merge_hint` as the server puts it on a fit result AND on get_fit_summary.
+_HINT = {"parameters": ["ac16", "ac8"], "dnll": 0.001, "dbic": -5.528, "move_scaled": 0.002}
+
+
+@pytest.mark.asyncio
+async def test_the_armed_finish_names_an_outstanding_merge():
+    """The tie is read off the SCORE, which is the gate's only view of HEAD: `get_fit_summary` now
+    carries the same `merge_hint` the fit result does, so the gate names the pair the lead was
+    already shown instead of projecting a second one out of the diagnosis (which needed
+    `petab_mcp` imported into an import-light module to do)."""
+    mod = _agent
+    armed = await _finish(_tool_for(mod, _fit(merge_hint=_HINT)))
+    assert "FINISH ARMED" in armed and "OUTSTANDING MERGE" in armed
+    assert "ac16 == ac8" in armed and "5.528" in armed        # ...and stated as a bic DECREASE
+    assert "lowers bic" in armed.lower() and "-5.528" not in armed
+    assert "0.002" in armed                                   # the move the panel must sanity-check
+    # a clean fit says nothing: the line is absent, not "no merge found"
+    assert "OUTSTANDING MERGE" not in await _finish(_tool_for(mod, _fit()))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hint", [
+    # REGRESSION: `abs(hint["dbic"] or 0.0)` — a tie beating the ln(n)/2 price by under 5e-4 nll
+    # rounds to -0.0, which is FALSY, so the arm printed "LOWERS bic by 0.0" while telling the lead
+    # to take the merge. A merge whose stated payoff is zero is not an argument.
+    {**_HINT, "dbic": -0.0},
+    {**_HINT, "dbic": None},          # ...and a genuinely absent dbic was swallowed the same way
+])
+async def test_the_armed_merge_never_advertises_a_zero_payoff(hint):
+    mod = _agent
+    armed = await _finish(_tool_for(mod, _fit(merge_hint=hint)))
+    assert "OUTSTANDING MERGE" in armed
+    assert "lowers bic by 0.0" not in armed.lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hint", ["not-a-dict", {}, {"parameters": []}, {"parameters": ["a", "b"]}])
+async def test_a_malformed_merge_hint_never_raises_a_finish(hint):
+    """REGRESSION: the merge rendering was the ONE step in the gate with no fail-open path (bare
+    `hint[...]` subscripts, plus a lazy `from petab_mcp...` import in a module that must not depend
+    on the server package). Every armed finish raised there, and the driver bounces a finish that
+    did not confirm — so the run looped to the recursion limit instead of finishing at its honest
+    score. A missing or odd hint means "no merge to report"."""
+    mod = _agent
+    state = {}
+    tool = _tool_for(mod, _fit(merge_hint=hint), finish_state=state)
+    assert "FINISH ARMED" in await _finish(tool)
+    assert (await _finish(tool)).startswith("Recorded: finish")
+    assert state["confirmed"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_stale_diagnosis_never_refuses_a_finish():
+    """The server labels a diagnosis of an EARLIER fit `stale` rather than re-pricing the working
+    model (which would mean building it). Refusing on it would refuse this finish over another
+    structure's rank, so the parsimony gate fails open."""
+    mod = _agent
+    ident = {**_ident(rank_deficient=True, flat_directions=[{"participants": [{"id": "a"}]}]),
+             "stale": True}
+    assert "FINISH ARMED" in await _finish(_tool_for(mod, _fit(), identifiability=ident))
 
 
 @pytest.mark.asyncio

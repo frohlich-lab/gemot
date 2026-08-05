@@ -126,9 +126,19 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     # whether runs that passed the BIC gate also had structure-free residuals, and whether the
     # tests were underpowered. Report-only: a diagnosis failure must never fail the run (which
     # would leave no result.json at all — the exact unscored-run outcome the harness avoids), so
-    # the whole call is guarded and degrades to None.
+    # the call is guarded and degrades. The rolled-up verdict comes from `final` (get_fit_summary,
+    # which carries it) and the per-observable rows from the diagnosis — so this asks for the RESIDUAL
+    # section only: nothing here reads the parameter geometry, and the projection below discards it.
+    # The ROWS call is guarded on its own: the verdict half is already in hand when it runs, and
+    # wrapping both in one try threw that away over a failure to read the detail behind it.
+    rollup = final.get("residual_structure") if isinstance(final, dict) else None
     try:
-        residual_structure = _residual_structure_fields(await call("get_fit_diagnosis"))
+        diagnosis = await call("get_fit_diagnosis", sections="residuals")
+    except Exception as exc:  # noqa: BLE001 - report-only diagnostic; never fail the judge on it
+        print(f"  (residual-structure detail unavailable: {type(exc).__name__}: {exc})")
+        diagnosis = None
+    try:
+        residual_structure = _residual_structure_fields(diagnosis, rollup)
     except Exception as exc:  # noqa: BLE001 - report-only diagnostic; never fail the judge on it
         print(f"  (residual-structure diagnosis unavailable: {type(exc).__name__}: {exc})")
         residual_structure = None

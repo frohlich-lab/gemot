@@ -29,13 +29,28 @@ __all__ = [
     "_residual_structure_fields",
 ]
 
-def _residual_structure_fields(diagnosis) -> dict | None:
-    """A compact, bounded residual-structure block for result.json from a get_fit_diagnosis
-    payload, or ``None`` when no diagnosis is available (no simulation / model-less run).
+def _residual_structure_fields(diagnosis, rollup=None) -> dict | None:
+    """A compact, bounded residual-structure block for result.json, or ``None`` when neither half
+    is available (no simulation / model-less run).
+
+    TWO inputs because the two live in two places: ``rollup`` is the fit's own
+    ``residual_structure`` verdict (read here off ``get_fit_summary``; see
+    ``data_access.residual_structure_rollup`` for which surfaces carry it), and ``diagnosis`` is the
+    ``get_fit_diagnosis`` payload the per-observable rows come from — its residual section, since
+    nothing here reads its parameter half.
 
     Keeps the rolled-up verdict (which observables show significant sign-test bias or runs-test
     time trend, and whether the tests were underpowered) plus one row per observable with the
     two p-values and the bias magnitude — enough to analyse a sweep without the per-point data.
+
+    ``rollup_status`` and ``rows_status`` say which of the two halves was actually READ, because they
+    arrive from two different calls now and either can be missing. When the verdict is absent — a
+    non-dict, an ``{ok: false}`` envelope, a payload without the key — ``flagged_observables`` and
+    ``low_power`` are OMITTED rather than defaulted: defaulting them wrote "no observable flagged, and
+    the tests were powered" into result.json for a run whose verdict was never read, and a sweep
+    grouped on those columns cannot tell that from a genuine clean pass. Absent means UNKNOWN, and
+    ``rows_status`` is the same distinction for the rows, whose ``[]`` is otherwise identical to a
+    genuinely empty diagnosis.
 
     ``replicate_lack_of_fit`` is carried through verbatim: it is already the bounded projection the
     fit result rides on (a verdict plus at most REPLICATE_LOF_MAX_REPORTED_POINTS named points), and
@@ -45,18 +60,18 @@ def _residual_structure_fields(diagnosis) -> dict | None:
     trace, which does not scale to a series. ``metrics._flatten_replicate_lof`` takes it the last
     step, into the flat ``lof_*`` columns of the history CSV a sweep is actually grouped by.
     """
-    if not isinstance(diagnosis, dict):
+    per = diagnosis.get("per_observable") if isinstance(diagnosis, dict) else None
+    if not isinstance(rollup, dict) and not isinstance(per, list):
         return None
-    rolled = diagnosis.get("residual_structure")
-    per = diagnosis.get("per_observable")
-    if not isinstance(rolled, dict) and not isinstance(per, list):
-        return None
-    # NARROWED once, here, not `(rolled or {})` at each use: the guard above is satisfied by `per`
-    # alone, so a truthy NON-dict `residual_structure` (a status string from a degraded payload) got
-    # past it and `.get` raised AttributeError — which judge.py catches by setting the whole block to
-    # None, losing the per-observable rows too. This is the projection that makes a run readable from
-    # result.json; it must degrade, not vanish.
-    rolled = rolled if isinstance(rolled, dict) else {}
+    # A truthy NON-dict `residual_structure` (a status string from a degraded payload) satisfies
+    # nothing here: the guard above is satisfied by `per` alone, and `.get` on a string raised
+    # AttributeError — which judge.py catches by setting the whole block to None, losing the
+    # per-observable rows too. This is the projection that makes a run readable from result.json; it
+    # must degrade, not vanish.
+    # A verdict is a dict that CARRIES one: every rollup does, degraded ones included (see
+    # data_access._unavailable_structure), so an `{ok: false}` envelope or any other dict-shaped
+    # non-verdict reads as unavailable rather than as an empty flagged list.
+    read = isinstance(rollup, dict) and "flagged_observables" in rollup
     per_obs = []
     for o in (per or []):
         if not isinstance(o, dict):
@@ -71,13 +86,16 @@ def _residual_structure_fields(diagnosis) -> dict | None:
             "low_power": bool(o.get("structure_low_power")),
         })
     out = {
-        "flagged_observables": rolled.get("flagged_observables", []),
-        "low_power": bool(rolled.get("low_power")),
+        "rollup_status": "read" if read else "unavailable",
+        "rows_status": "read" if isinstance(per, list) else "unavailable",
         "per_observable": per_obs,
     }
-    lof = rolled.get("replicate_lack_of_fit")
-    if isinstance(lof, dict):
-        out["replicate_lack_of_fit"] = lof
+    if read:
+        out["flagged_observables"] = rollup.get("flagged_observables", [])
+        out["low_power"] = bool(rollup.get("low_power"))
+        lof = rollup.get("replicate_lack_of_fit")
+        if isinstance(lof, dict):
+            out["replicate_lack_of_fit"] = lof
     return out
 
 

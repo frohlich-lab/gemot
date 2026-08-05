@@ -63,6 +63,29 @@ def test_import_is_light(importline):
     _assert_light(importline)
 
 
+def test_the_agent_package_never_imports_the_server_package():
+    """Not even LAZILY, inside a function. ``petab_mcp`` is a server-side dependency: the harness
+    process that runs the panel talks to the server over MCP and need not have it installed.
+
+    The parametrized module-scope check above cannot see a `from petab_mcp... import` inside a
+    function body, and one of those in the finish gate's ARM step meant that where petab_mcp was
+    absent EVERY armed finish raised — and the driver bounces a finish that did not confirm, so the
+    run looped to the recursion limit instead of finishing at its honest score. Scanned statically
+    over the AST, so no import is attempted here either.
+    """
+    offenders = []
+    for path in sorted((Path(__file__).parent.parent / "src" / "petab_harness" / "agent")
+                       .rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            module = (node.module if isinstance(node, ast.ImportFrom) else None) or ""
+            names = [a.name for a in getattr(node, "names", [])] if isinstance(
+                node, (ast.Import, ast.ImportFrom)) else []
+            if module.split(".")[0] == "petab_mcp" or any(
+                    n.split(".")[0] == "petab_mcp" for n in names):
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert not offenders, f"petab_harness.agent imports petab_mcp at {offenders}"
+
+
 def _lazy_table(package):
     """A lazy facade's ``{name: relative module}`` map, read from its source without importing
     any submodule (which is the whole point — resolving them needs mcp/petab_mcp)."""

@@ -70,8 +70,9 @@ ORCHESTRATOR_TOOLS = [
     # such calls against 451 fits: near-zero benefit for a tool schema re-sent every turn. The tool
     # stays on the server: the analysts (who never fit) and the harness's own finish gate and
     # final scoring all read the score through it. `describe_problem` covers has_unfit_edits.
-    "get_fit_diagnosis",    # per-observable bias/chi2 + worst-N points — bounded residual read
-    "get_identifiability",  # FIM SE/correlations + multistart spread — WHICH params to cut/merge
+    # per-observable bias/chi2 + worst-N points, AND the FIM/multistart geometry saying WHICH
+    # params to cut or merge — two sections of one bounded read (`sections`)
+    "get_fit_diagnosis",
     "list_versions",        # scored version history — track which structures were tried + scores
     "get_version",          # read a prior version's Antimony + params (to inspect / re-author from)
     # NOTE: restore_version is deliberately NOT a lead tool. It sets HEAD to a prior version, but
@@ -107,9 +108,9 @@ ORCHESTRATOR_TOOLS = [
     # NOTE: the UNBOUNDED data/diagnostic tools (get_measurements, query_data, get_fitting_log,
     # list_data_tables) are deliberately NOT here — they belong to the analyst subagents, since
     # their large results would pile up in the lead's re-sent history (the input-token cost). The
-    # lead instead has get_fit_diagnosis (a COMPACT, size-bounded residual read) for cheap
-    # self-diagnosis, and DELEGATES the deep dives — full residual SQL, the optimizer log, raw
-    # data characterization — to the analysts via `task`.
+    # lead instead has get_fit_diagnosis (a COMPACT, size-bounded read of both the residuals and
+    # the parameter geometry) for cheap self-diagnosis, and DELEGATES the deep dives — full
+    # residual SQL, the optimizer log, raw data characterization — to the analysts via `task`.
 ]
 
 # The full set handed to create_deep_agent: the union of the lead's tools and every

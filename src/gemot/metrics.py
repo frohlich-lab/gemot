@@ -239,13 +239,18 @@ def _flatten_replicate_lof(row: dict) -> dict:
     """Expand the replicate lack-of-fit verdict nested under ``residual_structure`` into the flat
     ``lof_*`` history columns. Same transform-at-write-time shape as :func:`_flatten_edit_rejects`,
     and a row without the block passes through untouched — model-less runs and every run that
-    predates the column. Runs that HAVE the block always carry it, including the 13 of 16 examples
-    whose problems have no replicated design points: there the block says ``available: false`` and
-    ``lof_status`` records which kind of no-evidence it was."""
+    predates the column. A run that HAS the block carries the verdict whenever the verdict was READ,
+    including the 13 of 16 examples whose problems have no replicated design points: there it says
+    ``available: false`` and ``lof_status`` records which kind of no-evidence it was. Where the read
+    itself failed (``rollup_status: unavailable``) the status is ``unknown``, so the sweep CSV can
+    still tell an unread verdict from a run that had no model to test."""
     rolled = row.get("residual_structure")
-    lof = rolled.get("replicate_lack_of_fit") if isinstance(rolled, dict) else None
-    if not isinstance(lof, dict):
+    if not isinstance(rolled, dict):
         return row
+    lof = rolled.get("replicate_lack_of_fit")
+    if not isinstance(lof, dict):
+        return ({**row, "lof_status": "unknown"}
+                if rolled.get("rollup_status") == "unavailable" else row)
     # `weak` and `lof_df` are OMITTED from the verdict when they say nothing (see
     # data_access._LOF_OMIT_WHEN_EMPTY_KEYS). `lof_weak` is written only where there IS a counted df
     # to qualify: coercing an absent one to False would record "the arm ran and its pass was solid"

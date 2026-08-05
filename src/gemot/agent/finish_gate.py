@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 
 from .. import prompts
-from .probe import _current_diagnosis, _current_fit, _current_identifiability
+from .probe import _current_diagnosis, _current_fit
 
 # After this many CONSECUTIVE finish attempts with no valid fit, the gate gives up: it flags the
 # run (finish_state["gave_up"]) so the driver ends it promptly as no-model-built, rather than
@@ -44,10 +44,10 @@ _MAX_SIGMA_FINISH_REFUSALS = 3
 # correlated-but-full-rank group, routinely produces a flat_direction while the FIM stays full
 # rank). Bounded exactly like the sigma gate: after this many consecutive refusals it RELENTS, so a
 # model that genuinely cannot be made identifiable still terminates at its honest score instead of
-# spamming finish. An identifiable (full-rank) fit RESETS the counter. FAILS OPEN — an unavailable
-# identifiability diagnosis (no FIM, or the probe returned {}) never refuses a finish. The advice is
-# deliberately GENERAL (name the flat-direction params, point at the simplification menu); the
-# specific fix is the agent's to reason out, not the gate's to hand over.
+# spamming finish. An identifiable (full-rank) fit RESETS the counter. FAILS OPEN — an unavailable or
+# STALE diagnosis (no FIM, a diagnosis of a DIFFERENT structure, or the probe returned {}) never
+# refuses a finish. The advice is deliberately GENERAL (name the flat-direction params, point at the
+# simplification menu); the specific fix is the agent's to reason out, not the gate's to hand over.
 _MAX_PARSIMONY_FINISH_REFUSALS = 3
 
 # A finish on a model the REPLICATE LACK-OF-FIT arm condemns is REFUSED. This carries what the
@@ -87,7 +87,7 @@ def _render_flat_directions(flat_directions, *, max_dirs: int = 4, max_parts: in
     TOGETHER (the collinear structure), not just a flattened list of names. A direction dominated
     by a single high-weight id is one unconstrained parameter; a direction spreading weight across
     several is a collinear group to merge. Bounded: at most ``max_dirs`` directions (the smallest
-    eigenvalues, which get_identifiability already sorts first) and ``max_parts`` participants each,
+    eigenvalues, which the diagnosis already sorts first) and ``max_parts`` participants each,
     with a trailing marker when more were dropped — a wholesale-unidentifiable model (every initial
     condition free) shows a handful rather than a wall."""
     groups: list[str] = []
@@ -97,17 +97,56 @@ def _render_flat_directions(flat_directions, *, max_dirs: int = 4, max_parts: in
         if terms:
             groups.append("[" + ", ".join(terms) + "]")
     if not groups:
-        # rank_deficient can be flagged with no bounded flat-direction participants to name.
-        return "(see get_identifiability for the flat directions)"
+        # rank_deficient can be flagged with no bounded flat-direction participants to name. Names
+        # the SECTION, not the bare tool: `sections` defaults to the residual half, which carries no
+        # flat directions at all, so a lead following this would spend the turn on the wrong payload.
+        return "(see get_fit_diagnosis(sections='parameters') for the flat directions)"
     return "; ".join(groups) + ("; …" if len(flat_directions) > max_dirs else "")
+
+
+def _render_merge(hint) -> str:
+    """The OUTSTANDING MERGE line for the ARM text, or ``""`` when there is no tie to report.
+
+    Read off ``get_fit_summary``, which now carries the same ``merge_hint`` the fit result does, so
+    the gate names the pair the lead was already shown. Fails OPEN like every other diagnosis read
+    here: a missing field or an odd shape means "no merge to report", never a raised finish.
+
+    ``dbic`` is NEGATIVE when the merge wins and the template says "LOWERS bic by", so the slot takes
+    the MAGNITUDE — through :func:`_dbic_magnitude`, because ``abs(hint["dbic"] or 0.0)`` rendered
+    "LOWERS bic by 0.0" for a tie that beats the price by under 5e-4 nll (its dbic rounds to -0.0,
+    which is FALSY) while telling the lead the model was not finished. An edit whose stated payoff is
+    zero is not an argument; the same ``or`` swallowed a genuinely absent dbic into the same 0.0.
+    """
+    if not isinstance(hint, dict):
+        return ""
+    try:
+        params = [str(p) for p in (hint.get("parameters") or ())]
+        if not params:
+            return ""
+        return prompts.FINISH_ARMED_MERGE_TMPL.format(
+            parameters=" == ".join(params), dnll=hint.get("dnll"),
+            dbic=_dbic_magnitude(hint.get("dbic")), move=hint.get("move_scaled"))
+    except Exception:  # noqa: BLE001 - an advisory line never fails a finish
+        return ""
+
+
+def _dbic_magnitude(dbic) -> str:
+    """How much bic the merge LOWERS, as displayed: the magnitude, ``unknown`` when there is none,
+    and a BOUND rather than ``0.0`` when the win is real but below the reported resolution (dbic is
+    ``2*(dnll - price)`` rounded to 3 dp, and the hint only exists where ``dnll < price``)."""
+    if not isinstance(dbic, (int, float)) or isinstance(dbic, bool):
+        return "unknown"
+    magnitude = abs(float(dbic))
+    return f"{magnitude:g}" if round(magnitude, 3) else "less than 0.001"
 
 
 def _finish_tool(session, finish_state=None, probe=None):
     """The lead-only control tool for the one non-default move: ending the run.
 
-    ``probe`` is the driver's UN-TIMED ``await probe(name, args)`` handle; the gate's internal
-    get_fit_summary / get_fit_diagnosis polls go through it so they don't inflate the run's
-    tool_calls / compute_seconds (falling back to the timed ``session`` handle when absent).
+    ``probe`` is the driver's UN-TIMED ``await probe(name, args)`` handle; the gate's two internal
+    polls — get_fit_summary for the score, get_fit_diagnosis for the residual detail and the FIM —
+    go through it so they don't inflate the run's tool_calls / compute_seconds (falling back to the
+    timed ``session`` handle when absent).
 
     Plain iteration needs no call — to keep going the lead simply makes the next ``make_changes``
     edit — so the tool exists only to gate a finish.
@@ -246,7 +285,7 @@ def _finish_tool(session, finish_state=None, probe=None):
             state["structure_refusals"] = 0
         # HARD STOP on an OVER-parameterised model: a finish whose good-looking bic rests on
         # parameters the data cannot constrain — a RANK-DEFICIENT Fisher-information matrix (a
-        # non-identifiable parameter COMBINATION get_identifiability surfaces as a near-flat
+        # non-identifiable parameter COMBINATION the diagnosis surfaces as a near-flat
         # eigen-direction). The sigma gate above is structurally blind to this: extra free parameters
         # keep the per-point fit — and the estimated sigma — tight, so sigma passes while k is
         # padded. Refuse with GENERAL identifiability advice (name the flat-direction params;
@@ -256,9 +295,20 @@ def _finish_tool(session, finish_state=None, probe=None):
         # unavailable diagnosis (available False, no fim, or the probe returned {}) never
         # refuses — identifiability is best-effort, not a gate a finish can be held hostage to
         # when it can't be computed. Costs a FIM per finish attempt (a few per run) by design.
-        ident = await _current_identifiability(reader)
+        #
+        # ONE diagnosis call serves this branch and the ARM step below: both halves of it come
+        # from the same optimum, and the probe is fetched here (not at the arm) because this
+        # branch runs on every finish attempt while arming does not.
+        diag = await _current_diagnosis(reader)
+        ident = diag.get("identifiability") or {}
         fim_info = ident.get("fim")
-        if ident.get("available") and isinstance(fim_info, dict):
+        # `stale` means a DIFFERENT STRUCTURE is in the working state than the one this geometry
+        # describes (the server labels it rather than re-pricing, which would mean building the
+        # current structure). Refusing on it would refuse this finish over another structure's rank,
+        # so it fails open. A de-dup no-op is NOT stale — same structure, same optimum, still HEAD's
+        # own fit — so the refusal stands there, which matters: that is the one drift a lead can
+        # cause inside a run, and it fires precisely BECAUSE the structure did not change.
+        if ident.get("available") and not ident.get("stale") and isinstance(fim_info, dict):
             # Gate on RANK DEFICIENCY only (rank < n_estimated), NOT on the mere presence of a
             # flat_direction. Calibration across the reference structures showed the latter
             # over-refuses: a legitimate, identifiable fit routinely carries a flat_direction
@@ -300,8 +350,9 @@ def _finish_tool(session, finish_state=None, probe=None):
         token = (bic, nll, version)
         if state["armed_token"] != token:
             state["armed_token"] = token
-            diag = await _current_diagnosis(reader)
-            rs = diag.get("residual_structure") or {}
+            # The rolled-up verdict rides on the FIT, and is reported nowhere else — the
+            # diagnosis carries the per-observable detail behind it, not a second copy.
+            rs = fit.get("residual_structure") or {}
             struct = rs.get("summary") or prompts.FINISH_STRUCT_UNAVAILABLE
             per = diag.get("per_observable") or []
             worst = max(per, key=lambda o: abs(o.get("mean_weighted_residual") or 0.0),
@@ -324,11 +375,16 @@ def _finish_tool(session, finish_state=None, probe=None):
             invalid_line = (
                 prompts.FINISH_ARMED_INVALID_COMPARISON_TMPL.format(advisory=invalid)
                 if invalid else "")
+            # The PARAMETER counterpart of the residual verdict: a pair the data cannot separate
+            # whose merge BIC would pay for. Like the residual verdict it rides on the SCORE read
+            # (petab_mcp.fitting.fit_summary carries the same `merge_hint` the fit result does), so
+            # the gate names the tie the lead already saw instead of projecting a second one.
+            merge_line = _render_merge(fit.get("merge_hint"))
             print(f"[finish ARMED v={version}] bic={bic:.6g} — presented diagnosis, "
                   "awaiting confirming finish")
             return prompts.FINISH_ARMED_TMPL.format(
                 bic=bic, nll=nll, struct=struct, worst_line=worst_line,
-                invalid_line=invalid_line)
+                merge_line=merge_line, invalid_line=invalid_line)
         # Second finish on the same fit -> confirmed. Record it so the driver does not bounce
         # a legitimately-finished run back into the gate.
         state["armed_token"] = None

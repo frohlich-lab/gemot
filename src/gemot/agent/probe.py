@@ -2,7 +2,7 @@
 
 The finish gate and the driver's run loop both need to ask the server where things stand — is
 there a fitted model, what is its bic, what do the residuals look like — without going through
-the agent. They share these four helpers so the payload-unwrapping and fail-open rules live in
+the agent. They share these three helpers so the payload-unwrapping and fail-open rules live in
 one place.
 """
 
@@ -36,33 +36,19 @@ async def _current_fit(call_tool) -> dict[str, Any]:
 
 
 async def _current_diagnosis(call_tool) -> dict[str, Any]:
-    """The current HEAD's residual diagnosis (``get_fit_diagnosis``), or {} if unreadable.
-    ``call_tool`` is an ``await call_tool(name, args)`` handle (the finish gate passes the
-    un-timed probe so this doesn't inflate the tool clock).
+    """The current HEAD's fit diagnosis — BOTH sections of ``get_fit_diagnosis``, so the residual
+    magnitudes and the parameter geometry (under ``identifiability``) come from ONE call at ONE
+    optimum. ``{}`` if unreadable; ``call_tool`` is an ``await call_tool(name, args)`` handle (the
+    finish gate passes the un-timed probe so this doesn't inflate the tool clock).
 
-    Used to put the fit's residual-structure verdict in front of the lead at the finish
-    decision, so a finish is a considered call on the diagnosis rather than a reflex."""
+    ``sections`` is passed EXPLICITLY: the tool defaults to the cheap residual half (the agent pays
+    for every payload it asks for, in re-sent history), and the parameter half is not optional here —
+    it is the FIM the PARSIMONY branch refuses a rank-deficient finish on. The other thing the gate
+    reads off this is the worst observable's sign/runs p-values, shown at the ARM step so a finish is
+    a considered call on the diagnosis rather than a reflex. FAILS OPEN in both directions — a {}
+    here leaves the gate with no grounds to refuse."""
     try:
-        data = _structured(await call_tool("get_fit_diagnosis", {}))
-        if isinstance(data, dict):
-            return data
-    except Exception:  # pragma: no cover - never let the check break the run
-        pass
-    return {}
-
-
-async def _current_identifiability(call_tool) -> dict[str, Any]:
-    """The current fit's parameter-identifiability diagnosis (``get_identifiability``), or {} if
-    unreadable. ``call_tool`` is an ``await call_tool(name, args)`` handle (the finish gate passes
-    the un-timed probe so this internal poll doesn't inflate the tool clock / tool_calls metric).
-
-    Used by the finish gate's PARSIMONY branch to catch a finish whose bic rests on parameters the
-    data cannot constrain (a flat FIM direction / rank-deficient FIM inflating k — the sigma gate
-    is structurally blind to this). FAILS OPEN, like ``_current_fit``/``_current_diagnosis``:
-    returns {} on any error or when the diagnosis is unavailable, so the gate never refuses a
-    finish merely because identifiability could not be computed."""
-    try:
-        data = _structured(await call_tool("get_identifiability", {}))
+        data = _structured(await call_tool("get_fit_diagnosis", {"sections": "all"}))
         if isinstance(data, dict):
             return data
     except Exception:  # pragma: no cover - never let the check break the run
