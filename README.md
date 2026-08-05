@@ -141,8 +141,8 @@ unconstrained or trade off, and what each one-shared-value merge would cost — 
 simplifying an over-parameterised model — a local expansion around the LAST FIT's optimum, read off
 that fit's own frozen record and, in a process that did not run it, off the verdict the fit stored,
 so **no diagnosis can ever trigger a model build**), or `all` — the
-cheapest merge worth taking rides on
-every fit result and on `get_fit_summary` as `merge_hint` — and `get_run_timing()` (cumulative server-side
+cheapest few merges worth taking ride on
+every fit result and on `get_fit_summary` as `merge_hints` — and `get_run_timing()` (cumulative server-side
 compile/fit wall times). For anything else the fit is **not** pre-digested into a fixed menu —
 it is **SQL over the data** via DuckDB, so you compute the breakdown you want:
 - `list_data_tables()` lists the queryable tables and their columns; `query_data(sql,

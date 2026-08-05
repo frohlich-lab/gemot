@@ -15,6 +15,7 @@ import pytest
 pytest.importorskip("langchain_core", reason="harness-only dependency")
 
 from petab_harness import agent as _agent  # noqa: E402
+from petab_harness import prompts  # noqa: E402
 
 
 class _FakeResult:
@@ -433,24 +434,63 @@ async def test_one_diagnosis_call_serves_both_the_parsimony_gate_and_the_arm():
     assert set(session.calls) == {"get_fit_summary", "get_fit_diagnosis"}
 
 
-#: A `merge_hint` as the server puts it on a fit result AND on get_fit_summary.
+#: A `merge_hints` row as the server puts it on a fit result AND on get_fit_summary.
 _HINT = {"parameters": ["ac16", "ac8"], "dnll": 0.001, "dbic": -5.528, "move_scaled": 0.002}
+#: The other two rows of a redundant GROUP, as the server sends them cheapest-first.
+_HINTS = [_HINT,
+          {"parameters": ["ac16", "ac9"], "dnll": 0.004, "dbic": -5.522, "move_scaled": 0.01},
+          {"parameters": ["dc1", "dc2"], "dnll": 0.02, "dbic": -5.49, "move_scaled": 0.3}]
 
 
 @pytest.mark.asyncio
 async def test_the_armed_finish_names_an_outstanding_merge():
-    """The tie is read off the SCORE, which is the gate's only view of HEAD: `get_fit_summary` now
-    carries the same `merge_hint` the fit result does, so the gate names the pair the lead was
-    already shown instead of projecting a second one out of the diagnosis (which needed
+    """The ties are read off the SCORE, which is the gate's only view of HEAD: `get_fit_summary` now
+    carries the same `merge_hints` the fit result does, so the gate names the pairs the lead was
+    already shown instead of projecting new ones out of the diagnosis (which needed
     `petab_mcp` imported into an import-light module to do)."""
     mod = _agent
-    armed = await _finish(_tool_for(mod, _fit(merge_hint=_HINT)))
+    armed = await _finish(_tool_for(mod, _fit(merge_hints=[_HINT])))
     assert "FINISH ARMED" in armed and "OUTSTANDING MERGE" in armed
     assert "ac16 == ac8" in armed and "5.528" in armed        # ...and stated as a bic DECREASE
     assert "lowers bic" in armed.lower() and "-5.528" not in armed
     assert "0.002" in armed                                   # the move the panel must sanity-check
     # a clean fit says nothing: the line is absent, not "no merge found"
     assert "OUTSTANDING MERGE" not in await _finish(_tool_for(mod, _fit()))
+
+
+@pytest.mark.asyncio
+async def test_the_armed_finish_names_every_outstanding_tie_not_just_the_cheapest():
+    """One named tie per arm is what taught the lead to merge PIECEMEAL — take the cheapest, refit,
+    be shown the next member of the same redundant group, refit again. The arm names all of them and
+    says to take them in ONE call, and that the prices are individual (so they are not added up)."""
+    mod = _agent
+    armed = await _finish(_tool_for(mod, _fit(merge_hints=_HINTS)))
+    for hint in _HINTS:
+        assert " == ".join(hint["parameters"]) in armed
+    assert "ONE make_changes call" in armed
+    assert "ALONE" in armed and "not one per refit" in armed
+    assert "  " not in armed          # the tie lines carry their own leading space
+
+
+@pytest.mark.asyncio
+async def test_a_broken_merge_template_costs_the_line_not_the_finish():
+    """REGRESSION: rendering the ties moved the outer `.format` OUTSIDE the try that wraps the
+    per-row one, so an unfilled slot in the surrounding template would raise out of the ARM branch
+    — and the driver bounces a finish that did not confirm, so the run loops to the recursion limit
+    instead of finishing at its honest score. Every step of the advisory fails open."""
+    mod = _agent
+    broken = "{ties}{a_slot_nobody_fills}"
+    original = prompts.FINISH_ARMED_MERGE_TMPL
+    prompts.FINISH_ARMED_MERGE_TMPL = broken
+    try:
+        state = {}
+        tool = _tool_for(mod, _fit(merge_hints=_HINTS), finish_state=state)
+        armed = await _finish(tool)
+        assert "FINISH ARMED" in armed and "OUTSTANDING MERGE" not in armed
+        assert (await _finish(tool)).startswith("Recorded: finish")
+        assert state["confirmed"] is True
+    finally:
+        prompts.FINISH_ARMED_MERGE_TMPL = original
 
 
 @pytest.mark.asyncio
@@ -463,14 +503,29 @@ async def test_the_armed_finish_names_an_outstanding_merge():
 ])
 async def test_the_armed_merge_never_advertises_a_zero_payoff(hint):
     mod = _agent
-    armed = await _finish(_tool_for(mod, _fit(merge_hint=hint)))
+    armed = await _finish(_tool_for(mod, _fit(merge_hints=[hint])))
     assert "OUTSTANDING MERGE" in armed
     assert "lowers bic by 0.0" not in armed.lower()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hints", ["not-a-list", {"parameters": ["a", "b"]}, [], [None],
+                                   ["not-a-dict"], [{}]])
+async def test_a_malformed_merge_hints_payload_never_raises_a_finish(hints):
+    """The field itself, not just its rows: anything that is not a list of rows means "no merge to
+    report". A bare dict is included because that is the shape this field used to have."""
+    mod = _agent
+    state = {}
+    tool = _tool_for(mod, _fit(merge_hints=hints), finish_state=state)
+    armed = await _finish(tool)
+    assert "FINISH ARMED" in armed and "OUTSTANDING MERGE" not in armed
+    assert (await _finish(tool)).startswith("Recorded: finish")
+    assert state["confirmed"] is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("hint", ["not-a-dict", {}, {"parameters": []}, {"parameters": ["a", "b"]}])
-async def test_a_malformed_merge_hint_never_raises_a_finish(hint):
+async def test_a_malformed_merge_hint_row_never_raises_a_finish(hint):
     """REGRESSION: the merge rendering was the ONE step in the gate with no fail-open path (bare
     `hint[...]` subscripts, plus a lazy `from petab_mcp...` import in a module that must not depend
     on the server package). Every armed finish raised there, and the driver bounces a finish that
@@ -478,7 +533,7 @@ async def test_a_malformed_merge_hint_never_raises_a_finish(hint):
     score. A missing or odd hint means "no merge to report"."""
     mod = _agent
     state = {}
-    tool = _tool_for(mod, _fit(merge_hint=hint), finish_state=state)
+    tool = _tool_for(mod, _fit(merge_hints=[hint]), finish_state=state)
     assert "FINISH ARMED" in await _finish(tool)
     assert (await _finish(tool)).startswith("Recorded: finish")
     assert state["confirmed"] is True

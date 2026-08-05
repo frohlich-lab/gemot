@@ -104,12 +104,13 @@ def _render_flat_directions(flat_directions, *, max_dirs: int = 4, max_parts: in
     return "; ".join(groups) + ("; …" if len(flat_directions) > max_dirs else "")
 
 
-def _render_merge(hint) -> str:
-    """The OUTSTANDING MERGE line for the ARM text, or ``""`` when there is no tie to report.
+def _render_merge(hints) -> str:
+    """The OUTSTANDING MERGES line for the ARM text, or ``""`` when there is no tie to report.
 
-    Read off ``get_fit_summary``, which now carries the same ``merge_hint`` the fit result does, so
-    the gate names the pair the lead was already shown. Fails OPEN like every other diagnosis read
-    here: a missing field or an odd shape means "no merge to report", never a raised finish.
+    Read off ``get_fit_summary``, which now carries the same ``merge_hints`` the fit result does, so
+    the gate names the pairs the lead was already shown. Fails OPEN like every other diagnosis read
+    here: a missing field or an odd shape means "no merge to report", never a raised finish — and one
+    unreadable row does not silence the readable ones.
 
     ``dbic`` is NEGATIVE when the merge wins and the template says "LOWERS bic by", so the slot takes
     the MAGNITUDE — through :func:`_dbic_magnitude`, because ``abs(hint["dbic"] or 0.0)`` rendered
@@ -117,17 +118,27 @@ def _render_merge(hint) -> str:
     which is FALSY) while telling the lead the model was not finished. An edit whose stated payoff is
     zero is not an argument; the same ``or`` swallowed a genuinely absent dbic into the same 0.0.
     """
-    if not isinstance(hint, dict):
+    if not isinstance(hints, (list, tuple)):
+        return ""
+    ties: list[str] = []
+    for hint in hints:
+        if not isinstance(hint, dict):
+            continue
+        try:
+            params = [str(p) for p in (hint.get("parameters") or ())]
+            if not params:
+                continue
+            ties.append(prompts.FINISH_ARMED_MERGE_TIE_TMPL.format(
+                parameters=" == ".join(params), dnll=hint.get("dnll"),
+                dbic=_dbic_magnitude(hint.get("dbic")), move=hint.get("move_scaled")))
+        except Exception:  # noqa: BLE001 - an advisory line never fails a finish
+            continue
+    if not ties:
         return ""
     try:
-        params = [str(p) for p in (hint.get("parameters") or ())]
-        if not params:
-            return ""
-        return prompts.FINISH_ARMED_MERGE_TMPL.format(
-            parameters=" == ".join(params), dnll=hint.get("dnll"),
-            dbic=_dbic_magnitude(hint.get("dbic")), move=hint.get("move_scaled"))
-    except Exception:  # noqa: BLE001 - an advisory line never fails a finish
-        return ""
+        return prompts.FINISH_ARMED_MERGE_TMPL.format(ties="".join(ties))
+    except Exception:  # noqa: BLE001 - inside the fail-open boundary too: a template slot
+        return ""      # mistake must cost the advisory line, never every finish in the run
 
 
 def _dbic_magnitude(dbic) -> str:
@@ -375,11 +386,11 @@ def _finish_tool(session, finish_state=None, probe=None):
             invalid_line = (
                 prompts.FINISH_ARMED_INVALID_COMPARISON_TMPL.format(advisory=invalid)
                 if invalid else "")
-            # The PARAMETER counterpart of the residual verdict: a pair the data cannot separate
-            # whose merge BIC would pay for. Like the residual verdict it rides on the SCORE read
-            # (petab_mcp.fitting.fit_summary carries the same `merge_hint` the fit result does), so
-            # the gate names the tie the lead already saw instead of projecting a second one.
-            merge_line = _render_merge(fit.get("merge_hint"))
+            # The PARAMETER counterpart of the residual verdict: the pairs the data cannot separate
+            # whose merges BIC would pay for. Like the residual verdict they ride on the SCORE read
+            # (petab_mcp.fitting.fit_summary carries the same `merge_hints` the fit result does), so
+            # the gate names the ties the lead already saw instead of projecting new ones.
+            merge_line = _render_merge(fit.get("merge_hints"))
             print(f"[finish ARMED v={version}] bic={bic:.6g} — presented diagnosis, "
                   "awaiting confirming finish")
             return prompts.FINISH_ARMED_TMPL.format(

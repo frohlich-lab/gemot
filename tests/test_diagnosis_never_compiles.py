@@ -130,9 +130,9 @@ async def _probe_diagnosis(fx):
 
 #: Every way a diagnosis can be asked for. Named so a failure says WHICH surface built something.
 _ENTRY_POINTS = {
-    "merge_hint": lambda fx: I.fit_merge_hint(fx.session),
+    "merge_hints": lambda fx: I.fit_merge_hints(fx.session),
     "fit_diagnosis_block": lambda fx: I.fit_diagnosis_block(fx.session),
-    "stored_merge_hint": lambda fx: I.stored_merge_hint(fx.session),
+    "stored_merge_hints": lambda fx: I.stored_merge_hints(fx.session),
     "identifiability": lambda fx: I.identifiability(fx.session),
     "get_fit_summary": lambda fx: fx.call("get_fit_summary"),
     "diagnosis_default": lambda fx: fx.call("get_fit_diagnosis"),
@@ -238,5 +238,5 @@ def test_a_resumed_process_still_reports_the_fits_parameter_geometry(tmp_path):
     assert after["fim"] == fitted["fim"] and after["parameters"] == fitted["parameters"]
     assert "stale" not in after
     # ...and the score read beside it names the same tie (or the same absence of one)
-    assert resumed.call("get_fit_summary").get("merge_hint") == \
-        fx.call("get_fit_summary").get("merge_hint")
+    assert resumed.call("get_fit_summary").get("merge_hints") == \
+        fx.call("get_fit_summary").get("merge_hints")

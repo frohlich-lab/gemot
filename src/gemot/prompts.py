@@ -133,9 +133,24 @@ DEFAULT_SYSTEM_PROMPT = (
     "a parameter you are unsure of is fine — that is what the fit is for.\n"
     "3. Read the CURRENT HEAD's metrics (never an earlier version's) after each `make_changes` and decide "
     "what to do next. The DEFAULT is to KEEP ITERATING while the model is still mis-specified — "
-    "bic is still clearly improving fit-over-fit, OR get_fit_diagnosis shows a systematic "
-    "per-observable bias / a residual time-trend: just make the next justified "
-    "`make_changes` call (iterating needs NO control call). If it has NOT "
+    "bic is still improving fit-over-fit by more than a few units, OR get_fit_diagnosis shows a "
+    "systematic per-observable bias / a residual time-trend: just make the next justified "
+    "`make_changes` call (iterating needs NO control call). "
+    "STRUCTURE BEFORE POLISH — while the residuals still show systematic structure, the MECHANISM is "
+    "what is wrong, so spend the call on the mechanism: a rate-law form, a topology, a species, a "
+    "reaction. Refinements that leave the reaction network alone — retuning bounds or a scale, "
+    "merging a tied pair, pinning an initial condition — cannot supply a mechanism that isn't there. "
+    "They are how you finish a model whose residuals are ALREADY clean, not how you fix one that "
+    "underfits; the exception is a NUMERICAL fault the diagnosis actually names (a parameter pinned "
+    "at a bound, a rank-deficient fit), which you fix and then go straight back to the mechanism. "
+    "And read the SIZE of each gain, not just its sign: getting a structure right buys TENS or "
+    "hundreds of bic, so a run of calls buying a few bic each means you are refining rather than "
+    "fixing. What that tells you depends on the residuals. While they are still systematically "
+    "structured, small gains are a WRONG structure being polished — 'bic is still improving' is then "
+    "no reason to keep going in that direction, so change the mechanism instead. Once they are CLEAN, "
+    "small gains are the legitimate endgame: keep taking them — the merges your fit names, a dropped "
+    "parameter, a tighter form — until they run out, because the last few bic are often exactly what "
+    "puts a model at the bar. Either way, when bic has NOT "
     "improved over the last few "
     "iterations, STOP tweaking the same structure or piling on parameters: (a) call "
     "`get_fit_diagnosis(sections='all')`, which answers both halves of 'why is it stuck' in one "
@@ -158,9 +173,12 @@ DEFAULT_SYSTEM_PROMPT = (
     "rate-law form or topology).\n"
     "Call `finish` — the ONE control call — when the residuals show NO systematic structure "
     "(get_fit_diagnosis bias ≈ 0, no time-trend) AND bic has bottomed out: you cannot lower it "
-    "further by adding, dropping, re-forming, or MERGING mechanism. A `merge_hint` on your last "
-    "fit names a pair the data cannot tell apart, so bic has not bottomed out: take the merge "
-    "first. Finish on the LOWEST-bic such model.\n"
+    "further by adding, dropping, re-forming, or MERGING mechanism. `merge_hints` on your last "
+    "fit name pairs the data cannot tell apart, so bic has not bottomed out: take them first — ALL "
+    "of them in ONE `make_changes` call, since each is priced independently at the same optimum and "
+    "two hints sharing a parameter are one multi-way tie (tie all its names into a single symbol). "
+    "One merge per refit spends a whole fit to delete one parameter. Finish on the LOWEST-bic such "
+    "model.\n"
     "Repeat until you call `finish`. When you finish, report the "
     "final bic/neg_log_likelihood and the model you built."
 )
@@ -447,8 +465,8 @@ TOOL_DESCRIPTIONS = {
                        "(bounds, scale, fixed/estimated, any prior), so a shipped constant costs "
                        "you nothing to adopt and a shipped-FIXED one must stay declared."),
     "get_fit_summary": ("Current fit metrics only (neg_log_likelihood, chi2, n_data_points) — a "
-                        "cheap score check. Carries `merge_hint` when the fit has a parameter pair "
-                        "the data cannot separate whose merge bic would pay for."),
+                        "cheap score check. Carries `merge_hints` when the fit has parameter pairs "
+                        "the data cannot separate whose merges bic would pay for."),
     "get_fit_diagnosis": ("The DETAIL behind the verdicts fit already gave you, in TWO sections — "
                           "`sections`: 'residuals' (the DEFAULT), 'parameters', or 'all' (one call, "
                           "both). RESIDUALS is the DEFAULT (~2-7 kB, 0.01-0.12 s, no new "
@@ -479,10 +497,21 @@ TOOL_DESCRIPTIONS = {
                           "move a parameter (cheap but many decades is not an edit that survives "
                           "a refit). READ IT rather than guessing a tie from a flat direction's "
                           "member list, which names members, not which tie is cheap; the fit "
-                          "result's `merge_hint` is the cheapest of these rows worth taking — its "
+                          "result's `merge_hints` are the cheapest few of these rows worth taking — "
+                          "each with its "
                           "parameters, dnll, move_scaled, and dbic (a NEGATIVE dbic is the win: it "
                           "is how much the merge LOWERS bic) — so a hint on your last fit means a "
-                          "free parameter is sitting there. It lists "
+                          "free parameter is sitting there. How many parameters SEVERAL hints buy "
+                          "you depends on how they overlap: three hints over three symbols are one "
+                          "multi-way tie worth two parameters, three DISJOINT pairs are worth three. "
+                          "Merges are the ENDGAME, not the fix for an underfit: while the residuals "
+                          "are still systematically structured, spend the call on the mechanism and "
+                          "leave these — a tie is a parameter the data cannot separate, never a "
+                          "missing rate law. Once the residuals are clean, take them TOGETHER in one "
+                          "make_changes call: each dbic is priced for that tie alone "
+                          "(they do not add up), and hints sharing a parameter are ONE multi-way "
+                          "tie — tie all its names into a single symbol instead of merging pairwise "
+                          "over successive refits. It lists "
                           "top_n, and prices only same-role, same-scale pairs with neither member "
                           "at a bound (n_ties_skipped counts the rest), so an absent pair — or an "
                           "absent hint — may be one it refused rather than a dear one. "
@@ -596,12 +625,12 @@ FINISH_DESCRIPTION = (
     "form can reach it, so the form is what has to change. Its PASS is worth only its lof_df "
     "(replicated points minus your estimated structural parameters): a pass carrying weak: true, or "
     "carrying no lof_df at all, does not show the form is right. And bic bottoming out does NOT "
-    "mean finished while a `merge_hint` stands on your last fit (or the ARM message names an "
-    "OUTSTANDING MERGE): that is a pair of parameters the data cannot tell apart, and tying them "
+    "mean finished while `merge_hints` stand on your last fit (or the ARM message names "
+    "OUTSTANDING MERGES): each is a pair of parameters the data cannot tell apart, and tying them "
     "into one symbol LOWERS bic — its `dbic` is the change, so a NEGATIVE dbic is the win — at a "
-    "cost of `dnll` in fit. Take it (re-author both as one symbol via make_changes) and let the "
-    "refit adjudicate before you finish; the one exception is a `move_scaled` of many decades, "
-    "which is a flat direction rather than an edit that will survive the refit. "
+    "cost of `dnll` in fit. Take them ALL in ONE make_changes call (re-author each pair as one "
+    "symbol) and let the refit adjudicate before you finish; the one exception is a `move_scaled` of "
+    "many decades, which is a flat direction rather than an edit that will survive the refit. "
     "Finishing takes TWO calls: the "
     "first ARMS it and shows you the "
     "current bic and residual-structure diagnosis; review it, then call `finish` AGAIN to "
@@ -688,17 +717,26 @@ FINISH_ARMED_WORST_TMPL = (
     " Worst observable {observable_id}: sign-test p={sign_p}, runs-test p={runs_p}."
 )
 
-# Appended to the ARM text when the fit's FIM still holds a merge BIC would pay for. The same
-# verdict rides on every fit RESULT as `merge_hint`, but a rollback ran no fit and so carries none,
+# Appended to the ARM text when the fit's FIM still holds merges BIC would pay for. The same
+# verdict rides on every fit RESULT as `merge_hints`, but a rollback ran no fit and so carries none,
 # and this is where the finish is actually decided. The failure it addresses (blasi, run 1075fdf1):
 # the run that came CLOSEST to the bar — +11.6 against <=10 — finished on a model whose own FIM
-# held a merge costing 0.001 nll against a 5.53 BIC charge, and never asked for it.
+# held a merge costing 0.001 nll against a 5.53 BIC charge, and never asked for it. ALL the ties the
+# charge covers (petab_mcp.identifiability.MERGE_HINT_LIMIT of them), not the cheapest alone: naming
+# one taught the lead to take one per refit, which spends the budget a parameter at a time.
 FINISH_ARMED_MERGE_TMPL = (
-    " OUTSTANDING MERGE: {parameters} — the data cannot tell that pair apart. Tying them into ONE "
-    "symbol costs {dnll} of neg_log_likelihood and LOWERS bic by {dbic} (it moves a parameter "
-    "{move} on its estimation scale — many decades there means a flat direction, not an edit that "
-    "survives a refit). A bic that has bottomed out with a merge like this outstanding is NOT a "
-    "finished model: take it with make_changes and let the refit adjudicate before you finish."
+    " OUTSTANDING MERGES — the data cannot tell these pairs apart:{ties} A bic that has bottomed out "
+    "with merges like these outstanding is NOT a finished model: take them — ALL of them, in ONE "
+    "make_changes call, not one per refit — and let the refit adjudicate before you finish. Each "
+    "price is for that tie ALONE, so they do not simply add up, and two pairs SHARING a parameter "
+    "are one multi-way tie: tie all three names into one symbol rather than merging them in turn."
+)
+
+#: One tie inside :data:`FINISH_ARMED_MERGE_TMPL`.
+FINISH_ARMED_MERGE_TIE_TMPL = (
+    " {parameters} — tying them into ONE symbol costs {dnll} of neg_log_likelihood and LOWERS bic "
+    "by {dbic} (it moves a parameter {move} on its estimation scale — many decades there means a "
+    "flat direction, not an edit that survives a refit)."
 )
 
 # Appended to the ARM text when the run's last "does adding structure help?" experiment was
@@ -841,6 +879,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "armed": FINISH_ARMED_TMPL,
             "armed_worst": FINISH_ARMED_WORST_TMPL,
             "armed_merge": FINISH_ARMED_MERGE_TMPL,
+            "armed_merge_tie": FINISH_ARMED_MERGE_TIE_TMPL,
             "armed_invalid_comparison": FINISH_ARMED_INVALID_COMPARISON_TMPL,
             "struct_unavailable": FINISH_STRUCT_UNAVAILABLE,
             "confirmed": FINISH_CONFIRMED_TMPL,
