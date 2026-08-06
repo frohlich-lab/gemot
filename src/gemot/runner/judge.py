@@ -37,22 +37,148 @@ async def _head_version(call) -> "int | None":
     return int(desc.get("current_version", -1)) if isinstance(desc, dict) else None
 
 
-async def _restore_best_checkpoint(call) -> None:
-    """Make the early-stop chain's best-BIC model the current HEAD before scoring.
+#: How many fitted versions the scoring scan will inspect, best-BIC first — EVERY one of them.
+#: Each costs a restore and a score read (no fit, no compile), and the count is already bounded by
+#: the run's own turn budget: a version exists only where a `make_changes` call fitted one, so the
+#: recursion limit caps the list at a few hundred in the worst case and at 10-30 in practice. A
+#: tighter cap only buys a few seconds, and buys them by giving up the run's best scoreable model —
+#: exactly the failure this scan exists to prevent, reintroduced one rung further down.
+_SCORING_SCAN_LIMIT = None
+
+
+async def _restore_best_checkpoint(call, reference=None) -> None:
+    """Make the best model the judge can legitimately score the current HEAD before scoring.
 
     Agents wander off their best model and finish worse (verified pass→fail flips on a credit
     abort, e.g. armistead v56 → v66), so the judge must score the BEST fitted version, not the
-    last-committed one. The server tracks that checkpoint (``get_progress`` → ``best_version``);
-    ``restore_version`` restores it as a new HEAD, which every read in :func:`_judge` then sees. This
-    runs on ANY termination that reaches the judge (early-stop, wall-time, recursion limit,
-    clean finish). Best-effort — a probe/rollback failure just leaves HEAD in place.
+    last-committed one. Runs on ANY termination that reaches the judge (early-stop, wall-time,
+    recursion limit, clean finish). Best-effort throughout — any probe failure leaves HEAD in place.
 
-    No checkpoint means no ``make_changes`` call ever produced a fitted version — the agent built
-    nothing, or every fit failed. There is nothing to score either way, so the judge scores HEAD
-    and the run is reported on its own (empty or unfit) merits. It used to auto-fit here, because
-    edits were fit-free (#81) and a model could sit assembled-but-unscored; ``make_changes``
-    always fits, so that state no longer arises from an agent simply forgetting to score.
+    "Best" is NOT simply the lowest BIC. A model whose estimated sigma is implausible against the
+    reference's own fitted sigmas fails :func:`_judge`'s integrity gate, so scoring it throws the run
+    away while a clean, nearly-as-good version sits unscored in the same version store. The scan
+    therefore walks EVERY fitted version best-BIC first and stops at the first one that would clear
+    the gate, falling back to the plain best-BIC model when NONE is clean (an all-gamed run is still
+    reported on its own lowest-BIC model, exactly as before, and still fails).
+
+    Why the candidate set is every fitted version and not the server's ``best_version`` checkpoint
+    (brannmark, run 9285a352): ``v5`` scored bic 344.175 but improved on ``v4`` by only 0.70 — under
+    ``NEW_BEST_MIN_DELTA_BIC`` (2.0) — so the checkpoint stayed at ``v4`` (bic 344.875) and the judge
+    scored the worse model. That run failed on the sigma gate either way (all six of its versions
+    fitted sigmaYDosR at 0.24-0.28 of the reference's, well under the 1/3 floor), so the hysteresis
+    cost it nothing there; it is a pass waiting to be discarded the first time the two versions
+    differ in plausibility. The threshold is right for the streak and plateau logic, which need a
+    stable notion of progress, and wrong for a final decision, which should see every version.
+
+    Nor can the server make this choice: the plausibility question here is asked against the TRUE
+    model's fitted sigmas, which live in the scenario's reference and are deliberately not visible
+    to the session (see :func:`scoring._reference_sigma_flag`). Only the judge holds both halves.
+
+    No fitted version at all means no ``make_changes`` call ever produced one — the agent built
+    nothing, or every fit failed. There is nothing to score either way, so the judge scores HEAD and
+    the run is reported on its own (empty or unfit) merits.
     """
+    candidates = await _scoreable_versions(call)
+    if not candidates:  # nothing fitted, or an older server without list_versions
+        return await _restore_checkpoint_only(call)
+    head = await _head_version(call)
+    fallback = candidates[0]
+    chosen, clean = fallback, False
+    for version in candidates[:_SCORING_SCAN_LIMIT]:
+        flagged = await _sigma_flagged(call, version, reference)
+        # `None` is unassessable — no stored report, or one the gate cannot read. The gate will not
+        # fail that version either, so it is scoreable and the scan stops on it exactly as it does
+        # on a clean one. (A whole store of them, e.g. a version dir written before the report was
+        # persisted, therefore lands on the best-BIC version: the pre-scan behaviour.)
+        if flagged is not True:
+            chosen, clean = version, True
+            break
+    # ONE restore, of the version actually chosen. The scan itself is read-only: restoring each
+    # candidate to look at it would mutate the working state N times and write N rollback entries
+    # into the provenance the run is judged on, to read numbers already stored beside each version.
+    #
+    # ANNOUNCED ONLY ONCE IT SUCCEEDS. A failed restore leaves HEAD where the AGENT left it — which,
+    # now that the scan no longer walks the versions, can be any model at all, not the runner-up —
+    # and printing the choice first would put a version number in the log that nothing scored.
+    if not await _restore(call, chosen, head):
+        print(f"[judge] could not restore v{chosen}; scoring HEAD v{head} instead")
+        return
+    if not clean:
+        # Every candidate would fail the sigma gate. Score the plain best-BIC one: the run's own
+        # lowest-BIC model is the honest thing to report, and the gate still fails it.
+        print(f"[judge] none of the run's {len(candidates)} fitted versions has a plausible noise "
+              f"sigma — scoring best-bic v{fallback}")
+    elif chosen != fallback:
+        print(f"[judge] scoring v{chosen} — the best-BIC version whose noise sigma is plausible "
+              f"(v{fallback} scores better but its sigma would fail the gate)")
+
+
+async def _scoreable_versions(call) -> "list[int]":
+    """Every FITTED version, best BIC first — the candidate set for the scoring scan.
+
+    Read off ``list_versions`` rather than ``get_progress`` so a version the checkpoint's
+    minimum-improvement threshold skipped is still a candidate (see :func:`_restore_best_checkpoint`).
+    A version with no finite bic was never scored and cannot be scored now, so it is dropped.
+    """
+    try:
+        versions = await call("list_versions")
+    except Exception:  # pragma: no cover - older server: caller falls back to the checkpoint
+        return []
+    scored = []
+    for v in versions if isinstance(versions, list) else ():
+        if not isinstance(v, dict):
+            continue
+        bic, num = v.get("bic"), v.get("version")
+        if isinstance(bic, (int, float)) and not isinstance(bic, bool) and math.isfinite(bic) \
+                and isinstance(num, int):
+            scored.append((float(bic), num))
+    scored.sort()
+    return [num for _, num in scored]
+
+
+async def _sigma_flagged(call, version: int, reference) -> "bool | None":
+    """Would ``version``'s noise model fail :func:`_judge`'s integrity gate? ``None`` when
+    unassessable.
+
+    The SAME verdict the gate itself computes — ``_reference_sigma_flag`` against the reference's
+    fitted sigmas, falling back to the data-std band — read off the report the FIT stored beside
+    that version (:func:`petab_mcp.fitting.build_sim_payload_for_version`). A read, not a rollback:
+    the scan can ask about every version without touching the working state.
+
+    Anything unreadable is ``None``: an unassessable version must not be silently skipped in favour
+    of a worse one, since the gate will not fail it either. A version stored before the report was
+    persisted reads that way too, which is what makes the scan degrade to plain best-BIC on an old
+    store rather than mis-rank it.
+    """
+    try:
+        stored = await call("get_version", version=version)
+    except Exception:  # pragma: no cover - unreadable version: no verdict
+        return None
+    simulation = stored.get("simulation") if isinstance(stored, dict) else None
+    report = simulation.get("noise_sigma_report") if isinstance(simulation, dict) else None
+    if not report:
+        return None
+    flag = _reference_sigma_flag(report, reference) or _noise_sigma_flag(report)
+    if not flag:
+        return None
+    return bool(flag["inflated"] or flag["collapsed"])
+
+
+async def _restore(call, version: int, head: "int | None") -> bool:
+    """Put ``version`` in the working state, or say it could not be done."""
+    if version == head:
+        return True
+    try:
+        await call("restore_version", version=version,
+                   justification="scoring scan: evaluate this version before the judge scores")
+        return True
+    except Exception as exc:  # pragma: no cover - skip a version we cannot restore
+        print(f"[judge] could not restore v{version} ({type(exc).__name__}: {exc})")
+        return False
+
+
+async def _restore_checkpoint_only(call) -> None:
+    """The pre-scan behaviour, for a server that cannot list versions: restore ``best_version``."""
     try:
         progress = await call("get_progress")
     except Exception:  # pragma: no cover - older server without the tool: score HEAD
@@ -63,13 +189,8 @@ async def _restore_best_checkpoint(call) -> None:
     head = await _head_version(call)
     if best == head:
         return  # already on the best model
-    try:
-        await call("restore_version", version=best,
-                   justification="restore best-BIC checkpoint before scoring")
+    if await _restore(call, best, head):
         print(f"[judge] restored best-BIC checkpoint v{best} (was HEAD v{head}) before scoring")
-    except Exception as exc:  # pragma: no cover - score HEAD if the restore fails
-        print(f"[judge] could not restore best-BIC checkpoint v{best} "
-              f"({type(exc).__name__}: {exc}); scoring HEAD instead")
 
 
 async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta: dict,
@@ -92,8 +213,11 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     """
     from ..scenario import bic, chi2_gof_pvalue
 
-    # Restore + score the best-BIC checkpoint, not whatever was committed last (see the helper).
-    await _restore_best_checkpoint(call)
+    # Restore + score the best model this judge can legitimately score — not whatever was committed
+    # last, and not a lower-BIC version whose noise model the gate below would reject while a clean
+    # one sits unscored (see the helper). Handed the reference so the scan asks the SAME sigma
+    # question the gate does.
+    await _restore_best_checkpoint(call, scenario.reference())
 
     structure = await call("get_model_structure")
     reactions = structure.get("reactions", []) or []
