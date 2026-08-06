@@ -181,8 +181,21 @@ def test_bad_bic_fails_despite_plausible_sigma(tmp_path):
 
 
 # --- Design A: judge the sigma against the TRUE model's own fitted sigma (#118) --------------
-def _ref_flag(fitted, ref_sigma):
-    return _reference_sigma_flag({"s": {"fitted": fitted}}, {"noise_sigma": {"s": ref_sigma}})
+#: A sigma pooled over enough points to HAVE power: 60 points, and models spending 12 of 120 and
+#: 22 of 120 parameters, so both sides keep ~50 residual df. Its RAW sampling band is [0.696, 1.445],
+#: but that is narrower than the fixed factor and the union keeps the wider one — so the band these
+#: fixtures actually apply is [1/3, 3], i.e. the old fixed tolerance. That is the point: at high df
+#: the df-awareness never binds, and these tests pin the unchanged behaviour there. The other end,
+#: where it does bind, is test_the_sigma_band_widens_as_the_group_shrinks.
+_WELL_POWERED = dict(n_points=60, k=12, n=120, ref_k=22, ref_n=120)
+
+
+def _ref_flag(fitted, ref_sigma, *, n_points=_WELL_POWERED["n_points"],
+              k=_WELL_POWERED["k"], n=_WELL_POWERED["n"]):
+    return _reference_sigma_flag(
+        {"s": {"fitted": fitted, "n_points": n_points}},
+        {"noise_sigma": {"s": ref_sigma}, "k": _WELL_POWERED["ref_k"], "n": _WELL_POWERED["ref_n"]},
+        k=k, n=n)
 
 
 def test_reference_sigma_flag_accepts_a_sigma_near_the_truth():
@@ -199,11 +212,70 @@ def test_reference_sigma_flag_accepts_a_sigma_near_the_truth():
 
 
 def test_reference_sigma_flag_catches_both_tails():
+    # Twice the fixed tolerance, read off the constant: the floor is what decides at this df, and a
+    # literal here would quietly stop testing the tails if the factor ever moved.
     from petab_mcp.constants import NOISE_SIGMA_REFERENCE_FACTOR as F
+
     inflated = _ref_flag(0.10 * (F * 2), 0.10)
     assert inflated["inflated"] and not inflated["collapsed"]
     collapsed = _ref_flag(0.10 / (F * 2), 0.10)
     assert collapsed["collapsed"] and not collapsed["inflated"]
+
+
+def test_the_sigma_band_widens_as_the_group_shrinks():
+    """The point of the F band. A ratio of 0.25 is decisive evidence when the sigma was pooled over
+    60 points and unremarkable when it came from 7 — the fixed factor of 3 it replaces called both
+    "collapsed", which is what discarded brannmark run 9285a352 at dBIC -21.65 (its sigmaYDosR is
+    pooled over SEVEN dose-response points, one per observable)."""
+    powered = _ref_flag(0.025, 0.10)                          # 60 points
+    assert powered["collapsed"] and powered["per_sigma"]["s"]["verdict"] == "collapsed"
+
+    thin = _ref_flag(0.025, 0.10, n_points=7, k=17, n=43)     # brannmark's own shape
+    assert not thin["collapsed"] and not thin["inflated"]
+    assert thin["per_sigma"]["s"]["verdict"] == "ok"
+    # ...and the band is REPORTED, so a reader can see which df produced the verdict
+    assert thin["per_sigma"]["s"]["band_low"] < 0.25 < thin["per_sigma"]["s"]["band_high"]
+    assert powered["per_sigma"]["s"]["band_low"] > thin["per_sigma"]["s"]["band_low"]
+
+
+def test_tolerance_never_tightens_as_the_group_gets_smaller():
+    """The property the band exists to have, and an earlier draft inverted: below
+    NOISE_SIGMA_BAND_MIN_DF it SWITCHED to the fixed factor, so at brannmark's shape a five-point
+    sigma was judged in [0.333, 3.0] while a seven-point one got [0.154, 8.65] — thinner evidence,
+    harsher test, and the false failure this whole change removes surviving just below the floor.
+    The floor now clamps the df the band is computed at, so tolerance stops widening rather than
+    collapsing."""
+    bands = [_ref_flag(0.10, 0.10, n_points=m, k=17, n=43)["per_sigma"]["s"] for m in
+             (3, 5, 7, 12, 20, 60)]
+    lows = [b["band_low"] for b in bands]
+    assert lows == sorted(lows), f"a smaller group was judged more strictly: {lows}"
+    highs = [b["band_high"] for b in bands]
+    assert highs == sorted(highs, reverse=True), f"band narrowed downward as df fell: {highs}"
+    # ...and the clamp bounds how permissive it gets rather than letting the gate vanish
+    assert bands[0]["band_low"] > 0.0 and bands[0]["band_high"] < 100
+    # the REPORTED df stays the real one, unclamped, so the audit trail is not a fiction
+    assert bands[0]["df"] == pytest.approx(3 * (1 - 17 / 43))
+
+
+def test_a_sigma_below_the_df_floor_is_still_gated():
+    """Clamping is not switching the gate off: an absurd ratio on a three-point group is still
+    caught, it just has to be more absurd than on a well-powered one."""
+    f = _ref_flag(0.001, 0.10, n_points=3, k=17, n=43)     # 100x too small
+    assert f["collapsed"] and f["per_sigma"]["s"]["verdict"] == "collapsed"
+
+
+def test_testing_several_sigmas_splits_the_alpha():
+    """Flagging when ANY of g sigmas is outside its band is a multiple comparison: at a flat alpha
+    an honest run fails g times as often as the alpha claims."""
+    # A group small enough that the SAMPLING band is the binding one (10 points, ~6 df) — where the
+    # fixed floor binds, alpha cannot move anything.
+    one = _reference_sigma_flag({"a": {"fitted": 0.1, "n_points": 10}},
+                                {"noise_sigma": {"a": 0.1}, "k": 22, "n": 43}, k=17, n=43)
+    four = _reference_sigma_flag(
+        {p: {"fitted": 0.1, "n_points": 10} for p in "abcd"},
+        {"noise_sigma": {p: 0.1 for p in "abcd"}, "k": 22, "n": 43}, k=17, n=43)
+    assert four["alpha"] == one["alpha"] / 4
+    assert four["per_sigma"]["a"]["band_low"] < one["per_sigma"]["a"]["band_low"]
 
 
 def test_reference_sigma_flag_is_none_without_recorded_reference_sigmas():
@@ -244,3 +316,18 @@ def test_reference_gate_judges_effective_sigma_when_available():
     # Without the effective map the same pair is judged raw (1.25/0.25 = 5x) and IS flagged.
     raw_only = _reference_sigma_flag(report, {"noise_sigma": {"sd_o": 0.25}})
     assert raw_only is not None and raw_only["inflated"]
+
+
+def test_every_sigma_gets_a_verdict_whatever_its_degrees_of_freedom():
+    """There is no unjudged sigma. An early draft returned "no verdict" below the df floor, which
+    would have let an agent collapse a sigma on a three-point group untouched; the fixed factor
+    applies there instead. Each entry records which band decided it, so a pass is auditable."""
+    for kwargs in ({"n_points": 60, "k": 12, "n": 120},      # sampling band binds
+                   {"n_points": 7, "k": 17, "n": 43},        # brannmark's shape
+                   {"n_points": 3, "k": 17, "n": 43},        # below the df floor -> fixed factor
+                   {"n_points": None, "k": 12, "n": 120}):   # no stored count -> fixed factor
+        detail = _ref_flag(0.10, 0.10, **kwargs)["per_sigma"]["s"]
+        assert detail["verdict"] == "ok", kwargs
+        assert detail["band_low"] < 1.0 < detail["band_high"], kwargs
+    # ...and where the count is missing the band says so rather than inventing a df
+    assert _ref_flag(0.10, 0.10, n_points=None)["per_sigma"]["s"]["df"] is None

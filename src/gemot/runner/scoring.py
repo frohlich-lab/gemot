@@ -18,11 +18,15 @@ from __future__ import annotations
 # judge gate share ONE value (re-exported under the old name for callers/tests).
 from petab_mcp.constants import NOISE_SIGMA_COLLAPSE_FRACTION as _NOISE_SIGMA_COLLAPSE_FRACTION
 from petab_mcp.constants import (
+    NOISE_SIGMA_BAND_ALPHA as _NOISE_SIGMA_BAND_ALPHA,
+    NOISE_SIGMA_BAND_MIN_DF as _NOISE_SIGMA_BAND_MIN_DF,
     NOISE_SIGMA_REFERENCE_FACTOR as _NOISE_SIGMA_REFERENCE_FACTOR,
 )
 
 __all__ = [
     "_NOISE_SIGMA_COLLAPSE_FRACTION",
+    "_NOISE_SIGMA_BAND_ALPHA",
+    "_NOISE_SIGMA_BAND_MIN_DF",
     "_NOISE_SIGMA_REFERENCE_FACTOR",
     "_noise_sigma_flag",
     "_reference_sigma_flag",
@@ -99,19 +103,48 @@ def _residual_structure_fields(diagnosis, rollup=None) -> dict | None:
     return out
 
 
-def _reference_sigma_flag(report, reference) -> dict | None:
+def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
     """Plausibility of the candidate's ESTIMATED sigmas against the TRUE model's OWN fitted sigmas
     (``reference.json``'s ``noise_sigma``), or ``None`` when the reference doesn't record them.
 
     This is the dimensionally sound comparison and the judge's preferred one (#118): the marginal
     data std conflates variance the model EXPLAINS with variance it cannot, which is why legitimate
     sigmas span ~0.0004-0.59 of it and no fixed band can hold the truth. Against the reference's own
-    sigma the scale question disappears — a correct fit lands near 1 — so the only choice left is a
-    tolerance FACTOR, kept generous because a good model that isn't literally the truth still has
-    somewhat different residuals (a sharp chi2 point-null rejects near-misses once n is large).
+    sigma the scale question disappears — a correct fit lands near 1.
 
-    Returns ``{inflated, collapsed, max_ratio, min_ratio}`` where the ratios are
-    ``fitted / reference`` per sigma.
+    How far from 1 is too far depends on HOW MUCH DATA the sigma was estimated from, which the fixed
+    tolerance factor this used to apply alone could not know. A fitted sigma is an ML estimate: its
+    squared value is a mean of squared residuals, so ``sigma_hat^2 / sigma^2 ~ chi2_d / d`` and the
+    two sides' ratio is F-distributed — ``(fitted/reference)^2 ~ F(d_candidate, d_reference)``. A
+    sigma is flagged only outside the WIDER of that distribution's central
+    ``1 - NOISE_SIGMA_BAND_ALPHA`` interval (Bonferroni-split across the sigmas tested, since
+    flagging on ANY of several is a multiple comparison) and the fixed factor — see
+    :func:`_sigma_ratio_band` for why the union rather than the F band alone.
+
+    The fixed factor of 3 was, in effect, the 99% interval for a sigma with about 7 residual degrees
+    of freedom, applied to every sigma regardless of its own. That is far too tight below 7:
+    brannmark's ``sigmaYDosR`` is pooled over SEVEN dose-response points, one per observable, so at
+    its real df a ratio of 0.25 is a ~1-2% event, and the fixed band called it certain gaming and
+    discarded the run (9285a352, ΔBIC −21.65). Widening there is what this fixes; the factor stays as
+    the floor on tolerance, so nothing that passed before fails now.
+
+    One assumption is worth naming: ``F`` treats the two sigmas as independent, and they are not —
+    both are fitted to the SAME measurements, so their errors are correlated and the true null is
+    tighter than the F. The band is therefore CONSERVATIVE: the realised false-flag rate is below
+    the nominal ``alpha`` recorded in ``result.json``, not above it. For a gate whose job is to
+    catch gaming without discarding honest runs, erring that way is the right direction, but the
+    recorded alpha should be read as a bound rather than a rate.
+
+    ``d`` is the group's share of the model's residual degrees of freedom — its point count scaled by
+    ``1 - k/n``, the same crude attribution the replicate lack-of-fit arm makes when it charges each
+    design point a share of the structural parameters. Where the count is unknown, or the share
+    leaves less than ``NOISE_SIGMA_BAND_MIN_DF``, the sampling band means nothing and the FIXED
+    factor is applied on its own — the gate stays on, exactly as strict as it was before this
+    existed. Every sigma gets a verdict either way; ``per_sigma`` records which band produced it
+    (``df`` is ``None`` where the count was unknown), so a pass on a tiny group is auditable.
+
+    Returns ``{inflated, collapsed, max_ratio, min_ratio, alpha, per_sigma}`` where the ratios are
+    ``fitted / reference`` per sigma and ``per_sigma`` carries each one's ratio, df and band.
     """
     if not isinstance(report, dict) or not report:
         return None
@@ -133,7 +166,14 @@ def _reference_sigma_flag(report, reference) -> dict | None:
     # anything more than one-to-one stays id-matched, since a wrong pairing is worse than none.
     solo_pairing = len(report) == 1 and len(ref_sigmas) == 1
     solo_ref_value = next(iter(ref_sigmas.values())) if solo_pairing else None
+    # Bonferroni: the verdict fires if ANY sigma is outside its band, so testing g of them at alpha
+    # each would fail an honest run g times as often as the alpha claims. Counts the entries the
+    # loop below actually TESTS — a non-dict entry it skips is not a comparison, and counting it
+    # would split alpha further and widen every real sigma's band.
+    alpha = _NOISE_SIGMA_BAND_ALPHA / max(1, sum(1 for e in report.values() if isinstance(e, dict)))
     hi = lo = None
+    inflated = collapsed = False
+    per_sigma: dict[str, dict] = {}
     for pid, entry in report.items():
         if not isinstance(entry, dict):
             continue
@@ -155,15 +195,88 @@ def _reference_sigma_flag(report, reference) -> dict | None:
         ratio = fitted / ref_value
         hi = ratio if hi is None else max(hi, ratio)
         lo = ratio if lo is None else min(lo, ratio)
+        floor, ceiling, df_cand, df_ref = _sigma_ratio_band(
+            entry.get("n_points"), k, n, reference, alpha)
+        detail = {"ratio": ratio, "n_points": entry.get("n_points"),
+                  "band_low": floor, "band_high": ceiling,
+                  "df": df_cand, "df_reference": df_ref}
+        if ratio > ceiling:
+            inflated = True
+            detail["verdict"] = "inflated"
+        elif ratio < floor:
+            collapsed = True
+            detail["verdict"] = "collapsed"
+        else:
+            detail["verdict"] = "ok"
+        per_sigma[pid] = detail
     if hi is None:
         return None
-    return {"inflated": hi > _NOISE_SIGMA_REFERENCE_FACTOR,
-            "collapsed": lo < 1.0 / _NOISE_SIGMA_REFERENCE_FACTOR,
+    return {"inflated": inflated, "collapsed": collapsed,
             "max_ratio": hi, "min_ratio": lo,
+            # The per-sigma detail behind the verdict: each ratio, the df it was judged at, and the
+            # band that df implies. Written to result.json so a flag (or the absence of one on a
+            # low-power sigma) can be audited without re-deriving any of it.
+            "alpha": alpha, "per_sigma": per_sigma,
             # Same key names the data-std fallback emits, so a consumer of result.json's
             # noise_sigma_flag sees ONE shape regardless of which basis produced it.
             "max_fraction_of_data_std": _max_fraction_of_data_std(report),
             "min_fraction_of_data_std": _min_fraction_of_data_std(report)}
+
+
+def _sigma_ratio_band(n_points, k, n, reference, alpha):
+    """``(low, high, df_candidate, df_reference)`` — how far ``fitted/reference`` may stray before
+    this sigma is called implausible.
+
+    The WIDER of two bands, never the narrower:
+
+    * the sampling band — the central ``1 - alpha`` interval of ``F(d_candidate, d_reference)``,
+      where ``d = n_points * (1 - k/n)`` is the group's points less its share of the parameters the
+      model spends (each side gets its own: a 22-parameter truth and a 12-parameter candidate do not
+      leave the same freedom in the same points);
+    * the fixed ``[1/FACTOR, FACTOR]`` tolerance this used to apply alone.
+
+    Taking the union is the whole point. The sampling band is what a ratio could reach BY CHANCE if
+    both models were the truth, and on a small group that is much wider than the fixed factor —
+    which is the miscalibration that discarded brannmark run 9285a352. But it also SHRINKS as the
+    group grows, and at a few hundred points it is tighter than ±20%, which would start failing
+    honest near-misses: a good model that is not literally the truth has somewhat larger residuals,
+    and that difference is real rather than sampling noise, so a sharp test rejects it. The fixed
+    factor was chosen for exactly that reason and stays as the floor on tolerance.
+
+    So this only ever RELAXES the old gate — never tightens it — and the relaxation is confined to
+    sigmas whose df cannot support the old one.
+
+    Tolerance is MONOTONE in df: fewer points can only widen the band, never narrow it. That sounds
+    obvious and an earlier draft got it backwards — below ``NOISE_SIGMA_BAND_MIN_DF`` it switched to
+    the fixed factor, so at brannmark's shape a FIVE-point sigma was judged in [0.333, 3.0] while a
+    seven-point one got [0.154, 8.65]: the thinner evidence, the harsher test, and the very
+    false-failure this change exists to remove would have survived just below the floor. The floor
+    now clamps the df the band is COMPUTED at rather than switching regimes, so tolerance stops
+    widening below it instead of collapsing. A missing point count is the one case with no df at
+    all, and falls back to the fixed factor.
+    """
+    from scipy.stats import f as _f
+
+    fixed = (1.0 / _NOISE_SIGMA_REFERENCE_FACTOR, float(_NOISE_SIGMA_REFERENCE_FACTOR))
+    try:
+        points = int(n_points)
+        k_cand, n_cand = int(k), int(n)
+        k_ref, n_ref = int(reference["k"]), int(reference["n"])
+    except (TypeError, ValueError, KeyError):
+        return (*fixed, None, None)       # unknown df: the fixed tolerance, as before
+    if points <= 0 or n_cand <= 0 or n_ref <= 0:
+        return (*fixed, None, None)
+    df_cand = points * max(0.0, 1.0 - k_cand / n_cand)
+    df_ref = points * max(0.0, 1.0 - k_ref / n_ref)
+    # Clamped, not switched: at one or two degrees of freedom the band is so wide it says nothing,
+    # and letting it keep widening would make the gate vanish on a two-point group. Bounding how
+    # permissive it can get is a choice about the limit; the REPORTED df stays the real one.
+    lo_df = max(df_cand, _NOISE_SIGMA_BAND_MIN_DF)
+    hi_df = max(df_ref, _NOISE_SIGMA_BAND_MIN_DF)
+    # The band is on the RATIO, the F quantiles are on its square.
+    return (min(fixed[0], float(_f.ppf(alpha / 2, lo_df, hi_df)) ** 0.5),
+            max(fixed[1], float(_f.ppf(1 - alpha / 2, lo_df, hi_df)) ** 0.5),
+            df_cand, df_ref)
 
 
 def _fractions_of_data_std(report) -> list[float]:

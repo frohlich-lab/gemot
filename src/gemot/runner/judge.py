@@ -113,6 +113,31 @@ async def _restore_best_checkpoint(call, reference=None) -> None:
               f"(v{fallback} scores better but its sigma would fail the gate)")
 
 
+def _stored_k_and_n(stored) -> "tuple[int | None, int | None]":
+    """``(k, n)`` for a stored version: its ESTIMATED-parameter count and its data-point count.
+
+    The band the sigma gate applies depends on how much freedom the model spent (see
+    :func:`scoring._reference_sigma_flag`), and for a version the judge has not restored those come
+    off the stored payload rather than off live ``get_parameters``/``get_fit_summary``. ``k`` counts
+    rows with ``estimate`` truthy, as the judge does — but off THAT VERSION's stored parameter table
+    rather than the live one, and the two need not agree to the row: ``get_parameters`` also reports
+    parameters the PROBLEM ships that the model never declared (``in_model: false``), and brannmark
+    ships eight all-estimated rows a candidate may leave undeclared. The consequence is bounded: k
+    enters only as the scale factor ``1 - k/n`` on a band's degrees of freedom, so a handful of rows
+    shifts a band slightly and cannot move a sigma across it the way a wrong k would move a BIC.
+    ``(None, None)`` when either is unreadable: the band then has no df to work from and applies the
+    fixed tolerance factor, so the sigma is still judged, just without df-awareness.
+    """
+    if not isinstance(stored, dict):
+        return None, None
+    params = stored.get("parameters")
+    k = (sum(1 for p in params if isinstance(p, dict) and p.get("estimate"))
+         if isinstance(params, list) else None)
+    simulation = stored.get("simulation")
+    n = simulation.get("n_data_points") if isinstance(simulation, dict) else None
+    return k, (n if isinstance(n, int) else None)
+
+
 async def _scoreable_versions(call) -> "list[int]":
     """Every FITTED version, best BIC first — the candidate set for the scoring scan.
 
@@ -158,7 +183,8 @@ async def _sigma_flagged(call, version: int, reference) -> "bool | None":
     report = simulation.get("noise_sigma_report") if isinstance(simulation, dict) else None
     if not report:
         return None
-    flag = _reference_sigma_flag(report, reference) or _noise_sigma_flag(report)
+    k_v, n_v = _stored_k_and_n(stored)
+    flag = _reference_sigma_flag(report, reference, k=k_v, n=n_v) or _noise_sigma_flag(report)
     if not flag:
         return None
     return bool(flag["inflated"] or flag["collapsed"])
@@ -288,7 +314,7 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     # explained and unexplained variance, so no fixed band holds the truth). Falls back to the
     # data-std band for a reference.json written before `noise_sigma` was recorded — regenerate
     # with `python examples/setup.py --refit <example>` to switch an example over.
-    reference_sigma_flag = _reference_sigma_flag(noise_sigma_report, ref)
+    reference_sigma_flag = _reference_sigma_flag(noise_sigma_report, ref, k=k, n=n)
     noise_sigma_flag = reference_sigma_flag or _noise_sigma_flag(noise_sigma_report)
     sigma_basis = "reference" if reference_sigma_flag else "data_std"
     sigma_implausible = bool(noise_sigma_flag
