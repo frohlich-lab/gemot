@@ -461,14 +461,23 @@ async def test_the_armed_finish_names_an_outstanding_merge():
 @pytest.mark.asyncio
 async def test_the_armed_finish_names_every_outstanding_tie_not_just_the_cheapest():
     """One named tie per arm is what taught the lead to merge PIECEMEAL — take the cheapest, refit,
-    be shown the next member of the same redundant group, refit again. The arm names all of them and
-    says to take them in ONE call, and that the prices are individual (so they are not added up)."""
+    be shown the next member of the same redundant group, refit again. The arm names all of them, and
+    licenses only the edits that were PRICED: independent pairs together in one call, an overlapping
+    group one pair at a time.
+
+    Both halves are load-bearing, and the second was learned the expensive way (blasi, the first run
+    under the multi-hint text): "take them ALL in ONE call" plus "an overlapping group is one
+    multi-way tie" produced a 3-symbol collapse worth +186 bic against it. The arm must not be able to
+    read as a license for that again."""
     mod = _agent
     armed = await _finish(_tool_for(mod, _fit(merge_hints=_HINTS)))
     for hint in _HINTS:
         assert " == ".join(hint["parameters"]) in armed
-    assert "ONE make_changes call" in armed
-    assert "ALONE" in armed and "not one per refit" in armed
+    assert "ONE make_changes call" in armed and "PRICED" in armed
+    assert "PAIR alone" in armed
+    # the unpriced collapse is named and refused, not merely left unmentioned
+    assert "Do NOT collapse three symbols" in armed
+    assert "multi-way tie" not in armed
     assert "  " not in armed          # the tie lines carry their own leading space
 
 
