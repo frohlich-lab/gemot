@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .. import prompts
@@ -23,6 +24,32 @@ from ..prompts import _DISABLED_TOOL_HINT_DEFAULT, _DISABLED_TOOL_HINTS
 # reliably receive a middleware list (see _builtin_tool_filter). Wrapping the tool object makes
 # the breaker travel WITH the tool into whichever agent (lead or analyst) calls it.
 _TOOL_ERROR_DISABLE_THRESHOLD = 3   # consecutive identical errors from one tool before it is cut
+
+# Tools the breaker may NEVER disable, however often they fail. `make_changes` is the run's only
+# editor: disabling it does not degrade the run, it GUARANTEES `no_model_built`, because nothing
+# else can author a model or move a bound. Observed in the August sweep — xiaomi/mimo-v2.5 sent
+# `parameters` as a JSON *string*, three identical client-side validation errors tripped the
+# breaker, and the run then received "TOOL DISABLED ... Do NOT call it again" 98 times and scored
+# nothing. The transport path already refuses to strip this tool (see the note in
+# `_wrap_tools_with_circuit_breaker`); the 3-strike path simply never got the same guard.
+# These tools escalate instead: the error is returned with an added instruction to CHANGE the
+# call's shape, which is recoverable, where a disable is not.
+_NEVER_DISABLE = frozenset({"make_changes"})
+
+_ESCALATION = (
+    " — this is the {n}th identical failure. `{name}` is the only tool that can change the model, "
+    "so it stays available, but REPEATING THIS CALL WILL FAIL AGAIN. Change the SHAPE of the "
+    "arguments, not just their values: check each argument's type against the tool schema "
+    "(a list must be a JSON array, not a string containing one), and re-read the error above."
+)
+
+# JSON-schema types that a bare string is never a valid value for. A model that emits
+# `parameters: "[{...}]"` (a JSON-encoded string where an array is required) fails validation
+# BEFORE the server is reached — the pydantic error is titled `call[<tool>]`, i.e. raised against
+# the published tool schema on the client, so neither FastMCP's `pre_parse_json` nor any
+# server-side validator can rescue it. Coercing here, in the client-side wrapper, is the only
+# layer that can.
+_JSON_CONTAINER_TYPES = frozenset({"array", "object"})
 
 
 # Transport/connection failures — a hung or closed MCP server (in practice a flaky HOSTED bio
@@ -54,7 +81,18 @@ def _is_transport_error(exc: BaseException) -> bool:
 
 def _new_breaker_state() -> dict[str, Any]:
     """Mutable, run-scoped state shared by the wrapped tools and the lead's tool filter."""
-    return {"disabled": set(), "n_tool_errors": 0, "streaks": {}, "events": []}
+    return {"disabled": set(), "n_tool_errors": 0, "streaks": {}, "events": [],
+            # Separate from `streaks`: an operation REJECTION is not a tool error (see
+            # `_result_error`) and must never disable anything, but a run can still spend its
+            # whole budget re-sending one -- gemini 106 identical rejections, luna 246 of 265.
+            "reject_streaks": {}, "n_rejection_escalations": 0,
+            # Per-tool CALL outcomes, counted here because this wrapper is the only place that
+            # sees every attempt. `_ToolClock.note_result` (runner/clock.py) tallies only calls
+            # that reach `session.call_tool` AND return a parseable payload, so it is blind to the
+            # three ways a call can fail without ever touching the server -- which is how a
+            # mimo-v2.5 run that made 134 failing make_changes calls wrote
+            # `edit_rejects: {attempted: 0, rejected: 0, reject_rate: null}`.
+            "calls": {}}
 
 
 def _breaker_message(name: str, hint: str) -> list[dict[str, str]]:
@@ -117,6 +155,17 @@ def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
     else:
         streak = {"sig": sig, "count": 1}
         state["streaks"][name] = streak
+    if name in _NEVER_DISABLE:
+        # Not disabled — but still RECORDED. Returning silently here would leave a run that
+        # failed this call 200 times reporting `disabled_tools: []`, no breaker line in the log
+        # and nothing in `events`: a run that scored nothing with no recorded reason, which is
+        # the exact invisibility the August sweep had to be reverse-engineered from.
+        if streak["count"] == _TOOL_ERROR_DISABLE_THRESHOLD:
+            msg = (f"`{name}` has failed {streak['count']} times with the same error and is the "
+                   f"only editor, so it is NOT disabled; escalating instead: {sig}")
+            state["events"].append(msg)
+            print(f"[circuit-breaker] {msg}")
+        return False
     if streak["count"] >= _TOOL_ERROR_DISABLE_THRESHOLD and name not in state["disabled"]:
         state["disabled"].add(name)
         msg = (f"disabled `{name}` after {streak['count']} consecutive identical errors: "
@@ -153,16 +202,37 @@ def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
         if name is None or orig is None:
             continue
         hint = _DISABLED_TOOL_HINTS.get(name, _DISABLED_TOOL_HINT_DEFAULT)
+        containers = _container_arg_names(tool)
 
-        def _make(name: str, orig, hint: str):
+        def _make(name: str, orig, hint: str, containers: dict):
             @wraps(orig)
             async def _breaker(runtime=None, **arguments):
                 if name in state["disabled"]:
+                    _note_call(state, name, _CALL_DISABLED)
                     return (_breaker_message(name, hint), None)  # short-circuit, no server hit
+                arguments = _coerce_json_string_args(arguments, containers)
                 try:
                     result = await orig(runtime=runtime, **arguments)
                 except Exception as exc:  # a raised tool error (e.g. MCP isError -> ToolException)
-                    tripped = _record_error(state, name, f"{type(exc).__name__}: {exc}")
+                    _note_call(state, name, _CALL_CLIENT_INVALID
+                               if _is_client_validation_error(exc) else _CALL_TOOL_ERROR)
+                    sig = f"{type(exc).__name__}: {exc}"
+                    tripped = _record_error(state, name, sig)
+                    if name in _NEVER_DISABLE:
+                        # Never stripped, so the model keeps the tool — but a bare repeat of the
+                        # same error teaches it nothing. Escalate the wording once the streak is
+                        # real. Raise a plain ToolException rather than rebuilding `type(exc)`:
+                        # the exception this path actually receives is langchain-mcp-adapters'
+                        # `_MCPToolExecutionError`, whose __init__ takes a list of content blocks,
+                        # so `type(exc)(some_string)` yields an object whose message is
+                        # "string indices must be integers" — losing the escalation AND the
+                        # original error. ToolException takes a string and keeps the tool-error
+                        # handling path that every caller here already expects.
+                        n = state["streaks"].get(name, {}).get("count", 1)
+                        if n >= _TOOL_ERROR_DISABLE_THRESHOLD:
+                            raise _tool_exception(
+                                sig + _ESCALATION.format(n=n, name=name)) from exc
+                        raise
                     # A transport error (unreachable/closed server) on an EXTERNAL bio tool can't be
                     # fixed by the model and aborts the whole run if it propagates — disable that
                     # tool for the rest of the run and return the degraded message NOW, without
@@ -181,7 +251,11 @@ def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
                 err = _result_error(content, artifact)
                 if err is None:
                     state["streaks"].pop(name, None)  # a success clears the tool's error streak
-                    return result
+                    escalated = _note_repeated_rejection(state, name, content, artifact)
+                    _note_call(state, name, _CALL_SERVER_REJECTED
+                               if _rejection_error(content, artifact) is not None else _CALL_OK)
+                    return escalated or result
+                _note_call(state, name, _CALL_TOOL_ERROR)
                 if _record_error(state, name, err) and isinstance(content, list):
                     return (content + _breaker_message(name, hint), artifact)
                 return result
@@ -192,8 +266,194 @@ def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
                 pass
             return _breaker
 
-        tool.coroutine = _make(name, orig, hint)
+        tool.coroutine = _make(name, orig, hint, containers)
     return tools
+
+
+_CALL_OK = "ok"
+_CALL_SERVER_REJECTED = "server_rejected"   # reached the server, `applied: false`
+_CALL_CLIENT_INVALID = "client_invalid"     # never reached it: argument shape failed validation
+_CALL_TOOL_ERROR = "tool_error"             # raised anything else
+_CALL_DISABLED = "disabled"                 # short-circuited by the breaker
+
+
+def _note_call(state: dict[str, Any], name: str, outcome: str) -> None:
+    state["calls"].setdefault(name, {})
+    state["calls"][name][outcome] = state["calls"][name].get(outcome, 0) + 1
+
+
+def _is_client_validation_error(exc: BaseException) -> bool:
+    """True for the pydantic error raised against the PUBLISHED tool schema, client-side.
+
+    langchain titles that model `call[<tool>]`, which is what distinguishes it from a validation
+    error raised inside the server. Worth its own bucket: it means the request never left the
+    process, so no server-side change can affect it.
+    """
+    return type(exc).__name__ == "ValidationError" and "validation error" in str(exc)
+
+
+def call_outcomes(state: dict[str, Any], name: str) -> dict[str, Any]:
+    """``{attempted, failed, fail_rate, by_outcome}`` for one tool, for ``result.json``."""
+    by = dict(state.get("calls", {}).get(name) or {})
+    attempted = sum(by.values())
+    failed = attempted - by.get(_CALL_OK, 0)
+    return {
+        "attempted": attempted,
+        "failed": failed,
+        "fail_rate": round(failed / attempted, 3) if attempted else None,
+        "by_outcome": dict(sorted(by.items(), key=lambda kv: -kv[1])),
+    }
+
+
+def _tool_exception(message: str) -> Exception:
+    """A string-carrying tool error langchain's error handling understands.
+
+    NOT ``type(original)(message)``: the exception this path receives from
+    langchain-mcp-adapters is ``_MCPToolExecutionError``, whose ``__init__`` takes a list of
+    content blocks. Passing it a string produces an object whose message is "string indices must
+    be integers" — the escalation AND the original error both lost, so the model would end up
+    with strictly less information than before.
+    """
+    try:
+        from langchain_core.tools import ToolException
+    except Exception:  # pragma: no cover - langchain_core is a harness dep
+        return RuntimeError(message)
+    return ToolException(message)
+
+
+_REJECTION_ESCALATE_AT = 5   # identical operation rejections before the wording escalates
+
+_REJECTION_ESCALATION = (
+    "\n\nNOTE: this is the {n}th time this call was rejected for the SAME reason. Re-sending it "
+    "with different values will not help — the rejection is about the FORM of the change, not "
+    "its numbers. Re-read the error above, and if you cannot satisfy it, change approach: edit a "
+    "different part of the model, or accept the current structure and stop."
+)
+
+
+def _rejection_error(content: Any, artifact: Any) -> str | None:
+    """The error text of an operation REJECTION (``applied: false``), else None.
+
+    Deliberately distinct from :func:`_result_error`: a rejection is the normal edit/retry
+    feedback loop and must never disable a tool. It is tracked only so that a run cannot spend
+    its whole budget re-sending one identical rejected edit without ever being told so.
+    """
+    obj = None
+    if isinstance(artifact, dict) and isinstance(artifact.get("structured_content"), dict):
+        obj = artifact["structured_content"]
+    else:
+        text = ""
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text += str(block.get("text") or "")
+                elif isinstance(block, str):
+                    text += block
+        elif isinstance(content, str):
+            text = content
+        try:
+            obj = json.loads(text)
+        except Exception:
+            return None
+    if isinstance(obj, dict) and obj.get("applied") is False:
+        return str(obj.get("error") or "rejected")
+    return None
+
+
+def _note_repeated_rejection(state: dict[str, Any], name: str, content: Any, artifact: Any):
+    """Append an escalation block once the SAME rejection repeats, else return None.
+
+    The alternative — counting rejections toward the breaker — would disable the editor, which is
+    exactly the failure this module now guards against. So the streak only changes the WORDING.
+    """
+    err = _rejection_error(content, artifact)
+    if err is None:
+        state["reject_streaks"].pop(name, None)
+        return None
+    sig = err[:200]
+    streak = state["reject_streaks"].get(name)
+    if streak and streak["sig"] == sig:
+        streak["count"] += 1
+    else:
+        streak = {"sig": sig, "count": 1}
+        state["reject_streaks"][name] = streak
+    if streak["count"] < _REJECTION_ESCALATE_AT or not isinstance(content, list):
+        return None
+    if streak["count"] == _REJECTION_ESCALATE_AT:
+        state["n_rejection_escalations"] += 1
+        msg = f"`{name}` rejected {streak['count']}x with the same error; escalating: {sig}"
+        state["events"].append(msg)
+        print(f"[circuit-breaker] {msg}")
+    note = [{"type": "text",
+             "text": _REJECTION_ESCALATION.format(n=streak["count"])}]
+    return (content + note, artifact)
+
+
+def _container_arg_names(tool: Any) -> dict[str, str]:
+    """``{argument: declared container type}`` for this tool, read off its published schema.
+
+    Only these are candidates for JSON-string coercion — never a plain `str` argument, so an
+    Antimony model or a justification that happens to start with `[` is left alone. The declared
+    type is kept so a parse can be checked against the container the schema actually asked for.
+    """
+    # `BaseTool.args` is a PROPERTY that indexes `args_schema["properties"]`, so it raises
+    # KeyError for a zero-argument MCP tool published as `{"type": "object"}` — and getattr's
+    # default only swallows AttributeError. The hosted bio servers' schemas are not ours to fix,
+    # and this runs for EVERY tool at wrap time, so an unguarded read would abort run setup on
+    # someone else's schema. Any failure here just means "no coercion for this tool".
+    try:
+        schema = tool.args
+    except Exception:
+        return {}
+    if not isinstance(schema, dict):
+        return {}
+    names = {}
+    for arg, spec in schema.items():
+        if not isinstance(spec, dict):
+            continue
+        branches = spec.get("anyOf") or spec.get("oneOf") or [spec]
+        for branch in branches:
+            if isinstance(branch, dict) and branch.get("type") in _JSON_CONTAINER_TYPES:
+                names[arg] = branch["type"]      # remember WHICH container was declared
+                break
+    return names
+
+
+def _coerce_json_string_args(arguments: dict, containers: dict) -> dict:
+    """Parse a JSON-encoded STRING passed where the schema declares an array/object.
+
+    Some models emit `parameters="[{...}]"` instead of a real list. That fails validation on the
+    CLIENT, against the published tool schema, so the request never reaches the server and no
+    server-side coercion can help. The intent is unambiguous and the repair is exact, so accept
+    it rather than burn a whole edit cycle on a quoting artefact. Anything that does not parse,
+    or parses to the wrong container, is passed through untouched for normal validation to
+    reject — this widens what is accepted, it never changes what a valid call means.
+    """
+    if not containers:
+        return arguments
+    want = {"array": list, "object": dict}
+    out = None
+    for arg, declared in containers.items():
+        value = arguments.get(arg)
+        if not isinstance(value, str):
+            continue
+        stripped = value.strip()
+        if stripped[:1] not in ("[", "{"):
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except (ValueError, TypeError):
+            continue
+        # Must match the container the schema DECLARED. An object string where an array is
+        # required is not a quoting artefact we can repair — forwarding it would only trade a
+        # client-side failure for a server round trip that fails anyway, and add a streak
+        # increment on a tool that is never allowed to be disabled.
+        if not isinstance(parsed, want.get(declared, (list, dict))):
+            continue
+        if out is None:
+            out = dict(arguments)
+        out[arg] = parsed
+    return out if out is not None else arguments
 
 
 def _disabled_tool_filter(state: dict[str, Any]):

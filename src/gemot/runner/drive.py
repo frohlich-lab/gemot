@@ -170,6 +170,17 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                 meta = {**base_meta, "stop_reason": stop_reason,
                         "n_tool_errors": agent_out.get("n_tool_errors", 0),
                         "disabled_tools": agent_out.get("disabled_tools", []),
+                        # make_changes is the only editor, so its call-level fail rate is the
+                        # run's most direct health signal. Client-side, so it counts the attempts
+                        # `edit_rejects` cannot see (argument-shape failures that never reached
+                        # the server, and breaker short-circuits).
+                        "make_changes_calls": agent_out.get("make_changes_calls", {}),
+                        # What was actually SENT for this model: the provider pin and the
+                        # reasoning block. Recorded because the package is editable-installed
+                        # from a shared checkout, so a config change lands on every task that
+                        # starts after it -- a run must say what it ran with rather than leaving
+                        # it to be inferred from submission time.
+                        "openrouter_extra_body": agent_out.get("openrouter_extra_body", {}),
                         # Which bio tools the biocurator actually got (empty = a "dumb" run — the
                         # biocurator ran on the model's own knowledge, no bio tools) — recorded to
                         # result.json so a sweep can see the biocurator's status.

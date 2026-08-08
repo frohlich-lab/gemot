@@ -101,6 +101,127 @@ def phoenix_base_url(url: str) -> str:
     return _base_endpoint(url)
 
 
+# ------------------------------------------------------------------ span input stripping
+# The LangChain instrumentor turns every LangGraph node and every middleware hook into a
+# CHAIN span whose ``input.value`` is the serialized graph state -- which embeds the whole
+# ``messages`` list. Three such hooks fire per agent step, so the transcript is stored four
+# times per step (these three plus the ``ChatOpenAI`` LLM span that legitimately holds it),
+# and since the transcript grows with every step the total scales as O(steps^2). Measured on
+# the July sweep collector DB: 27.1 GB of its 37.6 GB was these three spans' ``input.value``,
+# against 4 KB of genuinely-theirs ``output.value``.
+#
+# Stripping is by span name rather than by a size threshold so it can never touch a span we
+# read: the ``ChatOpenAI`` LLM span, any TOOL span (whose ``input.value`` is the tool
+# arguments), the ``model_build_run`` root span (whose ``input.value`` is this module's own
+# ``petab.*`` run metadata), or a subagent's delegation prompt. The cost is that a rename
+# upstream silently stops the saving -- ``tests/test_tracing_span_inputs.py`` pins these
+# against the node names a real LangChain agent graph produces, so that shows up as a test
+# failure. Note the names are LangChain graph node names, not class names: the middleware
+# ones come from ``AgentMiddleware.name``, an overridable property that merely *defaults*
+# to the class name.
+#
+# The graph's other per-step node, ``tools``, is deliberately absent: its ``input.value`` is
+# the tool call being dispatched, ~0.5 KB, not a transcript copy.
+_STRIPPED_INPUT_SPANS = frozenset({
+    "model",                            # LangChain's model node
+    "TodoListMiddleware.after_model",   # deepagents
+    "_ToolDispatchGuard.after_model",   # ours, see petab_harness.agent.guards
+})
+
+# Only the payload goes; the span, its parentage and its timings stay, so the trace tree is
+# unchanged. Dropping these spans outright is NOT an option -- ``ChatOpenAI`` is their child
+# and would be orphaned.
+_STRIPPED_INPUT_KEYS = ("input.value", "input.mime_type")
+
+
+def _strip_span_inputs(span: Any) -> Any:
+    """Return ``span`` with the bulky ``input.*`` attributes removed, or unchanged if it
+    isn't one of the wrapper spans.
+
+    Name check FIRST: this runs for every span in every export batch, and the large majority
+    return here unchanged, so nothing more expensive than a set lookup belongs above it.
+    """
+    if span.name not in _STRIPPED_INPUT_SPANS:
+        return span
+    from opentelemetry.sdk.trace import ReadableSpan
+    attributes = {
+        key: value
+        for key, value in (span.attributes or {}).items()
+        if key not in _STRIPPED_INPUT_KEYS
+    }
+    return ReadableSpan(
+        name=span.name,
+        context=span.context,
+        parent=span.parent,
+        resource=span.resource,
+        attributes=attributes,
+        events=span.events,
+        links=span.links,
+        kind=span.kind,
+        status=span.status,
+        start_time=span.start_time,
+        end_time=span.end_time,
+        instrumentation_scope=span.instrumentation_scope,
+    )
+
+
+def _make_stripping_exporter(inner: Any) -> Any:
+    """Wrap a ``SpanExporter`` so wrapper-span inputs are dropped on the way out.
+
+    Filtering at the exporter, not in a second ``SpanProcessor``: a processor added after the
+    default one would have to mutate the span while the batch processor's exporter thread may
+    already be serializing it.
+    """
+    from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+
+    class _StrippingSpanExporter(SpanExporter):
+        def __init__(self, wrapped: Any) -> None:
+            self._wrapped = wrapped
+
+        def export(self, spans: Any) -> "SpanExportResult":
+            return self._wrapped.export([_strip_span_inputs(s) for s in spans])
+
+        def shutdown(self) -> None:
+            self._wrapped.shutdown()
+
+        def force_flush(self, timeout_millis: int = 30_000) -> bool:
+            return self._wrapped.force_flush(timeout_millis)
+
+    return _StrippingSpanExporter(inner)
+
+
+def _install_stripping_processor(tracer_provider: Any, traces_endpoint: str) -> bool:
+    """Replace the provider's default span processor with one that strips wrapper inputs.
+
+    Returns True if it was installed. Only attempted on Phoenix's ``TracerProvider``, whose
+    ``add_span_processor`` documents that it removes the default processor: on a plain OTel
+    provider the default would survive and every span would be exported twice -- once
+    unstripped -- which is worse than not stripping at all.
+    """
+    try:
+        from phoenix.otel import BatchSpanProcessor, HTTPSpanExporter
+        from phoenix.otel import TracerProvider as PhoenixTracerProvider
+
+        if not isinstance(tracer_provider, PhoenixTracerProvider):
+            return False
+        # `add_span_processor` only drops the default processor while this private flag is
+        # set (phoenix.otel sets it at the end of `register`). If a future release stops
+        # setting it, ours would be *appended* instead and every span would export twice --
+        # one copy unstripped. Refuse rather than risk that; the count is asserted in
+        # tests/test_tracing_span_inputs.py.
+        if getattr(tracer_provider, "_default_processor", False) is not True:
+            return False
+        exporter = _make_stripping_exporter(HTTPSpanExporter(traces_endpoint))
+        tracer_provider.add_span_processor(BatchSpanProcessor(span_exporter=exporter))
+        return True
+    except Exception as exc:
+        # Telemetry must never take the run down: `drive.py` calls setup_phoenix_tracing
+        # unguarded, and add_span_processor joins the default batch processor's worker
+        # thread on shutdown, which can raise against an unreachable collector.
+        print(f"[phoenix] input-stripping span processor not installed ({exc})")
+        return False
+
+
 def setup_phoenix_tracing(
     project_name: str = "petab-mcp-agent",
     *,
@@ -194,6 +315,13 @@ def setup_phoenix_tracing(
             tracer_provider = register(project_name=project_name, batch=True)
         except TypeError:  # very old release without `batch` — accept SimpleSpanProcessor
             tracer_provider = register(project_name=project_name)
+
+    # Swap the default span processor for one that drops the redundant wrapper-span inputs
+    # (see _STRIPPED_INPUT_SPANS). Best-effort: if the provider isn't Phoenix's, tracing
+    # still works, it just exports the full ~4x-duplicated transcript as before.
+    if not _install_stripping_processor(tracer_provider, traces_endpoint):
+        print("[phoenix] could not install the input-stripping span processor; "
+              "traces will carry duplicated agent transcripts and grow quickly.")
 
     # Instrument LangChain (deepagents/LangGraph run on it) so LLM calls and tool calls
     # are captured. Passing the provider explicitly avoids relying on global-lookup order.

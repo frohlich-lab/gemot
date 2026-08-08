@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import re
 import time
 from typing import Any
 
@@ -38,6 +39,7 @@ from .circuit_breaker import (
     _disabled_tool_filter,
     _new_breaker_state,
     _wrap_tools_with_circuit_breaker,
+    call_outcomes,
 )
 from .finish_gate import _finish_tool
 from .guards import _empty_report_guard, _task_arg_guard, _tool_dispatch_guard
@@ -76,6 +78,90 @@ _RUN_RESUME_ATTEMPTS = 3       # resume the graph from the last checkpoint after
 # full multistart fit budget (fit_budget.py) for the run, since a lead commit's fit is one long
 # super-step that legitimately streams nothing back for minutes.
 _STEP_STALL_TIMEOUT_S = 600.0
+
+# Provider content-policy refusals, matched on the response text because they arrive as a plain
+# 400 with no distinguishing exception type: OpenAI/OpenRouter raise ValueError/BadRequestError
+# carrying the provider's JSON. Kept deliberately NARROW — a stray 400 (a malformed request, a bad
+# parameter) must NOT be relabelled as a content refusal, so a match needs an explicit
+# moderation/policy phrase, not merely the status code.
+_CONTENT_FILTER_MARKERS = (
+    "flagged for possible biological risk",
+    "content was flagged",
+    "content_policy_violation",
+    "content policy",
+    "responsible_ai_policy",
+    "flagged by the moderation",
+    "moderation_blocked",
+)
+
+
+def _content_filter_stop_reason(exc: BaseException) -> str | None:
+    """``content_filtered: <short reason>`` if ``exc`` is a provider content refusal, else None.
+
+    The refusal is the model provider declining the request, not a harness or model failure, and
+    it is not retriable — so the caller uses this to end the run with a countable outcome rather
+    than a per-run-unique exception string.
+    """
+    text = str(exc)
+    low = text.lower()
+    if not any(m in low for m in _CONTENT_FILTER_MARKERS):
+        return None
+    # Surface the provider's own sentence, not the whole JSON envelope. The closing quote must
+    # match the one that OPENED the message -- taking whichever of `',` / `",` comes first would
+    # cut at a quote belonging to the message body.
+    for opener, closer in (("'message': '", "'"), ('"message": "', '"')):
+        i = text.find(opener)
+        if i == -1:
+            continue
+        rest = text[i + len(opener):]
+        # The message ends at the first closing quote that is followed by the JSON punctuation
+        # that can legally follow a value. `rfind` would run past the message and land on the
+        # quote of a LATER key (`'code'`); a plain `find` would stop at a quote inside the
+        # message body. Both were wrong in earlier versions of this function.
+        end = -1
+        for punct in (",", "}"):
+            j = rest.find(closer + punct)
+            if j != -1 and (end == -1 or j < end):
+                end = j
+        detail = (rest[:end] if end != -1 else rest)[:200]
+        return f"content_filtered: {detail.strip()}"
+    return f"content_filtered: {text.strip('{} ')[:200]}"
+
+
+def _extra_body(model: str) -> dict[str, Any]:
+    """OpenRouter-specific request fields: provider pinning, and reasoning where it is not on
+    by default. Both are omitted entirely when unset, so a model with neither sends a bare
+    request exactly as before."""
+    body: dict[str, Any] = {}
+    if (routing := models.provider_routing(model)) is not None:
+        body["provider"] = routing
+    if (reasoning := models.reasoning_config(model)) is not None:
+        body["reasoning"] = reasoning
+    return body
+
+
+# A provider 5xx that arrives UNCLASSIFIED. OpenRouter returns HTTP 200 with an `{"error": ...}`
+# body for some upstream failures, so the OpenAI client raises a bare ValueError instead of an
+# InternalServerError — which means such an error is invisible to BOTH retry layers: the client's
+# own `max_retries` (it never saw a 5xx status) and `_TRANSIENT_ERRORS` (ValueError is not in it).
+# It therefore reached the terminal handler and ended the run. Observed twice in 839 archived
+# runs, each time on a HEALTHY run: median 5 fits, 62 tool calls and 25 minutes of work already
+# done, with a model committed. The resume-from-checkpoint machinery already exists and preserves
+# all of that; this classifier is only what lets the error reach it.
+#
+# Matched on a 5xx CODE, never on wording: a `ValueError` carrying a 400 is deterministic (a
+# content refusal, a malformed request) and must keep falling through to the terminal path, or
+# every content refusal would be retried three times before failing anyway.
+_PROVIDER_CODE_RE = re.compile(r"['\"]code['\"]\s*:\s*(\d{3})")
+
+
+def _transient_provider_reason(exc: BaseException) -> str | None:
+    """A short reason if ``exc`` is an unclassified provider 5xx worth RESUMING for, else None."""
+    m = _PROVIDER_CODE_RE.search(str(exc))
+    if not m or not 500 <= int(m.group(1)) <= 599:
+        return None
+    return f"provider {m.group(1)}: {type(exc).__name__}: {str(exc)[:120]}"
+
 
 # NOTE: the lead used to run a ContextEditingMiddleware (ClearToolUsesEdit) that cleared old
 # tool results once its context passed ~90k tokens — a guard against an early failure mode where
@@ -284,7 +370,7 @@ async def run_deepagents(
         # Bedrock/Azure at ~2-11x) this excludes the pricey copies so the request stays on OpenAI's
         # standard tier. Sent verbatim in the request body via extra_body; included ONLY when the
         # model needs pinning (models.provider_routing returns None otherwise). See models.py.
-        extra_body=({"provider": _pr} if (_pr := models.provider_routing(model)) else {}),
+        extra_body=_extra_body(model),
     )
     # Transient provider errors that should RESUME the run (below) rather than end it, when they
     # escape the OpenAI client's own retries — e.g. a malformed non-JSON body the client won't
@@ -476,7 +562,20 @@ async def run_deepagents(
         except _TRANSIENT_ERRORS as exc:  # call-level retries exhausted -> resume the run
             retriable = f"{type(exc).__name__}: {exc}"
         except Exception as exc:
-            stop_reason = f"{type(exc).__name__}: {exc}"  # not retriable (recursion limit, etc.)
+            # A provider CONTENT-POLICY refusal is terminal and deterministic: the same transcript
+            # re-sent trips it again, so it must not join _TRANSIENT_ERRORS and be resumed. Give it
+            # its own short stop_reason instead of the raw exception text, so a sweep can count it
+            # as one outcome rather than as a unique failure string per run. Seen live:
+            # gpt-5.6-luna-pro on a PEtab immunology model -> 400 "This content was flagged for
+            # possible biological risk." Nothing here can fix that; the point is to record it.
+            # Order matters: a content refusal is checked FIRST and is terminal, so it can never
+            # be routed to the retry path by a later branch.
+            if (filtered := _content_filter_stop_reason(exc)) is not None:
+                stop_reason = filtered
+            elif (transient := _transient_provider_reason(exc)) is not None:
+                retriable = transient          # resume from the checkpoint, keeping every version
+            else:
+                stop_reason = f"{type(exc).__name__}: {exc}"
         finally:
             # Best-effort close; bound it so a truly wedged stream can't hang teardown too.
             if agen is not None:
@@ -576,6 +675,12 @@ async def run_deepagents(
         "stop_reason": stop_reason,
         "n_tool_errors": breaker_state["n_tool_errors"],
         "disabled_tools": sorted(breaker_state["disabled"]),
+        # Call-level outcomes for the single editor, counted at the CLIENT wrapper. Distinct from
+        # `edit_rejects`, which is server-side and therefore blind to a call that never reached
+        # the server -- the case that mattered: a run making 134 failing make_changes calls
+        # recorded `edit_rejects.attempted: 0`, so nothing in result.json showed the failure.
+        "make_changes_calls": call_outcomes(breaker_state, "make_changes"),
+        "openrouter_extra_body": _extra_body(model),
         "biocurator_tools": biocurator_tools,
         "biocurator_entities": biocurator_entities,
         "biocurator_literature": literature_log,
