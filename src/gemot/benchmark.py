@@ -15,6 +15,15 @@ by copying the REAL published tables **verbatim**:
   * an EMPTY SBML (so ``describe_problem`` reports model_authored: false — the agent rebuilds it);
   * a SUBSET ``parameters.tsv`` — only the KNOWN shipped parameters (observation scalings/noise,
     known fixed constants, estimated ICs); the agent introduces the estimated kinetics itself.
+    A published-FIXED value is shipped only when it is genuine experimental SETUP. One that instead
+    encodes a mechanistic VERDICT of the published fit — a link fixed at exactly 0 ("this route does
+    not exist"), a ratio fixed at exactly 1 ("these two were tested and found equivalent"), or a rate
+    railed onto a bound ("the data cannot identify this") — is deliberately
+    WITHHELD, because naming it hands the agent the answer. Withholding alone would inflate the
+    candidate's ``k`` (reconcile mints the symbol estimated), so each kind gets a leak-free repair:
+    a term fixed at exactly 0 or 1 is PRUNED from the example's ``TRUE_ANT`` (numerically exact, so the pruned
+    model IS the effective published model), and a bound-railed one is FREED in the reference via
+    ``write_reference_for(free_parameters=...)`` so both sides estimate it. See BENCHMARK_NOTES.
 
 ``reference.json`` (the BIC bar — the true structure fit to the data) is NOT materialized: it is the
 committed answer key, regenerated only via ``setup.py --refit`` (see :func:`write_reference_for`).
@@ -25,6 +34,7 @@ The collection is pinned to ``COLLECTION_PIN`` for reproducibility; override its
 
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 from pathlib import Path
@@ -248,9 +258,37 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
             "conditions": len(prob.condition_df)}
 
 
+def _apply_param_overrides(problem, name: str, param_overrides: dict[str, dict] | None) -> None:
+    """Apply ``write_reference_for``'s ``param_overrides`` to a loaded published problem, in place.
+
+    Factored out so BOTH reference stages (the published fit and, when ``free_parameters`` is set,
+    the freed fit) are guaranteed to see the same table: fitting them under different tables would
+    make the ``min(freed, constrained)`` comparison meaningless, since the two numbers would come
+    from different problems.
+    """
+    if not param_overrides:
+        return
+    unknown = sorted(set(param_overrides) - set(problem.parameter_df.index))
+    if unknown:
+        raise KeyError(f"{name}: param_overrides names parameters absent from the published "
+                       f"table: {unknown}")
+    for col in ("nominalValue", "lowerBound", "upperBound"):
+        if col in problem.parameter_df.columns:
+            problem.parameter_df[col] = problem.parameter_df[col].astype(float)
+    for pid, cells in param_overrides.items():
+        for col, val in cells.items():
+            problem.parameter_df.loc[pid, col] = val
+    if "estimate" in problem.parameter_df.columns:
+        problem.parameter_df["estimate"] = problem.parameter_df["estimate"].astype("int64")
+    print(f"[setup] {name}: reference is NOT pristine — param_overrides applied to "
+          f"{sorted(param_overrides)} (see BENCHMARK_NOTES.md)")
+
+
 def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
                         n_workers: int | None = None,
+                        per_start_timeout: float | None = None,
                         collection: Path | None = None,
+                        free_parameters: list[str] | None = None,
                         param_overrides: dict[str, dict] | None = None) -> dict[str, Any]:
     """Regenerate the committed ``reference.json`` (the BIC bar): fit the PRISTINE published PEtab
     problem EXACTLY as it ships. Run only via ``setup.py --refit`` — slow, and its output is committed.
@@ -267,6 +305,31 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     The candidate still fits the SAME data (materialize copies the collection's measurements/
     observables verbatim), so ``n`` matches; ``k`` is the published table's estimated-parameter count.
 
+    ``free_parameters`` FREES parameters the published table froze (``estimate`` 0 -> 1) before
+    fitting, so they are estimated on BOTH sides and counted in ``k``. This is for a published
+    constant that is not knowledge but an artefact of the published fit — a rate the optimizer drove
+    onto a bound and was then frozen there (see ``alkan``: three p53-apoptosis rates railed at their
+    lower bound, two checkpoint terms at their upper bound). Such a value cannot be SHIPPED to the
+    agent — a rate constant pinned at its floor states "this route is inactive", which is the
+    mechanism to rediscover, not experimental setup — so the honest alternative is to let both sides
+    estimate it. Freeing it here keeps the candidate's ``k`` equal to the reference's while leaking
+    nothing; the parameter is estimated within the PUBLISHED bounds, so the bar stays anchored to the
+    published problem's parameter space. Use it only for a demonstrably bound-railed / unidentified
+    published constant, and record the choice in BENCHMARK_NOTES.
+
+    AMICI compiles a non-estimated parameter as a model CONSTANT, so a build directory produced
+    under a different free/fixed split is silently wrong for this one. The freed fit's build dir is
+    therefore keyed to a hash of ``free_parameters``, and the published fit keeps plain
+    ``pristine`` (its split never varies) — so editing ``REFERENCE_FREE_PARAMS`` just lands in a
+    fresh directory instead of reusing an incompatible model.
+
+    ``per_start_timeout`` sets the Fides per-start wall-clock cap for BOTH stages (they must be fit
+    under the same cap, or the min() below would compare a well-converged fit against a truncated
+    one). It is a per-example number because the time a start needs to converge is a property of the
+    model: the suite spans 0.2 s starts (``perelson``) to 4 h starts (``raimundez``), and a cap that
+    binds does not fail loudly — Fides returns its best-so-far, so the reference silently records a
+    looser bar and every ΔBIC measured against it looks too good. See ``REFIT_PER_START_TIMEOUT``.
+
     ``param_overrides`` ``{parameter_id: {column: value}}`` is a deliberate, per-example EXCEPTION to
     "pristine": it edits the published parameter table before the reference is fit. Use it ONLY to
     repair a published NOISE MODEL that ΔBIC cannot be computed against, and only when the SAME
@@ -276,29 +339,127 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     the reconcile-mirroring #90 warns about, and it cancels shared handicaps instead of measuring
     them. Every use needs an entry in ``examples/BENCHMARK_NOTES.md`` (see oliveira).
     """
+    import json
+
+    from petab.v1.C import ESTIMATE
+
     from .simulate import write_reference_from_problem
 
     problem_dir = Path(example_dir) / "problem"
+    build_dir = Path(example_dir) / ".gen_build"
     # The pristine published problem (shipped SBML + full published parameter table + data),
     # flattened if it uses per-measurement output overrides — the same load materialize uses.
     problem = _load_problem(name, collection)
-    if param_overrides:
-        unknown = sorted(set(param_overrides) - set(problem.parameter_df.index))
-        if unknown:
-            raise KeyError(f"{name}: param_overrides names parameters absent from the published "
-                           f"table: {unknown}")
-        for col in ("nominalValue", "lowerBound", "upperBound"):
-            if col in problem.parameter_df.columns:
-                problem.parameter_df[col] = problem.parameter_df[col].astype(float)
-        for pid, cells in param_overrides.items():
-            for col, val in cells.items():
-                problem.parameter_df.loc[pid, col] = val
-        if "estimate" in problem.parameter_df.columns:
-            problem.parameter_df["estimate"] = problem.parameter_df["estimate"].astype("int64")
-        print(f"[setup] {name}: reference is NOT pristine — param_overrides applied to "
-              f"{sorted(param_overrides)} (see BENCHMARK_NOTES.md)")
-    return write_reference_from_problem(
-        problem, build_dir=Path(example_dir) / ".gen_build" / "pristine",
-        model_name=f"{name}_pristine", path=problem_dir / "reference.json",
-        n_starts=n_starts, n_workers=n_workers,
+    # param_overrides first: it repairs the published table (a broken noise model), and every
+    # subsequent decision -- which rows count as already-estimated, which bounds a freed row gets
+    # -- must see the repaired table. It is applied to BOTH reference stages below via the same
+    # helper, since fitting them under different tables would make min(freed, constrained)
+    # compare two different problems.
+    _apply_param_overrides(problem, name, param_overrides)
+
+    if not free_parameters:
+        return write_reference_from_problem(
+            problem, build_dir=build_dir / "pristine",
+            model_name=f"{name}_pristine", path=problem_dir / "reference.json",
+            n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout,
+        )
+
+    missing = [p for p in free_parameters if p not in problem.parameter_df.index]
+    if missing:
+        raise KeyError(f"{name}: free_parameters not in the published table: {missing}")
+    # Freeing an ALREADY-estimated parameter is a no-op that silently degrades the bar: `freed`
+    # would equal `problem`, both stages would fit the SAME problem with different random draws,
+    # and reporting min() of two independent multistarts lowers the committed nll by pure optimizer
+    # luck (at double the refit cost) while printing a "freeing N published-fixed parameter(s)"
+    # line about a parameter that was never fixed.
+    # PEtab only requires bounds on an ESTIMATED row, so a published FIXED row may leave them
+    # blank. Freeing such a row hands pypesto a NaN box: Fides either raises deep inside the
+    # optimizer with no mention of REFERENCE_FREE_PARAMS, or samples starts from it and commits a
+    # garbage nll. The min(freed, constrained) argument also rests on the constrained optimum being
+    # a FEASIBLE point of the freed problem, which needs nominalValue inside the bounds.
+    from petab.v1.C import LOWER_BOUND, NOMINAL_VALUE, UPPER_BOUND
+
+    unbounded = []
+    for p in free_parameters:
+        row = problem.parameter_df.loc[p]
+        try:
+            lo, hi = float(row[LOWER_BOUND]), float(row[UPPER_BOUND])
+            nom = float(row[NOMINAL_VALUE])
+        except (KeyError, TypeError, ValueError):
+            unbounded.append(f"{p} (unreadable bounds/nominalValue)")
+            continue
+        if not (math.isfinite(lo) and math.isfinite(hi) and math.isfinite(nom)):
+            unbounded.append(f"{p} (non-finite bounds/nominalValue)")
+        elif not lo <= nom <= hi:
+            unbounded.append(f"{p} (nominalValue {nom} outside [{lo}, {hi}])")
+    if unbounded:
+        raise ValueError(
+            f"{name}: free_parameters need finite PUBLISHED bounds bracketing their nominalValue, "
+            f"but {unbounded} do not. Freeing them would fit inside a NaN/degenerate box and the "
+            "constrained optimum would not be a feasible point of the freed problem.")
+    already = [p for p in free_parameters
+               if int(float(problem.parameter_df.loc[p, ESTIMATE])) == 1]
+    if already:
+        raise ValueError(
+            f"{name}: free_parameters must name parameters the published table FIXES, but "
+            f"{already} are already estimated. Freeing them would make both reference stages fit "
+            "the same problem and take the luckier of two multistarts as the bar.")
+
+    # Fit BOTH the published problem and the freed one, and take the better.
+    #
+    # Freeing parameters can only ENLARGE the feasible set, so the freed optimum is bounded above by
+    # the constrained one: the constrained fit's parameter vector is itself a feasible point of the
+    # freed problem (the freed parameters sitting at their published values). A freed fit that scores
+    # worse is therefore under-converged, not a better bar — and it is easy to get, because freeing
+    # adds dimensions to an already hard multistart (alkan: 20 starts reach 3653.4 in 56-D but only
+    # 4002.2 in 65-D, which would hand every candidate a free ~765 BIC win). Reporting the better of
+    # the two keeps the bar an ACHIEVABLE point of the freed parameter space and monotone in the
+    # freeing, whichever way the optimizer happens to land.
+    #
+    # Both intermediate fits write to SCRATCH paths, never to the committed reference.json: that
+    # file is written exactly once, at the end, from the reconciled result. Writing the constrained
+    # fit there first would leave a silently WRONG answer key behind if the freed fit then failed —
+    # the constrained nll paired with the UN-freed k, i.e. a k short by len(free_parameters) and a
+    # systematic k*ln(n) offset in every future ΔBIC, with no error raised anywhere.
+    scratch = build_dir / "_reference_stages"
+    scratch.mkdir(parents=True, exist_ok=True)
+    ref_fixed = write_reference_from_problem(
+        problem, build_dir=build_dir / "pristine",
+        model_name=f"{name}_pristine", path=scratch / "published.json",
+        n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout,
     )
+    freed = _load_problem(name, collection)
+    _apply_param_overrides(freed, name, param_overrides)  # same table on both stages
+    freed.parameter_df.loc[free_parameters, ESTIMATE] = 1
+    print(f"[setup] {name}: freeing {len(free_parameters)} published-fixed parameter(s) for the "
+          f"reference fit: {sorted(free_parameters)}")
+    # Key the freed build directory to the free/fixed SPLIT. AMICI compiles a non-estimated
+    # parameter as a model CONSTANT, so a build dir produced under a different split is silently
+    # wrong for this one — it either raises ("does not support estimating ...") or, worse, fits a
+    # differently-compiled model and returns a slightly different optimum. Hashing the freed set
+    # means editing REFERENCE_FREE_PARAMS just lands in a fresh directory. (Stage 1 always fits the
+    # PUBLISHED split, so plain `pristine` is always valid for it.)
+    import hashlib
+
+    split = hashlib.sha1("\0".join(sorted(free_parameters)).encode()).hexdigest()[:8]
+    ref_free = write_reference_from_problem(
+        freed, build_dir=build_dir / f"pristine_freed_{split}",
+        model_name=f"{name}_pristine_freed", path=scratch / "freed.json",
+        n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout,
+    )
+
+    # k is the FREED count either way — that is the parameter space the candidate is scored in —
+    # but every OTHER field has to come from the stage that actually won, and be carried rather
+    # than dropped. Rebuilding the dict from just {nll, k, n} silently discarded the
+    # `noise_sigma` / `noise_sigma_effective` the sub-call had computed, so a freed example wrote a
+    # reference with no sigmas at all and the ground-truth plausibility gate then fell back to
+    # `nominalValue` — a starting point, not the truth, for an estimated sigma.
+    winner = ref_fixed if ref_fixed["nll"] < ref_free["nll"] else ref_free
+    ref = {**winner, "k": ref_free["k"], "n": ref_free["n"]}
+    if ref_fixed["nll"] < ref_free["nll"]:
+        print(f"[setup] {name}: the freed multistart under-converged "
+              f"({ref_free['nll']:.4f} vs {ref_fixed['nll']:.4f} with the same parameters held at "
+              f"their published values); keeping the better, achievable point. Raise REFIT_N_STARTS "
+              f"if this persists.")
+    (problem_dir / "reference.json").write_text(json.dumps(ref, indent=2) + "\n")
+    return ref

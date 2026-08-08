@@ -100,6 +100,19 @@ FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_workers())
 # overhead on top), got misclassified as hung, and cascaded into an unrecovered teardown error.
 # Override with PETAB_MCP_FIT_BUDGET_MARGIN.
 FIT_BUDGET_MARGIN = _env_float("PETAB_MCP_FIT_BUDGET_MARGIN", 1.4)
+# AMICI absolute integration tolerance for EVERY fit in the project. AMICI's stock default is
+# 1e-16, which on a stiff model is tight enough that the FORWARD-SENSITIVITY solve cannot make
+# progress: the objective VALUE still evaluates fine, but the gradient comes back non-finite, so
+# Fides reads +INF at iteration 0 and the start dies. Nothing in a fit's output distinguishes that
+# from a genuinely bad start — it is a solver that cannot differentiate there, reported as a start
+# that failed.
+#
+# Measured on lucarelli, whose published optimum sits in exactly such a region. At 1e-16 a
+# 5000-start multistart never once reached the committed bar (best 1772.80, 182 BIC adrift) and
+# 22% of its starts died NOT_FINITE; at 1e-10, 99 of 500 starts land ON the bar, none die, and the
+# objective at the optimum moves by 2e-5. Raising max_steps does nothing: it is the tolerance, not
+# the step budget. Override with PETAB_MCP_FIT_AMICI_ATOL.
+FIT_AMICI_ATOL = _env_float("PETAB_MCP_FIT_AMICI_ATOL", 1e-10)
 
 
 def fit_workers(n_starts: int, n_workers: int | None = None) -> int:
@@ -107,8 +120,7 @@ def fit_workers(n_starts: int, n_workers: int | None = None) -> int:
     always at least one.
 
     ``n_workers`` overrides the ``FIT_N_WORKERS`` cap for this call. Pass it when a specific
-    caller needs a specific parallelism — e.g. a stiff model whose reference refit must run
-    SEQUENTIALLY because a parallel pyPESTO worker hard-crashes on it (``BrokenProcessPool``).
+    caller needs a specific parallelism — e.g. a reference refit that must run SEQUENTIALLY.
     That used to be done by setting ``PETAB_MCP_FIT_N_WORKERS`` at runtime, which silently did
     nothing: ``FIT_N_WORKERS`` is bound at import, and importing an example's ``run.py`` already
     pulls this module in. An argument cannot lose that race."""
@@ -128,13 +140,45 @@ def fit_time_budget(n_starts: int) -> float:
     return (FIT_COMPILE_MARGIN_S + waves * FIT_PER_START_TIMEOUT_S) * FIT_BUDGET_MARGIN
 
 
-def fides_maxtime_options() -> dict:
+def apply_amici_solver_defaults(problem, atol: float | None = None) -> None:
+    """Set :data:`FIT_AMICI_ATOL` on ``problem``'s AMICI solver, in place.
+
+    Call this on every pyPESTO problem either side fits, immediately after
+    ``PetabImporter.create_problem()`` — reference fits AND candidate fits, or the two optimizers
+    stop agreeing and ΔBIC stops being a comparison. It lives here, next to
+    :func:`fides_maxtime_options` and :func:`fit_engine`, for that reason: this module is the one
+    place the harness and the server both already read their fit settings from.
+
+    ``atol`` overrides the module default for THIS call. Best-effort — a problem whose objective
+    exposes no AMICI solver (a non-AMICI objective, or a pyPESTO that renamed the attribute) is
+    left exactly as it was rather than raising, since a missing tolerance degrades fit quality but
+    a raise here would take down every fit path at once."""
+    value = FIT_AMICI_ATOL if atol is None else float(atol)
+    solver = getattr(getattr(problem, "objective", None), "amici_solver", None)
+    setter = (getattr(solver, "set_absolute_tolerance", None)
+              or getattr(solver, "setAbsoluteTolerance", None))
+    if setter is not None:
+        setter(value)
+
+
+def fides_maxtime_options(per_start_timeout: float | None = None) -> dict:
     """``{fides.Options.MAXTIME: FIT_PER_START_TIMEOUT_S}`` if this ``fides`` exposes ``MAXTIME``,
     else ``{}`` (older/absent fides just runs uncapped). Pass into ``FidesOptimizer(options=...)``
-    to bound each optimization start's wall time."""
+    to bound each optimization start's wall time.
+
+    ``per_start_timeout`` overrides the module default for THIS call. It exists for the same reason
+    :func:`fit_workers` takes ``n_workers``: ``FIT_PER_START_TIMEOUT_S`` is bound at import, and
+    importing an example's ``run.py`` already imports this module, so a per-example value could not
+    be delivered through ``PETAB_MCP_FIT_PER_START_TIMEOUT`` after the fact. The cap that leaves
+    ~80% of a model's starts terminating on their own convergence criterion (rather than being
+    truncated at MAXTIME, which makes Fides return best-so-far and silently loosens the bar) spans
+    two and a half orders of magnitude across the suite — 60 s on ``perelson`` against 14400 s on
+    ``raimundez`` — so one global default cannot serve both without either wasting the cluster or
+    committing an under-converged reference. See each ``run.py``'s ``REFIT_PER_START_TIMEOUT``."""
+    timeout = FIT_PER_START_TIMEOUT_S if per_start_timeout is None else float(per_start_timeout)
     try:
         import fides
-        return {fides.Options.MAXTIME: FIT_PER_START_TIMEOUT_S}
+        return {fides.Options.MAXTIME: timeout}
     except Exception:  # noqa: BLE001 - no fides / no MAXTIME on this version: run uncapped
         return {}
 

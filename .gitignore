@@ -98,5 +98,21 @@ examples/schwen/problem/*
 !examples/schwen/problem/reference.json
 examples/fujita/problem/*
 !examples/fujita/problem/reference.json
+examples/alkan/problem/*
+!examples/alkan/problem/reference.json
+examples/bachmann/problem/*
+!examples/bachmann/problem/reference.json
+examples/isensee/problem/*
+!examples/isensee/problem/reference.json
+examples/lucarelli/problem/*
+!examples/lucarelli/problem/reference.json
+examples/raimundez/problem/*
+!examples/raimundez/problem/reference.json
 slurm/trace_review/crauste_deepdive/
 slurm/trace_review/biolit_deepdive/
+# Refit / solver-probe RESULTS (reusable scripts alongside them are tracked): per-start records
+# from slurm/refit_references.sh, the atol probes, and the jitter ladders. Regenerable, and a
+# single sweep is megabytes of JSON.
+slurm/refit_runs/
+slurm/atol_out/
+slurm/jitter_out_*/

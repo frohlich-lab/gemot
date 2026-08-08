@@ -231,7 +231,10 @@ def fit_reference(
     # Cap each start's wall time exactly as the server's candidate fit does, so the reference and
     # candidate optimizers agree and ΔBIC parity holds, and parallelise the multistart the same way
     # (a one-time offline fit — MultiProcessEngine just makes it faster; see fit_budget.py).
-    from .fit_budget import fides_maxtime_options, fit_engine
+    from .fit_budget import apply_amici_solver_defaults, fides_maxtime_options, fit_engine
+
+    # Same reason: the integration tolerance is part of what the two optimizers have to agree on.
+    apply_amici_solver_defaults(pp)
     optimizer = pypesto.optimize.FidesOptimizer(
         verbose=_logging.ERROR, options=fides_maxtime_options())
     result = pypesto.optimize.minimize(
@@ -362,6 +365,7 @@ def write_reference_from_problem(
     path: str | Path,
     n_starts: int = 50,
     n_workers: int | None = None,
+    per_start_timeout: float | None = None,
     seed: int = 0,
     seed_at_nominal: bool = True,
 ) -> dict:
@@ -378,6 +382,11 @@ def write_reference_from_problem(
     seeds start-0 at the published optimum (adopted only if it beats the random multistart), so the
     reference reliably lands in the true basin. BIC is likelihood-based and the server scores the
     candidate on the pure AMICI ``-llh``, so any ``objectivePrior*`` columns are dropped here.
+
+    ``per_start_timeout`` overrides the global Fides ``MAXTIME`` cap for this fit — the reference is
+    the one fit that must be run to convergence rather than to a shared budget, and what "long
+    enough" means is a property of the individual model (see
+    :func:`~petab_harness.fit_budget.fides_maxtime_options`).
     """
     import json
     import logging as _logging
@@ -388,7 +397,7 @@ def write_reference_from_problem(
     from petab.v1 import scale
     from petab.v1.C import ESTIMATE, NOMINAL_VALUE, PARAMETER_ID, PARAMETER_SCALE
 
-    from .fit_budget import fides_maxtime_options, fit_engine
+    from .fit_budget import apply_amici_solver_defaults, fides_maxtime_options, fit_engine
 
     _ensure_swig_on_path()
     np.random.seed(seed)
@@ -405,8 +414,9 @@ def write_reference_from_problem(
     importer = pypesto.petab.PetabImporter(
         problem, output_folder=str(build_dir), model_name=model_name)
     pp = importer.create_problem()
+    apply_amici_solver_defaults(pp)
     optimizer = pypesto.optimize.FidesOptimizer(
-        verbose=_logging.ERROR, options=fides_maxtime_options())
+        verbose=_logging.ERROR, options=fides_maxtime_options(per_start_timeout))
     result = pypesto.optimize.minimize(
         pp, optimizer=optimizer, n_starts=n_starts, engine=fit_engine(n_starts, n_workers),
         progress_bar=False)
