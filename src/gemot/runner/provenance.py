@@ -39,6 +39,52 @@ def _git_sha(path: Path) -> str | None:
     return f"{sha}+dirty" if dirty else sha
 
 
+def _git_diff_digest(path: Path) -> dict | None:
+    """Fingerprint of the UNCOMMITTED working tree, or ``None`` on a clean/absent checkout.
+
+    ``git_sha`` alone does not pin the code. Every run of the Aug 8-10 sweep recorded
+    ``732ee74+dirty``, so three array jobs a day apart were indistinguishable in the record even
+    though their measured tool-failure rates differed materially (17% -> 7% within one model). A
+    whole class of question -- "is this a model effect or a code change?" -- was unanswerable after
+    the fact, and the ``+dirty`` suffix was the only hint that anything was missing.
+
+    Stores a DIGEST rather than the diff: the patch can be megabytes and would land in every
+    result.json, while a sha256 is enough to tell two runs apart and to match a run against a
+    working tree you still have. ``lines``/``files`` make an accidental huge diff visible.
+    Best-effort, like :func:`_git_sha` -- provenance must never break a run.
+    """
+    import hashlib
+
+    try:
+        diff = subprocess.check_output(
+            ["git", "diff", "HEAD", "--ignore-submodules"], cwd=str(path),
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:  # noqa: BLE001 - no git, detached tree, anything
+        return None
+    if not diff.strip():
+        return None
+    # File names are derived from the diff bytes ALREADY captured, not from a second `git diff`:
+    # running it twice recomputes the whole patch, and if the tree changes between the two calls the
+    # digest and the file list describe different states. Split on LINES -- `.split()` on whitespace
+    # turned a path containing a space (`slurm/trace review/x.py`) into two entries, inflating
+    # `n_files`, the one field whose job is making an accidental huge diff visible.
+    names = set()
+    for line in diff.decode(errors="replace").splitlines():
+        for prefix in ("+++ b/", "--- a/"):
+            if line.startswith(prefix):
+                names.add(line[len(prefix):])
+    files = sorted(names)
+    return {
+        "sha256": hashlib.sha256(diff).hexdigest(),
+        "lines": diff.count(b"\n"),
+        # Truncated for the record, but n_files counts them ALL -- so a 500-file diff cannot look
+        # like a 50-file one.
+        "files": files[:50],
+        "n_files": len(files),
+    }
+
+
 def _bic_reference(ref) -> float | None:
     """BIC of the true-model reference, or ``None`` when it is absent or malformed.
 
@@ -114,6 +160,8 @@ def _base_meta(scenario: Scenario, args: argparse.Namespace,
         "driver": args.driver,
         "model": None if scripted else args.model,
         "git_sha": _git_sha(scenario.example_dir), "example_version": scenario.version,
+        # What `git_sha`'s `+dirty` suffix only hinted at: see `_git_diff_digest`. None when clean.
+        "git_diff": _git_diff_digest(scenario.example_dir),
         "prompt_version": prompt_version(),
         "prompt_group_versions": prompt_group_versions(),
         # the skills are instructions the panel reads (prompts step 0), so they are

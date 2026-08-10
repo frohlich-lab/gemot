@@ -38,6 +38,13 @@ def test_an_applied_edit_is_counted_but_not_rejected():
 @pytest.mark.parametrize("error,cause", [
     ("Failed to parse antimony model: syntax error, unexpected ':'", "antimony_syntax"),
     ("Operation 'set_model' rejected: the resulting problem is invalid.", "invalid_problem"),
+    # The reasons now travel INSIDE the message (see operations._rejection_summary). The bucket must
+    # be unchanged: the substring is still there, and no earlier pattern may capture the embedded
+    # issue text -- `antimony_syntax` is matched first, and a parse failure raises before
+    # validation, so it can never appear here.
+    ("Operation 'make_changes' rejected: the resulting problem is invalid: 'RAF_total' ships "
+     "FIXED (estimate=0) in this problem | Extraneous parameter(s) in parameter table: {'pAkt_S6'} "
+     "(+2 more in `issues`)", "invalid_problem"),
     ("Refusing to widen 'k' a 3rd time: it re-pinned at its upper bound", "repeated_widening"),
     ("change_parameters: 'k' sets only one bound — a bound edit needs BOTH", "bad_bounds_usage"),
     ("change_parameters: entry for 'k' has unknown key(s) ['bounds']", "unknown_key"),
@@ -146,3 +153,103 @@ def test_every_reject_bucket_matches_a_message_the_server_can_emit():
     ).lower()
     dead = [label for label, needle in _REJECT_PATTERNS if needle not in src]
     assert not dead, f"reject buckets matching no message the server emits: {dead}"
+
+
+# -- the rejection message must carry its own reasons (Aug 8-10 sweep) -----------------------
+def test_rejection_summary_names_the_reasons():
+    from petab_mcp.operations import _rejection_summary
+
+    out = _rejection_summary([
+        "'RAF_total' ships FIXED (estimate=0) in this problem — a known constant",
+        "Extraneous parameter(s) in parameter table: {'pEGFR_Akt', 'pAkt_S6'}",
+    ])
+    assert "resulting problem is invalid" in out       # bucket substring preserved
+    assert "RAF_total" in out and "pAkt_S6" in out     # the actionable detail is IN the message
+    assert "more in `issues`" not in out               # nothing elided at 2 issues
+
+
+def test_rejection_summary_caps_and_says_what_it_elided():
+    from petab_mcp.operations import _rejection_summary
+
+    out = _rejection_summary([f"issue number {i}" for i in range(7)])
+    assert "issue number 0" in out and "issue number 2" in out
+    assert "issue number 3" not in out                 # capped at 3
+    assert "(+4 more in `issues`)" in out              # a truncated view never looks complete
+
+
+def test_rejection_summary_collapses_multiline_libsbml_noise():
+    from petab_mcp.operations import _rejection_summary
+
+    long_sbml = ("libSBML Error (SBML component consistency): The value of a 'symbol' field in any "
+                 "<initialAssignment>\n   definition cannot also appear as the value of a "
+                 "'variable' field.\n   " + "x" * 400)
+    out = _rejection_summary([long_sbml])
+    assert "\n" not in out                             # one line, not a wall of text
+    assert len(out) < 420                              # per-issue truncation actually applied
+
+
+def test_rejection_summary_falls_back_when_there_is_no_error_level_issue():
+    from petab_mcp.operations import _rejection_summary
+
+    assert _rejection_summary([]) == "the resulting problem is invalid."
+
+
+# -- the working tree must be attributable, not just the commit ------------------------------
+def test_git_diff_digest_fingerprints_an_uncommitted_tree(tmp_path):
+    """`git_sha` ends in `+dirty` when the tree is modified, which means it does NOT pin the code.
+    The Aug 8-10 sweep recorded `732ee74+dirty` for all 361 runs across three array jobs whose
+    measured tool-failure rates differed materially, and nothing in the record could separate
+    "different code" from "different model"."""
+    import subprocess
+
+    from petab_harness.runner.provenance import _git_diff_digest, _git_sha
+
+    def git(*a):
+        subprocess.check_call(["git", *a], cwd=tmp_path,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    git("init")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (tmp_path / "a.txt").write_text("one\n")
+    git("add", "a.txt")
+    git("commit", "-m", "first")
+
+    # Clean tree: no digest, and git_sha carries no +dirty -> the run IS attributable.
+    assert _git_diff_digest(tmp_path) is None
+    assert not (_git_sha(tmp_path) or "").endswith("+dirty")
+
+    (tmp_path / "a.txt").write_text("one\ntwo\n")
+    d = _git_diff_digest(tmp_path)
+    assert (_git_sha(tmp_path) or "").endswith("+dirty")
+    assert d and len(d["sha256"]) == 64
+    assert d["n_files"] == 1 and d["files"] == ["a.txt"] and d["lines"] > 0
+
+    # A DIFFERENT modification of the same commit gets a different digest -- the point of the fix.
+    first = d["sha256"]
+    (tmp_path / "a.txt").write_text("one\nthree\n")
+    assert _git_diff_digest(tmp_path)["sha256"] != first
+    # ...and the same modification reproduces the same digest.
+    (tmp_path / "a.txt").write_text("one\ntwo\n")
+    assert _git_diff_digest(tmp_path)["sha256"] == first
+
+
+def test_git_diff_digest_never_raises_outside_a_checkout(tmp_path):
+    from petab_harness.runner.provenance import _git_diff_digest
+    assert _git_diff_digest(tmp_path / "does-not-exist") is None
+    assert _git_diff_digest(tmp_path) is None          # a real dir that is not a git tree
+
+
+def test_the_history_csv_carries_the_working_tree_digest(tmp_path):
+    import csv as _csv
+
+    from petab_harness import metrics
+    out = tmp_path / "history.csv"
+    metrics.append_history([
+        {"scenario": "dirty", "git_sha": "abc1234+dirty",
+         "git_diff": {"sha256": "f" * 64, "lines": 12, "files": ["src/x.py"], "n_files": 1}},
+        {"scenario": "clean", "git_sha": "abc1234"},
+    ], history_path=out)
+    rows = list(_csv.DictReader(out.open()))
+    assert rows[0]["git_diff_sha256"] == "f" * 64
+    assert rows[1]["git_diff_sha256"] == ""            # clean tree -> empty, i.e. attributable

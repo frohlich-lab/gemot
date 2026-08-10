@@ -131,6 +131,19 @@ DEFAULT_SYSTEM_PROMPT = (
     "prefer the lower bic and drop parameters that don't earn their keep. But NEVER trade an "
     "adequate fit for a smaller k: if a simpler structure cannot fit, ADD mechanism. Estimating "
     "a parameter you are unsure of is fine — that is what the fit is for.\n"
+    "DO THE k ARITHMETIC, DO NOT EYEBALL IT. One free parameter costs exactly ln(n) bic, where n "
+    "is the number of data points in your fit result — so compute it once and keep the number in "
+    "mind. Three consequences follow directly, and they are the ones runs get wrong: (a) a "
+    "parameter that buys LESS than ln(n) of 2·nll makes the model WORSE even though the fit got "
+    "better, so 'nll improved' is not a reason to keep a parameter; (b) dropping a parameter that "
+    "costs you nothing in nll is a FREE ln(n) of bic, which is why the merges and pinned "
+    "parameters your fit already names are worth taking; and (c) the failure is TWO-SIDED — too "
+    "few parameters underfits and too many is charged for nothing, and both lose. When a change "
+    "trades structure for parameters, price BOTH sides before you make it: a mechanism encoded as "
+    "a new species plus its auto-generated estimated `_init` costs several ln(n), while the same "
+    "correction expressed as a term on states you ALREADY have may cost one or none. Prefer the "
+    "cheaper encoding of the SAME insight, and only pay for the expensive one when the cheap one "
+    "has actually been tried and failed.\n"
     "3. Read the CURRENT HEAD's metrics (never an earlier version's) after each `make_changes` and decide "
     "what to do next. The DEFAULT is to KEEP ITERATING while the model is still mis-specified — "
     "bic is still improving fit-over-fit by more than a few units, OR get_fit_diagnosis shows a "
@@ -219,6 +232,14 @@ _REPORT_CONTRACT = (
     "modeling lead (name the operation and, if you can, the exact reaction and rate law). "
     "Flag explicitly if the evidence is ambiguous or outside your expertise. NEVER return an "
     "empty message: if the evidence is thin, still write the little you can conclude."
+    "\n\nSTAY ON THE QUESTION YOU WERE ASKED. You have a HARD TURN LIMIT and are cut off when "
+    "you reach it, so spend your turns on the question the lead delegated and nothing else. A "
+    "handful of well-chosen tool calls is the expectation; a dozen means you are wandering. Do "
+    "NOT keep exploring to make a finding more complete, re-query data you have already seen, "
+    "chase an interesting detail outside the question, or investigate a second problem you "
+    "noticed along the way — mention it in one line and leave it to the lead. The moment you "
+    "can answer, answer. An early, partial, honestly-hedged report is worth far more to the "
+    "lead than a thorough one you never get to deliver."
 )
 
 MATHEMATICIAN_PROMPT = (
@@ -331,6 +352,12 @@ _BIOCURATOR_REPORT_CONTRACT = (
     "well-established vs speculative, cite a PMID/DOI wherever one grounds a claim, mark every "
     "entity you name that was NOT in the list you were given as such, flag an entity you do not "
     "know or evidence that is thin, and NEVER return an empty message."
+    "\n\nYou have a HARD TURN LIMIT and are cut off when you reach it. Budget roughly one or two "
+    "lookups per entity and then write the report. Do NOT keep searching for a better citation "
+    "for a claim you can already support, widen the survey to entities nobody asked about, or "
+    "follow an interesting pathway beyond what the request needs — note it in one line and stop. "
+    "A short, well-cited, honestly-hedged report delivered in time beats an exhaustive one that "
+    "is cut off before you send it."
 )
 
 BIOCURATOR_PROMPT = (
@@ -831,6 +858,21 @@ SUBAGENT_EMPTY_REPORT_NUDGE = (
 # read as "the analyst found nothing".
 SUBAGENT_EMPTY_REPORT_MARKER = "[analyst returned no report]"
 
+# Escalating notice as a subagent delegation nears its turn cap, injected into the OUTGOING request
+# by `agent.guards._subagent_turn_limit`. Lives HERE, not in guards.py, because it is model-facing
+# text: `prompt_version()` hashes `all_prompts()`, so a reword in guards.py would change every
+# analyst's system prompt while `prompt_version` and `prompt_group_versions` stayed identical — and a
+# sweep spanning that edit would pool both versions into one cell with no column to split them on.
+# `{left}`/`{cap}` are filled per turn. The sibling hard-limit wording is in _REPORT_CONTRACT.
+SUBAGENT_TURN_NOTICES = (
+    (10, "NOTE: about {left} of your {cap} turns remain. Start converging — prefer answering "
+         "with what you have over gathering more."),
+    (5,  "WARNING: only {left} of your {cap} turns remain. Stop gathering evidence now and write "
+         "your report from what you already know."),
+    (1,  "FINAL TURN. Reply with your report THIS TURN — do not call another tool. Anything you "
+         "have not written down is lost."),
+)
+
 
 # ============================================================ the tracked prompt surface
 # The registry, and the versioning over it. It lives HERE, next to the text, because the
@@ -932,6 +974,11 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "task_arg_reject": TASK_ARG_REJECT_TMPL,
             "empty_report_nudge": SUBAGENT_EMPTY_REPORT_NUDGE,
             "empty_report_marker": SUBAGENT_EMPTY_REPORT_MARKER,
+            # One entry PER notice, not a joined blob: each is injected verbatim into a subagent's
+            # system prompt on its own, so each must be a tracked LEAF (see
+            # tests/test_prompt_tracking.py). A concatenation would leave the individual texts
+            # invisible to `prompt_version` -- exactly the gap moving them here closes.
+            **{f"turn_notice_{threshold}": text for threshold, text in SUBAGENT_TURN_NOTICES},
             "tool_disabled_repeated": TOOL_DISABLED_REPEATED_TMPL,
             "tool_disabled_transport": TOOL_DISABLED_TRANSPORT_TMPL,
             "disabled_tool_hint_default": _DISABLED_TOOL_HINT_DEFAULT,

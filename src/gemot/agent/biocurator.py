@@ -11,7 +11,17 @@ from __future__ import annotations
 from typing import Any
 
 from ..prompts import BIOCURATOR_DESCRIPTION, BIOCURATOR_PROMPT, _biocurator_entity_block
+from .guards import _subagent_turn_limit
 from .subagents import ANALYSTS, _subagent_prompt_key
+
+#: Model calls one biocurator delegation may make before it must report.
+#:
+#: The same 20 as the analysts, on measurement rather than reasoning. The prior guess here was
+#: that being handed the whole entity list at once would make it the LONGEST-running subagent
+#: and earn it a bigger budget; across 246 delegations in the main sweep it is in fact one of
+#: the SHORTEST (med 2, p95 10, max 17) -- it batches lookups instead of serialising them.
+#: 20 clears its observed maximum outright, so this cap never truncates a real survey.
+BIOCURATOR_MAX_TURNS = 20
 
 # ---------------------------------------------------------------- biocurator (optional)
 # A FOURTH analyst, added for the deepagents driver whenever a bio-knowledge server is
@@ -120,4 +130,8 @@ def _build_biocurator_subagent(bio_tools: list, entity_names: "list[str] | None"
         "description": BIOCURATOR_DESCRIPTION,
         prompt_key: BIOCURATOR_PROMPT + _biocurator_entity_block(entity_names or []),
         "tools": list(bio_tools),
+        # Bounded like the analysts, and for the same reason -- but a touch longer: the
+        # biocurator makes one external lookup per entity, and it is handed the whole entity
+        # list at once, so its floor scales with that list rather than being a single question.
+        "middleware": [_subagent_turn_limit(BIOCURATOR_MAX_TURNS)],
     }

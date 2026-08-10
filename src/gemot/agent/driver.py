@@ -79,6 +79,24 @@ _RUN_RESUME_ATTEMPTS = 3       # resume the graph from the last checkpoint after
 # super-step that legitimately streams nothing back for minutes.
 _STEP_STALL_TIMEOUT_S = 600.0
 
+# Hard per-run token ceiling — the ONLY bound on how much a run can spend.
+#
+# `recursion_limit` does not bound this and cannot be made to: it caps LangGraph SUPER-STEPS, but
+# a deepagents subagent makes all of its LLM calls inside ONE parent super-step, so its calls are
+# invisible to the limit. Observed: a run with recursion_limit=250 made 1,493 LLM calls and
+# consumed 107.9M prompt tokens (~$51 on one model, in one run). Two multipliers compound it:
+# every resume re-enters astream with a FRESH step budget (so the effective ceiling is
+# _RUN_RESUME_ATTEMPTS + 1 times whatever you set), and each resume re-sends the whole history
+# because there is no trimmer — a deliberate choice that is near-free at ~98% cache_read but
+# full price on a weakly-caching model.
+#
+# 20M is ~1.5x the largest legitimate run measured across 339 runs (13.2M, luna-pro on schwen at
+# 155 calls) and below all three observed runaways (24.4M / 43.4M / 107.9M). Counting TOTAL
+# tokens rather than estimated dollars deliberately: the per-model prices in models.py are
+# documentation and carry no cache rates, so a cost estimate would be wrong by up to 10x on
+# exactly the cache-friendly models least in need of a guard.
+_MAX_RUN_TOKENS = 20_000_000
+
 # Provider content-policy refusals, matched on the response text because they arrive as a plain
 # 400 with no distinguishing exception type: OpenAI/OpenRouter raise ValueError/BadRequestError
 # carrying the provider's JSON. Kept deliberately NARROW — a stray 400 (a malformed request, a bad
@@ -192,6 +210,7 @@ async def run_deepagents(
     temperature: float = 0.0,
     n_starts: int = 1,
     max_wall_seconds: float | None = None,
+    max_run_tokens: int | None = _MAX_RUN_TOKENS,
     progress_probe: Any | None = None,
     bio_sessions: Any | None = None,
     bio_literature: bool = False,
@@ -528,6 +547,7 @@ async def run_deepagents(
         retriable: str | None = None
         agen = None
         wall_budget_exceeded = False
+        token_budget_exceeded = False
         early_stopped: str | None = None
         try:
             # Open the stream INSIDE the try so a synchronous raise from astream (e.g. on the
@@ -535,11 +555,30 @@ async def run_deepagents(
             agen = agent.astream(stream_input, config=config, stream_mode="values").__aiter__()
             while True:
                 try:
-                    await asyncio.wait_for(agen.__anext__(), timeout=stall_timeout)
+                    # Wait no longer than the time left in the wall-time budget. Without this the
+                    # loop can only notice the deadline BETWEEN super-steps, so a step starting
+                    # just before it runs the loop up to `stall_timeout` (18 min at any n_starts)
+                    # PAST it -- against a default margin of 20 min, that leaves ~2 min for the
+                    # judge to restore and score a checkpoint. Observed: a fujita/v4-pro run was
+                    # hard-killed by Slurm at exactly 06:00:02 with NO result.json, losing the
+                    # whole run. Capping the wait hands control back at the deadline, so the
+                    # entire margin is available for scoring.
+                    step_wait = stall_timeout if deadline is None else max(
+                        1.0, min(stall_timeout, deadline - time.monotonic()))
+                    await asyncio.wait_for(agen.__anext__(), timeout=step_wait)
                 except StopAsyncIteration:
                     break
                 if deadline is not None and time.monotonic() >= deadline:
                     wall_budget_exceeded = True
+                    break
+                # Token ceiling, checked at the same clean boundary as the wall-time budget. The
+                # accountant is ONE instance across every resume, so this bounds the whole run
+                # rather than resetting each time astream is re-entered -- which is precisely how
+                # the observed runaway escaped every other limit.
+                if (max_run_tokens is not None
+                        and token_accountant.prompt + token_accountant.completion
+                        >= max_run_tokens):
+                    token_budget_exceeded = True
                     break
                 # The gate gave up (too many no-fit finish attempts) — end promptly at this
                 # boundary rather than letting the model spam finish to the recursion limit.
@@ -552,13 +591,28 @@ async def run_deepagents(
                     break
             stop_reason = (
                 "wall_time_budget_exceeded" if wall_budget_exceeded
+                # A BARE label, like wall_time_budget_exceeded beside it: the counts used to be
+                # interpolated here, which made every such run's stop_reason unique AND collided
+                # with `experiments._INFRA_ABORT_MARKERS` -- its "402" marker (out-of-credits) is a
+                # substring of a comma-formatted token count like "20,402,551", so a runaway with
+                # 0 fits was classified as infrastructure noise and dropped from the aggregation
+                # entirely. The counts belong in the print below and in `token_usage`.
+                else "token_budget_exceeded" if token_budget_exceeded
                 else "no_model_built" if finish_state["gave_up"]
                 else f"early_stop: {early_stopped}" if early_stopped
                 else "completed"
             )
         except asyncio.TimeoutError:
-            retriable = (f"stalled: no step completed in {stall_timeout:.0f}s "
-                         "(hung provider call or wedged fit)")
+            if deadline is not None and time.monotonic() >= deadline:
+                # The wait was cut short by the wall-time cap above, not by a wedged step. This is
+                # the budget expiring mid-super-step, so it must STOP (and let the judge score what
+                # is committed) rather than resume — a resume here would spend the margin that the
+                # scoring needs, which is how a run gets hard-killed with no result at all.
+                wall_budget_exceeded = True
+                stop_reason = "wall_time_budget_exceeded"
+            else:
+                retriable = (f"stalled: no step completed in {stall_timeout:.0f}s "
+                             "(hung provider call or wedged fit)")
         except _TRANSIENT_ERRORS as exc:  # call-level retries exhausted -> resume the run
             retriable = f"{type(exc).__name__}: {exc}"
         except Exception as exc:
@@ -584,6 +638,15 @@ async def run_deepagents(
         if wall_budget_exceeded:
             print(f"[agent] wall-time budget ({max_wall_seconds:.0f}s) exceeded — stopping "
                   "at this step boundary; the judge scores whatever is currently committed.")
+            break
+        if token_budget_exceeded:
+            # Deliberately NOT retriable: a resume would hand the loop a fresh step budget and the
+            # whole history to re-send, which is the exact mechanism that turned one run into
+            # 107.9M tokens. Ending here keeps everything committed so far scoreable.
+            print(f"[agent] token budget exceeded: "
+                  f"{token_accountant.prompt + token_accountant.completion:,} tokens over "
+                  f"{max_run_tokens:,} in {token_accountant.n_calls} LLM calls — stopping at this "
+                  "step boundary; the judge scores whatever is currently committed.")
             break
         if early_stopped is not None:
             print(f"[agent] early-stop: {early_stopped} — stopping at this step boundary; "
@@ -623,6 +686,19 @@ async def run_deepagents(
             # the deadline will just cut off anyway.
             stop_reason = f"wall_time_budget_exceeded (during retry: {retriable})"
             print(f"[agent] wall-time budget ({max_wall_seconds:.0f}s) exceeded while handling "
+                  f"'{retriable}' — stopping instead of resuming.")
+            break
+        # The SAME guard for tokens. Without it a run already past the ceiling could still resume:
+        # the inner check only runs at a completed step boundary, so a run that blew the budget and
+        # then hit a stall / transient error arrives here with `token_budget_exceeded` still False.
+        # Each resume re-enters astream with a fresh step budget AND re-sends the whole history, so
+        # with `_RUN_RESUME_ATTEMPTS` retries the effective ceiling was several times the nominal
+        # one -- the exact compounding `_MAX_RUN_TOKENS` exists to bound.
+        if (max_run_tokens is not None
+                and token_accountant.prompt + token_accountant.completion >= max_run_tokens):
+            stop_reason = "token_budget_exceeded"
+            print(f"[agent] token budget ({max_run_tokens:,}) already exceeded at "
+                  f"{token_accountant.prompt + token_accountant.completion:,} while handling "
                   f"'{retriable}' — stopping instead of resuming.")
             break
         if resume_left <= 0:

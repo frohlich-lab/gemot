@@ -148,6 +148,34 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
     """
     if not isinstance(report, dict) or not report:
         return None
+    # A sigma that shares its noiseFormula with an ESTIMATED gain is declined here. To be precise
+    # about WHY, because it is not that the quantity is meaningless:
+    #
+    #   * The RAW sigma is model-specific. Only the product `gain * sigma` is identified, so a model
+    #     at different internal units reaches the SAME noise with a proportionally different sigma.
+    #     fiedler: reference sigma_pMek = 5.8e-4 against gel gains of 77.7 .. 999.99.
+    #   * The PRODUCT is perfectly comparable -- it is the noise sd in measurement units, and both
+    #     models fit the same measurements, so two good fits should agree on it. 404.2 * 5.8e-4 =
+    #     0.235, against a pMek data std of 1.35: plausible, and nothing like the 179x "inflation"
+    #     the raw ratio reports.
+    #
+    # So this is a DATA-AVAILABILITY limit, not an impossibility. Neither side currently carries the
+    # product: the candidate entry's `effective_sigma` has the amplitude divided out by
+    # `sigma_effective_value` (deliberately -- the gain cancels from the data-driven sd/spread ratio,
+    # which is why that basis is unaffected), and reference.json records only the raw sigma, with
+    # `noise_sigma_effective` equal to it. Comparing effective-vs-effective therefore reduces to
+    # raw-vs-raw and changes nothing.
+    #
+    # The durable fix is to record the gain-inclusive sd in reference.json at refit time. It cannot
+    # be reconstructed generally from the shipped nominals: they ARE the reference fit for fiedler
+    # (verified -- both sigmas match reference.json exactly) but differ on most examples (alkan,
+    # isensee, oliveira, schwen, blasi...), so reading them would silently compare against the wrong
+    # model. Until then, decline the whole basis as the unpairable-sigma case below does, so `_judge`
+    # falls through to the data-driven band -- the test that was right all along here: it never
+    # flagged any of the 116 runs scored on it, while this basis silently failed 17 fiedler runs that
+    # had BEATEN the BIC bar. See reconcile.sigma_scale_coupled.
+    if any(e.get("scale_coupled") for e in report.values() if isinstance(e, dict)):
+        return None
     # Prefer the EFFECTIVE sd on BOTH sides: for a composite/proportional noiseFormula the raw
     # parameter is not comparable across models (fiedler's sd is per-gel scale * sigma, so a
     # candidate at a different amplitude trades scale against sigma and reaches an IDENTICAL sd

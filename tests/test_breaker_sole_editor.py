@@ -16,6 +16,7 @@ from petab_harness.agent.circuit_breaker import (
     _TOOL_ERROR_DISABLE_THRESHOLD,
     _coerce_json_string_args,
     _container_arg_names,
+    _is_transport_error,
     _new_breaker_state,
     _record_error,
     _wrap_tools_with_circuit_breaker,
@@ -75,15 +76,38 @@ def test_a_repeated_sole_editor_failure_escalates_the_message():
         return await tool.coroutine(runtime=None, justification="j")
 
     for i in range(_TOOL_ERROR_DISABLE_THRESHOLD - 1):
-        with pytest.raises(Exception) as early:
-            asyncio.run(_call())
-        assert "identical failure" not in str(early.value), f"escalated too early, on call {i+1}"
+        content, _ = asyncio.run(_call())
+        assert "bad shape" in content, "the original error must still reach the model"
+        assert "identical failure" not in content, f"escalated too early, on call {i+1}"
 
-    with pytest.raises(Exception) as escalated:
-        asyncio.run(_call())
-    text = str(escalated.value)
-    assert "identical failure" in text and "SHAPE" in text
-    assert "TOOL DISABLED" not in text
+    content, _ = asyncio.run(_call())
+    assert "identical failure" in content and "SHAPE" in content
+    assert "TOOL DISABLED" not in content
+
+
+def test_a_sole_editor_failure_is_returned_to_the_model_never_raised():
+    """The failure that cost 3 of minimax-m3's 5 sneyd runs (0 fits each).
+
+    langchain-mcp-adapters installs `_handle_mcp_tool_error` as these tools' `handle_tool_error`,
+    and it converts an error into a ToolMessage for `_MCPToolExecutionError` ONLY — every other
+    exception hits its `raise error` branch and aborts the run. So raising anything here (the old
+    escalation raised a plain ToolException) killed the run instead of teaching the model. Client
+    -side pydantic validation errors are worse still: not ToolException subclasses at all, so they
+    never reach that callback. `make_changes` is the sole editor; losing the run loses everything.
+    """
+    class _NotAToolException(Exception):
+        pass
+
+    for exc in (_NotAToolException("client-side validation error"), RuntimeError("boom")):
+        state = _new_breaker_state()
+        tool = _FakeTool("make_changes", fail_with=exc)
+        _wrap_tools_with_circuit_breaker([tool], state)
+        for _ in range(_TOOL_ERROR_DISABLE_THRESHOLD + 2):
+            result = asyncio.run(tool.coroutine(runtime=None, justification="j"))
+            assert isinstance(result, tuple) and len(result) == 2, (
+                "must be (content, artifact) — the shape these tools already declare"
+            )
+            assert str(exc) in result[0]
 
 
 # ------------------------------------------------------- client-side JSON-string coercion
@@ -178,11 +202,8 @@ def test_escalation_survives_an_exception_that_is_not_string_constructible():
         return await tool.coroutine(runtime=None, justification="j")
 
     for _ in range(_TOOL_ERROR_DISABLE_THRESHOLD - 1):
-        with pytest.raises(Exception):
-            asyncio.run(_call())
-    with pytest.raises(Exception) as escalated:
         asyncio.run(_call())
-    text = str(escalated.value)
+    text, _ = asyncio.run(_call())
     assert "server said no" in text, "the original error must survive the escalation"
     assert "identical failure" in text
     assert "string indices" not in text
@@ -302,7 +323,42 @@ def test_the_wrapper_records_each_outcome_class():
     state2 = _new_breaker_state()
     bad = _FakeTool("make_changes", args=_ARGS_SCHEMA, fail_with=RuntimeError("boom"))
     _wrap_tools_with_circuit_breaker([bad], state2)
-    with pytest.raises(Exception):
-        asyncio.run(bad.coroutine(runtime=None, justification="j"))
+    # Returns the error as tool content rather than raising (see the sole-editor note in
+    # circuit_breaker) — the outcome must still be RECORDED as a failure for triage.
+    content, _ = asyncio.run(bad.coroutine(runtime=None, justification="j"))
+    assert "boom" in content
     out = call_outcomes(state2, "make_changes")
     assert out["attempted"] == 1 and out["fail_rate"] == 1.0
+
+
+# -- a transport failure must still propagate, even for the sole editor ----------------------
+def test_a_transport_error_on_the_sole_editor_is_not_swallowed():
+    """The never-disable return exists so the MODEL can see and fix a bad call. A closed session or
+    an unreachable server is not something it can fix by changing arguments: swallowed as tool
+    content, every later call returns the same error, the run burns to the recursion/token limit,
+    and it is recorded as a genuine modelling failure with 0 fits — reclassifying infrastructure
+    noise as model incapability and biasing every model comparison. It must PROPAGATE, so the
+    driver's `_TRANSIENT_ERRORS` resume path can act on it, or failing that so the error class
+    lands in `stop_reason` where `experiments.is_noop_infra_abort` excludes the run.
+    """
+    import anyio
+
+    for exc in (anyio.ClosedResourceError(), anyio.BrokenResourceError()):
+        assert _is_transport_error(exc), "predicate must recognise the transport class"
+        state = _new_breaker_state()
+        tool = _FakeTool("make_changes", fail_with=exc)
+        _wrap_tools_with_circuit_breaker([tool], state)
+        with pytest.raises(type(exc)):
+            asyncio.run(tool.coroutine(runtime=None, justification="j"))
+        # Never disabled either — the sole editor must survive a transport blip for a resumed run.
+        assert "make_changes" not in state["disabled"]
+
+
+def test_a_non_transport_failure_on_the_sole_editor_is_still_returned():
+    """The exemption above must not re-break the case the return exists for: an argument-shape or
+    validation error is still handed back as (content, artifact) so the model can correct it."""
+    state = _new_breaker_state()
+    tool = _FakeTool("make_changes", fail_with=RuntimeError("bad argument shape"))
+    _wrap_tools_with_circuit_breaker([tool], state)
+    result = asyncio.run(tool.coroutine(runtime=None, justification="j"))
+    assert isinstance(result, tuple) and "bad argument shape" in result[0]

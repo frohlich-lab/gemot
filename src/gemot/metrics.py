@@ -45,6 +45,11 @@ _RESULT_FIELDS = (
     "wall_seconds", "compute_seconds", "llm_seconds",
     "compile_seconds", "fit_seconds", "n_compiles", "n_fits",
     "git_sha", "recursion_limit", "n_starts", "temperature",
+    # `git_sha` ends in `+dirty` whenever the tree had uncommitted changes, which means it does NOT
+    # pin the code: the whole Aug 8-10 sweep recorded one sha across jobs whose behaviour differed.
+    # This is the column you group by to tell "different code" from "different model". Flat, for
+    # the same reason as the edit_rejects columns above -- result.json's `git_diff` is a dict.
+    "git_diff_sha256",
     # The prompts are as much an input to a run as the code is, so the version rides beside
     # git_sha. Without it a sweep spanning a prompt edit pools both versions into one cell with
     # no column to split them on (and `DictWriter(extrasaction="ignore")` below drops silently,
@@ -66,7 +71,7 @@ _LOF_FIELDS = ("lof_status", "lof_weak", "lof_df")
 # below can expand them. build_row copies only the flat _RESULT_FIELDS, so without this the flatteners
 # saw nothing on the collect() path and every column derived from a nested block stayed empty —
 # silently, which is the failure mode the _RESULT_FIELDS comment above warns about.
-_NESTED_SOURCE_FIELDS = ("edit_rejects", "residual_structure")
+_NESTED_SOURCE_FIELDS = ("edit_rejects", "residual_structure", "git_diff")
 
 # Columns derived from the Phoenix trace (token usage + span breakdown).
 _PHOENIX_FIELDS = (
@@ -235,6 +240,16 @@ def _flatten_edit_rejects(row: dict) -> dict:
             "edit_reject_top_cause": top}
 
 
+def _flatten_git_diff(row: dict) -> dict:
+    """Expand result.json's nested ``git_diff`` into the single history column that identifies the
+    working tree. Absent/None (a clean checkout) passes through, leaving the column empty -- which
+    is itself the useful signal that the run WAS attributable to its commit."""
+    diff = row.get("git_diff")
+    if not isinstance(diff, dict):
+        return row
+    return {**row, "git_diff_sha256": diff.get("sha256")}
+
+
 def _flatten_replicate_lof(row: dict) -> dict:
     """Expand the replicate lack-of-fit verdict nested under ``residual_structure`` into the flat
     ``lof_*`` history columns. Same transform-at-write-time shape as :func:`_flatten_edit_rejects`,
@@ -281,7 +296,7 @@ def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HIST
         if is_new:
             writer.writeheader()
         for row in rows:
-            row = _flatten_replicate_lof(_flatten_edit_rejects(row))
+            row = _flatten_git_diff(_flatten_replicate_lof(_flatten_edit_rejects(row)))
             writer.writerow({k: row.get(k) for k in fields})
     return history_path
 

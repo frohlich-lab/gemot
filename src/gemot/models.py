@@ -31,6 +31,12 @@ MODELS: dict[str, tuple[str, float, float]] = {
     "v4-pro":     ("deepseek/deepseek-v4-pro",    0.435, 0.87),
     "minimax-m3": ("minimax/minimax-m3",          0.30, 1.20),
     "mimo":       ("xiaomi/mimo-v2.5",            0.168, 0.336),
+    # The tier above the panel: ~10x luna per run, added to test whether capability buys
+    # anything on the examples the panel cannot solve. Not defaults -- opt in with --models.
+    "terra":      ("openai/gpt-5.6-terra",        1.00, 6.00),
+    "grok":       ("x-ai/grok-4.20",              1.25, 2.50),
+    "gemini-flash": ("google/gemini-3.6-flash",       1.50, 7.50),
+    "gemini-pro":   ("google/gemini-3.1-pro-preview", 2.00, 12.00),
 }
 
 #: Default lead. 1M-token context; on this prompt-heavy workload (~95% prompt tokens) the blended
@@ -93,6 +99,45 @@ _ROUTING: dict[str, dict] = {
     # the window. Cost is not the reason for the order: the 524K endpoints save ~$0.03/run.
     "minimax/minimax-m3": {"order": ["novita/fp8", "parasail/fp8", "deepinfra/fp8", "together"],
                            "only":  ["novita/fp8", "parasail/fp8", "deepinfra/fp8", "together"]},
+    # terra: same Azure trap as the rest of the OpenAI family (OpenAI $1.00 vs Azure $2.75, a
+    # 5.5x spread), so the bare `openai` tag is mandatory -- it also excludes `openai/flex` and
+    # `openai/priority`, the undocumented cheap and dear tiers we refuse everywhere else.
+    "openai/gpt-5.6-terra": {"only": ["openai"]},
+    # grok: `xai/zdr` and `xai` are the SAME price ($1.25/$0.20/$2.50); pin the zdr tag because it
+    # names the data guarantee in the request rather than leaning on the account policy, and it
+    # excludes the `/priority` tiers which cost exactly double for no benefit here.
+    "x-ai/grok-4.20": {"order": ["xai/zdr", "xai"], "only": ["xai/zdr", "xai"]},
+    # Gemini: READ THIS BEFORE ADDING ANOTHER GOOGLE MODEL. Google publishes no ZDR-tagged endpoint
+    # at all -- grok's `xai/zdr` has no counterpart here, and `data_policy` comes back `{}` for
+    # every endpoint (terra's included), so the API cannot answer the retention question either
+    # way. These two are reachable only because ZDR enforcement is relaxed account-side, the same
+    # concession that admitted terra. That is a policy decision, not a property of the pin.
+    #
+    # All six endpoints are byte-identical on price and context (1M, so no context trap of the kind
+    # mimo and m3 have). The standby is the OTHER TWO VERTEX tags, not `google-ai-studio`: the
+    # Flash-Lite note below records `google-ai-studio` as ZDR-BLOCKED (verified live, 404 on data
+    # policy) while `google-vertex` and `google-vertex/eu` are not. Pinning AI Studio as the fallback
+    # -- as this did -- meant a `google-vertex/global` outage left an effectively EMPTY allowlist, so
+    # every gemini task in the array job would error out instead of degrading, which is the opposite
+    # of what the fallback is for. flex is half price and priority 1.8x, and is excluded by the same
+    # standing rule we apply to `openai/flex`.
+    #
+    # Unlike every incumbent, Gemini prices cache WRITES ($0.083/M flash, $0.375/M pro). That rate
+    # bills only for explicit `cache_control` breakpoints; we set none anywhere in the harness, so
+    # implicit caching applies and the write column stays at zero. Adding cache_control later would
+    # start billing it -- on pro the write rate is 1.9x its own cache-read rate.
+    #
+    # No _REASONING entry on purpose: both models think by DEFAULT (verified live, 140-210
+    # reasoning tokens on a one-shot tool call, tool calls intact). Contrast Flash-Lite below,
+    # where thinking was off and had to be asked for.
+    "google/gemini-3.6-flash":       {"order": ["google-vertex/global", "google-vertex",
+                                                "google-vertex/eu"],
+                                      "only":  ["google-vertex/global", "google-vertex",
+                                                "google-vertex/eu"]},
+    "google/gemini-3.1-pro-preview": {"order": ["google-vertex/global", "google-vertex",
+                                                "google-vertex/eu"],
+                                      "only":  ["google-vertex/global", "google-vertex",
+                                                "google-vertex/eu"]},
 }
 
 

@@ -334,3 +334,98 @@ def _empty_report_guard(stats: dict[str, Any], *, retries: int = _MAX_EMPTY_REPO
             return _with_marker(result, tm)
 
     return _EmptyReportGuard()
+
+
+# --- subagent turn limit ------------------------------------------------------------------
+# A subagent is invoked with a FRESH `recursion_limit` on every `task` call (deepagents seeds
+# the child run from the ambient parent config, and the child's own bound config wins), so the
+# lead's limit bounds how many times it may DELEGATE, not how long each delegation runs. One
+# observed run made 1,493 LLM calls under recursion_limit=250 with zero fits and zero edits:
+# the work all happened inside subagents that were free to explore indefinitely, and every
+# progress-based early stop stayed silent because those depend on FITTED ops (session.py's
+# should_stop), of which there were none.
+#
+# The limit is counted from the STATE (AIMessages so far), not an instance counter: the spec is
+# built once and shared across every invocation, so a counter on the middleware would leak the
+# first delegation's turns into the second and shrink each successive call's budget to zero.
+# Escalating notice as a delegation nears its cap. Injected into the OUTGOING REQUEST
+# (wrap_model_call), never appended to state: at the cap the model's last turn is usually a tool
+# call, and adding a HumanMessage after an AIMessage that carries `tool_calls` -- then returning to
+# the model without running those tools -- produces a message sequence providers reject outright
+# ("an assistant message with tool_calls must be followed by tool messages"). The existing
+# _ToolDispatchGuard sidesteps this by nudging only on text-only turns; a turn limit cannot, since
+# it must land wherever the budget runs out. Modifying the request leaves state well-formed.
+# Sourced from prompts.py so `prompt_version()` moves when the wording does — see
+# prompts.SUBAGENT_TURN_NOTICES for why this text cannot live here.
+_TURN_NOTICES = prompts.SUBAGENT_TURN_NOTICES
+
+
+def _turn_notice(turns_used: int, cap: int) -> "str | None":
+    """The sternest notice earned at ``turns_used``, or None while there is room to work.
+
+    Thresholds are clamped to at most HALF the cap, so a small cap cannot warn from turn zero. The
+    10/5/1 numbers are sized against a 20-turn budget; applied absolutely, a cap of 8 would fire
+    "start converging" on the delegation's very first turn (left = 8 <= 10) and a cap of 5 would
+    open on the WARNING. `cap // 2` leaves the shipped 20-turn caps EXACTLY as they were (10 -> 10)
+    while keeping the notices a genuine approach signal at any smaller cap.
+    """
+    left = cap - turns_used
+    for threshold, text in sorted(_TURN_NOTICES, key=lambda t: t[0]):
+        earned = min(threshold, max(1, cap // 2))
+        if left <= earned:
+            return text.format(left=max(left, 0), cap=cap)
+    return None
+
+
+def _subagent_turn_limit(max_turns: int):
+    """Bound one subagent delegation to ``max_turns`` model calls, with warnings on approach.
+
+    Counted from the STATE (AIMessages so far), not an instance counter: the spec is built once
+    and reused for every `task` call, so a counter on the middleware would leak the first
+    delegation's turns into the second and starve it.
+    """
+    from langchain.agents.middleware.types import AgentMiddleware, hook_config
+    from langchain_core.messages import AIMessage
+
+    def _turns(messages) -> int:
+        return sum(1 for m in messages or [] if isinstance(m, AIMessage))
+
+    def _augment(request):
+        """Append the notice to the request's system prompt, if one is due."""
+        notice = _turn_notice(_turns(getattr(request, "messages", None)), max_turns)
+        if notice is None:
+            return request
+        base = getattr(request, "system_prompt", None) or ""
+        try:
+            return request.override(system_prompt=f"{base}\n\n{notice}")
+        except Exception:  # pragma: no cover - older/newer request shapes
+            return request
+
+    def _check(state):
+        # The hard stop. `jump_to: end` is safe with a tool call outstanding (nothing further is
+        # sent to the provider), unlike returning to the model; a delegation cut off mid-call
+        # yields a thin report, which _EmptyReportGuard already covers.
+        # `>=`, not `>`: at `max_turns` AIMessages the budget is SPENT, and `>` allowed a
+        # (max_turns + 1)-th model call -- an off-by-one against this factory's own contract
+        # ("bound one delegation to `max_turns` model calls") and against the measured sizing.
+        if _turns(state.get("messages")) >= max_turns:
+            print(f"[subagent] turn limit ({max_turns}) reached — ending this delegation")
+            return {"jump_to": "end"}
+        return None
+
+    class _SubagentTurnLimit(AgentMiddleware):
+        def wrap_model_call(self, request, handler):
+            return handler(_augment(request))
+
+        async def awrap_model_call(self, request, handler):
+            return await handler(_augment(request))
+
+        @hook_config(can_jump_to=["end"])
+        def after_model(self, state, runtime):
+            return _check(state)
+
+        @hook_config(can_jump_to=["end"])
+        async def aafter_model(self, state, runtime):
+            return _check(state)
+
+    return _SubagentTurnLimit()

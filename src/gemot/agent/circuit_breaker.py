@@ -218,21 +218,42 @@ def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
                                if _is_client_validation_error(exc) else _CALL_TOOL_ERROR)
                     sig = f"{type(exc).__name__}: {exc}"
                     tripped = _record_error(state, name, sig)
-                    if name in _NEVER_DISABLE:
+                    # A TRANSPORT failure is exempt from the never-disable return below. The model
+                    # cannot fix a closed session or an unreachable server by changing its
+                    # arguments, so handing it "ClosedResourceError: ..." as a successful tool
+                    # result on every subsequent call just burns the run to the recursion or token
+                    # limit — and it is then recorded as a genuine modelling failure with 0 fits.
+                    # Letting it propagate is what reaches the driver's `_TRANSIENT_ERRORS` resume
+                    # path, and failing that, what puts the error class in `stop_reason` where
+                    # `experiments._is_infra_abort` / `is_noop_infra_abort` can exclude it from the
+                    # success/dBIC aggregation. Swallowing it silently reclassified infrastructure
+                    # noise as model incapability, which biases every model comparison.
+                    if name in _NEVER_DISABLE and not _is_transport_error(exc):
                         # Never stripped, so the model keeps the tool — but a bare repeat of the
                         # same error teaches it nothing. Escalate the wording once the streak is
-                        # real. Raise a plain ToolException rather than rebuilding `type(exc)`:
-                        # the exception this path actually receives is langchain-mcp-adapters'
-                        # `_MCPToolExecutionError`, whose __init__ takes a list of content blocks,
-                        # so `type(exc)(some_string)` yields an object whose message is
-                        # "string indices must be integers" — losing the escalation AND the
-                        # original error. ToolException takes a string and keeps the tool-error
-                        # handling path that every caller here already expects.
+                        # real, and RETURN it as the tool's result rather than raising.
+                        #
+                        # Raising here used to END THE RUN. langchain-mcp-adapters installs
+                        # `_handle_mcp_tool_error` as the tools' `handle_tool_error`, and it
+                        # converts the error into a ToolMessage for exactly ONE type:
+                        #
+                        #     if isinstance(error, _MCPToolExecutionError): return ...content
+                        #     raise error          # <- everything else propagates
+                        #
+                        # so a plain ToolException carrying the escalation took the `raise error`
+                        # branch and aborted the whole run — as did any client-side pydantic
+                        # validation error, which is not a ToolException subclass and so never
+                        # reaches that callback at all. Observed: 3 of minimax-m3's 5 sneyd runs
+                        # died this way with 0 fits.
+                        #
+                        # Returning (content, artifact) is the shape these tools already use
+                        # (`response_format="content_and_artifact"`) and the same one the breaker
+                        # and transport paths return, so the model reliably SEES the error and can
+                        # correct the call — which is the entire point of never disabling this tool.
                         n = state["streaks"].get(name, {}).get("count", 1)
-                        if n >= _TOOL_ERROR_DISABLE_THRESHOLD:
-                            raise _tool_exception(
-                                sig + _ESCALATION.format(n=n, name=name)) from exc
-                        raise
+                        detail = sig + (_ESCALATION.format(n=n, name=name)
+                                        if n >= _TOOL_ERROR_DISABLE_THRESHOLD else "")
+                        return (detail, None)
                     # A transport error (unreachable/closed server) on an EXTERNAL bio tool can't be
                     # fixed by the model and aborts the whole run if it propagates — disable that
                     # tool for the rest of the run and return the degraded message NOW, without
@@ -305,20 +326,11 @@ def call_outcomes(state: dict[str, Any], name: str) -> dict[str, Any]:
     }
 
 
-def _tool_exception(message: str) -> Exception:
-    """A string-carrying tool error langchain's error handling understands.
-
-    NOT ``type(original)(message)``: the exception this path receives from
-    langchain-mcp-adapters is ``_MCPToolExecutionError``, whose ``__init__`` takes a list of
-    content blocks. Passing it a string produces an object whose message is "string indices must
-    be integers" — the escalation AND the original error both lost, so the model would end up
-    with strictly less information than before.
-    """
-    try:
-        from langchain_core.tools import ToolException
-    except Exception:  # pragma: no cover - langchain_core is a harness dep
-        return RuntimeError(message)
-    return ToolException(message)
+# NOTE: there is deliberately no `_tool_exception` helper any more. It existed to wrap the
+# escalation in a plain ToolException, which is precisely what killed runs -- langchain-mcp-adapters'
+# `_handle_mcp_tool_error` re-raises every ToolException that is not an `_MCPToolExecutionError`.
+# Errors on a never-disabled tool are RETURNED as tool content instead (see `_make` above); do not
+# reintroduce a raise here without checking that callback first.
 
 
 _REJECTION_ESCALATE_AT = 5   # identical operation rejections before the wording escalates

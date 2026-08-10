@@ -45,11 +45,30 @@ from ..prompts import (
     SIGNAL_ENGINEER_PROMPT,
     SYSTEMS_SCIENTIST_PROMPT,
 )
+from .guards import _subagent_turn_limit
 from .tools import (
     MATHEMATICIAN_TOOLS,
     SIGNAL_ENGINEER_TOOLS,
     SYSTEMS_SCIENTIST_TOOLS,
 )
+
+# Model calls one analyst delegation may make before it must report.
+#
+# Measured, not guessed: 1,442 delegations across the 239 productive runs of the 260-run main
+# sweep (Phoenix spans; slurm/trace_review/subagent_turns.py). Turns per delegation --
+#
+#     systems_scientist  med 3  p95  7  max 10
+#     mathematician      med 3  p95  8  max 20
+#     signal_engineer    med 5  p95 12  max 25
+#
+# signal_engineer sets the bound: it walks per-observable residual SQL, so it is legitimately
+# the longest, and a cap near its p95 would truncate ~1 delegation in 20 of exactly the analysis
+# worth having. 20 covers its p99 and every other analyst's maximum, trimming only the top ~1%
+# of its tail -- which still returns a report, via the wrap-up turn, just earlier than it liked.
+#
+# Note this is NOT the runaway guard: 4 subagents x a 250-step parent limit is still large in
+# principle. This keeps one delegation from wandering; driver._MAX_RUN_TOKENS bounds the run.
+ANALYST_MAX_TURNS = 20
 
 # deepagents subagent specs. `subagent_type` values the orchestrator passes to the `task`
 # tool are the `name`s here. Each names a curated tool subset (resolved from ALLOWED_TOOLS).
@@ -114,6 +133,9 @@ def _build_subagents(tools_by_name: dict[str, Any]) -> list[dict[str, Any]]:
             "description": spec["description"],
             prompt_key: spec["prompt"],
             "tools": tools,
+            # Bound each delegation. Without this an analyst may explore until the parent's
+            # limit or the credit runs out -- see the note on _subagent_turn_limit.
+            "middleware": [_subagent_turn_limit(ANALYST_MAX_TURNS)],
         })
     return subagents
 

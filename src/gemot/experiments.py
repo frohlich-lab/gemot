@@ -411,7 +411,9 @@ def _is_infra_abort(stop_reason: Any) -> bool:
     s = str(stop_reason or "").strip().lower()
     if s in ("", "completed"):
         return False
-    if "wall_time_budget" in s or "recursion" in s:  # genuine agent outcomes, not infrastructure
+    # Genuine agent outcomes, not infrastructure: the run hit a harness budget or the graph's step
+    # limit because of what it DID, so it counts as a failure rather than being dropped as noise.
+    if "wall_time_budget" in s or "token_budget" in s or "recursion" in s:
         return False
     if s.startswith("aborted:"):  # pre-verdict transport abort (runner._write_degraded_result)
         return True
