@@ -457,6 +457,9 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         "n_compiles": n_compiles,
         "n_fits": n_fits,
         "tool_calls": clock.calls,
+        # Which tools, not just how many. Answers "did the agent ever call X?" from result.json
+        # alone -- no Phoenix collector, no `.slurm_scratch` (which is deleted on completion).
+        "tool_call_counts": dict(sorted(clock.by_tool.items(), key=lambda kv: -kv[1])),
         # Rejected edits are SUCCESSFUL tool calls returning applied=false, so
         # n_tool_errors never sees them (see _ToolClock.note_result).
         "edit_rejects": clock.reject_summary(),

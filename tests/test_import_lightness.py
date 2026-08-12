@@ -114,6 +114,13 @@ def _toplevel_names(path):
             names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
             if any(getattr(t, "id", None) == "_LAZY" for t in node.targets):
                 names |= {k.value for k in node.value.keys}
+        # An ANNOTATED module constant (`ABLATIONS: tuple[Ablation, ...] = (...)`) is an AnnAssign,
+        # not an Assign, so it needs its own branch — otherwise a script importing it is reported as
+        # importing a name that does not exist. A false positive here is expensive: it accuses
+        # working code, and the quickest way to silence it is to delete the annotation.
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name):
+                names.add(node.target.id)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.add(node.name)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):

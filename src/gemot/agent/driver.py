@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import inspect
 import re
 import time
@@ -158,6 +159,56 @@ def _extra_body(model: str) -> dict[str, Any]:
     return body
 
 
+@functools.lru_cache(maxsize=None)
+def _chat_model_class():
+    """``ChatOpenAI``, subclassed to keep the UPSTREAM endpoint identity OpenRouter reports.
+
+    OpenRouter returns a top-level ``provider`` naming the endpoint that actually served the call
+    (``"OpenAI"``, ``"Azure"``, ``"Novita"``, …). ``langchain_openai`` drops it: its ``llm_output``
+    hard-codes ``model_provider: "openai"`` — the name of the INTEGRATION, not of the endpoint —
+    so the served endpoint is invisible downstream. That is the one field an A/B needs, because
+    ``provider.only`` bounds routing to a SET and every member of that set is a different
+    machine: an arm can drift across endpoints mid-sweep and nothing in the record would say so.
+
+    ``response.model_dump()`` already carries ``provider`` (pydantic keeps unknown top-level
+    fields as extras), so this only copies it where the callbacks can read it. Everything else is
+    ``super()``'s. Best-effort by construction: any failure leaves the unmodified result, since
+    provenance capture must never break a run.
+
+    ``lru_cache``d, and the caller passes ``name="ChatOpenAI"`` -- both for reasons that bite
+    silently. LangChain derives a run's name (and openinference the SPAN name) from the class name,
+    so an un-named subclass would rename every LLM span to ``_ChatOpenAIRecordingProvider``: every
+    archived trace and every span query under ``slurm/trace_review`` keys on ``ChatOpenAI``, so the
+    new runs would simply return no rows and could not be compared with the old ones. The cache is
+    because each call would otherwise build -- and permanently register -- a fresh pydantic model
+    class. Keeping the import inside the function is what ``tests/test_import_lightness`` needs.
+    """
+    from langchain_openai import ChatOpenAI
+
+    class _ChatOpenAIRecordingProvider(ChatOpenAI):
+        def _create_chat_result(self, response, generation_info=None):
+            result = super()._create_chat_result(response, generation_info)
+            try:
+                served = getattr(response, "provider", None)
+                if served is None and isinstance(response, dict):
+                    served = response.get("provider")
+                if not served:
+                    return result
+                # Both places: `llm_output` is what on_llm_end sees as an aggregate, and the
+                # per-message metadata is what Phoenix exports onto the LLM span.
+                if isinstance(result.llm_output, dict):
+                    result.llm_output["openrouter_provider"] = served
+                for gen in result.generations:
+                    meta = getattr(getattr(gen, "message", None), "response_metadata", None)
+                    if isinstance(meta, dict):
+                        meta["openrouter_provider"] = served
+            except Exception:  # pragma: no cover - provenance must never break a run
+                pass
+            return result
+
+    return _ChatOpenAIRecordingProvider
+
+
 # A provider 5xx that arrives UNCLASSIFIED. OpenRouter returns HTTP 200 with an `{"error": ...}`
 # body for some upstream failures, so the OpenAI client raises a bare ValueError instead of an
 # InternalServerError — which means such an error is invisible to BOTH retry layers: the client's
@@ -246,7 +297,6 @@ async def run_deepagents(
     """
     from deepagents import create_deep_agent
     from langchain_mcp_adapters.tools import load_mcp_tools
-    from langchain_openai import ChatOpenAI
 
     # Adapt the MCP tools bound to this already-initialized session, then curate to the
     # union of the lead's + analysts' tools. This pool is only used to resolve each analyst's
@@ -254,7 +304,7 @@ async def run_deepagents(
     petab_tools = _trim_descriptions(_select_tools(await load_mcp_tools(session)))
     # Blinded bio-knowledge tools from one or more SECONDARY MCP servers (biocurator joins the
     # panel on every deepagents run; endpoints hardcoded in runner.BIO_MCP_URLS = BioContextAI + OmniPath;
-    # --bio-literature adds EuropePMC/bioRxiv). They are
+    # the `bio_literature` ablation adds EuropePMC/bioRxiv). They are
     # RUNTIME-DISCOVERED (their names are unknown ahead of time), so they deliberately BYPASS
     # _select_tools/ALLOWED_TOOLS (which would warn+drop them as "unexpected") and are handed
     # ONLY to the biocurator subagent below — never to the lead or the other analysts. NOTE: the
@@ -268,7 +318,7 @@ async def run_deepagents(
         # The biocurator's tool selection: the curated DEFAULT_BIO_TOOLS (a lean, deliberate set
         # spanning the default BioContextAI server + OmniPath: identity/domains/interactions/
         # pathways/GO/ontology + OmniPath's SQL tool), plus the literature tools when the operator
-        # opted in with --bio-literature. It is an allowlist of NAMES, not a numeric cap, so it can
+        # opted in with PETAB_BIO_LITERATURE=1. It is an allowlist of NAMES, not a numeric cap, so it can
         # never drop the one tool the biocurator needs.
         allow = set(DEFAULT_BIO_TOOLS)
         if bio_literature:
@@ -327,7 +377,7 @@ async def run_deepagents(
     _wrap_tools_with_circuit_breaker(all_tools, breaker_state, transport_disable_names=_bio_names)
     # Provenance: record the biocurator's LITERATURE accesses (query + returned DOIs/PMIDs) for
     # audit + analysis (surfaced as biocurator_literature). Only literature tools are wrapped, and
-    # only when --bio-literature made them resolve into bio_tools; empty otherwise.
+    # only when the `bio_literature` ablation made them resolve into bio_tools; empty otherwise.
     literature_log: list = []
     _wrap_literature_recorder(
         [t for t in bio_tools if getattr(t, "name", None) in LITERATURE_BIO_TOOLS], literature_log
@@ -368,7 +418,9 @@ async def run_deepagents(
     finish_state = {"confirmed": False, "gave_up": False}
     lead_tools = [*lead_tools, _finish_tool(session, finish_state, probe=progress_probe)]
 
-    llm = ChatOpenAI(
+    llm = _chat_model_class()(
+        # Keeps the Phoenix span named `ChatOpenAI` despite the subclass -- see _chat_model_class.
+        name="ChatOpenAI",
         model=model,
         temperature=temperature,
         base_url=base_url,
@@ -757,6 +809,10 @@ async def run_deepagents(
         # recorded `edit_rejects.attempted: 0`, so nothing in result.json showed the failure.
         "make_changes_calls": call_outcomes(breaker_state, "make_changes"),
         "openrouter_extra_body": _extra_body(model),
+        # What the request ASKED for is `openrouter_extra_body`; this is what it GOT. The two are
+        # not the same claim -- `provider.only` bounds routing to a set, so a run can be served by
+        # several of its members and still honour the pin.
+        "openrouter_endpoints": token_accountant.endpoints(),
         "biocurator_tools": biocurator_tools,
         "biocurator_entities": biocurator_entities,
         "biocurator_literature": literature_log,

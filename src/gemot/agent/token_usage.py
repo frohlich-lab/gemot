@@ -31,8 +31,41 @@ def _token_accountant():
     class _Accountant(AsyncCallbackHandler):
         def __init__(self):
             self.prompt = self.completion = self.cache_read = self.n_calls = 0
+            # (upstream provider, service tier) -> calls served by it. See `endpoints()`.
+            self.served: dict[tuple, int] = {}
+
+        def _record_endpoint(self, response):
+            """Tally which upstream endpoint served this call, from whichever place carries it.
+
+            ``openrouter_provider`` is put there by the ChatOpenAI subclass in ``agent.driver``;
+            ``service_tier`` is langchain's own passthrough. Both may be absent — a non-OpenRouter
+            base_url, or a stream — and an unattributed call is tallied under ``None`` rather than
+            dropped, so the counts always sum to the calls actually made.
+            """
+            # isinstance, not `or {}`: a truthy NON-dict llm_output (a provider returning a bare
+            # string) would sail through `or {}` and raise on `.get`, and the caller's except would
+            # then drop the call from the tally entirely -- breaking the one invariant below.
+            out = getattr(response, "llm_output", None)
+            out = out if isinstance(out, dict) else {}
+            provider, tier = out.get("openrouter_provider"), out.get("service_tier")
+            if provider is None:
+                for gens in getattr(response, "generations", None) or []:
+                    for gen in gens or []:
+                        meta = getattr(getattr(gen, "message", None), "response_metadata", None)
+                        if isinstance(meta, dict) and meta.get("openrouter_provider"):
+                            provider = meta["openrouter_provider"]
+                            tier = tier or meta.get("service_tier")
+                            break
+                    if provider is not None:
+                        break
+            key = (provider, tier)
+            self.served[key] = self.served.get(key, 0) + 1
 
         async def on_llm_end(self, response, **kwargs):  # noqa: D401 - LangChain hook
+            try:
+                self._record_endpoint(response)
+            except Exception:  # pragma: no cover - accounting must never break a run
+                pass
             try:
                 found = False
                 # `generations` is List[List[Generation]]: the OUTER list is one entry per
@@ -78,6 +111,35 @@ def _token_accountant():
                 "cache_read_tokens": self.cache_read,   # cached prompt tokens (for cache-aware cost)
                 "total_tokens": self.prompt + self.completion,
                 "n_llm_calls": self.n_calls,
+            }
+
+        def endpoints(self):
+            """Which upstream endpoints served this run, for ``result.json``.
+
+            ``drifted`` is the field to group an A/B by: ``provider.only`` bounds routing to a SET,
+            and every member of that set is a different machine, so a run served by two of them is
+            not one measurement. Recorded for EVERY run, not only drifted ones — "absent" would
+            otherwise have to be read as "probably fine", which is how provenance rots.
+            """
+            served = sorted(
+                ({"provider": p, "service_tier": t, "n_calls": n}
+                 for (p, t), n in self.served.items()),
+                key=lambda r: (-r["n_calls"], str(r["provider"])),
+            )
+            # Drift is judged over ATTRIBUTED endpoints only. The unattributed bucket is a gap in
+            # our own recording, not a second machine, and counting it would flag an ordinary
+            # single-endpoint run as drifted the moment one response arrived without a provider --
+            # excluding a healthy run from the very A/B this field exists to filter. It stays in
+            # `served` (so the counts still sum to the calls made) and is surfaced separately.
+            attributed = [s for s in served if s["provider"] is not None]
+            return {
+                "served": served,
+                "n_distinct": len(attributed),
+                "n_unattributed_calls": sum(s["n_calls"] for s in served
+                                            if s["provider"] is None),
+                # One endpoint = no drift. Zero happens when nothing reported a provider (a
+                # non-OpenRouter base_url), which is not drift either.
+                "drifted": len(attributed) > 1,
             }
 
     return _Accountant()

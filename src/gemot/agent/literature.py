@@ -13,12 +13,13 @@ import inspect
 import re
 
 # ---------------------------------------------------------------- literature access tracking
-# When --bio-literature is on, the biocurator can search EuropePMC/bioRxiv. We record each such
+# Under the `bio_literature` ablation (PETAB_BIO_LITERATURE=1) the biocurator can search
+# EuropePMC/bioRxiv. We record each such
 # call (the query it ran + the DOIs/PMIDs it got back) into a run-scoped log, surfaced as
 # ``biocurator_literature`` in result.json — a provenance/audit trail of what the biocurator
 # actually READ (which also lets a sweep audit whether it pulled a benchmark problem's source
 # paper). The full request/response is also in the Phoenix trace; this is the compact, analysable
-# view. Only the LITERATURE tools are wrapped (they are the only ones present under --bio-literature).
+# view. Only the LITERATURE tools are wrapped (they are the only ones the ablation adds).
 _DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>)\]]+")
 _PMID_RE = re.compile(r"pmid['\"\s:=>]{1,4}(\d{4,9})", re.IGNORECASE)
 

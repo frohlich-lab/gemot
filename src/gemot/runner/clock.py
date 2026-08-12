@@ -115,7 +115,7 @@ class _ToolClock:
     """
 
     __slots__ = ("seconds", "calls", "_active", "_since", "edits", "rejects", "fit_reverts",
-                 "reject_causes")
+                 "reject_causes", "by_tool")
 
     def __init__(self) -> None:
         self.seconds = 0.0
@@ -126,12 +126,23 @@ class _ToolClock:
         self.rejects = 0
         self.fit_reverts = 0
         self.reject_causes: dict[str, int] = {}
+        # Per-tool CALL COUNTS. `calls` alone is a bare total, so "was this tool used at all?" was
+        # answerable only from the Phoenix traces -- which need a shared collector running, and
+        # otherwise land in `.slurm_scratch`, which is deleted when a task completes. A sweep run
+        # without the collector is therefore permanently unable to answer the question, and one was:
+        # the whole point of job 51614722 was whether the agent called `get_data_regimes`, and the
+        # answer is unrecoverable. The name is already in hand at the single chokepoint every call
+        # routes through; keeping it costs one dict and makes tool usage part of result.json, which
+        # survives.
+        self.by_tool: dict[str, int] = {}
 
-    def enter(self) -> None:
+    def enter(self, tool_name: "str | None" = None) -> None:
         if self._active == 0:
             self._since = time.monotonic()
         self._active += 1
         self.calls += 1
+        if tool_name:
+            self.by_tool[tool_name] = self.by_tool.get(tool_name, 0) + 1
 
     def leave(self) -> None:
         self._active -= 1
@@ -197,7 +208,8 @@ def _wrap_tool_clock(session: ClientSession) -> _ToolClock:
     original = session.call_tool
 
     async def timed(*args, **kwargs):
-        clock.enter()
+        _name = kwargs.get("name") or (args[0] if args else None)
+        clock.enter(_name if isinstance(_name, str) else None)
         try:
             result = await original(*args, **kwargs)
         finally:
@@ -205,9 +217,10 @@ def _wrap_tool_clock(session: ClientSession) -> _ToolClock:
         # Tally edit rejections here rather than at a call site: EVERY tool call routes through
         # this shadow (the runner's own and the agent panel's), so nothing can bypass the metric.
         with contextlib.suppress(Exception):
-            name = kwargs.get("name") or (args[0] if args else None)
-            if isinstance(name, str):
-                clock.note_result(name, result)
+            # `_name` from above, not a second copy of the same expression: two derived metrics
+            # (`by_tool` and `reject_causes`) must never disagree about what a call was called.
+            if isinstance(_name, str):
+                clock.note_result(_name, result)
         return result
 
     with contextlib.suppress(Exception):

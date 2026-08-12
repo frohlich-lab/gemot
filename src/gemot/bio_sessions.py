@@ -169,11 +169,33 @@ async def open_bio_sessions(
     This context manager NEVER raises for a bio failure (its ``__aexit__`` must not convert a
     successful run into a degraded one).
     """
+    # Imported HERE, not at module scope. This module is deliberately self-contained so its
+    # supervision/teardown logic can be unit-tested by loading it BY FILE PATH with a fake opener
+    # (see `_summarize_exc`, whose duplication exists for exactly that reason) — and a path-loaded
+    # module cannot resolve a relative import. A top-level `from . import bio_cache` would have
+    # silently removed that escape hatch and falsified the comment justifying the duplication.
+    from . import bio_cache, omnipath_local
+
     shutdown = asyncio.Event()
     tasks: list[asyncio.Task] = []      # every holder task ever created — all retrieved at teardown
     sessions: list[Any] = []
+    caches: list[Any] = []
     try:
         for url in urls:
+            # OmniPath is served from a PINNED LOCAL SNAPSHOT when one is on disk: no network, no
+            # rate limit, and — the part that matters for an A/B — every arm sees identical biology
+            # instead of whatever the hosted service returns that day. A missing snapshot falls
+            # straight through to the hosted service, so this can only ever degrade to the old
+            # behaviour. See `omnipath_local` for why a cache could never have covered this endpoint
+            # (free-text SQL: unbounded key space, measured 0.00 hit rate over 11 runs).
+            if "omnipathdb" in url and omnipath_local.available():
+                sessions.append(omnipath_local.LocalOmniPathSession())
+                info = omnipath_local.snapshot_info()
+                tables = info.get("tables") or {}
+                counts = ", ".join(f"{name} {meta.get('rows')}" for name, meta in tables.items())
+                log(f"[bio] OmniPath served LOCALLY from the {info.get('fetched_at')} snapshot "
+                    f"({counts} rows) — no network, no rate limit")
+                continue
             session = None
             for attempt in range(retries + 1):
                 holder: dict[str, Any] = {"session": None, "error": None}
@@ -211,8 +233,32 @@ async def open_bio_sessions(
                     log(f"[bio] WARNING: could not connect to bio-knowledge server {url} "
                         f"({reason}); skipping it.")
             if session is not None:
+                # Read-through disk cache in front of the hosted server, wrapped HERE so every
+                # consumer gets it and none has to know. A sweep asks the same SCENARIO-level
+                # questions on every seed (each fujita run looks up the same four entities), so
+                # after one warm run the rest are served from disk and never leave the cluster —
+                # which is what stops the fair-use throttle being the limit on seed count, and
+                # therefore on whether a sweep has the power to measure anything.
+                cache = bio_cache.wrap_session(session, url, log=log)
+                if cache.enabled:
+                    caches.append(cache)
                 sessions.append(session)
-        yield sessions
+        if caches:
+            log(f"[bio] response cache: {bio_cache.cache_dir()}")
+        try:
+            yield sessions
+        finally:
+            # Report the HIT RATE, not just the path. Without this a sweep logs
+            # "[bio] response cache: <path>" identically whether the cache is serving everything or
+            # nothing -- and it was serving nothing: a blanket kwargs bypass meant a 0% hit rate in
+            # production that no log line and no test could reveal. A number here is the thing that
+            # would have shown it on the first run.
+            for c in caches:
+                with contextlib.suppress(Exception):
+                    s = c.stats()
+                    log(f"[bio] cache {s['url']}: {s['hits']} hits / {s['misses']} misses "
+                        f"(rate {s['hit_rate']}), {s['writes']} written, "
+                        f"{s['bypasses']} bypassed, {s['errors']} errors")
     finally:
         # Signal the holders to close cleanly, give them a moment, then cancel any straggler and
         # RETRIEVE every task so nothing leaks an unretrieved exception AND this teardown never

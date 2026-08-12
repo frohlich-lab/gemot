@@ -355,7 +355,7 @@ _RESULT_METRIC_KEYS = (
     "head_version", "n_errors", "tool_calls",
     "wall_seconds", "compute_seconds", "llm_seconds",
     "compile_seconds", "fit_seconds", "n_compiles", "n_fits",
-    "recursion_limit", "n_starts", "temperature", "git_sha",
+    "recursion_limit", "n_starts", "temperature", "git_sha", "ablation_arm",
 )
 
 

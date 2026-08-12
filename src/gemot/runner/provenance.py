@@ -85,6 +85,27 @@ def _git_diff_digest(path: Path) -> dict | None:
     }
 
 
+def _omnipath_provenance() -> dict | None:
+    """Fetch date + row counts of the local OmniPath snapshot, or ``None`` if it was not used.
+
+    ``None`` means no snapshot was on disk, so OmniPath came from the hosted service and this run's
+    biology is not pinned -- which is the thing worth being able to tell apart afterwards. The
+    snapshot is deliberately NOT an ablation (it changes where an answer comes from, not what the
+    answer is); this is pure provenance, and best-effort like the git helpers above, because
+    provenance must never break a run.
+    """
+    try:
+        from ..omnipath_local import available, snapshot_info
+        if not available():
+            return None
+        info = snapshot_info()
+        tables = info.get("tables") or {}
+        return {"fetched_at": info.get("fetched_at"),
+                "rows": {name: meta.get("rows") for name, meta in tables.items()}}
+    except Exception:  # noqa: BLE001 - any import/IO problem degrades to "unrecorded", not a crash
+        return None
+
+
 def _bic_reference(ref) -> float | None:
     """BIC of the true-model reference, or ``None`` when it is absent or malformed.
 
@@ -153,6 +174,8 @@ def _base_meta(scenario: Scenario, args: argparse.Namespace,
     ``experiments`` to keep the runner free of the (heavier, Phoenix-facing) module."""
     from petab_mcp.skills import skills_version
 
+    from .. import ablations
+
     from ..prompts import prompt_group_versions, prompt_version
 
     scripted = args.driver == "scripted"
@@ -167,6 +190,18 @@ def _base_meta(scenario: Scenario, args: argparse.Namespace,
         # the skills are instructions the panel reads (prompts step 0), so they are
         # part of "what produced this run" just as much as the prompts are.
         "skills_version": skills_version(),
+        # WHICH ARM. An ablation changes what a run does while leaving `git_sha` and (for the
+        # switches that touch no prompt text) `prompt_version` identical, so without these two
+        # fields the halves of an A/B are indistinguishable in the record and pool into one cell
+        # that looks like a result. `ablation_arm` is the flat, groupable name -- "baseline", or
+        # the deviations -- and rides in the metrics CSV; `ablations` is the full resolved state,
+        # every switch recorded rather than only the non-default ones, so a silent absence can
+        # never have to be read as "probably the default". See petab_harness.ablations.
+        "ablation_arm": ablations.arm(),
+        "ablations": ablations.state(),
+        # Which OmniPath answered, and from when. A pinned snapshot that nothing records is the
+        # `git_sha +dirty` problem in a new costume; None when the run used the hosted service.
+        "omnipath_snapshot": _omnipath_provenance(),
         "recursion_limit": None if scripted else args.recursion_limit,
         "n_starts": args.n_starts,
         "temperature": None if scripted else args.temperature,

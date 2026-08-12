@@ -27,7 +27,10 @@ _NOT_PROMPTS = {"PROMPT_GROUPS", "_HASH_SEP"}
 # own, so they are checked by containment instead of equality. Keep this set tiny and
 # explicit — it is the one hole in an otherwise exact guard, and a new constant lands under the
 # strict rule by default.
-_FRAGMENTS = {"_REPORT_CONTRACT", "_BIOCURATOR_REPORT_CONTRACT"}
+_FRAGMENTS = {"_REPORT_CONTRACT", "_BIOCURATOR_REPORT_CONTRACT",
+              # Concatenated into DEFAULT_SYSTEM_PROMPT, and EMPTY in the ablation
+              # arm (PETAB_DATA_REGIMES=0), where it is vacuously contained.
+              "_DATA_REGIMES_GUIDANCE"}
 
 
 def _texts_of(value) -> list[str]:
@@ -244,10 +247,22 @@ def test_skills_are_tracked_like_prompts(tmp_path):
     # the lead can actually reach them (otherwise the instruction is a dead letter)
     assert {"get_skill", "list_skills"} <= set(ORCHESTRATOR_TOOLS)
     assert "get_skill('petab-model-building')" in P.DEFAULT_SYSTEM_PROMPT
+    # `independence-audit` is NOT step-0 reading -- it is a mid-run diagnostic, pointed at from the
+    # structure-vs-parsimony section here and from the server's structural-inadequacy stop message.
+    # Still a dead letter unless the prompt names it, so pin that it does -- but ONLY in the arm that
+    # ships it. In the ablation arm (PETAB_DATA_REGIMES=0) the pointer must be ABSENT, or a control
+    # run is told to read a skill about a tool it no longer has: a wasted turn and a contaminated
+    # control. Asserting both directions is what makes this a real check of the arm.
+    if P.DATA_REGIMES_ENABLED:
+        assert "get_skill('independence-audit')" in P.DEFAULT_SYSTEM_PROMPT
+    else:
+        assert "get_skill('independence-audit')" not in P.DEFAULT_SYSTEM_PROMPT
+        assert "get_data_regimes" not in P.DEFAULT_SYSTEM_PROMPT
 
     skills = collect_skills()
     assert set(skills) == {"petab-skill-petab-model-building",
-                           "petab-skill-antimony-authoring"}
+                           "petab-skill-antimony-authoring",
+                           "petab-skill-independence-audit"}
     assert all(text.strip() for text in skills.values())
 
     v = skills_version()
@@ -324,3 +339,68 @@ def test_appending_to_a_pre_existing_history_does_not_shift_columns(tmp_path):
     rows = list(_csv.DictReader(out.open()))
     assert [r["run_started_at"] for r in rows] == ["T0", "T1"]
     assert [r["git_sha"] for r in rows] == ["abc", "def"]
+
+
+# --------------------------------------------------------------------------- no archaeology
+# Agent-facing text states RULES. It must not cite this project's own development history — a sweep
+# size, a measured rate, an issue number, what some earlier version did. Three reasons that is not a
+# style preference:
+#
+#   1. It is unverifiable to the reader. The agent cannot check a number from our runs, so it acts
+#      as an appeal to authority and crowds out the rule it decorates.
+#   2. It dates. Text describing how the harness behaves today becomes wrong when that changes, and
+#      nothing fails when it does.
+#   3. It leaks the benchmark's frame — run counts, pass rates and scoring anecdotes tell the agent
+#      it is being scored, and roughly on what.
+#
+# A number that genuinely teaches belongs as a property of the problem ("a collapse of three
+# near-free pairs can cost hundreds of bic"), which is checkable against the model in front of the
+# agent, rather than as a finding of ours.
+_ARCHAEOLOGY = [
+    (r"\b\d+[\s-]run\b", "a run count from our own sweeps"),
+    (r"\bsweeps?\b", "refers to our sweeps"),
+    (r"issue #\d+", "an issue number"),
+    (r"\bmeasured (?:on|across|over)\b", "cites our own measurement"),
+    (r"\bwe (?:found|observed|measured|saw)\b", "cites our own observation"),
+    (r"\bhit rate\b", "a cache statistic from our runs"),
+    (r"%\s*of runs\b", "a rate over our runs"),
+    # Deliberately NOT "an earlier version" / "no longer" / "previously": the agent has its own
+    # model versions, and "never an earlier version's metrics" is exactly the rule the lead prompt
+    # needs to state. A guard that flags correct text gets silenced rather than obeyed, so this
+    # matches only phrasings that can mean the HARNESS's history and nothing else.
+    (r"\bthis (?:harness|tool|prompt|skill) (?:used to|once)\b",
+     "describes the harness's own change history"),
+    (r"\ban earlier draft\b", "describes an earlier draft of this text"),
+    (r"\bregression\b", "describes our own defect history"),
+]
+
+
+def _agent_facing_text():
+    """Every string the agent can actually read: the tracked prompts and the shipped skills."""
+    from petab_mcp import skills as _skills
+
+    for name, text in P.all_prompts().items():
+        if isinstance(text, str):
+            yield f"prompt:{name}", text
+    root = Path(_skills.__file__).resolve().parent / "_skills"
+    for path in sorted(root.rglob("SKILL.md")):
+        yield f"skill:{path.parent.name}", path.read_text(encoding="utf-8")
+
+
+def test_agent_facing_text_contains_no_archaeology():
+    import re
+
+    offences = []
+    for where, text in _agent_facing_text():
+        for pattern, why in _ARCHAEOLOGY:
+            for m in re.finditer(pattern, text, re.IGNORECASE):
+                s, e = max(0, m.start() - 70), min(len(text), m.end() + 70)
+                offences.append(f"{where}: {why}\n      ...{text[s:e].strip()}...")
+    assert not offences, (
+        "agent-facing text cites this project's own history instead of stating a rule:\n    "
+        + "\n    ".join(offences)
+        + "\n  State the rule and drop the provenance. If the number genuinely teaches something, "
+          "phrase it as a property of the problem ('a collapse of three near-free pairs can cost "
+          "hundreds of bic'), not as a finding of ours. Development history belongs in a code "
+          "comment, a commit message, or BENCHMARK_NOTES.md."
+    )

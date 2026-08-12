@@ -28,6 +28,8 @@ Rewrapping a line counts. Adding a new model-facing constant means adding it to
 
 from __future__ import annotations
 
+from . import ablations as _ablations
+
 
 # --------------------------------------------------------- the modeling lead
 # The lead's own system prompt and task. A Scenario may override either (see Scenario.
@@ -38,6 +40,35 @@ from __future__ import annotations
 # They are the same for every scenario, so they default here and each example just omits
 # them. Only the fixed FACT that the parameters are already fitted is stated — a capable
 # lead infers from that that re-tuning cannot help, without being told the answer.
+# --- ablation arm: the data-regimes tool + independence-audit skill -------------------------
+# `PETAB_DATA_REGIMES=0` removes BOTH from a run: the tool from every agent's toolset (see
+# agent.tools) and this guidance from the lead's prompt. They ship together and are tested together,
+# so they are one arm rather than two.
+#
+# Read at import and folded into the prompt TEXT on purpose, so `prompt_version()` differs between
+# the arms. Gating only the tool would leave two arms sharing a prompt_version while actually
+# receiving different prompts — which is precisely the provenance failure this branch spent a
+# commit closing for the subagent turn notices.
+DATA_REGIMES_ENABLED = _ablations.enabled("data_regimes")
+
+_DATA_REGIMES_GUIDANCE = (
+    " Two things help here and they answer different questions. "
+    "`get_data_regimes` answers WHAT THE DATA REQUIRES — read straight off the measurements, no "
+    "model and no fit, so it is valid before you have written anything: whether the response rises "
+    "AND falls (which constant production plus first-order decay cannot do at any rate constants), "
+    "whether a second timescale is distinguishable, how steep the dose-response is, whether a total "
+    "is conserved. READ IT AS THREE OUTCOMES, not as an answer: a non-null `requirement` is "
+    "ESTABLISHED and any model must reproduce it; `support_for_extension: suggestive` means the "
+    "estimate leans toward richer structure without establishing it — a reason to TRY it; and a "
+    "null `requirement`, like `testable: false`, means this DESIGN did not settle the question. "
+    "None of these can ever rule structure OUT: silence is what an underpowered test returns, so it "
+    "is never permission to simplify, and your own mechanistic judgement still governs there. "
+    "`get_skill('independence-audit')` answers HOW TO ENCODE the fix cheaply once you know the "
+    "requirement — and what to do when the data cannot tell you. Reach for both when a fit is "
+    "adequate on chi2 but `residual_structure` still flags an observable: that combination means a "
+    "factorisation is wrong, and no amount of re-fitting will move it."
+) if DATA_REGIMES_ENABLED else ""
+
 DEFAULT_SYSTEM_PROMPT = (
     "You are the MODELING LEAD building a mechanistic ODE model for a PEtab v1 problem "
     "through an MCP server. The problem ships WITHOUT a model — only the READ-ONLY "
@@ -138,12 +169,11 @@ DEFAULT_SYSTEM_PROMPT = (
     "better, so 'nll improved' is not a reason to keep a parameter; (b) dropping a parameter that "
     "costs you nothing in nll is a FREE ln(n) of bic, which is why the merges and pinned "
     "parameters your fit already names are worth taking; and (c) the failure is TWO-SIDED — too "
-    "few parameters underfits and too many is charged for nothing, and both lose. When a change "
-    "trades structure for parameters, price BOTH sides before you make it: a mechanism encoded as "
-    "a new species plus its auto-generated estimated `_init` costs several ln(n), while the same "
-    "correction expressed as a term on states you ALREADY have may cost one or none. Prefer the "
-    "cheaper encoding of the SAME insight, and only pay for the expensive one when the cheap one "
-    "has actually been tried and failed.\n"
+    "few parameters underfits and too many is charged for nothing, and both lose. Note which side "
+    "you are on: while the residuals are still structured you are underfitting, and the arithmetic "
+    "above is for pricing what you keep at the end, not for talking yourself out of a mechanism "
+    "the data is asking for."
+    + _DATA_REGIMES_GUIDANCE + "\n"
     "3. Read the CURRENT HEAD's metrics (never an earlier version's) after each `make_changes` and decide "
     "what to do next. The DEFAULT is to KEEP ITERATING while the model is still mis-specified — "
     "bic is still improving fit-over-fit by more than a few units, OR get_fit_diagnosis shows a "
@@ -375,7 +405,19 @@ BIOCURATOR_PROMPT = (
     "between compartments). The names you were handed are rarely the whole story — the biology "
     "usually runs through further species and processes, so surface those too.\n"
     "If you have lookup tools, use them — prefer curated interaction/pathway sources — rather than "
-    "answering from memory. When you search the LITERATURE, rank results by RELEVANCE rather than "
+    "answering from memory. "
+    # NOMENCLATURE. The bio lookups are cached on (url, tool, arguments), so two spellings of one
+    # question are two keys and two network calls for the same answer. Left free, the model varies
+    # both the field it routes an identifier through (`gene_symbol` / `protein_id` /
+    # `protein_name`) and the type it sends `species` as, which caps the cache's usefulness and
+    # with it the concurrency a sweep can run at. Pinning one spelling costs the model nothing.
+    "Spell every lookup the same way: identify an entity by its canonical HGNC gene symbol "
+    "(`TP53`, not `p53` and not a UniProt accession) for every tool that takes one, including the "
+    "UniProt and Reactome lookups; pass it as `gene_symbol` and leave `protein_id` and "
+    "`protein_name` unset rather than repeating the same name across several fields; and give "
+    "`species` as the plain string `\"9606\"` for human, never as a list. Depart from this only "
+    "when the canonical symbol genuinely fails to resolve. "
+    "When you search the LITERATURE, rank results by RELEVANCE rather than "
     "by citation count, and query for the SPECIFIC mechanism or interaction you need: the "
     "most-cited papers matching a broad keyword are usually general reviews that will not answer a "
     "specific mechanistic question, so a few targeted searches beat many broad ones, and read "
@@ -503,6 +545,24 @@ TOOL_DESCRIPTIONS = {
                        "the name in your Antimony and the row comes back exactly as shown "
                        "(bounds, scale, fixed/estimated, any prior), so a shipped constant costs "
                        "you nothing to adopt and a shipped-FIXED one must stay declared."),
+    # Dropped in the ablation arm so ALLOWED_TOOLS and TOOL_DESCRIPTIONS stay in
+    # agreement (test_every_panel_tool_has_a_description asserts it).
+    **({"get_data_regimes": ("What the MEASUREMENTS require of ANY model — from the data alone: no "
+                         "model, no fit, no compile, valid before you have written anything. Per "
+                         "observable, measured against its own noise floor: `shape` (does the "
+                         "response rise AND fall? a pulse cannot come from constant production plus "
+                         "first-order decay at any rate constants, so it REQUIRES a depletable pool, "
+                         "a second state, or feedback), `timescales` (is a second one "
+                         "distinguishable, by BIC), `dose_response` (steepest log-log slope vs a "
+                         "numeric input; above 1 rules out a single mass-action binding step), and "
+                         "`conservation` (is the sum of observables constant while the parts move? "
+                         "imposing it REMOVES a parameter). A non-null `requirement` is ESTABLISHED "
+                         "and any model must reproduce it; `support_for_extension: suggestive` "
+                         "means the estimate leans toward richer structure without establishing "
+                         "it — a reason to TRY it. THESE CAN FORCE STRUCTURE IN, NEVER RULE IT OUT: "
+                         "`testable: false` or a null `requirement` means this design did not "
+                         "settle it, which is NOT permission to simplify.")}
+     if DATA_REGIMES_ENABLED else {}),
     "get_fit_summary": ("Current fit metrics only (neg_log_likelihood, chi2, n_data_points) — a "
                         "cheap score check. Carries `merge_hints` when the fit has parameter pairs "
                         "the data cannot separate whose merges bic would pay for."),
@@ -549,9 +609,9 @@ TOOL_DESCRIPTIONS = {
                           "hints that share NO parameter are independent edits — take them together "
                           "in one make_changes call; hints that SHARE one are not, and collapsing "
                           "three symbols into a single value is an edit the FIM never priced. Its "
-                          "cost is not the sum of the pairs and can be enormous (measured on this "
-                          "problem class: a 3-symbol collapse of three near-free pairs cost +186 "
-                          "bic and reintroduced lack-of-fit). Take the CHEAPEST pair of an "
+                          "cost is not the sum of the pairs and can be enormous — a collapse of "
+                          "three individually near-free pairs can cost hundreds of bic and "
+                          "reintroduce lack-of-fit. Take the CHEAPEST pair of an "
                           "overlapping group, refit, and read the hints again — the next fit prices "
                           "what is actually left. It lists "
                           "top_n, and prices only same-role, same-scale pairs with neither member "

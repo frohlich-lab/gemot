@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import shutil
 import subprocess
@@ -108,7 +109,14 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
                 # run explorer (examples/explore_ui.py) stitches this with the persisted Phoenix
                 # trace. Best-effort: archive_run never raises.
                 if result:
-                    archive_run(work, result)
+                    # Record WHERE it went. The archive is keyed by run id, but every sweep and
+                    # recover_run.py key by <job>_<task>; without this the history exists and is
+                    # unfindable from a result, which is what made a bash copier look necessary.
+                    _dest = archive_run(work, result)
+                    if _dest is not None:
+                        result["archive_dir"] = str(_dest)
+                        with contextlib.suppress(Exception):
+                            (work / "result.json").write_text(json.dumps(result, indent=2))
                 return exit_code, result
     except BaseException as exc:
         # `_drive`'s own guard covers a stall/provider failure inside the agent loop or the

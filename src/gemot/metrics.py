@@ -57,6 +57,18 @@ _RESULT_FIELDS = (
     # NOT get a column: a flat key is what you group a sweep BY, and the per-group hashes answer
     # the follow-up question — which group moved — which is read from result.json.
     "prompt_version", "skills_version",
+    # The arm. Same argument as `prompt_version` above, for the switches that change behaviour
+    # WITHOUT changing prompt text (`bio_cache`, `omnipath_local`): those move neither git_sha nor
+    # prompt_version, so this is the only column that can split them. Flat and canonical
+    # ("baseline" or the deviations) because a flat key is what you group a sweep by; the full
+    # per-switch state is the `ablations` dict in result.json, read for the follow-up question.
+    "ablation_arm",
+    # Which upstream endpoint actually served the run, flattened out of `openrouter_endpoints`.
+    # `openrouter_extra_body` records what routing ASKED for; these record what it GOT, and the two
+    # differ whenever `provider.only` names more than one endpoint. `served_drifted` is the column
+    # to filter a benchmark on: a run split across two endpoints is not one measurement, and until
+    # now nothing in the history could say whether that had happened.
+    "served_provider", "served_n_distinct", "served_drifted",
     "run_started_at", "run_ended_at",
     "phoenix_project", "phoenix_trace_id",
 )
@@ -71,7 +83,8 @@ _LOF_FIELDS = ("lof_status", "lof_weak", "lof_df")
 # below can expand them. build_row copies only the flat _RESULT_FIELDS, so without this the flatteners
 # saw nothing on the collect() path and every column derived from a nested block stayed empty —
 # silently, which is the failure mode the _RESULT_FIELDS comment above warns about.
-_NESTED_SOURCE_FIELDS = ("edit_rejects", "residual_structure", "git_diff")
+_NESTED_SOURCE_FIELDS = ("edit_rejects", "residual_structure", "git_diff",
+                         "openrouter_endpoints")
 
 # Columns derived from the Phoenix trace (token usage + span breakdown).
 _PHOENIX_FIELDS = (
@@ -250,6 +263,32 @@ def _flatten_git_diff(row: dict) -> dict:
     return {**row, "git_diff_sha256": diff.get("sha256")}
 
 
+def _flatten_served_endpoints(row: dict) -> dict:
+    """Expand ``openrouter_endpoints`` into the flat ``served_*`` history columns.
+
+    ``served_provider`` names the endpoint when exactly one served the run and is left as a
+    ``"a+b"`` join when several did — so the column reads as a group key either way, with
+    ``served_drifted`` as the boolean to filter on. A row without the block (every run recorded
+    before this existed) passes through untouched rather than gaining empty columns that would
+    read as "not drifted"."""
+    ep = row.get("openrouter_endpoints")
+    if not isinstance(ep, dict):
+        return row
+    served = [s for s in (ep.get("served") or []) if isinstance(s, dict)]
+    # provider+TIER, because the tier is half of what makes two endpoints different (`openai` and
+    # `openai/flex` are different prices and different machines) -- a name-only key renders that
+    # case as the useless "OpenAI+OpenAI" and hides the thing that actually differed.
+    # Unattributed calls are LEFT OUT rather than stringified: `str(None)` writes the literal
+    # "None", which is indistinguishable from a real endpoint name when grouping a sweep.
+    names = sorted({f"{s['provider']}/{s['service_tier']}" if s.get("service_tier")
+                    else str(s["provider"])
+                    for s in served if s.get("provider") is not None})
+    return {**row,
+            "served_provider": "+".join(names) if names else None,
+            "served_n_distinct": ep.get("n_distinct"),
+            "served_drifted": ep.get("drifted")}
+
+
 def _flatten_replicate_lof(row: dict) -> dict:
     """Expand the replicate lack-of-fit verdict nested under ``residual_structure`` into the flat
     ``lof_*`` history columns. Same transform-at-write-time shape as :func:`_flatten_edit_rejects`,
@@ -296,7 +335,8 @@ def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HIST
         if is_new:
             writer.writeheader()
         for row in rows:
-            row = _flatten_git_diff(_flatten_replicate_lof(_flatten_edit_rejects(row)))
+            row = _flatten_served_endpoints(
+                _flatten_git_diff(_flatten_replicate_lof(_flatten_edit_rejects(row))))
             writer.writerow({k: row.get(k) for k in fields})
     return history_path
 

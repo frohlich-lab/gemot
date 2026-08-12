@@ -74,13 +74,11 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
                    help="Server reference-validation mode (off = no network; default for a hermetic demo).")
     # --- blinded `biocurator` analyst: on the deepagents panel every run (endpoints hardcoded in
     #     runner.BIO_MCP_URLS; tools = the curated agent.DEFAULT_BIO_TOOLS allowlist).
-    #     --bio-literature additionally exposes EuropePMC/bioRxiv. ---
-    p.add_argument("--bio-literature", action="store_true",
-                   help="Also give the biocurator EuropePMC + bioRxiv LITERATURE search (OFF by "
-                        "default). Its structured knowledge (interactions/pathways/ontologies/"
-                        "OmniPath) is included by default and is general biology; literature search over a "
-                        "benchmark problem's distinctive entity panel could surface its withheld "
-                        "source paper, so it is opt-in. Unambiguously useful on NOVEL problems.")
+    #     Literature access (EuropePMC/bioRxiv) is an ABLATION, not a flag: `PETAB_BIO_LITERATURE=1`,
+    #     registered in petab_harness.ablations alongside every other arm, so it is reachable from
+    #     array_task.sh and written into result.json. Adding a flag for it here would put the arm
+    #     out of reach of a batch job and give it a second, unrecorded way to be set.
+    #     Run `python -m petab_harness.ablations` to see the arms. ---
     # Phoenix tracing is MANDATORY — every run must be traced, so there is deliberately no flag to
     # disable it (the --phoenix-* options below only configure it, they never turn it off).
     default_project = f"petab-mcp-{scenario.name}"

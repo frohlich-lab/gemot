@@ -14,7 +14,7 @@ the text the panel actually reads, and the reason every tool here needs an entry
 
 from __future__ import annotations
 
-from ..prompts import TOOL_DESCRIPTIONS
+from ..prompts import DATA_REGIMES_ENABLED, TOOL_DESCRIPTIONS
 
 # ---------------------------------------------------------------- tool exposure
 # Per the module docstring: each persona's set is as SMALL as its lens allows, and a tool it
@@ -26,6 +26,11 @@ from ..prompts import TOOL_DESCRIPTIONS
 MATHEMATICIAN_TOOLS = [
     "get_model_structure",  # species, reactions, rate laws (empty until a model is built)
     "get_measurements",     # the DATA — dynamics/shape to reason about candidate structure
+    # The same shape questions, already decided against the noise floor. A feasibility argument is
+    # far stronger stated against a computed verdict ("the data REQUIRES a pulse, and this topology
+    # cannot make one") than against an eyeballed trace, and this is the analyst whose job is that
+    # argument.
+    "get_data_regimes",
     "list_observables",     # what is measured
     "get_parameters",       # scales, bounds — identifiability / conditioning
     "get_fit_summary",
@@ -39,6 +44,9 @@ SYSTEMS_SCIENTIST_TOOLS = [
     "get_model_structure",  # the mechanism as written
     "list_observables",     # what quantity is measured
     "get_measurements",     # the actual data / dynamic behaviour
+    # What any mechanism must reproduce, before proposing one — a requirement is better known up
+    # front than discovered after a topology has been built that cannot meet it.
+    "get_data_regimes",
     "get_parameters",       # are the rate magnitudes plausible?
     "get_skill",            # PEtab semantics behind the read (steady-state identifiability, etc.)
 ]
@@ -47,6 +55,10 @@ SYSTEMS_SCIENTIST_TOOLS = [
 SIGNAL_ENGINEER_TOOLS = [
     "list_data_tables",     # the queryable tables (simulations, residuals, ...) + columns
     "query_data",           # SQL over measured-vs-simulated points + residual breakdowns
+    # The standing verdicts this analyst would otherwise re-derive in SQL every run, already
+    # measured against the noise floor. Its own reads stay the way to answer anything bespoke; this
+    # keeps the routine shape/timescale/dose questions off the lottery of whether it thought to ask.
+    "get_data_regimes",
     "get_fit_summary",
     "get_skill",            # PEtab semantics behind the read (e.g. all times inf = steady state)
 ]
@@ -62,6 +74,15 @@ ORCHESTRATOR_TOOLS = [
     "get_model_structure",  # the current model (empty until built)
     "list_observables",     # what is measured (observable -> species) — needed to name species
     "list_conditions",      # per-condition inputs/doses set in the condition table (match by name)
+    # What the DATA requires of any model — excursion vs monotone, how many timescales,
+    # dose-response steepness, a conserved total — computed from the measurement table alone. It is
+    # a lead tool despite the "no bulky data" rule because it returns VERDICTS, not data: 1-9 kB on
+    # the shipped examples, no model, no fit, no compile. That bound is enforced, not hoped for —
+    # the report is capped at 12 observables and takes an `observables=` filter, because an
+    # unscoped report on a 123-observable problem measured 61 kB (~15k tokens) re-sent every turn.
+    # Available before the first model exists, which is the point: a structural requirement is
+    # better known up front than discovered after ten fits that cannot meet it.
+    "get_data_regimes",
     # score / diagnose (both COMPACT + bounded) / history
     # NOTE: get_fit_summary is deliberately NOT here. `make_changes` already returns
     # the whole fit block — metrics, bic, parameters_at_bound, the noise-sigma verdict + advice,
@@ -112,6 +133,16 @@ ORCHESTRATOR_TOOLS = [
     # the parameter geometry) for cheap self-diagnosis, and DELEGATES the deep dives — full
     # residual SQL, the optimizer log, raw data characterization — to the analysts via `task`.
 ]
+
+# The ablation arm (see prompts.DATA_REGIMES_ENABLED). Applied to the lists AFTER they are
+# defined, so each persona's rationale above reads as the intended design and this is visibly a
+# subtraction from it — and so a future tool added to a list cannot forget to be gated.
+if not DATA_REGIMES_ENABLED:
+    for _lst in (ORCHESTRATOR_TOOLS, MATHEMATICIAN_TOOLS, SYSTEMS_SCIENTIST_TOOLS,
+                 SIGNAL_ENGINEER_TOOLS):
+        while "get_data_regimes" in _lst:
+            _lst.remove("get_data_regimes")
+
 
 # The full set handed to create_deep_agent: the union of the lead's tools and every
 # analyst's tools (deepagents resolves each subagent's `tools` names from this set).

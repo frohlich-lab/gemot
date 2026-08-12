@@ -253,3 +253,27 @@ def test_the_history_csv_carries_the_working_tree_digest(tmp_path):
     rows = list(_csv.DictReader(out.open()))
     assert rows[0]["git_diff_sha256"] == "f" * 64
     assert rows[1]["git_diff_sha256"] == ""            # clean tree -> empty, i.e. attributable
+
+
+# -- which tools were called, not just how many ------------------------------------------------
+def test_the_clock_records_per_tool_call_counts():
+    """`tool_calls` was a bare total, so "did the agent ever call X?" was answerable only from the
+    Phoenix traces — which need a shared collector running and otherwise land in `.slurm_scratch`,
+    deleted when the task completes. Job 51614722 was run to find out whether the agent called
+    `get_data_regimes`; that answer is permanently unrecoverable. The name is already in hand at the
+    chokepoint every call routes through, so keep it."""
+    clock = _ToolClock()
+    for name in ("make_changes", "make_changes", "get_data_regimes", "describe_problem"):
+        clock.enter(name)
+        clock.leave()
+    assert clock.calls == 4
+    assert clock.by_tool == {"make_changes": 2, "get_data_regimes": 1, "describe_problem": 1}
+
+
+def test_an_unnamed_call_still_counts_toward_the_total():
+    """The name is best-effort (it comes off the MCP envelope). A call whose name cannot be read
+    must still be counted in the total rather than dropped, or the two numbers disagree."""
+    clock = _ToolClock()
+    clock.enter(None)
+    clock.leave()
+    assert clock.calls == 1 and clock.by_tool == {}

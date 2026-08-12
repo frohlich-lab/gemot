@@ -23,6 +23,9 @@ _CONFIG_KEYS = (
     # `prompt_version` is a run INPUT, like git_sha — config, not a summary metric. Without it
     # a W&B sweep cannot group or filter runs by the prompt text that produced them.
     "example_version", "git_sha", "prompt_version", "skills_version",
+    # Same argument, for the arms that change no prompt text and so leave prompt_version equal
+    # on both halves of an A/B (petab_harness.ablations).
+    "ablation_arm",
     "phoenix_project", "phoenix_trace_id", "stop_reason",
 )
 # Outcome -> W&B summary metrics.

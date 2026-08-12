@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 
 from mcp import ClientSession
+
+from .. import ablations
 from .failure import _should_reraise, _summarize_exc, _write_degraded_result
 from .judge import _judge
 from .clock import _make_call, _wrap_tool_clock
@@ -129,6 +131,10 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
             # (prompts.py) or the skills (_skills/), which are edited independently.
             "prompt_version": base_meta.get("prompt_version"),
             "skills_version": base_meta.get("skills_version"),
+            # Which ARM, so a Phoenix query can split an A/B the same way the metrics CSV does.
+            # Not derivable from prompt_version: an arm that changes no prompt text (see
+            # petab_harness.ablations) leaves it identical across both halves.
+            "ablation_arm": base_meta.get("ablation_arm"),
         }
         exit_code, result = 1, {}
         with run_span(tracing, name="model_build_run", attributes=span_attrs) as span:
@@ -142,7 +148,8 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                 # The biocurator roster/guidance is spliced into the lead prompt INSIDE
                 # run_deepagents, under the SAME guard that actually wires the subagent, so the
                 # prompt can't promise a biocurator that wasn't added. Its tools are the
-                # curated agent.DEFAULT_BIO_TOOLS allowlist (+ literature under --bio-literature).
+                # curated agent.DEFAULT_BIO_TOOLS allowlist (+ literature under the
+                # `bio_literature` ablation, PETAB_BIO_LITERATURE=1).
                 agent_out = await run_deepagents(
                     session,
                     model=args.model,
@@ -156,7 +163,7 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                     max_wall_seconds=args.max_wall_seconds,
                     progress_probe=raw_call_tool,
                     bio_sessions=bio_sessions,
-                    bio_literature=getattr(args, "bio_literature", False),
+                    bio_literature=ablations.enabled("bio_literature"),
                     # Hand-curated biological entities for the blinded biocurator (issue #91);
                     # empty for scenarios with no lookupable biology (the abstract toys).
                     curated_entities=getattr(scenario, "biocurator_entities", None),
@@ -206,7 +213,7 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                         "subagent_names": agent_out.get("subagent_names", []),
                         "general_purpose_subagent": agent_out.get("general_purpose_subagent"),
                         # Provenance of the literature the biocurator READ (per call: query +
-                        # returned DOIs/PMIDs; only populated under --bio-literature) — an audit
+                        # returned DOIs/PMIDs; only populated under the `bio_literature` ablation) — an audit
                         # trail for analysis and for the leakage check on published problems.
                         "biocurator_literature": agent_out.get("biocurator_literature", []),
                         # Whole-run token usage (lead + subagents) summed in-process by

@@ -67,6 +67,12 @@ slurm/trace_review/*_fullsweep/*.md
 slurm/trace_review/*_fullsweep/*.out
 slurm/trace_review/*_fullsweep/*.json
 slurm/trace_review/refit_exp/*.out
+# A/B working sets (ab_*/, and the pulled span tables any investigation writes). These dirs were
+# not covered by the two patterns above and a run manifest reached the index because of it --
+# 41 kB rebuildable in one pass from slurm/runs/results/*/result.json. Same rule as the rest:
+# artifacts by extension, so the pull scripts beside them stay addable.
+slurm/trace_review/ab_*/*.json
+slurm/trace_review/*/*.parquet
 
 # Zero-shot benchmark PEtab problems are materialized from the pinned Benchmark-Models-PEtab
 # collection by `python examples/setup.py` — NOT vendored. Only reference.json (the committed
@@ -116,3 +122,4 @@ slurm/trace_review/biolit_deepdive/
 slurm/refit_runs/
 slurm/atol_out/
 slurm/jitter_out_*/
+slurm/bio_cache/

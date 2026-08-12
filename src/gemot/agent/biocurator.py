@@ -91,7 +91,7 @@ DEFAULT_BIO_TOOLS = (
 )
 
 # Literature tools (EuropePMC + bioRxiv), added to the biocurator's set ONLY when the operator
-# opts in with --bio-literature. Kept OUT of the default because free-text literature search over
+# opts in with PETAB_BIO_LITERATURE=1. Kept OUT of the default because free-text literature search over
 # a benchmark problem's distinctive entity panel is the one path that could surface the withheld
 # source paper (see examples/BENCHMARK_NOTES.md); the biocurator's default structured tools
 # (interactions/pathways/ontologies/OmniPath) are general biology and don't carry that risk. On a

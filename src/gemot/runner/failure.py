@@ -92,7 +92,8 @@ def _write_degraded_result(work: Path, base_meta: dict, scenario: Scenario,
         # An aborted run still made edits, and they are the MOST interesting ones: omitting them
         # scored every abort as zero rejections, biasing the sweep-wide rate DOWN for exactly the
         # runs that struggled. `clock` is None only when the abort predates the session.
-        **({"tool_calls": clock.calls, "edit_rejects": clock.reject_summary()} if clock else {}),
+        **({"tool_calls": clock.calls, "tool_call_counts": dict(clock.by_tool),
+           "edit_rejects": clock.reject_summary()} if clock else {}),
     }
     (work / "result.json").write_text(json.dumps(result, indent=2))
     return result
