@@ -12,7 +12,7 @@ from typing import Any
 
 from ..prompts import BIOCURATOR_DESCRIPTION, BIOCURATOR_PROMPT, _biocurator_entity_block
 from .guards import _subagent_turn_limit
-from .subagents import ANALYSTS, _subagent_prompt_key
+from .subagents import ACTIVE_SPECS, _subagent_prompt_key
 
 #: Model calls one biocurator delegation may make before it must report.
 #:
@@ -45,7 +45,7 @@ BIOCURATOR_NAME = "biocurator"
 # `change_parameters` into a subagent and bypass lead-only authoring, plus sink ~39% of that
 # subagent's calls into unused filesystem builtins (issue #112). run_deepagents turns that
 # auto-add off (see _disable_general_purpose_subagent), so this tuple is the whole registry.
-SUBAGENT_NAMES = (*(spec["name"] for spec in ANALYSTS), BIOCURATOR_NAME)
+SUBAGENT_NAMES = (*(spec["name"] for spec in ACTIVE_SPECS), BIOCURATOR_NAME)
 
 # Curated default tool allowlist for the biocurator. The default bio server (BioContextAI
 # Knowledgebase) exposes ~50 tools across ~20 databases — literature search, clinical trials,

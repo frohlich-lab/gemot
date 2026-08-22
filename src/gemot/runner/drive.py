@@ -135,6 +135,10 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
             # Not derivable from prompt_version: an arm that changes no prompt text (see
             # petab_harness.ablations) leaves it identical across both halves.
             "ablation_arm": base_meta.get("ablation_arm"),
+            # ...and the default-INDEPENDENT twin, or the claim above is false across a default
+            # flip: `ablation_arm` names only deviations, so "baseline" means different
+            # configurations either side of 2026-08-15 (see ablations.state_key).
+            "ablation_state": base_meta.get("ablation_state"),
         }
         exit_code, result = 1, {}
         with run_span(tracing, name="model_build_run", attributes=span_attrs) as span:

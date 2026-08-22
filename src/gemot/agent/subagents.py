@@ -93,6 +93,12 @@ ANALYSTS = [
     },
 ]
 
+# ONE source of truth for the active roster — the panel builder and SUBAGENT_NAMES both read
+# this, so they cannot disagree about who is on the panel. (The draft-era model_editor rode
+# here arm-gated; the diff_edits arm that replaced it changes only the LEAD's own surface, so
+# the roster is now arm-independent.)
+ACTIVE_SPECS = list(ANALYSTS)
+
 
 def _subagent_prompt_key() -> str:
     """The key deepagents' SubAgent spec uses for the persona prompt.
@@ -122,7 +128,7 @@ def _build_subagents(tools_by_name: dict[str, Any]) -> list[dict[str, Any]]:
     """
     prompt_key = _subagent_prompt_key()
     subagents: list[dict[str, Any]] = []
-    for spec in ANALYSTS:
+    for spec in ACTIVE_SPECS:
         tools = [tools_by_name[n] for n in spec["tools"] if n in tools_by_name]
         dropped = [n for n in spec["tools"] if n not in tools_by_name]
         if dropped:

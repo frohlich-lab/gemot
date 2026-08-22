@@ -30,7 +30,20 @@ _NOT_PROMPTS = {"PROMPT_GROUPS", "_HASH_SEP"}
 _FRAGMENTS = {"_REPORT_CONTRACT", "_BIOCURATOR_REPORT_CONTRACT",
               # Concatenated into DEFAULT_SYSTEM_PROMPT, and EMPTY in the ablation
               # arm (PETAB_DATA_REGIMES=0), where it is vacuously contained.
-              "_DATA_REGIMES_GUIDANCE"}
+              "_DATA_REGIMES_GUIDANCE",
+              # Same shape: concatenated into DEFAULT_SYSTEM_PROMPT. Default ON since the
+              # 2026-08-15 A/B, so under a bare test env this is NON-empty and the
+              # fragments-really-are-fragments check exercises it for real.
+              "_FREE_EXPONENTS_GUIDANCE",
+              # Concatenated into the three ANALYST prompts (the skill formerly fetched via
+              # get_skill once per spawn — now prompt text, versioned through those prompts).
+              "_PETAB_SKILL_INLINE",
+              # Same shape again: concatenated into DEFAULT_SYSTEM_PROMPT, and EMPTY in the
+              # ablation arm (PETAB_DIFF_EDITS=0). Default ON since the 2026-08-19 flip, so under
+              # a bare test env this is NON-empty and really is exercised here. While the arm was
+              # default-OFF the constant was "" and this check passed vacuously, which is why the
+              # gap only surfaced when the default moved.
+              "_DIFF_EDITS_GUIDANCE"}
 
 
 def _texts_of(value) -> list[str]:
@@ -244,8 +257,11 @@ def test_skills_are_tracked_like_prompts(tmp_path):
     from petab_harness.experiments import collect_skills, skills_version
     from petab_mcp.skills import skills_version as server_skills_version
 
-    # the lead can actually reach them (otherwise the instruction is a dead letter)
-    assert {"get_skill", "list_skills"} <= set(ORCHESTRATOR_TOOLS)
+    # the lead can actually reach it (otherwise the instruction is a dead letter).
+    # list_skills is deliberately NOT exposed: zero agent calls across every measured sweep,
+    # and the lead prompt names the two skills it needs directly.
+    assert "get_skill" in ORCHESTRATOR_TOOLS
+    assert "list_skills" not in ORCHESTRATOR_TOOLS
     assert "get_skill('petab-model-building')" in P.DEFAULT_SYSTEM_PROMPT
     # `independence-audit` is NOT step-0 reading -- it is a mid-run diagnostic, pointed at from the
     # structure-vs-parsimony section here and from the server's structural-inadequacy stop message.

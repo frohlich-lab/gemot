@@ -57,6 +57,8 @@ _PROMPT_ROLES = {
     "petab-analyst-systems-scientist": "system",
     "petab-analyst-signal-engineer": "system",
     "petab-analyst-descriptions": "system",
+    "petab-model-editor-system": "system",
+    "petab-model-editor-description": "system",
     "petab-biocurator-system": "system",
     "petab-biocurator-description": "system",
     "petab-biocurator-entity-block": "user",

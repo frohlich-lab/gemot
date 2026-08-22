@@ -23,6 +23,11 @@ from .. import prompts
 from ..prompts import _IDLE_NUDGE
 from .dedup import _dedupe_raw_tool_calls, _dedupe_tool_calls
 
+#: Set once if appending the turn-budget notice ever fails, so the warning in `_augment` prints
+#: one line per process rather than one per turn. See the comment there for why there is no
+#: system-prompt fallback.
+_TURN_NOTICE_BROKEN = False
+
 # --- tool-dispatch guard: make sure proposed tool calls actually FIRE -----------------------
 # A whole class of runs (originally seen on the blasi zero-shot build) never executed a single
 # tool: the lead kept emitting text-only assistant turns — narrating what it *would* do — and the
@@ -391,14 +396,51 @@ def _subagent_turn_limit(max_turns: int):
         return sum(1 for m in messages or [] if isinstance(m, AIMessage))
 
     def _augment(request):
-        """Append the notice to the request's system prompt, if one is due."""
+        """Append the notice as a TRAILING message, never to the system prompt.
+
+        The notice carries a countdown (``left`` decrements every turn), so putting it in the
+        system prompt made message[0] a DIFFERENT STRING on every turn once the first notice
+        fired — invalidating the whole prefix cache from the very first token, every turn, for
+        the rest of the delegation. Measured on the 2026-08-14 draft-editing A/B: at the 11th
+        call of a delegation (turns_used=10, the first notice) the model_editor's cache-hit rate
+        fell 0.86-0.98 -> 0.72 and per-call excess novel tokens jumped ~1.6k -> ~4.9k, on 361/361
+        calls at that depth; cache_write jumped 248 -> 1,594 in lockstep. Appended at the END the
+        same text costs its own length once and leaves every earlier token cacheable.
+
+        Injected into the OUTGOING REQUEST only (never into state), so it is not persisted and
+        cannot accumulate across turns — the property the system-prompt version also had, and the
+        reason this is a request hook rather than a state write.
+        """
         notice = _turn_notice(_turns(getattr(request, "messages", None)), max_turns)
         if notice is None:
             return request
-        base = getattr(request, "system_prompt", None) or ""
+        from langchain_core.messages import HumanMessage
+
         try:
-            return request.override(system_prompt=f"{base}\n\n{notice}")
-        except Exception:  # pragma: no cover - older/newer request shapes
+            messages = list(getattr(request, "messages", None) or [])
+            return request.override(messages=[*messages, HumanMessage(content=notice)])
+        except Exception as exc:  # pragma: no cover - older/newer request shapes
+            # NO system-prompt fallback. Injecting the notice there is the regression this
+            # function exists to remove: the countdown makes message[0] a different string every
+            # turn, which invalidates the whole prefix cache from the first token (measured above:
+            # hit rate 0.86-0.98 -> 0.72, ~1.6k -> ~4.9k excess novel tokens per call, 361/361
+            # calls at that depth). Paying that on EVERY remaining turn to deliver a courtesy
+            # countdown is a far worse trade than dropping the countdown — the hard cap in
+            # `_check` still fires, so the delegation is bounded either way; it just gets cut off
+            # without advance warning.
+            #
+            # And it is LOUD. A silent `return request` here would mean a langchain request-shape
+            # change quietly disables turn notices for every delegation in every run, with the
+            # only symptom being subagents that stop tapering — indistinguishable from a prompt
+            # regression, and invisible in the trace. Printed once per process so a shape change
+            # is obvious in the first run's log without flooding it every turn.
+            global _TURN_NOTICE_BROKEN
+            if not _TURN_NOTICE_BROKEN:
+                _TURN_NOTICE_BROKEN = True
+                print(f"[agent] WARNING: could not append the turn-budget notice to the request "
+                      f"({type(exc).__name__}: {exc}). Delegations will run to their hard cap "
+                      f"with no countdown; `_augment` needs updating for this request shape. "
+                      f"NOT falling back to the system prompt — that destroys the prefix cache.")
             return request
 
     def _check(state):
@@ -429,3 +471,5 @@ def _subagent_turn_limit(max_turns: int):
             return _check(state)
 
     return _SubagentTurnLimit()
+
+

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import functools
 import inspect
 import re
@@ -43,7 +44,8 @@ from .circuit_breaker import (
     call_outcomes,
 )
 from .finish_gate import _finish_tool
-from .guards import _empty_report_guard, _task_arg_guard, _tool_dispatch_guard
+from .guards import (_empty_report_guard, _task_arg_guard,
+                     _tool_dispatch_guard)
 from .literature import _wrap_literature_recorder
 from .probe import _model_committed, _structured
 from .subagents import (
@@ -418,9 +420,21 @@ async def run_deepagents(
     finish_state = {"confirmed": False, "gave_up": False}
     lead_tools = [*lead_tools, _finish_tool(session, finish_state, probe=progress_probe)]
 
+    # The model's REAL context window, as a langchain profile. Without it, deepagents'
+    # summarization middleware cannot see a window and falls back to a flat 170,000-token
+    # trigger (compute_summarization_defaults) — measured on the 37-run sneyd/fujita A/B:
+    # every run compacted (81 events), each costing ~102k NOVEL tokens (cache hit 0.46 vs
+    # 0.85-0.89 normal) and ~33s, at a median trigger prompt of 169,266 tokens — 16% of the
+    # 1M window this driver already assumes everywhere else (it deliberately runs no history
+    # trimmer, and models.py pins 1M-context endpoints for exactly that reason). With the
+    # profile set, the trigger becomes 0.85 x window ≈ 891k, which no measured call has ever
+    # approached (all-time max 483k) — so compaction becomes what it should be: dead code on
+    # this workload, with the context-stop below as the backstop if a run ever gets there.
+    max_input_tokens = int(os.environ.get("PETAB_MCP_MAX_INPUT_TOKENS", 1_048_576))
     llm = _chat_model_class()(
         # Keeps the Phoenix span named `ChatOpenAI` despite the subclass -- see _chat_model_class.
         name="ChatOpenAI",
+        profile={"max_input_tokens": max_input_tokens},
         model=model,
         temperature=temperature,
         base_url=base_url,
@@ -559,6 +573,23 @@ async def run_deepagents(
     # Self-imposed total-runtime budget (see the docstring): checked between super-steps, never
     # mid-step, so we always stop at a clean boundary rather than interrupting a live commit/fit.
     deadline = (time.monotonic() + max_wall_seconds) if max_wall_seconds is not None else None
+    # RESERVE ONE STEP. The budget is checked at step boundaries, but a super-step that commits a
+    # model runs a full multistart, so "am I past the deadline?" asked AFTER the step is asked too
+    # late: the overshoot is a whole fit. On the 2026-08-17 isensee sweep (budget 56400s inside a
+    # 57600s Slurm limit, i.e. 1200s of margin against a ~5200s fit) 15 of 16 tasks were
+    # TIMEOUT-killed rather than stopping cleanly, losing result.json, the judge verdict and the
+    # token accounting for every one of them. So stop when there is not enough time left to
+    # FINISH another step, using the same fit estimate the stall watchdog sizes itself to.
+    # Capped at half the budget so a small budget still buys some work rather than stopping at 0.
+    step_headroom = (min(fit_time_budget(n_starts), max_wall_seconds * 0.5)
+                     if max_wall_seconds is not None else 0.0)
+    # THE deadline for every "may I start (or continue into) another step?" decision. The hard
+    # `deadline` is the budget; this is the budget minus one step, i.e. the last moment at which
+    # beginning a super-step can still finish inside it. Every such decision must use this one --
+    # guarding only the step-boundary check left three paths (the stall/budget split, the
+    # silent-finish bounce, and the retry-resume gate) able to start a fresh super-step inside the
+    # reserved window, which is exactly the overshoot that TIMEOUT-killed 15/16 isensee tasks.
+    soft_deadline = (deadline - step_headroom) if deadline is not None else None
     config: dict[str, Any] = {"recursion_limit": recursion_limit}
     if checkpointer is not None:
         config["configurable"] = {"thread_id": "petab-mcp-run"}
@@ -615,12 +646,17 @@ async def run_deepagents(
                     # hard-killed by Slurm at exactly 06:00:02 with NO result.json, losing the
                     # whole run. Capping the wait hands control back at the deadline, so the
                     # entire margin is available for scoring.
+                    # The HARD deadline, deliberately — NOT `soft_deadline`. This bounds a step
+                    # that is already running, and the whole point of the reserve is to let that
+                    # step finish: capping the wait at the soft deadline cancels a commit step up
+                    # to `step_headroom` (as much as half the budget) early and throws its fit
+                    # away. Only the "may I START another step?" decisions use the soft deadline.
                     step_wait = stall_timeout if deadline is None else max(
                         1.0, min(stall_timeout, deadline - time.monotonic()))
                     await asyncio.wait_for(agen.__anext__(), timeout=step_wait)
                 except StopAsyncIteration:
                     break
-                if deadline is not None and time.monotonic() >= deadline:
+                if soft_deadline is not None and time.monotonic() >= soft_deadline:
                     wall_budget_exceeded = True
                     break
                 # Token ceiling, checked at the same clean boundary as the wall-time budget. The
@@ -631,6 +667,16 @@ async def run_deepagents(
                         and token_accountant.prompt + token_accountant.completion
                         >= max_run_tokens):
                     token_budget_exceeded = True
+                    break
+                # Context backstop, checked at the same clean boundary: STOP the run before the
+                # summarization middleware would compact it (trigger 0.85 x window). A compaction
+                # is a silent quality event — it discards history mid-search and costs ~102k novel
+                # tokens — so a run that genuinely fills 80% of the window ends with an explicit,
+                # analyzable stop_reason instead. No measured call has reached half this line.
+                if token_accountant.max_prompt >= 0.8 * max_input_tokens:
+                    early_stopped = ("context_window_approached: largest prompt "
+                                     f"{token_accountant.max_prompt:,} tokens >= 80% of the "
+                                     f"{max_input_tokens:,}-token window")
                     break
                 # The gate gave up (too many no-fit finish attempts) — end promptly at this
                 # boundary rather than letting the model spam finish to the recursion limit.
@@ -655,7 +701,7 @@ async def run_deepagents(
                 else "completed"
             )
         except asyncio.TimeoutError:
-            if deadline is not None and time.monotonic() >= deadline:
+            if soft_deadline is not None and time.monotonic() >= soft_deadline:
                 # The wait was cut short by the wall-time cap above, not by a wedged step. This is
                 # the budget expiring mid-super-step, so it must STOP (and let the judge score what
                 # is committed) rather than resume — a resume here would spend the margin that the
@@ -688,8 +734,9 @@ async def run_deepagents(
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(agen.aclose(), timeout=10)
         if wall_budget_exceeded:
-            print(f"[agent] wall-time budget ({max_wall_seconds:.0f}s) exceeded — stopping "
-                  "at this step boundary; the judge scores whatever is currently committed.")
+            print(f"[agent] wall-time budget ({max_wall_seconds:.0f}s) reached with less than "
+                  f"one step ({step_headroom:.0f}s) of headroom left — stopping at this step "
+                  "boundary; the judge scores whatever is currently committed.")
             break
         if token_budget_exceeded:
             # Deliberately NOT retriable: a resume would hand the loop a fresh step budget and the
@@ -722,7 +769,7 @@ async def run_deepagents(
             # out. model_committed is captured for the post-loop relabel (no second probe).
             if stop_reason == "completed" and not finish_state["confirmed"]:
                 model_committed = await _model_committed(progress_probe)
-                past_deadline = deadline is not None and time.monotonic() >= deadline
+                past_deadline = soft_deadline is not None and time.monotonic() >= soft_deadline
                 if (silent_bounces < _MAX_SILENT_BOUNCES and checkpointer is not None
                         and not past_deadline):
                     silent_bounces += 1
@@ -733,7 +780,7 @@ async def run_deepagents(
                     stream_input = {"messages": [{"role": "user", "content": nudge}]}
                     continue
             break
-        if deadline is not None and time.monotonic() >= deadline:
+        if soft_deadline is not None and time.monotonic() >= soft_deadline:
             # Out of time even before a resume would start — don't burn a backoff on a retry
             # the deadline will just cut off anyway.
             stop_reason = f"wall_time_budget_exceeded (during retry: {retriable})"

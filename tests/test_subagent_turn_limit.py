@@ -78,8 +78,8 @@ def test_notice_never_reports_a_negative_budget():
 
 
 def test_notices_reach_the_model_via_the_request_not_the_state():
-    """Warnings go into the outgoing request's system prompt. Appending them to state would hit
-    the same invalid-sequence problem as the hard stop."""
+    """Warnings go into the outgoing REQUEST, never into state — appending them to state would
+    hit the same invalid-sequence problem as the hard stop, and would accumulate."""
     seen = {}
 
     class _Req:
@@ -92,8 +92,33 @@ def test_notices_reach_the_model_via_the_request_not_the_state():
 
     mw = _subagent_turn_limit(CAP)
     mw.wrap_model_call(_Req(), lambda r: r)
-    assert "WARNING" in seen["system_prompt"]
-    assert seen["system_prompt"].startswith("you are a signal engineer")
+    assert "system_prompt" not in seen, "the notice must not touch the cached prefix"
+    assert "WARNING" in seen["messages"][-1].content
+
+
+def test_the_notice_never_mutates_the_cached_prefix():
+    """THE cache bug this guards: the notice carries a countdown, so putting it in the system
+    prompt made message[0] a different string every turn — measured on the 2026-08-14 A/B as a
+    0.86-0.98 -> 0.72 cache-hit collapse on 361/361 calls past the threshold. Appended at the
+    END, everything before it stays cacheable."""
+    from langchain_core.messages import HumanMessage
+
+    seen = {}
+    base_msgs = _state(15)["messages"]
+
+    class _Req:
+        messages = base_msgs
+        system_prompt = "you are a signal engineer"
+
+        def override(self, **kw):
+            seen.update(kw)
+            return self
+
+    _subagent_turn_limit(CAP).wrap_model_call(_Req(), lambda r: r)
+    out = seen["messages"]
+    assert out[:len(base_msgs)] == list(base_msgs), "the prefix must be byte-identical"
+    assert len(out) == len(base_msgs) + 1
+    assert isinstance(out[-1], HumanMessage)
 
 
 def test_no_notice_leaves_the_request_untouched():

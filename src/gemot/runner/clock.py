@@ -63,6 +63,12 @@ _REJECT_PATTERNS = (
     ("bad_scale", "invalid parameterscale"),
     ("bad_estimate", "cannot interpret estimate value"),
     ("missing_id", "must include an 'id'"),
+    # NOTE there are deliberately no needles for the structured-op rejections. Those carry a
+    # machine-readable `error_cause` (petab_mcp.operations.OperationError.cause), which
+    # `note_result` prefers, so prose entries for them would be dead code — and a generic one
+    # like "already exists" would additionally steal any FUTURE rejection containing the phrase,
+    # which is the needle-shadows-the-bucket failure the labels were introduced to end.
+    ("op_malformed", "nothing was applied"),      # residual, for anything unlabelled
 )
 
 
@@ -176,7 +182,10 @@ class _ToolClock:
             self.fit_reverts += 1
             return
         self.rejects += 1
-        cause = _reject_cause(str(payload.get("error") or ""))
+        # The server's own label when it set one (petab_mcp.operations.OperationError.cause);
+        # the prose match is the fallback for rejections raised deeper in the pipeline, which
+        # carry no label.
+        cause = payload.get("error_cause") or _reject_cause(str(payload.get("error") or ""))
         self.reject_causes[cause] = self.reject_causes.get(cause, 0) + 1
 
     def reject_summary(self) -> dict:

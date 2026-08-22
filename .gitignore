@@ -123,3 +123,17 @@ slurm/refit_runs/
 slurm/atol_out/
 slurm/jitter_out_*/
 slurm/bio_cache/
+
+# Session analysis dirs under slurm/ (added 2026-08-19, tightened 2026-08-20). A `git add slurm/`
+# in ae53121 swept 543 untracked files into the branch — 237 of them under these three dirs, plus
+# four Slurm logs of 5.4M lines that had to be stripped from history before GitHub would accept
+# the push (>100 MB per-file limit). These are per-investigation scratch: scripts written for one
+# question, their digests, and their job logs. Ignoring the dirs wholesale rather than by
+# extension, because the earlier extension list still let .csv/.jsonl through.
+#
+# The 26 files here that predate ae53121 stay TRACKED — .gitignore does not untrack anything
+# already committed, which is the behaviour we want: they were committed deliberately.
+slurm/alkan_refit/
+slurm/_bench/
+slurm/trace_review/
+slurm/_*.log

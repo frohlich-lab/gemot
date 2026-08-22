@@ -26,6 +26,7 @@ _CONFIG_KEYS = (
     # Same argument, for the arms that change no prompt text and so leave prompt_version equal
     # on both halves of an A/B (petab_harness.ablations).
     "ablation_arm",
+    "ablation_state",
     "phoenix_project", "phoenix_trace_id", "stop_reason",
 )
 # Outcome -> W&B summary metrics.

@@ -51,6 +51,81 @@ from . import ablations as _ablations
 # commit closing for the subagent turn notices.
 DATA_REGIMES_ENABLED = _ablations.enabled("data_regimes")
 
+# The petab-model-building skill, INLINED into the analyst persona prompts. Measured: every
+# analyst spawn fetched this same document via get_skill exactly once (mathematician 203/203,
+# signal_engineer 217/217, systems_scientist 115/115 across the 37-run A/B) — a deterministic
+# fetch is a constant, and as a tool result it cost a turn per spawn and rode subagent history;
+# as prompt text it caches as prefix. Read from the petab_mcp package by PATH (not import: this
+# module must stay import-light, see tests/test_import_lightness); missing file degrades to the
+# old behaviour minus the tool, and prompt_version hashes whatever was actually inlined.
+def _inline_skill(name: str) -> str:
+    from pathlib import Path
+    f = Path(__file__).resolve().parent.parent / "petab_mcp" / "_skills" / name / "SKILL.md"
+    try:
+        text = f.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return f"\n\n--- PEtab semantics reference (inlined; formerly get_skill('{name}')) ---\n{text}"
+
+_PETAB_SKILL_INLINE = _inline_skill("petab-model-building")
+
+# Same shape as the arm above: the schema (make_changes grows `model_edits`/`base_version`, the lead
+# grows `get_model`) AND the prompt text ship together (changes_prompt=True), so prompt_version
+# separates the halves of an A/B.
+DIFF_EDITS_ENABLED = _ablations.enabled("diff_edits")
+
+# Prompt-only arm (no tools change; changes_prompt=True so prompt_version separates the halves).
+# Rationale and the measured numbers live on the registry entry in ablations.py.
+FREE_EXPONENTS_ENABLED = _ablations.enabled("free_exponents")
+
+_FREE_EXPONENTS_GUIDANCE = (
+    " EXPONENTS ARE PARAMETERS. EVERY time you write a cooperative or ligand-gated dependence "
+    "(any Hill or saturating term) — in the first model, in a later edit, or when you sharpen an "
+    "existing rate law — declare its exponent as a named, estimated parameter with its own "
+    "bounds. Never hardcode it as 1 or a literal 2 inside the formula. A hardcoded exponent "
+    "silently FIXES a quantity the fit may need, and it is the one mis-specification no later "
+    "bounds edit can reach: the only repair is re-authoring that rate law. An estimated exponent "
+    "costs exactly one ln(n) of bic and is cheap to TRIM at any point if the data cannot support "
+    "it — pay that price when you introduce the term and take it back later, not the reverse."
+) if FREE_EXPONENTS_ENABLED else ""
+
+_DIFF_EDITS_GUIDANCE = (
+    " EDIT BY OPERATION, NOT BY RE-AUTHORING. Your FIRST model is authored wholesale "
+    "(`antimony=`). Every LATER change goes through `model_edits`: a BATCH of structured "
+    "operations, each written as ANTIMONY and addressed by ID — "
+    "`{op:'add_reaction', antimony:'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'}`, "
+    "`{op:'remove_reaction', id}`, `{op:'set_rate_law', id, antimony:'k*EGF*EGFR'}`, "
+    "`{op:'set_initial', id, antimony:'5'}`, `{op:'rename', old, new}`. You write the model "
+    "language you already know; you just say WHICH reaction, instead of quoting its text. "
+    "EVERY reaction needs an id — an unnamed one cannot be changed later without re-authoring "
+    "the whole model, so authoring is refused until they are all named. "
+    "PUT THE WHOLE CHANGE IN ONE CALL. One call is one fit and one version, so a mechanism plus "
+    "the rate-law change it forces is ONE batch of two operations, not two calls — splitting it "
+    "pays a full multistart per operation and scores intermediate states you never meant to "
+    "test. Operations apply in order, all-or-nothing: a failure names the failing "
+    "`model_edits[i]` and lists the valid reaction ids, and nothing is applied. "
+    "NAME YOUR REACTIONS FOR YOURSELF. The id is how you will address a reaction for the rest "
+    "of the run, so use a meaningful one — `egfr_activation`, `akt_dephos`, `s6_feedback` — not "
+    "`reaction_7`. Numbered ids invite renumbering when you re-author, and a renumbered model is "
+    "one whose history cannot be read. Ids are yours to choose and are stable across the "
+    "server's re-rendering. "
+    "To ROLL BACK AND CHANGE, pass `base_version=N` with `model_edits`: the operations apply to "
+    "that version's stored model — one call forks and changes, and you never retype an earlier "
+    "model from memory. It restores that version's SEARCH SPACE too — its bounds and scales — and "
+    "the point the fit starts from, that version's own best fit, so the fork picks up where "
+    "version N got to instead of from the branch you are abandoning. You never have to remember "
+    "any of it. Parameters your operations newly introduce keep the defaults the reconcile mints, "
+    "and any parameter you name in this call's `parameters` keeps YOUR bound and scale rather "
+    "than the restored one. "
+    "`base_version` is a MODIFIER, never an action: sent on its own it is REJECTED. There is no "
+    "revert-and-stop, because re-committing an earlier version unchanged would spend a fit to "
+    "reproduce a result you already have. Say what you want DIFFERENT about that version in the "
+    "same call; to merely look at it first, use `get_model(version=N)`. "
+    "Wholesale re-authoring (`antimony=`) on a LATER model is for genuinely starting over — "
+    "legitimate when the structure is abandoned, discouraged otherwise: operations preserve the "
+    "working core and keep your reaction ids stable."
+) if DIFF_EDITS_ENABLED else ""
+
 _DATA_REGIMES_GUIDANCE = (
     " Two things help here and they answer different questions. "
     "`get_data_regimes` answers WHAT THE DATA REQUIRES — read straight off the measurements, no "
@@ -122,8 +197,19 @@ DEFAULT_SYSTEM_PROMPT = (
     "compartments, species (with their initial conditions), parameters, and reactions in "
     "Antimony. `make_changes` is the ONLY way to change anything — a rate-law form, a reaction, "
     "a parameter's bounds or scale — and it ALWAYS fits, so one call is one coherent change "
-    "scored as ONE version. Give `antimony` to re-author, `parameters` to retune the search "
-    "space, or BOTH when a structural change needs bounds; at least one is required. Your step "
+    "scored as ONE version. " + (
+        # ARM-GATED for the same reason the TOOL_DESCRIPTIONS clause is: shipped ungated, this
+        # sentence tells the arm-ON lead that `antimony` is the only model route, 50 lines
+        # before _DIFF_EDITS_GUIDANCE tells it to patch instead — two incompatible contracts in
+        # one prompt, which is how a lead ends up re-authoring wholesale in the arm built to
+        # stop that.
+        "Give `antimony` to author the FIRST model, `model_edits` (structured operations) to "
+        "change it thereafter, `parameters` to retune the search space, or a model route AND "
+        "`parameters` when a structural change needs bounds; at least one is required. "
+        if DIFF_EDITS_ENABLED else
+        "Give `antimony` to re-author, `parameters` to retune the search "
+        "space, or BOTH when a structural change needs bounds; at least one is required. ") +
+    "Your step "
     "budget is the scarce resource, so put a whole coherent change in one call rather than "
     "dribbling it out. The result IS the fit (`bic`, `neg_log_likelihood`, `n_estimated` = k). "
     "When a call does NOT produce a version, READ the result before retrying — never resubmit "
@@ -145,18 +231,21 @@ DEFAULT_SYSTEM_PROMPT = (
     "mechanism is RIGHT from the residual STRUCTURE — get_fit_diagnosis's per-observable bias + "
     "worst-fit points, or a signal_engineer time-trend read: SYSTEMATIC (non-random) residuals "
     "mean a mechanism is still missing; clean random scatter means it isn't. INITIAL CONDITIONS "
-    "— the server AUTO-GENERATES an `<species>_init` parameter for EVERY species you declare, "
+    "— the server AUTO-GENERATES an `<species>_init` parameter for most species you declare, "
     "ESTIMATED by default, whether or not you write one: every species you add silently adds a "
-    "free IC parameter to k. The only initials it keeps FIXED are a value of exactly 0 (an empty "
-    "pool) or exactly 1 (a unit normalization); any other declared initial is turned into an "
-    "estimated `<species>_init`. So an estimated IC the DATA CANNOT CONSTRAIN — a starting state "
+    "free IC parameter to k. Two initial VALUES are treated specially: exactly 0 (an empty pool, "
+    "which is also what leaving the initial unwritten means) gets NO `<species>_init` at all — "
+    "the state simply starts empty — and exactly 1 (a unit normalization) gets one held FIXED. "
+    "Any other declared initial becomes an estimated `<species>_init`. So an estimated IC the "
+    "DATA CANNOT CONSTRAIN — a starting state "
     "the measurement does not depend on — is a non-identifiable free parameter inflating k for no "
     "gain in fit (and the finish gate REFUSES a rank-deficient fit on exactly these). It is on YOU "
-    "to decide which initials the experiment actually pins. The ONLY lever is the VALUE: an initial "
-    "of exactly 0 or 1 is held FIXED, so give a known-and-irrelevant starting state one of those; "
+    "to decide which initials the experiment actually pins. The ONLY lever is the VALUE: give a "
+    "known-and-irrelevant starting state 0 or 1 and it costs you no free parameter; "
     "an initial of ANY OTHER value stays ESTIMATED and there is no tool to fix it — so do not rely "
     "on being able to pin a known IC that isn't 0 or 1, and spend those free parameters only where "
-    "the data can constrain them. Check get_parameters to see which `<species>_init` are still free.\n"
+    "the data can constrain them. Check get_parameters to see which `<species>_init` exist and are "
+    "still free — an initial of 0 has no row there at all.\n"
     "PARAMETER MACHINERY — the one piece of it you must not get wrong: every rate-law parameter you declare is ESTIMATED, and the fit is a MULTISTART over the parameter's BOUNDS — it does NOT use the number you assign in Antimony, which is only a nominal placeholder overwritten by the fitted value. So re-declaring a parameter with a different VALUE changes nothing; to constrain one, change its BOUNDS/SCALE with `make_changes`. Everything else about parameters — which constants you may hold fixed, why a literal or an ultra-narrow box is not a way to fix one, and what to do about a parameter that keeps re-pinning — is in the `petab-model-building` skill, which you have READ (step 0) and which the server ENFORCES."
     "ADEQUACY BEFORE PARSIMONY — the trade-off rule. Among models that ALL fit adequately, "
     "prefer the lower bic and drop parameters that don't earn their keep. But NEVER trade an "
@@ -173,7 +262,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "you are on: while the residuals are still structured you are underfitting, and the arithmetic "
     "above is for pricing what you keep at the end, not for talking yourself out of a mechanism "
     "the data is asking for."
-    + _DATA_REGIMES_GUIDANCE + "\n"
+    + _FREE_EXPONENTS_GUIDANCE + _DATA_REGIMES_GUIDANCE + _DIFF_EDITS_GUIDANCE + "\n"
     "3. Read the CURRENT HEAD's metrics (never an earlier version's) after each `make_changes` and decide "
     "what to do next. The DEFAULT is to KEEP ITERATING while the model is still mis-specified — "
     "bic is still improving fit-over-fit by more than a few units, OR get_fit_diagnosis shows a "
@@ -290,6 +379,7 @@ MATHEMATICIAN_PROMPT = (
     "constants; never fold one into a rate law.\n"
     "Comment on whether the free parameters (proposed or present) are identifiable from the data."
     + _REPORT_CONTRACT
+    + _PETAB_SKILL_INLINE
 )
 
 SYSTEMS_SCIENTIST_PROMPT = (
@@ -303,6 +393,7 @@ SYSTEMS_SCIENTIST_PROMPT = (
     "magnitudes (get_parameters) are physically plausible. Prefer the most parsimonious "
     "mechanism that explains the data, reusing the measured species."
     + _REPORT_CONTRACT
+    + _PETAB_SKILL_INLINE
 )
 
 SIGNAL_ENGINEER_PROMPT = (
@@ -319,6 +410,7 @@ SIGNAL_ENGINEER_PROMPT = (
     "whether the residuals look like noise (the fit is adequate) or systematic (the structure "
     "is still wrong). Localize; leave the WHY to the mathematician and systems scientist."
     + _REPORT_CONTRACT
+    + _PETAB_SKILL_INLINE
 )
 
 
@@ -495,11 +587,33 @@ def _biocurator_entity_block(names: "list[str]") -> str:
 # across four entries is four places to update and the reason several of them disagreed.
 TOOL_DESCRIPTIONS = {
     "make_changes": ("THE editor, and it always FITS. Pass `antimony` to author the WHOLE model "
-                     "(builds the first one when model_authored: false, and re-authors an "
-                     "existing one wholesale — every structural change is a whole-model "
-                     "re-author), and/or `parameters` = [{parameter_id, lower_bound?, "
+                     "(builds the first one when model_authored: false" + (
+                         "; on a LATER model it is the start-over route, and EVERY reaction "
+                         "must be named — an unnamed one cannot be changed afterwards). OR "
+                         "`model_edits`: a BATCH of structured operations, each written as "
+                         "Antimony and addressed by ID — "
+                         "{op:'add_reaction', antimony:'act: EGFR => pEGFR; k*EGF*EGFR;'}, "
+                         "{op:'remove_reaction', id}, "
+                         "{op:'set_rate_law', id, antimony:'k*EGF*EGFR'}, "
+                         "{op:'set_initial', id, antimony:'5'}, {op:'rename', old, new}. "
+                         "The DEFAULT route for every change after the first: nothing to quote, "
+                         "in order, all-or-nothing, a bad id rejected with the valid ids listed. "
+                         "Put the WHOLE change in ONE call — one call is one fit and one "
+                         "version. With `base_version=N` the operations apply to that version's "
+                         "stored model AND its search space and starting point are restored "
+                         "with it: fork and change in one call. It is a MODIFIER of "
+                         "`model_edits`, never an action on its own — sent alone it is "
+                         "rejected, since re-committing a version unchanged re-fits it to "
+                         "the result it already has. "
+                         if DIFF_EDITS_ENABLED else
+                         ", and re-authors an existing one wholesale — every structural change "
+                         "is a whole-model re-author)") +
+                     ("And/or " if DIFF_EDITS_ENABLED else ", and/or ") +
+                     "`parameters` = [{parameter_id, lower_bound?, "
                      "upper_bound?, scale?}, ...] to set the estimation BOUNDS/SCALE (never a "
-                     "value). At least ONE is required; give both when a structural change needs "
+                     "value). At least ONE is required. " +
+                     ("Give both a model route and `parameters` when a structural change needs "
+                      if DIFF_EDITS_ENABLED else "Give both when a structural change needs ") +
                      "bounds — they apply atomically, after the reconcile, so an entry may target "
                      "a parameter this call introduces. One call is one coherent change and ONE "
                      "version. ALL-OR-NOTHING: a change that cannot be scored is REVERTED, so the "
@@ -515,7 +629,9 @@ TOOL_DESCRIPTIONS = {
                      "in a rate law; rejects a 3rd widening of a still-pinned parameter (that is "
                      "unidentifiability — see get_fit_diagnosis(sections='parameters'), not a "
                      "bounds problem); WARNS "
-                     "on widening an estimated noise sigma past its data-driven cap. Args: justification, antimony?, "
+                     "on widening an estimated noise sigma past its data-driven cap. "
+                     "Args: justification, antimony?, "
+                     + ("model_edits?, base_version?, " if DIFF_EDITS_ENABLED else "") +
                      "parameters?, references?, n_starts? (REPLACES the server default — "
                      "describe_problem's fit_n_starts_default — so omit it unless you want MORE; "
                      "below it fits LESS hard; the minimum is 1)."),
@@ -526,7 +642,10 @@ TOOL_DESCRIPTIONS = {
                         "to reproduce, not a value to fit."),
     "describe_problem": "Orientation: whether a mechanism has been authored (model_authored), table/entity counts, current version, and the multistart count a fit uses by default (fit_n_starts_default). Cheap.",
     "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law) — empty until a model is built.",
-    "get_parameters": ("Parameter table, one row per parameter: id, bounds, scale, nominalValue "
+    "get_parameters": ("Parameter table — pass `parameter_ids` and/or `role` to FILTER: on "
+                       "large problems the full table is 100+ rows re-sent in your history "
+                       "every later turn, so ask for the rows you need (e.g. the ids a fit "
+                       "just changed). One row per parameter: id, bounds, scale, nominalValue "
                        "(the fitted value), estimate flag, plus `role` (kinetic / noise_sigma / "
                        "observable_scaling / initial_condition / exponent / constant) and `status` "
                        "(estimated / fixed). Read `role` to keep roles straight: a noise_sigma or "
@@ -538,7 +657,8 @@ TOOL_DESCRIPTIONS = {
                        "the COMPLETE set of constants you may treat as known. Do NOT assume "
                        "sigma_* or *_init are "
                        "fixed — noise sigmas are often estimated, and initial conditions are "
-                       "estimated by DEFAULT (only an IC of exactly 0 or 1 stays fixed). "
+                       "estimated by DEFAULT (an IC of exactly 1 stays fixed; an IC of exactly 0 "
+                       "gets no row here at all). "
                        "`in_model: false` marks a parameter the PROBLEM ships that your model "
                        "does not declare yet — before you author anything that is every shipped "
                        "kinetic / initial-condition parameter. Those are yours to build on: use "
@@ -563,6 +683,17 @@ TOOL_DESCRIPTIONS = {
                          "`testable: false` or a null `requirement` means this design did not "
                          "settle it, which is NOT permission to simplify.")}
      if DATA_REGIMES_ENABLED else {}),
+    # Dropped in the ablation arm, same agreement rule as get_data_regimes above.
+    **({
+        "get_model": ("The COMMITTED model as raw Antimony text. With `model_edits` you address "
+                      "reactions by ID and never quote text, so reach for `get_model_structure` "
+                      "first — this is for reading the model as written. Pass `version=N` for a PRIOR version's stored text — use THAT "
+                      "before `base_version=N`, not `get_version`, which also returns that "
+                      "version's per-point simulation and optimizer trace. The trailing "
+                      "`const ...;` line is DERIVED (regenerated every render; a parameter is "
+                      "constant unless declared `var`) — read past it; no operation addresses "
+                      "it."),
+    } if DIFF_EDITS_ENABLED else {}),
     "get_fit_summary": ("Current fit metrics only (neg_log_likelihood, chi2, n_data_points) — a "
                         "cheap score check. Carries `merge_hints` when the fit has parameter pairs "
                         "the data cannot separate whose merges bic would pay for."),
@@ -639,14 +770,34 @@ TOOL_DESCRIPTIONS = {
                          "condition: n, time span, value min/max/mean, preview points); pass "
                          "summarize=False for all raw points. Optional: condition_id, observable_id."),
     "list_data_tables": "List the SQL tables query_data exposes and their columns.",
-    "query_data": ("Run a read-only DuckDB SQL query over the data. Tables: measurements, conditions, "
-                   "observables, parameters, simulations (one row per point: measurement, simulation, "
-                   "residual, residual_weighted, noise), optimization_starts, optimization_trace. "
+    # The column names are spelled out because guessing them was the single largest non-editing
+    # error class measured (15 of 22 query_data failures in the 2026-08-17 sweep): PEtab is
+    # camelCase, and `conditionId` is NOT a measurements column -- that table keys conditions as
+    # `simulationConditionId`. No casing convention would have saved the caller; only the schema.
+    "query_data": ("Run a read-only DuckDB SQL query over the data. Column names are PEtab's, "
+                   "camelCase. Tables: measurements (observableId, simulationConditionId, "
+                   "preequilibrationConditionId?, measurement, time, observableParameters, "
+                   "noiseParameters, datasetId, replicateId?), conditions (conditionId + one "
+                   "column per condition-specific quantity), observables (observableId, "
+                   "observableFormula, noiseFormula, observableTransformation, noiseDistribution), "
+                   "parameters (parameterId, parameterScale, lowerBound, upperBound, nominalValue, "
+                   "estimate), simulations (one row per point: measurement, simulation, residual, "
+                   "residual_weighted, noise), optimization_starts, optimization_trace. "
+                   "NOTE the join, and note that BOTH spellings are real, on different tables: "
+                   "`measurements.simulationConditionId = conditions.conditionId`. measurements "
+                   "has no `conditionId`; conditions has no `simulationConditionId`. `residual` "
+                   "lives on simulations, not measurements. Call `list_data_tables` for the exact "
+                   "per-problem columns. Two things that bite: aggregate only NUMERIC columns "
+                   "(`avg(measurement)`, not `avg(observableId)` — a text column raises a "
+                   "Conversion Error), and DuckDB is not SQLite/pandas, so check a function "
+                   "exists before leaning on it. A worked shape: "
+                   "`SELECT m.observableId, m.simulationConditionId, count(*) n, "
+                   "avg(s.residual_weighted) bias FROM measurements m JOIN simulations s USING "
+                   "(observableId, simulationConditionId, time) GROUP BY 1, 2 ORDER BY abs(bias) "
+                   "DESC LIMIT 20`. "
                    "Prefer aggregations; rows capped at max_rows (default 50 — raise it only if you "
                    "truly need many rows). Args: sql, max_rows."),
-    "list_skills": "Available skills: each name with a description of what it covers.",
     "get_skill": "Read a skill in full. Args: name, file?.",
-    "get_errors": "Recent rejected operations / failed tool calls. Arg: limit.",
 }
 
 

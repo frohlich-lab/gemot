@@ -115,12 +115,17 @@ def _run_judge(work: Path, nll: float, sigma_report, calls=None):
                               work, {}, _ToolClock(), time.monotonic()))
 
 
-def test_the_judge_asks_the_diagnosis_for_the_residual_section_only(tmp_path, judge_calls):
-    """The projection into result.json reads `per_observable` and nothing else, so it asks for the
-    residual section only — the parameter half would be several kB the projection discards."""
+def test_the_judge_asks_for_the_residual_section_only_and_for_every_observable(tmp_path,
+                                                                                judge_calls):
+    """Two things pinned in one call. The projection into result.json reads `per_observable` and
+    nothing else, so it asks for the residual section only — the parameter half would be several
+    kB the projection discards. And it asks with `max_observables=0` (NO cap): the agent-facing
+    default of 12 exists for the agent's context window, while this projection is permanent and
+    is what every later analysis of the run reads, so a capped table here would silently lose
+    observables from result.json forever."""
     _run_judge(tmp_path, 100.0, _PLAUSIBLE, calls=judge_calls)
     asked = [kwargs for name, kwargs in judge_calls if name == "get_fit_diagnosis"]
-    assert asked == [{"sections": "residuals"}]
+    assert asked == [{"sections": "residuals", "max_observables": 0}]
 
 
 def test_each_run_records_only_its_own_calls(tmp_path, judge_calls):

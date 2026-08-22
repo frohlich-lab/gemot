@@ -283,7 +283,10 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     # wrapping both in one try threw that away over a failure to read the detail behind it.
     rollup = final.get("residual_structure") if isinstance(final, dict) else None
     try:
-        diagnosis = await call("get_fit_diagnosis", sections="residuals")
+        # max_observables=0: NO cap. The agent-facing default (12) exists for its context
+        # window; this projection lands in result.json permanently and is what every later
+        # analysis of the run reads, so it must carry every observable.
+        diagnosis = await call("get_fit_diagnosis", sections="residuals", max_observables=0)
     except Exception as exc:  # noqa: BLE001 - report-only diagnostic; never fail the judge on it
         print(f"  (residual-structure detail unavailable: {type(exc).__name__}: {exc})")
         diagnosis = None

@@ -182,3 +182,5 @@ def empty_session(empty_yaml, tmp_path):
         provenance_dir=str(tmp_path / "prov"),
         resolver=StubReferenceResolver(),
     )
+
+

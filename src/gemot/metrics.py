@@ -63,6 +63,11 @@ _RESULT_FIELDS = (
     # ("baseline" or the deviations) because a flat key is what you group a sweep by; the full
     # per-switch state is the `ablations` dict in result.json, read for the follow-up question.
     "ablation_arm",
+    # ...and the default-INDEPENDENT twin, because `ablation_arm` names only the deviations and so
+    # changes meaning when a DEFAULT changes: a sweep spanning 2026-08-15 has "baseline" rows with
+    # free_exponents on and off. Group by `ablation_arm` for continuity across an added arm, by
+    # `ablation_state` when correctness across a default flip matters.
+    "ablation_state",
     # Which upstream endpoint actually served the run, flattened out of `openrouter_endpoints`.
     # `openrouter_extra_body` records what routing ASKED for; these record what it GOT, and the two
     # differ whenever `provider.only` names more than one endpoint. `served_drifted` is the column
@@ -330,6 +335,22 @@ def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HIST
             existing = next(csv.reader(fh), None)
         if existing:
             fields = tuple(existing)
+            # ...unless the old header is a strict PREFIX of the current one, i.e. columns were
+            # only APPENDED. Then no existing column shifts, so the file can be migrated in place
+            # by rewriting the header and padding old rows. Without this, a column added to fix a
+            # cross-sweep ambiguity is silently dropped for exactly the long-lived history it was
+            # added for (`ablation_state`, 2026-08-15: every appended row would keep writing only
+            # the default-relative `ablation_arm` the new column exists to disambiguate).
+            if (len(fields) < len(HISTORY_FIELDS)
+                    and HISTORY_FIELDS[:len(fields)] == fields):
+                with history_path.open(newline="") as fh:
+                    old_rows = list(csv.DictReader(fh))
+                with history_path.open("w", newline="") as fh:
+                    w = csv.DictWriter(fh, fieldnames=HISTORY_FIELDS, extrasaction="ignore")
+                    w.writeheader()
+                    for r in old_rows:
+                        w.writerow({k: r.get(k, "") for k in HISTORY_FIELDS})
+                fields = HISTORY_FIELDS
     with history_path.open("a", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         if is_new:

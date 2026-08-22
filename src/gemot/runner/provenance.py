@@ -197,7 +197,12 @@ def _base_meta(scenario: Scenario, args: argparse.Namespace,
         # the deviations -- and rides in the metrics CSV; `ablations` is the full resolved state,
         # every switch recorded rather than only the non-default ones, so a silent absence can
         # never have to be read as "probably the default". See petab_harness.ablations.
+        # `ablation_state` is the third: `ablation_arm` names only the DEVIATIONS, so its meaning
+        # moves whenever a default does (after 2026-08-15 "baseline" carries free_exponents=on
+        # where it used to carry off). Grouping a sweep that spans such a commit on `arm` alone
+        # pools opposite configurations; `ablation_state` spells every switch out and is safe.
         "ablation_arm": ablations.arm(),
+        "ablation_state": ablations.state_key(),
         "ablations": ablations.state(),
         # Which OmniPath answered, and from when. A pinned snapshot that nothing records is the
         # `git_sha +dirty` problem in a new costume; None when the run used the hosted service.

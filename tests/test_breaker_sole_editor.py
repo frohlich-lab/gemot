@@ -362,3 +362,61 @@ def test_a_non_transport_failure_on_the_sole_editor_is_still_returned():
     _wrap_tools_with_circuit_breaker([tool], state)
     result = asyncio.run(tool.coroutine(runtime=None, justification="j"))
     assert isinstance(result, tuple) and "bad argument shape" in result[0]
+
+
+# ------------------------------------------------------------------ verdict-shape protection
+def test_a_verdict_payload_is_not_a_breaker_error():
+    """Fix-me feedback shaped `{"ok": false, "issues": [...]}` with NO `error` key (the
+    draft-era lint shape) must not count as a tool failure: classifying it as one collapsed
+    every dirty verdict to the constant signature "tool error" — so the
+    different-errors-reset-the-streak protection could never fire, and three consecutive
+    verdicts disabled the tool (7 of 18 draft-arm runs, sneyd/fujita A/B). No current tool
+    emits the shape; the carve-out is pinned so any future verdict-style payload reads right."""
+    from petab_harness.agent.circuit_breaker import _result_error
+
+    verdict = {"ok": False, "issues": ["Unknown parameter id 'kdim_EGFR'"], "warnings": []}
+    assert _result_error(None, {"structured_content": verdict}) is None
+    # ...but a REAL failure (ok:false WITH an error) still counts, with its own signature.
+    failure = {"ok": False, "error": "server exploded"}
+    assert _result_error(None, {"structured_content": failure}) == "server exploded"
+    # The text-content fallback path applies the same rule.
+    import json as _j
+    assert _result_error([{"type": "text", "text": _j.dumps(verdict)}], None) is None
+    assert _result_error([{"type": "text", "text": _j.dumps(failure)}], None) == "server exploded"
+
+
+def test_a_verdict_is_identified_by_issues_not_by_a_missing_error_key():
+    """The lint exemption keys POSITIVELY on `issues`. Keying on "no `error` key" instead would
+    exempt two shapes that are real failures: an empty `error` (which signs the streak with "",
+    handing the model an escalation carrying no error text) and a bare `{"ok": false}` — the
+    shape a HOSTED bio server may use, and those are the flaky ones the breaker exists for."""
+    from petab_harness.agent.circuit_breaker import _result_error
+
+    assert _result_error(None, {"structured_content": {"ok": False, "error": ""}}) == "tool error"
+    assert _result_error(None, {"structured_content": {"ok": False}}) == "tool error"
+    assert _result_error(None, {"structured_content": {"ok": False, "issues": []}}) is None
+
+
+def test_a_never_disabled_tool_still_escalates_on_the_RESULT_path():
+    """A never-disabled tool that reports errors as RESULTS (`{"ok": false, "error": ...}`)
+    never raises — so the exception-path escalation cannot fire. Without a result-path
+    escalation, an agent stuck on one bad call shape loops on byte-identical feedback to the
+    turn limit: no disable, no escalation, nothing it can see."""
+    import json as _j
+
+    payload = _j.dumps({"ok": False, "error": "make_changes: `old_string` not found"})
+    tool = _FakeTool("make_changes", args=_ARGS_SCHEMA,
+                     record=None, fail_with=None)
+
+    async def _always_error(runtime=None, **kw):
+        return ([{"type": "text", "text": payload}], {"structured_content": _j.loads(payload)})
+
+    tool.coroutine = _always_error
+    state = _new_breaker_state()
+    _wrap_tools_with_circuit_breaker([tool], state)
+    outs = [asyncio.run(tool.coroutine(runtime=None, justification="j"))
+            for _ in range(_TOOL_ERROR_DISABLE_THRESHOLD)]
+    assert "make_changes" not in state["disabled"]         # never cut...
+    text = "".join(b["text"] for b in outs[-1][0] if isinstance(b, dict))
+    assert "REPEATING THIS CALL WILL FAIL AGAIN" in text   # ...but the wording escalates
+    assert "old_string` not found" in text                 # original error still reaches it

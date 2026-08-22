@@ -65,7 +65,7 @@ dependencies = [
 # reports green, which is how a broken _trim_europepmc_search and an uncurated `general-purpose`
 # subagent (issue #112) each stayed invisible. Phoenix and W&B are deliberately NOT pulled in --
 # no test touches them, and they are much heavier than the driver itself.
-dev = ["pytest>=7", "pytest-asyncio>=0.23", "petab-mcp[agent]"]
+dev = ["pytest>=7", "pytest-asyncio>=0.23", "pytest-xdist>=3", "petab-mcp[agent]"]
 
 # The deepagents driver stack: what the analyst panel actually runs on, and the only part of the
 # harness the test suite exercises. Split out from `harness` so `dev` can depend on exactly this
@@ -137,3 +137,17 @@ include = ["src/petab_mcp", "src/petab_harness", "tests", "README.md", "LICENSE"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+# Two xdist workers by default, so a bare `pytest` is parallel everywhere -- locally and on the
+# 2-core GitHub runner, which is why the number is 2 rather than `auto`.
+#
+# The scaling is poor and knowing why saves re-testing it: 8 workers cut the suite from 662s to
+# 306s, only 2.2x. `conftest.amici_build_root` is session-scoped so one AMICI build root is shared
+# and the toy model compiles ONCE (~60-90s); under xdist each worker is its own process with its
+# own root, so that compile is paid per worker and eats most of what the parallelism buys. Raising
+# the worker count mostly buys more compiles. Making it scale means sharing one root across workers
+# behind a file lock, which is a real change, not a flag.
+#
+# `-n` here means pytest-xdist is REQUIRED, not optional: without it pytest exits 4 on an
+# unrecognised argument before running anything. Hence pytest-xdist in the `dev` extra above, which
+# is what CI installs.
+addopts = ["-n", "2"]

@@ -26,7 +26,7 @@ from ..prompts import _DISABLED_TOOL_HINT_DEFAULT, _DISABLED_TOOL_HINTS
 _TOOL_ERROR_DISABLE_THRESHOLD = 3   # consecutive identical errors from one tool before it is cut
 
 # Tools the breaker may NEVER disable, however often they fail. `make_changes` is the run's only
-# editor: disabling it does not degrade the run, it GUARANTEES `no_model_built`, because nothing
+# committer: disabling it does not degrade the run, it GUARANTEES `no_model_built`, because nothing
 # else can author a model or move a bound. Observed in the August sweep — xiaomi/mimo-v2.5 sent
 # `parameters` as a JSON *string*, three identical client-side validation errors tripped the
 # breaker, and the run then received "TOOL DISABLED ... Do NOT call it again" 98 times and scored
@@ -34,10 +34,23 @@ _TOOL_ERROR_DISABLE_THRESHOLD = 3   # consecutive identical errors from one tool
 # `_wrap_tools_with_circuit_breaker`); the 3-strike path simply never got the same guard.
 # These tools escalate instead: the error is returned with an added instruction to CHANGE the
 # call's shape, which is recoverable, where a disable is not.
-_NEVER_DISABLE = frozenset({"make_changes"})
+#
+# The same sole-editor argument covers every rejection `make_changes` can raise, and they are all
+# REQUEST-SPECIFIC: three `unknown_reaction_id`/`malformed_reaction`/`duplicate_reaction_id`
+# rejections in a row mean three bad edits, not a dead tool. (The draft era reached the same
+# conclusion for lint_draft/edit_draft/write_draft, and the substring-patch surface that briefly
+# replaced them; both are gone — editing is `make_changes` alone, which was already never-disable.)
+#
+# `get_model` is here by the VERIFICATION-ONLY rule: a read cannot be "stuck" in the sense this
+# breaker models, so the 3-strike heuristic does not apply to it. It is the read of the model as
+# WRITTEN, and while `model_edits` addresses reactions by id — so a lost read is less crippling
+# than when edits had to quote text — it is still what a `base_version=N` fork is inspected with.
+# It is registered without `ctx.run`, so its errors RAISE and would otherwise reach the 3-strike
+# path.
+_NEVER_DISABLE = frozenset({"make_changes", "get_model"})
 
 _ESCALATION = (
-    " — this is the {n}th identical failure. `{name}` is the only tool that can change the model, "
+    " — this is the {n}th identical failure. `{name}` is part of the model-editing loop, "
     "so it stays available, but REPEATING THIS CALL WILL FAIL AGAIN. Change the SHAPE of the "
     "arguments, not just their values: check each argument's type against the tool schema "
     "(a list must be a JSON array, not a string containing one), and re-read the error above."
@@ -118,11 +131,19 @@ def _result_error(content: Any, artifact: Any) -> str | None:
     exposes in the artifact's ``structured_content`` and in the text content. A rejected
     *operation* (``{"committed": false}`` — e.g. a lint failure the agent should fix and retry)
     is deliberately NOT treated as a breaker error: that is the normal edit/retry feedback loop.
+
+    ``ok: false`` alone is NOT a failure either — it must carry an ``error`` key. A VERDICT
+    payload (``{"ok": false, "issues": [...]}`` with no error — the draft-era lint shape) is a
+    tool doing its job: treating it as an error collapsed every fix-me verdict to the constant
+    signature "tool error", so the documented different-errors-reset-the-streak protection could
+    never fire, and three consecutive verdicts — three DIFFERENT issues, in the observed trips —
+    disabled the tool (7 of 18 draft-arm runs, sneyd/fujita A/B). No current tool emits the
+    shape, but the carve-out stays: it is the correct reading of any future verdict-style payload.
     """
     if isinstance(artifact, dict):
         sc = artifact.get("structured_content")
         if isinstance(sc, dict) and sc.get("ok") is False:
-            return str(sc.get("error") or "tool error")
+            return _verdict_or_error(sc)
         if artifact.get("isError") or artifact.get("is_error"):
             return "tool error"
     # Fallback: concatenate any text content blocks and look for the {"ok": false} shape.
@@ -141,8 +162,25 @@ def _result_error(content: Any, artifact: Any) -> str | None:
     except Exception:
         return None
     if isinstance(obj, dict) and obj.get("ok") is False:
-        return str(obj.get("error") or "tool error")
+        return _verdict_or_error(obj)
     return None
+
+
+def _verdict_or_error(payload: dict) -> str | None:
+    """For an ``ok: false`` payload: None if it is a VERDICT, else its error string.
+
+    A verdict is identified POSITIVELY, by carrying ``issues`` without an ``error``.
+    Keying on "no ``error`` key" instead would exempt two shapes that are real failures: an
+    empty ``error`` (which then signs the streak with "", handing the model an escalation with
+    no error text), and a bare ``{"ok": false}`` — the shape a HOSTED bio server may use, and
+    those are the flaky ones the breaker exists for.
+    """
+    err = payload.get("error")
+    if err:
+        return str(err)
+    if "issues" in payload:
+        return None
+    return "tool error"
 
 
 def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
@@ -161,8 +199,8 @@ def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
         # and nothing in `events`: a run that scored nothing with no recorded reason, which is
         # the exact invisibility the August sweep had to be reverse-engineered from.
         if streak["count"] == _TOOL_ERROR_DISABLE_THRESHOLD:
-            msg = (f"`{name}` has failed {streak['count']} times with the same error and is the "
-                   f"only editor, so it is NOT disabled; escalating instead: {sig}")
+            msg = (f"`{name}` has failed {streak['count']} times with the same error but is part "
+                   f"of the model-editing loop, so it is NOT disabled; escalating instead: {sig}")
             state["events"].append(msg)
             print(f"[circuit-breaker] {msg}")
         return False
@@ -279,6 +317,18 @@ def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
                 _note_call(state, name, _CALL_TOOL_ERROR)
                 if _record_error(state, name, err) and isinstance(content, list):
                     return (content + _breaker_message(name, hint), artifact)
+                if name in _NEVER_DISABLE:
+                    # These tools are never cut, so a repeated failure has NO other feedback
+                    # path: the escalation below is applied in the `except` branch, but these
+                    # tools report their errors as RESULTS (`ctx.run` converts OperationError to
+                    # `{"ok": false, "error": ...}`), which never raises. Without this, an editor
+                    # stuck on one bad `old_string` loops on byte-identical feedback until the
+                    # turn limit — no disable, no escalation, only a stdout line it cannot see.
+                    n = state["streaks"].get(name, {}).get("count", 1)
+                    if n >= _TOOL_ERROR_DISABLE_THRESHOLD and isinstance(content, list):
+                        note = [{"type": "text",
+                                 "text": _ESCALATION.format(n=n, name=name)}]
+                        return (content + note, artifact)
                 return result
 
             try:  # keep the original signature so langchain still injects `runtime` correctly

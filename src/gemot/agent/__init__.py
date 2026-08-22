@@ -93,6 +93,7 @@ from .guards import (
 from .literature import _trim_europepmc_search, _wrap_literature_recorder
 from .probe import _model_committed
 from .subagents import (
+    ACTIVE_SPECS,
     ANALYSTS,
     _build_subagents,
     _disable_general_purpose_subagent,

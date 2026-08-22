@@ -4,9 +4,10 @@ The Phoenix trace (conversation/tokens/sub-agents) persists in the collector on 
 fetched lazily by the viewer via ``phoenix_trace_id``. What does NOT survive is the server's
 version store under ``work/.petab_mcp`` — the next run of the same example ``rmtree``s ``work/``.
 So at run end we copy the lightweight, durable pieces (``result.json`` + each version's
-``meta.json`` / ``model.ant`` / ``parameters.tsv`` / ``simulations.json`` + ``provenance.jsonl``)
-into ``examples/_runs_archive/<run_id>/``, laid out as ``.petab_mcp/`` so :mod:`.bundle` reads it
-unchanged. Best-effort: any failure is swallowed so archiving never breaks a run.
+``meta.json`` / ``model.ant`` / ``parameters.tsv`` / ``simulations.json`` + ``provenance.jsonl``
++ ``errors.jsonl``) into ``examples/_runs_archive/<run_id>/``, laid out as ``.petab_mcp/`` so
+:mod:`.bundle` reads it unchanged. Best-effort: any failure is swallowed so archiving never
+breaks a run.
 """
 
 from __future__ import annotations
@@ -19,7 +20,11 @@ from .. import paths
 
 # per-version files worth keeping — small + sufficient for the trajectory panel. The big
 # pypesto_result.hdf5 / optimization.json are deliberately skipped to keep the archive lean.
-_VERSION_FILES = ("meta.json", "model.ant", "parameters.tsv", "simulations.json")
+_VERSION_FILES = ("meta.json", "model.ant", "parameters.tsv", "simulations.json",
+                  # The caller's own text. Without it the post-hoc lineage check the source
+                  # exists for (`child.source == parent.source + ops`) dies with work/ on the
+                  # next run of the same example — the identical hole errors.jsonl had.
+                  "model_source.ant")
 
 
 def default_archive_root() -> Path:
@@ -108,7 +113,16 @@ def archive_run(work: Path, result: dict, archive_root: Path | None = None) -> P
 
         store = work / ".petab_mcp"
         dest_store = dest / ".petab_mcp"
-        for name in ("provenance.jsonl", "HEAD"):
+        # `errors.jsonl` rides along with the event log because it is the only durable record of
+        # what the agent got WRONG: every rejected call, with the tool, the arguments and the
+        # message (petab_mcp.provenance.log_error). provenance.jsonl records what LANDED, so
+        # without this a finished run can be asked "what did it build?" but never "what did it
+        # try that the server refused?" — which is the rejection-class question every editing
+        # A/B has turned on (the 81%-statically-detectable figure that motivated draft editing,
+        # and the 0/120 re-measurement that retired it, both had to be reconstructed from live
+        # work dirs that the next run then wiped). It is small: 2-8 kB against provenance's
+        # 37-46 kB on the sweep runs, because it holds only failures.
+        for name in ("provenance.jsonl", "errors.jsonl", "HEAD"):
             src = store / name
             if src.is_file():
                 dest_store.mkdir(parents=True, exist_ok=True)

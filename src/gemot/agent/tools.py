@@ -14,7 +14,7 @@ the text the panel actually reads, and the reason every tool here needs an entry
 
 from __future__ import annotations
 
-from ..prompts import DATA_REGIMES_ENABLED, TOOL_DESCRIPTIONS
+from ..prompts import DATA_REGIMES_ENABLED, DIFF_EDITS_ENABLED, TOOL_DESCRIPTIONS
 
 # ---------------------------------------------------------------- tool exposure
 # Per the module docstring: each persona's set is as SMALL as its lens allows, and a tool it
@@ -35,7 +35,9 @@ MATHEMATICIAN_TOOLS = [
     "get_parameters",       # scales, bounds — identifiability / conditioning
     "get_fit_summary",
     "get_fitting_log",      # pyPESTO/Fides log: multistart spread, convergence, bounds
-    "get_skill",            # PEtab semantics behind the read (steady-state identifiability, etc.)
+    # get_skill is NOT here: every analyst fetched the same petab-model-building document once
+    # per spawn (203/203, 217/217, 115/115 across the A/B) — a deterministic call is a constant,
+    # so the skill is INLINED into the persona prompts (prompts.py) where it caches as prefix.
 ]
 
 # Systems scientist: is the mechanism real? The mechanism as written, what was measured
@@ -48,7 +50,6 @@ SYSTEMS_SCIENTIST_TOOLS = [
     # front than discovered after a topology has been built that cannot meet it.
     "get_data_regimes",
     "get_parameters",       # are the rate magnitudes plausible?
-    "get_skill",            # PEtab semantics behind the read (steady-state identifiability, etc.)
 ]
 
 # Signal-processing engineer: residuals as signals, entirely via SQL over the data.
@@ -60,7 +61,6 @@ SIGNAL_ENGINEER_TOOLS = [
     # keeps the routine shape/timescale/dose questions off the lottery of whether it thought to ask.
     "get_data_regimes",
     "get_fit_summary",
-    "get_skill",            # PEtab semantics behind the read (e.g. all times inf = steady state)
 ]
 
 # The orchestrator ("modeling lead") orients, delegates analysis to the three analysts, and
@@ -104,7 +104,8 @@ ORCHESTRATOR_TOOLS = [
     # of HEAD (runner/judge.py restores it before scoring), so a worse change never loses the best
     # model. restore_version REMAINS a server tool — the judge itself calls it — it is just not
     # exposed to the lead. Same reasoning that dropped get_fit_summary from this list.
-    "get_errors",
+    # get_errors / list_skills are NOT here: zero agent calls across all 37 A/B runs (and the
+    # earlier sweeps), while their schemas were re-sent every turn. Both remain server tools.
     # THE editor. One call authors the whole model (antimony=), sets estimation bounds/scale
     # (parameters=), or both — and always fits, snapshotting one version. It replaces the
     # set_model -> change_parameters -> fit cycle that was 55% of the lead's calls.
@@ -124,8 +125,16 @@ ORCHESTRATOR_TOOLS = [
     # matter rather than by discipline.
     # This costs tokens rather than saving them: nothing prunes history, so a fetched skill is
     # re-sent every subsequent turn. Both skills are kept short for exactly that reason.
-    "list_skills",
     "get_skill",
+    # The diff-edit read (ablation arm `diff_edits`, default ON since 2026-08-19 — subtracted below
+    # like get_data_regimes, which genuinely IS default-off): the raw Antimony of the COMMITTED
+    # model, which is the text
+    # the lead reads when it wants the model AS WRITTEN. `model_edits` addresses reactions by
+    # id, so this is no longer required for editing (get_model_structure is the cheaper read
+    # for that) — it is kept for reading a prior version's source before a base_version fork,
+    # and is a candidate for removal if the traces show it going unused. Baseline does not get
+    # it: its re-author route never needs the committed text verbatim.
+    "get_model",
     # NOTE: the UNBOUNDED data/diagnostic tools (get_measurements, query_data, get_fitting_log,
     # list_data_tables) are deliberately NOT here — they belong to the analyst subagents, since
     # their large results would pile up in the lead's re-sent history (the input-token cost). The
@@ -134,24 +143,34 @@ ORCHESTRATOR_TOOLS = [
     # residual SQL, the optimizer log, raw data characterization — to the analysts via `task`.
 ]
 
-# The ablation arm (see prompts.DATA_REGIMES_ENABLED). Applied to the lists AFTER they are
-# defined, so each persona's rationale above reads as the intended design and this is visibly a
-# subtraction from it — and so a future tool added to a list cannot forget to be gated.
-if not DATA_REGIMES_ENABLED:
-    for _lst in (ORCHESTRATOR_TOOLS, MATHEMATICIAN_TOOLS, SYSTEMS_SCIENTIST_TOOLS,
-                 SIGNAL_ENGINEER_TOOLS):
-        while "get_data_regimes" in _lst:
-            _lst.remove("get_data_regimes")
+#: Every curated list, so the arm strip and ALLOWED_TOOLS below cannot disagree about which
+#: lists exist. Adding a persona means adding it HERE, not at three call sites.
+_TOOLSETS = (ORCHESTRATOR_TOOLS, MATHEMATICIAN_TOOLS, SYSTEMS_SCIENTIST_TOOLS,
+             SIGNAL_ENGINEER_TOOLS)
+
+# The ablation arms. Applied to the lists AFTER they are defined, so each persona's rationale
+# above reads as the intended design and this is visibly a subtraction from it — and so a future
+# tool added to a list cannot forget to be gated. One strip helper, not one loop per arm.
+_ARM_TOOLS = (
+    (DATA_REGIMES_ENABLED, ("get_data_regimes",)),
+    (DIFF_EDITS_ENABLED, ("get_model",)),
+)
+for _on, _names in _ARM_TOOLS:
+    if _on:
+        continue
+    for _lst in _TOOLSETS:
+        _lst[:] = [n for n in _lst if n not in _names]
+
 
 
 # The full set handed to create_deep_agent: the union of the lead's tools and every
 # analyst's tools (deepagents resolves each subagent's `tools` names from this set).
-ALLOWED_TOOLS = set(
-    ORCHESTRATOR_TOOLS
-    + MATHEMATICIAN_TOOLS
-    + SYSTEMS_SCIENTIST_TOOLS
-    + SIGNAL_ENGINEER_TOOLS
-)
+# EVERY curated list. Omitting one silently disarms whatever rides on it: `_select_tools`
+# keeps only tools in this union, so an omitted list's tools never reach `tools_by_name` and
+# `_build_subagents` drops them from the spec with only a stdout print — a whole arm can be
+# unreachable with a green test suite (the roster test asserts NAMES). The draft era hit
+# exactly this with the editor's list.
+ALLOWED_TOOLS = set().union(*_TOOLSETS)
 
 
 def _trim_descriptions(tools: list) -> list:

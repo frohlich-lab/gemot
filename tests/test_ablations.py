@@ -120,10 +120,18 @@ _NOT_ABLATIONS = {
     "PETAB_BIO_CACHE_DIR": "plumbing: where a bio answer is read from, not what it says",
     "PETAB_MCP_BUILD_ROOT": "path for AMICI build artefacts",
     "PETAB_MCP_PROVENANCE_DIR": "path for provenance logs",
+    "PETAB_MCP_MAX_INPUT_TOKENS": "infrastructure: the model's real context window, fed to the "
+                                  "summarization middleware as a profile so its trigger is a "
+                                  "fraction of the true window instead of a flat 170k fallback — "
+                                  "changes when compaction fires, not what any answer is",
     "PETAB_MCP_REFERENCE_VALIDATION": "server validation mode; also a run.py flag, not an arm",
     "PETAB_MCP_REPO_ROOT": "path override for repo_root()",
     "PETAB_MCP_SKILLS_DIR": "path to the skills directory",
     "PETAB_MCP_YAML": "path to the PEtab problem",
+    "PETAB_REQUIRE_COLLECTOR": "refuse to fall back to a throwaway in-process Phoenix when no "
+                               "shared collector is configured — a safety interlock on the "
+                               "RECORD of a run, not on what the agent does, so it cannot move "
+                               "a result (a run either happens traced or does not happen)",
     "PHOENIX_COLLECTOR_ENDPOINT": "telemetry endpoint",
     "PHOENIX_PROJECT_NAME": "telemetry project name",
     "WANDB_PROJECT": "telemetry project name",
@@ -159,7 +167,7 @@ def test_no_unregistered_environment_switch_gates_behaviour():
 @pytest.mark.parametrize("spelling", ["0", "false", "FALSE", "no", "off", " Off ",
                                       "1", "true", "yes", "on", "anything", None])
 def test_the_server_gate_agrees_with_the_registry(monkeypatch, spelling):
-    """The ONE duplicated predicate in the repo must agree with the registry on every spelling.
+    """A duplicated predicate must agree with the registry on every spelling.
 
     ``petab_mcp.session`` gates its own data-regimes advice by reading ``PETAB_DATA_REGIMES``
     itself, because the server cannot import the harness (wrong direction) and the harness's
@@ -188,6 +196,35 @@ def test_the_server_gate_agrees_with_the_registry(monkeypatch, spelling):
     assert registry == server, (
         f"PETAB_DATA_REGIMES={spelling!r}: registry says {registry}, "
         f"petab_mcp.session says {server} — the duplicated predicate has drifted")
+
+
+@pytest.mark.parametrize("spelling", ["0", "false", "FALSE", "no", "off", " Off ",
+                                      "1", "true", "yes", "on", "anything", None])
+def test_the_diff_edits_server_gate_agrees_with_the_registry(monkeypatch, spelling):
+    """Same duplicated-predicate rule for the OTHER server-read arm: ``petab_mcp.server``
+    reads PETAB_DIFF_EDITS itself (registration-time, to pick the make_changes schema), so the
+    two spellings-of-truth must agree or a run is half-ablated — the prompt promising `edits`
+    while the schema refuses it, or vice versa."""
+    if spelling is None:
+        monkeypatch.delenv("PETAB_DIFF_EDITS", raising=False)
+    else:
+        monkeypatch.setenv("PETAB_DIFF_EDITS", spelling)
+
+    # A fresh interpreter, same as above: the registry side is read through module-level
+    # constants elsewhere, and the probe must answer for THIS environment.
+    probe = (
+        "import os,sys;"
+        "sys.path.insert(0, %r);"
+        "from petab_harness.ablations import enabled;"
+        "from petab_mcp.server import _diff_edits_enabled;"
+        "print(int(enabled('diff_edits')), int(_diff_edits_enabled()))" % str(SRC)
+    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    registry, server = out.stdout.split()
+    assert registry == server, (
+        f"PETAB_DIFF_EDITS={spelling!r}: registry says {registry}, "
+        f"petab_mcp.server says {server} — the duplicated predicate has drifted")
 
 
 def test_registered_ablations_are_actually_read_somewhere():

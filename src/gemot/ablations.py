@@ -146,6 +146,99 @@ ABLATIONS: tuple[Ablation, ...] = (
                "independence-audit pointer to the lead prompt and the server's structural "
                "nudges — they ship and are tested together. Measured HARMFUL as built; see above",
     ),
+    # DEFAULT ON since 2026-08-19 — for COST, not capability. Five A/Bs measured no outcome
+    # effect and a -28% token saving on alkan (p=0.0065); see the `effect` string below for
+    # the numbers and the size dependence. The successor to
+    # the retired draft_editing arm, keeping the one component of that design that measured WELL
+    # and deleting the rest. What the draft era established across three A/Bs (sneyd/fujita, 57
+    # draft-arm runs): (a) search/replace patching itself is reliable — 1.4% mechanical failure
+    # over 1,540 patches, ZERO Antimony-semantics failures, 0/84 unauthorized edits; (b) the
+    # apparatus around it was the cost — a separate editor subagent, draft files, a lint gate and
+    # a delegation protocol ran 2.0-2.5x the LLM calls of baseline with outcomes indistinguishable
+    # (and 0/7 vs 3/10 on the last fujita cell); (c) the original motivation had meanwhile
+    # expired — 0 of 120 make_changes calls on the lucarelli re-run were statically rejected,
+    # vs the 81% static-rejection rate that justified drafts. So: keep the patch semantics, put
+    # them ON make_changes (edits= list, all-or-nothing, same scored pipeline; base_version=
+    # patches a prior version's stored text = rollback-and-change in one call), and delete the
+    # subagent, the files, and the gate.
+    #
+    # Then search/replace itself was removed too, and the arm now addresses model elements BY ID
+    # rather than by quoted text. The reason: text patching requires the agent to reproduce its
+    # own prior text exactly, and it does not. Substring edits mismatched their target far more
+    # often than wholesale authoring did, which is why the reject rate, not the edit semantics,
+    # was the binding constraint. An ID names a reaction whatever its text says.
+    Ablation(
+        name="diff_edits",
+        env="PETAB_DIFF_EDITS",
+        default_on=True,
+        changes_prompt=True,
+        effect="ON registers make_changes WITH `model_edits` (a BATCH of ID-addressed operations "
+               "— add_reaction, remove_reaction, set_rate_law, set_initial, rename — each an "
+               "Antimony statement, applied server-side, all-or-nothing) + `base_version` (edit a "
+               "prior version's stored source), adds `get_model` to the lead's toolset, and adds "
+               "the edit-by-operation guidance to its prompt. Batched deliberately: one fit per "
+               "call, not per edit. MEASURED over five A/Bs (~90 runs, sneyd/fujita/isensee/alkan): "
+               "NO outcome effect — sneyd 5/10 vs 6/10, fujita 1/10 vs 3/10, isensee 2/8 vs 1/7, "
+               "alkan 1/10 vs 1/10 — but a real COST saving that scales with model size. On alkan "
+               "(6v6 with full token accounting) median 7.03M vs 9.77M total tokens (-28%), "
+               "completion 110k vs 182k (-40%), 42 vs 48 LLM calls, exact two-sided "
+               "Mann-Whitney p = 0.0065. It does NOT generalise down: sneyd and fujita measured at "
+               "PARITY, because a wholesale re-author is ~292 tokens on sneyd and ~462 on fujita "
+               "but thousands on alkan's 53-reaction models, while a structured batch stays ~80. "
+               "Rejections also fell from 74 (substring arm) to 17 across 23 runs, with zero "
+               "unknown-reaction-id and zero base_version-alone errors. DEFAULT ON for the cost, "
+               "not for capability",
+    ),
+    # DEFAULT ON since 2026-08-15, when the A/B ran: measured helpful on sneyd (7/10 vs 2/10
+    # basin-hit at n=10/cell, p=0.07). Motivated by the sneyd basin post-mortem (50 runs,
+    # 32 with recoverable first-commit telemetry): the single separating variable between runs
+    # that found the reference structure and runs that plateaued was the estimated-parameter
+    # count of the FIRST committed model (k1 >= 11: 12/12 IN vs 2/20 OUT, AUC 0.963, MWU
+    # p = 1.4e-5, replicating in both sweeps and all three arms) — and decomposing k1 on the 15
+    # readable model bodies, free Hill/gating exponents carry 48% of the gap (IN mean 2.33 vs
+    # OUT 0.67). Topology does NOT separate (same 4-state/5-reaction graphs on both sides), and
+    # "prefer saturating rate laws" is vacuous (0/15 first commits were pure mass action). The
+    # sharpest case: one OUT run wrote the winners' exact bell-shaped algebra with the exponents
+    # HARDCODED as the literal 2 (k1=7, dBIC +24.9); an IN run with the same structure and free
+    # n_* finished at -105.7. This arm turns that one difference into an instruction. All of the
+    # above is observational — whether FORCING free exponents reproduces the association is
+    # exactly what the A/B must test (readout: sneyd basin-hit-rate, scored against the
+    # capacity-without-structure failure mode: 12 params across 3 reactions, trimmed to 7,
+    # finished +31.3).
+    Ablation(
+        name="free_exponents",
+        env="PETAB_FREE_EXPONENTS",
+        # ON by default: measured, and the A/B moved both the mechanism and the outcome.
+        # 2026-08-15 sneyd 2x2 (jobs 51901211/51901212, 10 runs/cell, sha 8fe8b8a): basin-hit
+        # 7/10 vs 2/10 (median dBIC -22.0 vs +15.7), and the FIRST commit moved exactly the
+        # targeted component — free exponents 1.4 -> 3.4 per model, hardcoded exponents 0.9 -> 0,
+        # reactions/rate constants flat (so it is not "build bigger"), k1 median 10 -> 12.5 with
+        # fe's minimum equal to base's maximum.
+        #
+        # HOW STRONG THIS IS, honestly. The MECHANISM half is what carries the decision: the
+        # intervention changed the component it named and nothing else, which is a within-arm
+        # fact and does not depend on the rate comparison. The RATE half is weak — 7/10 vs 2/10
+        # is Fisher p=0.070 two-sided at n=10/cell, against the n~50 that FINDINGS.md says sneyd
+        # bimodality demands, and the control drew 2/10 against its own 30-44% history, so some
+        # of the gap is a low control. Only sneyd is measured; the clause is generic but its
+        # effect elsewhere is not. Compare data_regimes above, whose verdict rests on n=115.
+        #
+        # NOT claimed: that "exponent freedom is the carrier and k1 its proxy". The tempting
+        # statistic (freeExp>=3 is 9/14 IN vs 0/6 below) pools BOTH arms of an intervention that
+        # exists to force freeExp up, so arm assignment drives predictor and outcome together and
+        # it cannot separate them. What is fair to say is narrower: the two control-arm winners
+        # opened below the k1>=11 threshold while carrying 3 free exponents, which is one
+        # observation against k1 being the whole story — a hypothesis for a bigger sweep.
+        default_on=True,
+        changes_prompt=True,
+        # Per the field contract this describes the NON-DEFAULT side (=0), like every other entry.
+        effect="OFF drops the lead-prompt clause that tells it to declare every "
+               "cooperativity/gating exponent as an estimated parameter WHENEVER the term is "
+               "introduced — first model, later edit, or sharpening an existing rate law "
+               "(never hardcoding 1 or 2) and trim after the first fit — i.e. the pre-2026-08-15 "
+               "behaviour. ON is the default: measured helpful on sneyd, 7/10 vs 2/10 basin-hit "
+               "at n=10/cell (p=0.07); see the note above for what that does and does not support",
+    ),
     Ablation(
         name="bio_literature",
         env="PETAB_BIO_LITERATURE",
@@ -188,6 +281,22 @@ def arm() -> str:
     """
     off = [f"{a.name}={'on' if a.enabled() else 'off'}" for a in ABLATIONS if not a.is_default()]
     return ",".join(off) if off else "baseline"
+
+
+def state_key() -> str:
+    """EVERY switch's resolved value, in registry order — the default-INDEPENDENT column.
+
+    :func:`arm` names only the deviations, which is what you want to group by but is defined
+    RELATIVE to the current defaults. So when a default flips, the same string denotes a
+    different configuration on either side of that commit: after 2026-08-15 ``"baseline"`` means
+    ``free_exponents=on`` where before it meant ``off``, and pooling a sweep that spans the
+    change silently averages opposite configurations — precisely the failure the module
+    docstring's "Recorded" rule exists to prevent, reintroduced by the default rather than by a
+    missing column. This string always says what actually ran, so a groupby on it is safe across
+    any default change (and a new arm appended at its default DOES move it, which is the
+    trade — group by `arm` for continuity, by this for correctness).
+    """
+    return ",".join(f"{name}={'on' if on else 'off'}" for name, on in state().items())
 
 
 def describe(*, use_color: bool = False) -> str:

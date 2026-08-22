@@ -91,7 +91,13 @@ def _residual_structure_fields(diagnosis, rollup=None) -> dict | None:
         })
     out = {
         "rollup_status": "read" if read else "unavailable",
-        "rows_status": "read" if isinstance(per, list) else "unavailable",
+        # "truncated" is its own status: since 2026-08-16 fit_diagnosis caps per_observable on
+        # large problems, and a sweep aggregate over a worst-chi2-biased subsample that calls
+        # itself "read" is the silent-truncation failure this field exists to prevent.
+        "rows_status": ("truncated" if isinstance(per, list) and (diagnosis or {}).get("omitted")
+                        else "read" if isinstance(per, list) else "unavailable"),
+        **({"rows_omitted": (diagnosis or {}).get("omitted")} if isinstance(per, list)
+           and (diagnosis or {}).get("omitted") else {}),
         "per_observable": per_obs,
     }
     if read:

@@ -172,7 +172,7 @@ def fides_maxtime_options(per_start_timeout: float | None = None) -> dict:
     be delivered through ``PETAB_MCP_FIT_PER_START_TIMEOUT`` after the fact. The cap that leaves
     ~80% of a model's starts terminating on their own convergence criterion (rather than being
     truncated at MAXTIME, which makes Fides return best-so-far and silently loosens the bar) spans
-    two and a half orders of magnitude across the suite — 60 s on ``perelson`` against 14400 s on
+    two and a half orders of magnitude across the suite — 60 s on ``perelson`` against 28800 s on
     ``raimundez`` — so one global default cannot serve both without either wasting the cluster or
     committing an under-converged reference. See each ``run.py``'s ``REFIT_PER_START_TIMEOUT``."""
     timeout = FIT_PER_START_TIMEOUT_S if per_start_timeout is None else float(per_start_timeout)

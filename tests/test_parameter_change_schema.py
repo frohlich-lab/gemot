@@ -250,3 +250,23 @@ def test_make_changes_still_advertises_an_array_schema():
     array_branch = next(b for b in branches if b.get("type") == "array")
     assert array_branch["type"] == "array"          # still an array, not anyOf[array, object]
     assert not any(b.get("type") == "object" for b in branches)
+
+
+def test_default_bounds_never_dip_below_zero_for_a_zero_nominal():
+    """A zero nominal is an initial CONCENTRATION in practice (reconcile minting <sid>_init for
+    an empty pool). The old bracket rule (`nominal - 1.0`) gave every such row a -1.0 lower
+    bound — fixed rows, so never sampled, but visible in every parameter read and draft TSV,
+    where it reads as a live negative-concentration box (and derailed a segfault investigation).
+    Zero is in [0, ub]; the bracket contract holds without dipping."""
+    from petab_mcp.parameters import _default_bounds
+
+    lb, ub = _default_bounds(0)
+    assert lb == 0.0 and ub > 0
+    lb, ub = _default_bounds(0.0)
+    assert lb == 0.0
+    # a genuinely negative nominal keeps the dip — correct for log-space/difference parameters
+    lb, ub = _default_bounds(-2.5)
+    assert lb <= -3.5
+    # positive nominals bracket as before
+    lb, ub = _default_bounds(5.0)
+    assert lb <= 5.0 <= ub

@@ -245,6 +245,23 @@ def setup_phoenix_tracing(
     Returns a :class:`TracingHandle` on success, or ``None`` if the tracing packages are
     missing (a hint is printed) — the caller then simply runs without tracing.
     """
+    # THE INTERLOCK FIRST, before anything that can `return None`. A batch run must never end
+    # up untraced, and there are three ways to get there: no endpoint configured (checked
+    # below), and the two ImportError paths under it — a partial or mid-upgrade environment
+    # where arize-phoenix-otel or the LangChain instrumentor is missing prints a hint and
+    # returns None. The slurm gates cannot see that: they check the COLLECTOR, which is alive.
+    # So a package gap would reproduce the 2026-08-16 outcome exactly — full budget spent, zero
+    # spans — with all three layers reporting success.
+    _require = os.environ.get("PETAB_REQUIRE_COLLECTOR", "0").strip().lower() not in (
+        "0", "false", "no", "off", "")
+
+    def _refuse(why: str) -> None:
+        raise RuntimeError(
+            f"PETAB_REQUIRE_COLLECTOR is set but tracing cannot be established: {why}. "
+            "Refusing to run untraced: the run would cost its full compute budget and leave "
+            "nothing to analyse."
+        )
+
     try:
         from phoenix.otel import register
     except ImportError:
@@ -253,6 +270,8 @@ def setup_phoenix_tracing(
             "  Install the runner requirements to enable it, or:\n"
             "    pip install arize-phoenix arize-phoenix-otel openinference-instrumentation-langchain"
         )
+        if _require:
+            _refuse("`arize-phoenix-otel` is not installed")
         return None
 
     try:
@@ -263,11 +282,31 @@ def setup_phoenix_tracing(
             "running without tracing. Install with:\n"
             "    pip install openinference-instrumentation-langchain"
         )
+        if _require:
+            _refuse("`openinference-instrumentation-langchain` is not installed")
         return None
 
     # Only auto-launch a local app when the user didn't point us at an external collector.
     explicit_endpoint = endpoint or os.environ.get("PHOENIX_COLLECTOR_ENDPOINT") \
         or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    # A BATCH run must never take the throwaway-local-app path. An in-process Phoenix dies with
+    # the task and takes every span with it, so the run burns its whole budget and produces
+    # nothing analysable — measured on 2026-08-16 at 40 tasks / ~26 CPU-hours, discovered only
+    # when the trace pull came back 0/40. slurm/array_task.sh and slurm/make_sweep.py both refuse
+    # to start such a run; this is the same rule one layer down, so that stripping the endpoint
+    # between the task gate and here cannot silently reinstate the fallback.
+    #
+    # SCOPE, precisely: array_task.sh is the only thing that sets this variable today, so this
+    # is a backstop for the sweep path, NOT protection for callers that bypass it. A hand-run
+    # `python run.py` or recover_run.py still gets the local app unless it exports
+    # PETAB_REQUIRE_COLLECTOR=1 itself — deliberate (interactive runs want the local app), but
+    # it does mean "the third layer covers bypassing callers" would be false.
+    if _require and not explicit_endpoint:
+        _refuse(
+            "no collector endpoint is configured (PHOENIX_COLLECTOR_ENDPOINT / "
+            "OTEL_EXPORTER_OTLP_ENDPOINT are unset), and a throwaway in-process Phoenix dies "
+            "with this process. Start the shared collector (slurm/phoenix_ctl.sh start)"
+        )
     local_session = None
     if launch and not explicit_endpoint:
         try:
@@ -355,7 +394,7 @@ _RESULT_METRIC_KEYS = (
     "head_version", "n_errors", "tool_calls",
     "wall_seconds", "compute_seconds", "llm_seconds",
     "compile_seconds", "fit_seconds", "n_compiles", "n_fits",
-    "recursion_limit", "n_starts", "temperature", "git_sha", "ablation_arm",
+    "recursion_limit", "n_starts", "temperature", "git_sha", "ablation_arm", "ablation_state",
 )
 
 
