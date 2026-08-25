@@ -97,4 +97,9 @@ jobs:
           node-version: "20"
 
       - name: Run tests
-        run: python -m pytest -v
+        # -n 2 lives HERE, not in pyproject's addopts, so it applies to CI (a 2-core runner)
+        # without taxing every local invocation: in addopts it made pytest-xdist a hard
+        # dependency (bare pytest exits 4 on the unrecognised argument), broke --pdb, and made
+        # even a single-file debug run spawn two workers -- each with its own session-scoped
+        # amici_build_root, so the ~60-90s toy-model compile was paid twice for no parallelism.
+        run: python -m pytest -v -n 2

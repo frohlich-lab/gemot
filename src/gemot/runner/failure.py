@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 from .provenance import _now_iso
@@ -54,6 +55,21 @@ def _should_reraise(exc: BaseException) -> bool:
     return False
 
 
+def _committed_versions(work: Path) -> "int | None":
+    """The run's HEAD version number from the on-disk store, or ``None`` if it cannot be read.
+
+    Versions are ``work/prov/versions/v0..vN`` and ``v0`` is the pristine baseline, so the count
+    minus one is how many commits the agent actually made -- the same quantity the judge reports
+    as ``head_version``/``n_ops``.
+    """
+    try:
+        vs = [d.name for d in (work / "prov" / "versions").iterdir()
+              if d.is_dir() and re.fullmatch(r"v\d+", d.name)]
+    except Exception:  # pragma: no cover - no store, or an unreadable one
+        return None
+    return max(int(v[1:]) for v in vs) if vs else None
+
+
 def _write_degraded_result(work: Path, base_meta: dict, scenario: Scenario,
                            reason: str, server_returncode: int | None = None,
                            clock=None) -> dict:
@@ -94,6 +110,13 @@ def _write_degraded_result(work: Path, base_meta: dict, scenario: Scenario,
         # runs that struggled. `clock` is None only when the abort predates the session.
         **({"tool_calls": clock.calls, "tool_call_counts": dict(clock.by_tool),
            "edit_rejects": clock.reject_summary()} if clock else {}),
+        # `n_ops` read off the version store rather than the judge, which never ran. Without it
+        # `experiments._did_modeling_work` sees no n_ops and no n_fits, `is_noop_infra_abort`
+        # returns True, and the run is DROPPED from the aggregation as pure scoring noise -- which
+        # contradicts that function's own rule ("A LATE abort that did work is deliberately NOT
+        # one of these"). bachmann 52859568_0 aborted with 14 completed fits and would have been
+        # discarded on exactly this.
+        **({"n_ops": n_ops} if (n_ops := _committed_versions(work)) is not None else {}),
     }
     (work / "result.json").write_text(json.dumps(result, indent=2))
     return result

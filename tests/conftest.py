@@ -112,6 +112,35 @@ def session(yaml_path, tmp_path):
     )
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _private_tempdir_per_worker(tmp_path_factory):
+    """Give each xdist worker its own ``tempfile.gettempdir()``.
+
+    `amici_build_root` below is already worker-private, but only tests that ASK for it get that
+    isolation. Anything constructing a server without an explicit `build_root` --
+    `create_server(...)` in test_make_changes/test_server, the commonest shape -- falls back to
+    `AmiciEngine`'s default, `tempfile.gettempdir()/petab_mcp_amici`. That is ONE directory shared
+    by every worker AND by every concurrent test session on the machine, keyed by the hash of the
+    same toy model nearly all of them use. Workers then compile into and clear the same
+    `pypesto_<hash>` path, and one of them loses:
+
+        fit rejected: [Errno 2] No such file or directory:
+        '/tmp/.../petab_mcp_amici/pypesto_10ba47402a196890'
+
+    reported as an ill-posed model, which is a wrong and expensive diagnosis. Raising `-n` from 4
+    to 8 made it show up; it was always a race, just a narrower one. `tempfile.gettempdir()`
+    returns `tempfile.tempdir` when set, so pointing that at the worker's own tree fixes every
+    caller of the default at once rather than one test helper at a time.
+    """
+    import tempfile
+    previous = tempfile.tempdir
+    tempfile.tempdir = str(tmp_path_factory.mktemp("tmpdir"))
+    try:
+        yield
+    finally:
+        tempfile.tempdir = previous
+
+
 @pytest.fixture(scope="session")
 def amici_build_root(tmp_path_factory):
     """One AMICI build root shared by the whole test session.

@@ -156,7 +156,9 @@ it is **SQL over the data** via DuckDB, so you compute the breakdown you want:
   `(m - s) / σ` on the observable scale — the χ² term, reproducing PEtab's `calculate_chi2`),
   and the evaluated noise σ (`noise`).
 - The last fit's **pyPESTO multistart** is queryable too: `optimization_starts` (one row per
-  start, `start`=0 is best — `fval`, `time`, `n_fval`/`n_grad`/`n_hess`, `exitflag`, `message`)
+  start, `start`=0 is best — `fval`, `time`, `n_fval`/`n_grad`/`n_hess`; the per-start
+  `exitflag`/`message` are no longer columns — convergence is reported once per fit as an
+  `exitflag_counts` histogram)
   and `optimization_trace` (the objective `fval` per `start`/`iteration`), so convergence and
   multistart spread are a SQL query away (`SELECT count(*), min(fval), max(fval) FROM
   optimization_starts`). These are **persisted per version** (as `optimization.json` plus a

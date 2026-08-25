@@ -21,7 +21,7 @@ from mcp import ClientSession
 from .. import ablations
 from .failure import _should_reraise, _summarize_exc, _write_degraded_result
 from .judge import _judge
-from .clock import _make_call, _wrap_tool_clock
+from .clock import _make_call, _wrap_call_timeout, _wrap_tool_clock
 from .provenance import _base_meta, _write_live_marker
 from ..scenario import Baseline, Scenario
 
@@ -38,8 +38,14 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
     Returns ``(exit_code, result)`` (see :func:`_judge`).
     """
     t0 = time.monotonic()
-    # Capture the un-timed call handle BEFORE wrapping, so the agent's internal early-stop polls
-    # (get_progress, once per super-step) don't inflate the tool clock / tool_calls metric.
+    # Per-call read timeouts FIRST, so every later shadow (and `raw_call_tool` below) inherits
+    # them: the session-wide sse_read_timeout can only know the run default, but n_starts is a
+    # per-call argument. See _wrap_call_timeout.
+    _wrap_call_timeout(session, args.n_starts)
+    # Capture the un-timed call handle BEFORE the clock wrapper, so the agent's internal
+    # early-stop polls (get_progress, once per super-step) don't inflate the tool clock /
+    # tool_calls metric. "Un-timed" means unmeasured, not unbounded — it still carries the
+    # per-call timeout applied above.
     raw_call_tool = session.call_tool
     clock = _wrap_tool_clock(session)  # split server/compute time from LLM time
     call = _make_call(session)
@@ -166,6 +172,9 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                     n_starts=args.n_starts,
                     max_wall_seconds=args.max_wall_seconds,
                     progress_probe=raw_call_tool,
+                    # The EXACT liveness signal, not a probe: Popen.poll() cannot confuse a
+                    # server that is busy fitting with one that is gone (see _server_is_alive).
+                    server_poll=(server_proc.poll if server_proc is not None else None),
                     bio_sessions=bio_sessions,
                     bio_literature=ablations.enabled("bio_literature"),
                     # Hand-curated biological entities for the blinded biocurator (issue #91);
@@ -225,7 +234,30 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                         # cache_read is the cached-prompt count, so an offline cost estimate can
                         # be cache-aware without re-deriving anything from the Phoenix span DB.
                         "token_usage": agent_out.get("token_usage")}
-                exit_code, result = await _judge(scenario, call, baseline, work, meta, clock, t0)
+                # Is there a server left to judge against? Keyed on the PROCESS, not on
+                # `stop_reason`: the driver only consults liveness on its retriable branch, so a
+                # run whose server was OOM-killed can still arrive here labelled
+                # wall_time_budget_exceeded, no_model_built, silent_stop or early_stop. Judging
+                # then costs twelve reads x their full budget against something that is gone --
+                # and in the wall-budget case that overspend is taken from the margin reserved
+                # for scoring, which is how a task gets hard-killed with no result.json at all.
+                rc = server_proc.poll() if server_proc is not None else None
+                if rc is not None:
+                    print(f"[run] the MCP server process has exited ({rc}); skipping the judge "
+                          "and writing what the run already produced.")
+                    # `meta`, NOT `base_meta`: an aborted run that DID work must keep its work.
+                    # base_meta drops token_usage, n_tool_errors, make_changes_calls, the
+                    # biocurator provenance and the subagent counters -- and without them
+                    # `experiments.is_noop_infra_abort` reads the run as zero-work noise and
+                    # DROPS it, which for bachmann 52859568_0 would have discarded 14 completed
+                    # fits.
+                    result = _write_degraded_result(
+                        work, meta, scenario, f"server_unreachable: MCP server exited ({rc})",
+                        server_returncode=rc, clock=clock)
+                    exit_code = 1
+                else:
+                    exit_code, result = await _judge(scenario, call, baseline, work, meta,
+                                                     clock, t0)
                 record_run_result(span, result)
             except BaseException as exc:
                 # A provider or MCP-connection stall (httpx ReadTimeout/ConnectError, often

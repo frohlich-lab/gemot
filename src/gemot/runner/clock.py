@@ -10,8 +10,11 @@ from __future__ import annotations
 import contextlib
 import json
 import time
+from datetime import timedelta
 
 from mcp import ClientSession
+
+from ..fit_budget import fit_time_budget_for
 
 # --------------------------------------------------------------------------- MCP glue
 def _unwrap(result):
@@ -34,8 +37,28 @@ def _unwrap(result):
         return joined
 
 
+#: Per-call budget for a call that CANNOT fit -- every read, plus `restore_version`, which reuses
+#: a stored fit without recompiling or refitting. Applied in `_wrap_call_timeout` (below) so it
+#: reaches EVERY caller: the judge, the driver's probes, and the agent panel's own reads, all of
+#: which used to inherit the whole fit budget because the sizing keyed only on `n_starts`.
+#:
+#: Deliberately NOT a per-caller override. Two earlier attempts bounded individual handles by
+#: passing `read_timeout_seconds` explicitly, which sets `override` below and so DISCARDS the
+#: `in_flight` queue term -- and the queue term is precisely what keeps a read honest when it is
+#: sitting behind a live multistart. The finish gate reads through such a handle from INSIDE a
+#: super-step (`_finish_tool(..., probe=progress_probe)`), so a flat bound there 408s a healthy
+#: read, `_current_fit` comes back empty, the gate refuses the finish, and five refusals relabel a
+#: fully fitted run `no_model_built`. Bounding once here keeps the queue term for reads too.
+NON_FIT_CALL_TIMEOUT_S = 900.0
+
+
 def _make_call(session: ClientSession):
-    """Return an ``await call(tool, **args)`` bound to ``session`` (unwraps the result)."""
+    """Return an ``await call(tool, **args)`` bound to ``session`` (unwraps the result).
+
+    Carries no timeout of its own: `_wrap_call_timeout` sizes every call, and a read gets
+    `NON_FIT_CALL_TIMEOUT_S` plus whatever is queued ahead of it. An explicit budget here would
+    suppress that queue term -- see the constant.
+    """
 
     async def call(tool: str, /, **args):
         result = await session.call_tool(tool, args or {})
@@ -197,6 +220,137 @@ class _ToolClock:
             "reject_rate": round(self.rejects / self.edits, 3) if self.edits else None,
             "by_cause": dict(sorted(self.reject_causes.items(), key=lambda kv: -kv[1])),
         }
+
+
+def _wrap_call_timeout(session: ClientSession, default_n_starts: int) -> None:
+    """Give every ``session.call_tool`` a read timeout sized to THAT CALL's own ``n_starts``.
+
+    This is where a fit timeout is actually decided. The client's ``sse_read_timeout`` is a
+    per-SESSION httpx read timeout, so it cannot know any call's ``n_starts`` — and ``n_starts``
+    is per call: ``make_changes`` (the only fitting tool) takes one that REPLACES the run
+    default, the agent picks it at runtime, and ``build_true_model`` floors it higher still (
+    bruno 400, fujita 300) on a scripted path that has no driver loop at all. So the session
+    timeout is left deliberately non-binding (``runner.main``) and the exact cut is made here.
+
+    Note the layering, which is easy to get backwards: ``read_timeout_seconds`` takes precedence
+    per call, but it is an ``anyio.fail_after`` INSIDE the session — it can only end a call
+    EARLIER than the httpx ceiling, never later. Raising a per-call budget above
+    ``sse_read_timeout`` would achieve nothing; the ceiling has to be high and this has to be
+    the tight one.
+
+    Shadowing the instance method is how the runner already reaches every call site (see
+    :func:`_wrap_tool_clock`): the runner's own calls AND the deepagents panel's route through
+    the bound session, so no caller can bypass this — including ``build_true_model``, without
+    ``Scenario`` having to surface its floor to the transport setup.
+
+    A call carrying no ``n_starts`` (every read-only query) falls back to the run default, which
+    is already generous for a SQL read. An explicit caller-supplied ``read_timeout_seconds`` is
+    never overridden. The number itself comes from ``fit_budget.fit_time_budget_for``, shared
+    with the stall watchdog so the two cannot disagree about how long a fit may take.
+    """
+    original = session.call_tool
+    # n_starts of the fit calls currently in flight. `make_changes` holds `session.lock` for the
+    # whole change-and-fit critical section (petab_mcp/server.py), so batched fit calls SERIALIZE
+    # server-side: the second one waits out the first's entire fit on the lock before its own
+    # starts. Its wait is therefore (everything ahead of it) + (its own fit) -- sizing it at its
+    # own count alone would 408 a perfectly healthy call at roughly half the time it needs.
+    in_flight: list[int] = []
+
+    async def with_timeout(*args, **kwargs):
+        # args[2] is `read_timeout_seconds` in ClientSession.call_tool(name, arguments,
+        # read_timeout_seconds, progress_callback, *, meta). Check the positional slot too:
+        # injecting the keyword on top of a positional one raises "got multiple values for
+        # argument", which would make this wrapper the thing that fails the call.
+        override = "read_timeout_seconds" in kwargs or len(args) > 2
+        name = kwargs.get("name")
+        if name is None and args:
+            name = args[0]
+        asked = None
+        # Parsed for EVERY call, not just the ones being sized: `in_flight` below has to see a
+        # fit whoever set its timeout, or a concurrent read computes queued=0 against a server
+        # that is busy.
+        # Anything unexpected leaves `asked` None and takes the default budget rather than
+        # raising -- a timeout must never be the thing that fails a call.
+        with contextlib.suppress(Exception):
+            # langchain-mcp-adapters passes (name, arguments) POSITIONALLY with only
+            # progress_callback by keyword (langchain_mcp_adapters/tools.py), and so does
+            # `_make_call`; the keyword form is accepted for any caller that uses it.
+            tool_args = kwargs.get("arguments")
+            if tool_args is None and len(args) > 1:
+                tool_args = args[1]
+            asked = (tool_args or {}).get("n_starts")
+        # Could this call fit? The UNION of two signals, because each covers the other's
+        # blind spot. `n_starts` present (whatever the tool) keeps the wrapper open to a
+        # future fitting tool the day it is added rather than the day someone remembers to
+        # list it -- see test_the_transport_wrapper_is_deliberately_tool_agnostic. A known
+        # edit tool WITHOUT the argument is still a fit: `make_changes` takes the server's
+        # default when the agent omits it, and a malformed payload leaves it unreadable, so
+        # keying on presence alone would hand a real multistart a 900s budget.
+        can_fit = asked is not None or name in _EDIT_TOOLS
+        if not override:
+            # Queued behind whatever is already fitting (see `in_flight`). asyncio is
+            # cooperative and there is no await between reading and appending, so the list is
+            # consistent w.r.t. other calls arming at the same time.
+            queued = sum(in_flight)
+            if not can_fit:
+                # A tool that cannot fit must not inherit a fit budget -- that is what let a
+                # wedged read cost a whole multistart's wall clock, ten times over, on bachmann
+                # 52859568_0. It still has to outwait anything ALREADY fitting, because the
+                # server answers nothing while a sync `make_changes` holds its event loop, so the
+                # queue term stays. (Dropping that term is what made two earlier per-handle
+                # attempts unsafe: the finish gate reads from inside a super-step.)
+                budget = NON_FIT_CALL_TIMEOUT_S + (
+                    fit_time_budget_for(queued, default_n_starts) if queued else 0.0)
+            else:
+                budget = fit_time_budget_for(
+                    None if asked is None else _plus(asked, queued), default_n_starts)
+            kwargs["read_timeout_seconds"] = timedelta(seconds=budget)
+        tracked = None
+        if can_fit:
+            # Gated on `can_fit`, NOT on `asked is not None`. The server's own docstring tells the
+            # model to omit `n_starts` unless it wants more than the default, so most real fits
+            # arrive without one -- and while they were sized correctly for themselves, they were
+            # invisible here, so a read dispatched alongside (langgraph fires a message's tool
+            # calls together, and the finish gate reads from inside a super-step) computed
+            # queued=0 and took a flat 900s against a server whose event loop was held for
+            # thousands of seconds. That is the exact failure the queue term exists to stop.
+            tracked = default_n_starts
+            with contextlib.suppress(Exception):
+                if asked is not None:
+                    tracked = max(1, int(asked))
+            in_flight.append(tracked)
+        try:
+            # Pass the caller's args through untouched otherwise: the adapter sends
+            # `progress_callback=` on every single call and relies on it arriving.
+            return await original(*args, **kwargs)
+        finally:
+            if tracked is not None:
+                with contextlib.suppress(ValueError):
+                    in_flight.remove(tracked)
+
+    try:
+        session.call_tool = with_timeout  # type: ignore[method-assign]
+    except Exception as exc:
+        # Best-effort like the clock, but say so. Without the shadow every call falls back to the
+        # ClientSession-wide read_timeout_seconds `runner.main` sets, which is sized to the run
+        # DEFAULT -- safe, but blind to a call asking for more. Print it so a sweep post-mortem
+        # can tell that apart from a genuinely slow fit.
+        print(f"[runner] could not install per-call fit timeouts ({type(exc).__name__}: {exc}) — "
+              "tool calls fall back to the session-wide default-sized timeout")
+
+
+def _plus(asked, queued: int):
+    """``asked + queued`` when ``asked`` is a usable count, else ``asked`` untouched.
+
+    Keeps the coercion rules in ONE place (``fit_time_budget_for``): a value this cannot add to
+    is passed through unchanged so that function still decides what to make of it.
+    """
+    if isinstance(asked, bool):
+        return asked
+    try:
+        return max(1, int(asked)) + queued
+    except (TypeError, ValueError, OverflowError):
+        return asked
 
 
 def _wrap_tool_clock(session: ClientSession) -> _ToolClock:

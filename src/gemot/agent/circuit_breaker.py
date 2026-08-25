@@ -56,6 +56,24 @@ _ESCALATION = (
     "(a list must be a JSON array, not a string containing one), and re-read the error above."
 )
 
+# The same escalation for a never-disabled READ. `_ESCALATION` is written for the editor: it says
+# the tool "is part of the model-editing loop" and directs the model to change argument SHAPE
+# rather than values, which is right for a `parameters: "[{...}]"` type error and exactly WRONG
+# for `get_model(version=7)` on a five-version run — there the fix IS a different value, and the
+# editor text tells the model not to try it. With the read never disabled either, that could loop
+# to the turn limit where the 3-strike disable would at least have stopped it.
+_ESCALATION_READ = (
+    " — this is the {n}th identical failure. `{name}` is a READ and stays available, but "
+    "REPEATING THIS CALL WILL FAIL AGAIN. Re-read the error above and change the ARGUMENTS: an "
+    "id or version that does not exist needs a different VALUE (list_versions / "
+    "get_model_structure show what exists), and a type error needs a different shape. If the "
+    "error is about the model itself rather than your arguments, no argument will fix it — stop "
+    "calling this tool and proceed with what you already have."
+)
+
+#: Never-disabled tools that are READS, so the escalation names the right remedy.
+_NEVER_DISABLE_READS = frozenset({"get_model"})
+
 # JSON-schema types that a bare string is never a valid value for. A model that emits
 # `parameters: "[{...}]"` (a JSON-encoded string where an array is required) fails validation
 # BEFORE the server is reached — the pydantic error is titled `call[<tool>]`, i.e. raised against
@@ -77,13 +95,36 @@ _TRANSPORT_ERROR_NAMES = frozenset({
 })
 
 
+def _is_call_timeout(exc: BaseException) -> bool:
+    """True for mcp's per-call read timeout — an ``McpError`` carrying HTTP 408.
+
+    ``runner.clock._wrap_call_timeout`` gives every call a ``read_timeout_seconds`` sized to its
+    own fit, and the session layer turns an expiry into ``McpError(code=408)``
+    (``mcp/shared/session.py``) rather than anything in the httpx family. That distinction
+    matters here: a timed-out fit is NOT a tool error the model should see and retry. The server
+    is still running the abandoned multistart (mcp sends no cancellation), so handing the model
+    an error invites it to start a SECOND fit on top of the first, on the same session and the
+    same worker pool. Classifying it as transport routes it to the checkpoint resume instead,
+    which is what the session-wide ``sse_read_timeout`` used to do by raising ``httpx.ReadTimeout``
+    before the timeout moved per call.
+    """
+    if type(exc).__name__ != "McpError":
+        return False
+    code = getattr(getattr(exc, "error", None), "code", None)
+    return code == 408
+
+
 def _is_transport_error(exc: BaseException) -> bool:
-    """True for a transport/connection failure (an unreachable/closed MCP server) as opposed to a
-    normal tool error the model should see and retry. Covers the anyio stream errors (by name), the
-    builtin ConnectionError, and the WHOLE httpx.TransportError family (ConnectError/ReadError/
-    WriteError/ReadTimeout/ConnectTimeout/RemoteProtocolError/PoolTimeout/WriteTimeout/… ) — the same
-    surface the run-loop resume backstop matches, so the two never disagree on what is 'transport'."""
+    """True for a transport/connection failure (an unreachable/closed MCP server, or a call that
+    out-idled its own timeout) as opposed to a normal tool error the model should see and retry.
+    Covers the anyio stream errors (by name), the builtin ConnectionError, the WHOLE
+    httpx.TransportError family (ConnectError/ReadError/WriteError/ReadTimeout/ConnectTimeout/
+    RemoteProtocolError/PoolTimeout/WriteTimeout/… ), and mcp's own 408 (see _is_call_timeout) —
+    the same surface the run-loop resume backstop matches, so the two never disagree on what is
+    'transport'."""
     if type(exc).__name__ in _TRANSPORT_ERROR_NAMES or isinstance(exc, ConnectionError):
+        return True
+    if _is_call_timeout(exc):
         return True
     try:
         import httpx
@@ -289,7 +330,8 @@ def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
                         # and transport paths return, so the model reliably SEES the error and can
                         # correct the call — which is the entire point of never disabling this tool.
                         n = state["streaks"].get(name, {}).get("count", 1)
-                        detail = sig + (_ESCALATION.format(n=n, name=name)
+                        esc = (_ESCALATION_READ if name in _NEVER_DISABLE_READS else _ESCALATION)
+                        detail = sig + (esc.format(n=n, name=name)
                                         if n >= _TOOL_ERROR_DISABLE_THRESHOLD else "")
                         return (detail, None)
                     # A transport error (unreachable/closed server) on an EXTERNAL bio tool can't be
@@ -327,7 +369,8 @@ def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
                     n = state["streaks"].get(name, {}).get("count", 1)
                     if n >= _TOOL_ERROR_DISABLE_THRESHOLD and isinstance(content, list):
                         note = [{"type": "text",
-                                 "text": _ESCALATION.format(n=n, name=name)}]
+                                 "text": (_ESCALATION_READ if name in _NEVER_DISABLE_READS
+                                          else _ESCALATION).format(n=n, name=name)}]
                         return (content + note, artifact)
                 return result
 

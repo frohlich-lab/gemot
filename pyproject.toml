@@ -137,17 +137,16 @@ include = ["src/petab_mcp", "src/petab_harness", "tests", "README.md", "LICENSE"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
-# Two xdist workers by default, so a bare `pytest` is parallel everywhere -- locally and on the
-# 2-core GitHub runner, which is why the number is 2 rather than `auto`.
+# NO `-n` here, deliberately. Parallelism is requested by the CALLER (`.github/workflows/ci.yml`
+# passes `-n 2` for the 2-core runner) rather than baked into every invocation, because in addopts
+# it cost more than it bought locally: it made pytest-xdist a HARD dependency (bare `pytest` exits
+# 4 on the unrecognised argument before collecting anything), it breaks `--pdb`, and it made even
+# `pytest tests/test_model_edits.py` spawn two workers.
 #
-# The scaling is poor and knowing why saves re-testing it: 8 workers cut the suite from 662s to
-# 306s, only 2.2x. `conftest.amici_build_root` is session-scoped so one AMICI build root is shared
-# and the toy model compiles ONCE (~60-90s); under xdist each worker is its own process with its
-# own root, so that compile is paid per worker and eats most of what the parallelism buys. Raising
-# the worker count mostly buys more compiles. Making it scale means sharing one root across workers
-# behind a file lock, which is a real change, not a flag.
-#
-# `-n` here means pytest-xdist is REQUIRED, not optional: without it pytest exits 4 on an
-# unrecognised argument before running anything. Hence pytest-xdist in the `dev` extra above, which
-# is what CI installs.
-addopts = ["-n", "2"]
+# That last one is the expensive part, and the reason the scaling is poor in general: 8 workers cut
+# the full suite from 662s to 306s, only 2.2x. `conftest.amici_build_root` is session-scoped, so
+# ONE AMICI build root is shared and the toy model compiles once (~60-90s) -- but under xdist each
+# worker is its own process with its own root, so that compile is paid PER WORKER and eats most of
+# what the parallelism buys. Raising the worker count mostly buys more compiles; a single-file
+# debug run paid it twice for no parallelism at all. Making it scale means sharing one root across
+# workers behind a file lock, which is a real change, not a flag.

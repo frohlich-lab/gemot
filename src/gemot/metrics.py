@@ -24,6 +24,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -268,6 +269,18 @@ def _flatten_git_diff(row: dict) -> dict:
     return {**row, "git_diff_sha256": diff.get("sha256")}
 
 
+def _is_subsequence(old: "tuple[str, ...]", new: "tuple[str, ...]") -> bool:
+    """Whether every column of ``old`` appears in ``new`` in the same relative order.
+
+    The migration predicate for the append-only history: true exactly when columns were ADDED
+    (anywhere) and none removed or reordered, so no existing value changes meaning and the file
+    can be rewritten with the new header. A prefix test — the previous predicate — only covers
+    additions at the END, which is why a column inserted mid-list was silently dropped instead.
+    """
+    it = iter(new)
+    return all(col in it for col in old)
+
+
 def _flatten_served_endpoints(row: dict) -> dict:
     """Expand ``openrouter_endpoints`` into the flat ``served_*`` history columns.
 
@@ -335,21 +348,33 @@ def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HIST
             existing = next(csv.reader(fh), None)
         if existing:
             fields = tuple(existing)
-            # ...unless the old header is a strict PREFIX of the current one, i.e. columns were
-            # only APPENDED. Then no existing column shifts, so the file can be migrated in place
-            # by rewriting the header and padding old rows. Without this, a column added to fix a
-            # cross-sweep ambiguity is silently dropped for exactly the long-lived history it was
-            # added for (`ablation_state`, 2026-08-15: every appended row would keep writing only
-            # the default-relative `ablation_arm` the new column exists to disambiguate).
-            if (len(fields) < len(HISTORY_FIELDS)
-                    and HISTORY_FIELDS[:len(fields)] == fields):
+            # ...unless every old column still exists, in the same relative order — i.e. columns
+            # were only ADDED, wherever. Then no old value changes meaning and the file can be
+            # migrated in place by rewriting the header and padding old rows. Without this, a
+            # column added to fix a cross-sweep ambiguity is silently dropped for exactly the
+            # long-lived history it was added for (`ablation_state`, 2026-08-15: every appended
+            # row would keep writing only the default-relative `ablation_arm` it disambiguates).
+            #
+            # SUBSEQUENCE, not prefix. The prefix test only fired for columns appended at the END,
+            # and `ablation_state` went in at index 42 of 63 with 20 columns after it — so the
+            # very case this migration was written for did not match it, and the column was
+            # dropped from every appended row exactly as the paragraph above describes. A header
+            # carrying a column that no longer exists is NOT migrated: that is a removal, where
+            # rewriting would discard data, so the old header is kept and the new column skipped.
+            if len(fields) < len(HISTORY_FIELDS) and _is_subsequence(fields, HISTORY_FIELDS):
                 with history_path.open(newline="") as fh:
                     old_rows = list(csv.DictReader(fh))
-                with history_path.open("w", newline="") as fh:
+                # Temp file + atomic replace, never truncate-in-place: this is an append-only
+                # record spanning every sweep, and `open("w")` after reading it into memory means
+                # an OOM kill, a cancellation or a full filesystem between the truncate and the
+                # last writerow leaves it empty or half-written, with no copy anywhere.
+                tmp = history_path.with_suffix(history_path.suffix + ".tmp")
+                with tmp.open("w", newline="") as fh:
                     w = csv.DictWriter(fh, fieldnames=HISTORY_FIELDS, extrasaction="ignore")
                     w.writeheader()
                     for r in old_rows:
                         w.writerow({k: r.get(k, "") for k in HISTORY_FIELDS})
+                os.replace(tmp, history_path)
                 fields = HISTORY_FIELDS
     with history_path.open("a", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")

@@ -9,13 +9,15 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from ..bio_sessions import open_bio_sessions
 from ..explorer.archive import archive_run
-from ..fit_budget import FIT_N_WORKERS, FIT_PER_START_TIMEOUT_S, fit_time_budget
+from ..fit_budget import (FIT_BUDGET_CEILING_S, FIT_N_WORKERS, FIT_PER_START_TIMEOUT_S,
+                          fit_time_budget_for)
 from .drive import _drive
 from .endpoints import BIO_MCP_URLS
 from .failure import _should_reraise, _summarize_exc, _write_degraded_result
@@ -89,16 +91,64 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
     try:
         _wait_until_listening(host, port, proc, server_log_path)
         url = f"http://{host}:{port}/mcp"
-        # A single make_changes commit fits the model with an n_starts multistart that streams nothing
-        # back for its whole duration; the client's default sse_read_timeout (300s) would drop that
-        # response and hang the call. Size it to the worst-case fit (n_starts * Fides per-start cap
-        # + compile margin), the SAME budget the stall watchdog uses, so a slow-but-healthy fit
-        # always returns instead of being mistaken for a hang (see _harness/fit_budget.py).
+        # A single make_changes commit fits the model with an n_starts multistart that streams
+        # nothing back for its whole duration; the client's default sse_read_timeout (300s) would
+        # drop that response and hang the call.
+        #
+        # This is the CEILING, not the fit budget. mcp layers two independent timeouts and they
+        # do NOT compose the way the names suggest:
+        #
+        #   * sse_read_timeout becomes httpx's read timeout on the client (mcp/client/
+        #     streamable_http.py: `httpx.Timeout(timeout, read=sse_read_timeout)`). Per SESSION,
+        #     so it cannot know any call's n_starts.
+        #   * ClientSession's read_timeout_seconds is an `anyio.fail_after` in the session layer,
+        #     and it takes precedence PER CALL (mcp/shared/session.py) -- but only ever to cut a
+        #     call SHORTER. It cannot lift the httpx ceiling above.
+        #
+        # So the exact per-call budget has to be applied downward from a ceiling that is high
+        # enough for the largest fit the run could ask for -- and that number is unknowable here:
+        # make_changes takes an n_starts that REPLACES the default, the agent chooses it at
+        # runtime, and scenario.build_true_model floors it higher still (bruno 400, fujita 300).
+        # This used to be `fit_time_budget(2 * n_starts)`; the 2x was a guess that still sat
+        # below the scenario floors on the scripted path.
+        #
+        # Hence: make this ceiling deliberately NON-BINDING and let clock._wrap_call_timeout do
+        # the real enforcement, exactly, off each call's own n_starts.
+        #
+        # Strictly ABOVE FIT_BUDGET_CEILING_S, which is what fit_time_budget_for clamps every
+        # per-call budget to. Setting the two equal would leave the worst case (a hallucinated
+        # n_starts that clamps to the ceiling) as a race between an anyio timer and httpx's read
+        # deadline -- and if httpx won, the connection would be torn down instead of the call
+        # returning a clean 408, which is the abort path this whole redesign exists to avoid.
+        # The margin makes the per-call cut PROVABLY the tighter one.
+        #
+        # A flat constant, deliberately NOT args.max_wall_seconds. Tying it to the run budget
+        # reads tidy -- no call can usefully outlive the run -- but it hands this timeout a way
+        # to bind again: a fit that runs past a short --max-wall-seconds would surface as an
+        # httpx read timeout instead of the clean "wall_time_budget_exceeded" stop the driver is
+        # there to produce, i.e. a confusing error in place of a scored result. The wall budget
+        # is already enforced where it can stop cleanly (agent.driver, at a step boundary).
         async with contextlib.AsyncExitStack() as stack:
             read, write, _ = await stack.enter_async_context(
-                streamablehttp_client(url, sse_read_timeout=fit_time_budget(args.n_starts))
+                streamablehttp_client(
+                    url,
+                    # Above the CEILING *and* above this run's own default budget: a 1-worker
+                    # run with a large --n-starts can compute a default budget past the ceiling
+                    # (the ceiling bounds what the MODEL may ask for, not what the operator
+                    # configured), and this has to stay looser than both.
+                    sse_read_timeout=max(FIT_BUDGET_CEILING_S,
+                                         fit_time_budget_for(None, args.n_starts)) * 1.2)
             )
-            session = await stack.enter_async_context(ClientSession(read, write))
+            # Session-wide fallback UNDER the per-call cut. mcp prefers a per-request
+            # read_timeout_seconds outright (it does not take a min), so clock._wrap_call_timeout
+            # still overrides this on every tool call. It matters in the two windows that shadow
+            # does not cover: `initialize()` below, which would otherwise run against the
+            # non-binding ceiling, and the case where installing the shadow FAILS -- which
+            # previously left the run with no effective call timeout at all.
+            session = await stack.enter_async_context(ClientSession(
+                read, write,
+                read_timeout_seconds=timedelta(
+                    seconds=fit_time_budget_for(None, args.n_starts))))
             await session.initialize()
             # SECONDARY MCP sessions: the blinded bio-knowledge server(s) for the biocurator, on
             # the deepagents panel every run. The endpoints are HARDCODED (BIO_MCP_URLS:

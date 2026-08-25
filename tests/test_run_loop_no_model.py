@@ -72,9 +72,30 @@ class _FakeAgent:
         return _gen()
 
 
-def _run(mod, monkeypatch, probe, confirm_after=None):
+class _TimeoutAgent:
+    """Graph stub whose every astream raises the per-call fit timeout mcp really raises — a bare
+    ``McpError(408)``, the shape pinned by tests/test_judge_call_timeout.py."""
+
+    def __init__(self):
+        self.inputs = []
+        self.captured = {}
+        self.confirm_after = None
+
+    def astream(self, stream_input, config=None, stream_mode=None):
+        self.inputs.append(stream_input)
+
+        async def _gen():
+            from mcp.shared.exceptions import McpError
+            from mcp.types import ErrorData
+            raise McpError(ErrorData(code=408, message="Timed out waiting for response"))
+            yield  # pragma: no cover - unreachable, present to make this an async generator
+
+        return _gen()
+
+
+def _run(mod, monkeypatch, probe, confirm_after=None, agent=None, server_poll=None):
     from langchain_core.tools import StructuredTool
-    fake_agent = _FakeAgent()
+    fake_agent = agent if agent is not None else _FakeAgent()
     fake_agent.confirm_after = confirm_after
 
     # Capture the finish_state the driver hands the finish tool, so the fake agent can flip it
@@ -104,12 +125,20 @@ def _run(mod, monkeypatch, probe, confirm_after=None):
     monkeypatch.setattr(lmt, "load_mcp_tools", _fake_load_mcp_tools)
     monkeypatch.setattr(deepagents, "create_deep_agent", _fake_create_deep_agent)
 
+    # The resume backoff is real time (5 + 10 + 15 = 30s for a run that exhausts the budget), and
+    # nothing here is testing that we can sleep. Without this, the three liveness tests below add
+    # ~60s to every suite run.
+    async def _no_backoff(_seconds):
+        return None
+
+    monkeypatch.setattr(mod.driver.asyncio, "sleep", _no_backoff)
+
     import asyncio
     result = asyncio.run(mod.run_deepagents(
         object(),  # session — only passed to the (mocked) load_mcp_tools and decision tool
         model="fake/model", base_url="http://x", api_key="sk-test",
         system_prompt="sp", task="build a model", recursion_limit=50,
-        progress_probe=probe,
+        progress_probe=probe, server_poll=server_poll,
     ))
     return result, fake_agent
 
@@ -155,3 +184,47 @@ def test_confirmed_finish_is_not_bounced(monkeypatch):
     # runs no real tools — but never our silent-stop labels.)
     assert result["stop_reason"] not in ("silent_stop", "no_model_built")
     assert len(fake_agent.inputs) == 2                          # initial + 1 bounce, then confirmed
+
+
+# --- liveness at the CALL SITE ---------------------------------------------------------------
+# `_server_is_alive` is unit-tested in tests/test_judge_call_timeout.py; these drive the branch
+# in run_deepagents that consumes it, which is where the three-state handling actually matters.
+
+
+@requires_harness
+def test_a_dead_server_ends_the_run_without_spending_a_resume(monkeypatch):
+    """bachmann 52859568_0: the OOM killer took the server down and the loop resumed into it
+    three more times, each re-sending the whole history and re-issuing the pending fit for
+    another full 4200s timeout. The check must come BEFORE the resume budget is spent."""
+    mod = _load_agent_module()
+    agent = _TimeoutAgent()
+    result, agent = _run(mod, monkeypatch, _Probe(model_authored=True),
+                         agent=agent, server_poll=lambda: -9)
+
+    assert result["stop_reason"].startswith("server_unreachable:")
+    assert "fit call timed out" in result["stop_reason"]   # keeps WHY it stopped talking
+    assert len(agent.inputs) == 1                          # no resume attempted
+
+
+@requires_harness
+def test_a_live_server_still_gets_every_resume_attempt(monkeypatch):
+    """The other side: a fit timeout against a server that is still running is exactly the case
+    the checkpoint resume exists for, and must not be cut short."""
+    mod = _load_agent_module()
+    result, agent = _run(mod, monkeypatch, _Probe(model_authored=True),
+                         agent=_TimeoutAgent(), server_poll=lambda: None)
+
+    assert not result["stop_reason"].startswith("server_unreachable")
+    assert len(agent.inputs) == 1 + mod.driver._RUN_RESUME_ATTEMPTS
+
+
+@requires_harness
+def test_no_liveness_signal_does_not_end_the_run(monkeypatch):
+    """`None` is 'cannot tell', not 'dead'. A refactor to `if not await _server_is_alive(...)`
+    would end every run that wires no signal — this is the test that would catch it."""
+    mod = _load_agent_module()
+    result, agent = _run(mod, monkeypatch, _Probe(model_authored=True),
+                         agent=_TimeoutAgent(), server_poll=None)
+
+    assert not result["stop_reason"].startswith("server_unreachable")
+    assert len(agent.inputs) == 1 + mod.driver._RUN_RESUME_ATTEMPTS

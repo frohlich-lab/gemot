@@ -5,13 +5,21 @@ independent timeouts must each exceed one such fit, or a slow-but-healthy fit is
 hang:
 
   * the server's Fides per-start cap (``fides.Options.MAXTIME``) — bounds ONE optimization start;
-  * the MCP streamable-HTTP client's ``sse_read_timeout`` — drops the fit's response if the whole
-    fit out-idles it (:mod:`runner`);
+  * the MCP client's per-call ``read_timeout_seconds`` — drops the fit's response if the whole fit
+    out-idles it (``runner.clock._wrap_call_timeout``; the session-wide ``sse_read_timeout`` above
+    it is deliberately non-binding, since it cannot see a per-call ``n_starts``);
   * the harness stall watchdog (``agent._STEP_STALL_TIMEOUT_S``) — declares the run wedged.
 
-Fides defaults ``MAXTIME`` to ``inf``, so today one stiff start runs unbounded, out-idles the 300s
-transport, and the 600s stall watchdog then kills an otherwise-healthy run. The fix is to give
-Fides a real per-start cap and size the other two off the SAME budget so they cannot drift.
+The last two are sized off the ``n_starts`` the call/step ACTUALLY asked for, not the run default
+(:func:`fit_time_budget_for`, which both share): ``make_changes`` takes an ``n_starts`` that
+REPLACES the default, and ``build_true_model`` floors it higher still. A timeout sized to the run
+default — or to any fixed multiple of it — either kills a healthy fit or leaves a wedged step
+undetected for longer than it should.
+
+Fides defaults ``MAXTIME`` to ``inf``, so one stiff start would run unbounded, out-idle the 300s
+transport default, and the 600s stall watchdog would then kill an otherwise-healthy run. The fix
+is to give Fides a real per-start cap and derive the other two from this ONE function so they
+cannot drift — same formula, each evaluated at its own ``n_starts``.
 
 pyPESTO runs the multistart across ``FIT_N_WORKERS`` worker processes when more than one core is
 available (the batch runner dispatches examples one at a time, so a fit has the whole box), so the
@@ -138,6 +146,73 @@ def fit_time_budget(n_starts: int) -> float:
     n = max(1, int(n_starts))
     waves = math.ceil(n / fit_workers(n))
     return (FIT_COMPILE_MARGIN_S + waves * FIT_PER_START_TIMEOUT_S) * FIT_BUDGET_MARGIN
+
+
+#: Hard upper bound on any single derived fit budget. `n_starts` is chosen by the MODEL and the
+#: server accepts any int >= 1 (`_coerce_n_starts`), so a hallucinated `n_starts=1000000` would
+#: otherwise compute a ~115-DAY timeout and switch off both the stall watchdog and the transport
+#: cut for that call. This clamps the derived TIMEOUT, which is not the same as capping n_starts:
+#: a server-side cap on the count itself was tried and reverted (any cap near the run default
+#: refuses scenario.build_true_model's bruno-400 / fujita-300 reference builds). The fit still
+#: runs at whatever it asked for; it just cannot buy itself an unbounded window.
+FIT_BUDGET_CEILING_S = _env_float("PETAB_MCP_FIT_BUDGET_CEILING", 24 * 3600.0)
+
+#: Upper bound on the START COUNT any derived budget is computed from. Distinct from the seconds
+#: ceiling above and NOT redundant with it: the seconds clamp is applied to the RESULT, so
+#: without this the formula still evaluates at the raw count first -- and `n_starts=10**400`
+#: (an int the model can emit, and `_pending_fit_starts` will happily read) overflows
+#: `waves * FIT_PER_START_TIMEOUT_S` to an OverflowError that ends the run. Ten million is orders
+#: of magnitude above any real multistart, so it never touches a legitimate count.
+_MAX_DERIVABLE_N_STARTS = 10_000_000
+
+#: Margin the STALL WATCHDOG sits above the per-call transport cut for the same fit.
+#:
+#: The three timeouts have to be strictly ordered, not merely "all big enough": httpx ceiling >
+#: watchdog > per-call cut. Ties are not safe. When the watchdog and the transport cut are set to
+#: the same number the watchdog ALWAYS wins -- its `asyncio.wait_for` is armed a graph-dispatch
+#: earlier than the call's `anyio.fail_after` -- so an overrunning fit is cancelled mid-flight as
+#: "stalled" and the clean `McpError(408)` path (which resumes from the checkpoint WITHOUT the
+#: model being told to re-fit) is unreachable. This margin makes the transport cut provably the
+#: first to fire, so a slow fit degrades the gentle way.
+FIT_WATCHDOG_MARGIN = _env_float("PETAB_MCP_FIT_WATCHDOG_MARGIN", 1.15)
+
+
+def fit_time_budget_for(asked, default: int) -> float:
+    """:func:`fit_time_budget` for a call/step that ASKED for ``asked`` starts, or ``default``.
+
+    ONE implementation, deliberately: the stall watchdog (``agent.driver``) and the per-call
+    transport cut (``runner.clock``) must agree about how long a given fit is allowed to take, or
+    they stop firing at comparable times and whichever is accidentally tighter becomes the real
+    limit. They read ``n_starts`` from different places — a pending ``tool_calls`` entry and a
+    live ``call_tool`` argument — but the rule turning that number into seconds belongs here,
+    next to the formula it feeds.
+
+    ``asked`` is untrusted: it comes from the model. Coerced with a bare ``int()`` to match the
+    server's own ``_coerce_n_starts``, so a model sending ``"300"`` as a string gets a window for
+    the 300-start fit it will actually run; anything ``int()`` refuses — including ``None``,
+    ``bool`` (which ``int()`` would silently read as 0/1) and ``float('inf')`` (which raises
+    OverflowError) — falls back to ``default``.
+
+    Bounds, in the order they are applied:
+
+    * the COUNT is capped at :data:`_MAX_DERIVABLE_N_STARTS` BEFORE the formula runs, so an absurd
+      value cannot overflow the arithmetic instead of being clamped;
+    * the result is capped at :data:`FIT_BUDGET_CEILING_S`;
+    * and then floored at ``fit_time_budget(default)``. The floor is applied LAST and therefore
+      wins: a call asking for FEWER starts than the default makes a shorter fit, but the default
+      budget is the floor already trusted and shrinking a timeout buys nothing. This also means a
+      run whose own default budget exceeds the ceiling is not silently cut below it — the ceiling
+      bounds what the MODEL can ask for, never what the operator configured.
+    """
+    default_n = max(1, min(int(default), _MAX_DERIVABLE_N_STARTS))
+    floor = fit_time_budget(default_n)
+    n = default_n
+    if asked is not None and not isinstance(asked, bool):
+        try:
+            n = max(n, min(int(asked), _MAX_DERIVABLE_N_STARTS))
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return max(floor, min(fit_time_budget(n), FIT_BUDGET_CEILING_S))
 
 
 def apply_amici_solver_defaults(problem, atol: float | None = None) -> None:

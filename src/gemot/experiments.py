@@ -386,6 +386,10 @@ _INFRA_ABORT_MARKERS = (
     "readtimeout", "readerror", "writeerror", "connecterror", "connecttimeout",
     "remoteprotocolerror", "pooltimeout",
     "stalled",                   # harness stall watchdog: hung provider call / wedged fit
+    "fit call timed out",        # per-call MCP read timeout (clock._wrap_call_timeout). Same
+                                 # event as the "readtimeout" above -- it only stopped being an
+                                 # httpx.ReadTimeout when the timeout moved from the session to
+                                 # the individual call, and it must keep scoring as infra.
     "typeerror",                 # e.g. a scoring float() crash before a verdict was reached
 )
 

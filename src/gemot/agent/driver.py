@@ -39,6 +39,7 @@ from .biocurator import (
 )
 from .circuit_breaker import (
     _disabled_tool_filter,
+    _is_call_timeout,
     _new_breaker_state,
     _wrap_tools_with_circuit_breaker,
     call_outcomes,
@@ -77,9 +78,12 @@ _RUN_RESUME_ATTEMPTS = 3       # resume the graph from the last checkpoint after
 # never fired on). astream emits once per graph super-step (a lead LLM call, a tool, or a whole
 # analyst sub-agent), so if NO step completes within this window the loop is wedged — we cancel
 # it and RESUME from the last checkpoint (or, once resume attempts run out, end gracefully).
-# This is only the FLOOR for the non-fit steps: run_deepagents raises the effective window to the
-# full multistart fit budget (fit_budget.py) for the run, since a lead commit's fit is one long
-# super-step that legitimately streams nothing back for minutes.
+# This is only the LOWER floor. run_deepagents takes max(this, fit_time_budget(run default)) as
+# its baseline and raises it per step to the budget of the fit that step is about to run
+# (fit_budget.py), since a lead commit's fit is one long super-step that legitimately streams
+# nothing back for minutes. So this 600s only binds when the run default's fit budget is smaller,
+# which it is not on the large examples -- a step with no fit pending still waits the DEFAULT
+# fit budget, not 600s.
 _STEP_STALL_TIMEOUT_S = 600.0
 
 # Hard per-run token ceiling — the ONLY bound on how much a run can spend.
@@ -114,6 +118,136 @@ _CONTENT_FILTER_MARKERS = (
     "flagged by the moderation",
     "moderation_blocked",
 )
+
+
+#: Tools whose call runs a full pyPESTO multistart, i.e. the ones whose `n_starts` argument
+#: decides how long the next super-step legitimately takes.
+#:
+#: Derived from the lead's OWN tool list, not hand-written: `make_changes` has been renamed once
+#: already (`set_model`/`change_parameters` -> `make_changes`, #130), and a hand-maintained copy
+#: would silently stop matching on the next rename -- `_pending_fit_starts` would return None for
+#: every step, every fit would run under the run-default window, and bachmann task 9's failure
+#: would come back with a green test suite. Intersecting the roster means a rename empties this
+#: set rather than half-matching, and tests/test_fit_timeouts asserts it is non-empty -- so the
+#: rename fails a test instead of quietly disarming the watchdog. `make_changes` is the only
+#: entry: there is no separate `fit` tool, and `get_fit_diagnosis` reads a fit rather than
+#: running one.
+#:
+#: The analysts cannot fit at all -- no analyst toolset includes it, and deepagents' auto-added
+#: `general-purpose` subagent that once called it from inside a delegation is disabled in
+#: `subagents.py`. That is what makes reading the LEAD's own message a COMPLETE view of the
+#: pending fit rather than a sample of it.
+_FIT_TOOLS = frozenset({"make_changes"}) & frozenset(ORCHESTRATOR_TOOLS)
+
+#: How far back to look for the AIMessage carrying the pending tool calls. Small on purpose: a
+#: middleware node or two may emit after it, but anything deeper than this means the tool node
+#: is not what runs next, and scanning the whole history would re-arm on ancient calls.
+_PENDING_SCAN_DEPTH = 6
+
+
+def _is_tool_result(msg: Any) -> bool:
+    """True for a ToolMessage — matched by ``type``/``role``, not by class, so a serialized
+    message reads the same as an object one and neither needs a langchain import here."""
+    kind = getattr(msg, "type", None)
+    if kind is None and isinstance(msg, dict):
+        kind = msg.get("type") or msg.get("role")
+    return str(kind or "") == "tool"
+
+
+def _pending_fit_starts(state: Any, default: int, stats: dict | None = None) -> int | None:
+    """``n_starts`` of the fit this state leaves PENDING, or ``None`` if no fit is pending.
+
+    ``astream(..., stream_mode="values")`` emits the graph state after each node, so the
+    ``AIMessage`` carrying ``make_changes(n_starts=300)`` arrives one super-step BEFORE the tool
+    node runs that fit. Reading it here is what lets the stall watchdog size the very wait during
+    which the fit happens, instead of guessing a multiple of the run default.
+
+    With more than one fit pending the counts are SUMMED (they contend for one worker pool —
+    see the loop). ``None`` and "pending at the default count" are deliberately DIFFERENT answers
+    even though they size the same window. The server's own docstring tells the model to omit ``n_starts``
+    unless it wants more than the default, so the commonest wedged-fit case is a pending fit with
+    no count attached — reporting that as "no fit pending" would send every such post-mortem to
+    the provider/LLM layer while a full multistart was in flight.
+
+    Degrades to ``None`` when the state does not have the expected shape: a watchdog must not
+    raise. That is precision loss in the direction of the old bug, so it is counted into
+    ``stats["unreadable_graph_state"]`` (which reaches ``result.json``) rather than being
+    absorbed silently, and the first occurrence prints.
+    """
+    try:
+        if not isinstance(state, dict):
+            # stream_mode="values" emits the graph state as a mapping. A langgraph that switches
+            # to a pydantic state object would land here and disarm the watchdog for the whole
+            # run, so this is a WARN path, not a quiet `return None`.
+            raise TypeError(f"state is {type(state).__name__}, not a mapping")
+        messages = state.get("messages")
+        if not messages:
+            return None                                   # start of the run / empty state
+        # Walk BACK to the newest message that carries tool_calls, stopping at the first
+        # ToolMessage. Reading only messages[-1] was too brittle: deepagents/langchain
+        # middleware hooks (after_model, the 0.85 compaction node, the dispatch and
+        # empty-report guards) are graph NODES, each with its own stream_mode="values"
+        # emission, so anything landing a message between the AIMessage and the tool node
+        # would silently drop the window to the floor -- bachmann task 9 again, and invisible,
+        # because the state SHAPE is fine so `unreadable_graph_state` never fires.
+        #
+        # The ToolMessage stop is what keeps this from re-arming on a fit that already ran:
+        # once results are back the fit is over, however many messages follow it.
+        calls = None
+        for msg in reversed(messages[-_PENDING_SCAN_DEPTH:]):
+            if _is_tool_result(msg):
+                break
+            found = getattr(msg, "tool_calls", None)
+            if found is None and isinstance(msg, dict):   # serialized message
+                found = msg.get("tool_calls")
+            if found:
+                calls = found
+                break
+            if not isinstance(msg, dict) and not hasattr(msg, "content"):
+                raise TypeError(f"unrecognised message object {type(msg).__name__}")
+        if calls is None:
+            return None                                   # no fit-shaped call pending
+        pending = None
+        for c in calls:
+            # Per call: a malformed entry must not discard a VALID sibling's count. Everything
+            # that can raise on a hostile shape goes inside -- `c.get`, and `args.get` when
+            # `args` arrives as a JSON string rather than a dict (AttributeError, which is why
+            # the suppress is not narrowed to TypeError/ValueError).
+            with contextlib.suppress(Exception):
+                if str(c.get("name") or "") not in _FIT_TOOLS:
+                    continue
+                n = (c.get("args") or {}).get("n_starts")
+                # Only the COUNT is decided here, for the window and for the stall message; the
+                # default floor and the ceiling live in fit_time_budget_for so the watchdog and
+                # the transport cut cannot disagree. max(1, ...) matches the server's own
+                # `_coerce_n_starts` lower bound -- without it a `n_starts=-5` the server will
+                # reject still reaches the post-mortem as "-5-start fit pending".
+                asked = default if n is None or isinstance(n, bool) else max(1, int(n))
+                # SUM across a batch, not max. langgraph's ToolNode dispatches a message's
+                # tool calls concurrently, but `make_changes` holds `session.lock` for its whole
+                # change-and-fit critical section (petab_mcp/server.py), so two fits in one
+                # emission SERIALIZE: the second waits out the first entirely before its own
+                # starts. The super-step's wall clock is therefore the sum, and max() would size
+                # the step for one of them and fire the watchdog mid-batch on a healthy run.
+                pending = asked if pending is None else pending + asked
+        return pending
+    except Exception as exc:
+        # Silent degradation here is the OLD BUG returning: every fit falls back to the
+        # run-default window, a legitimately larger one is killed as "stalled", and the stall
+        # line reports "no fit pending" while a full multistart is in flight. Nothing else in
+        # the artifacts would distinguish that from a genuine stall -- so record it where a
+        # sweep can count it (guard_stats is spread into result.json), and print the first one.
+        if stats is not None:
+            stats["unreadable_graph_state"] = stats.get("unreadable_graph_state", 0) + 1
+            first = stats["unreadable_graph_state"] == 1
+        else:
+            first = False
+        if first:
+            print(f"[agent] cannot read pending fits from the graph state "
+                  f"({type(exc).__name__}: {exc}) — the stall watchdog falls back to the "
+                  "run-default window, which can kill a legitimately larger fit and will "
+                  "report it as 'no fit pending'")
+        return None
 
 
 def _content_filter_stop_reason(exc: BaseException) -> str | None:
@@ -245,6 +379,42 @@ def _transient_provider_reason(exc: BaseException) -> str | None:
 # is introduced.
 
 
+def _server_is_alive(server_poll) -> "bool | None":
+    """``True`` if the MCP server PROCESS is still running, ``False`` if it has exited, ``None``
+    when the caller wired no way to ask.
+
+    Deliberately a process check and NOT a probe call. The obvious implementation -- read something
+    cheap and see whether it answers -- cannot work here, because it cannot tell a dead server from
+    a busy one, and the only moment this is consulted is the moment the server is guaranteed busy:
+    `_is_call_timeout` documents that the abandoned multistart is STILL RUNNING (mcp sends no
+    cancellation). Worse, `make_changes` is a sync `def`, and mcp runs sync tool functions directly
+    on the event loop (`fastmcp.utilities.func_metadata`: `if fn_is_async: await fn(...) else:
+    return fn(...)`), holding `session.lock` for the whole change-and-fit section. So NOTHING can be
+    answered for the remainder of a multi-thousand-second fit. A read-based probe would report
+    "dead" on a perfectly healthy server every single time it was asked, and end the run instead of
+    resuming it.
+
+    `Popen.poll()` has none of that ambiguity: it answers in microseconds, never confuses busy with
+    gone, and returns the killing signal itself. That is exactly the OOM case this exists for --
+    bachmann task 52859568_0, where the kill left every later call to wait out its own 4200s budget,
+    ten times over, for 11.7 hours (see BENCHMARK_NOTES).
+
+    It does not detect a server that is alive but wedged. That is on purpose: such a server is
+    indistinguishable from one mid-fit, which is the confusion that makes a read-based check wrong.
+    ``None`` is NOT treated as dead, so a caller that wires nothing keeps the old behaviour.
+    """
+    if server_poll is None:
+        return None
+    try:
+        # `Popen.poll()` semantics: None means STILL RUNNING, an int is the exit code. Taking the
+        # returncode rather than a bool is what makes `server_poll=proc.poll` -- the obvious
+        # wiring, given this docstring -- correct instead of exactly inverted. A `bool()` of the
+        # same call reads None as False and would report every healthy server dead.
+        return server_poll() is None
+    except Exception:  # pragma: no cover - never let a liveness check end a run by accident
+        return None
+
+
 # A silent stop (the graph ends on a no-tool turn) is not an accepted way to finish: the driver
 # bounces it back into the finish gate this many times before relenting so a genuinely stuck run
 # still terminates (at the step/wall limit) rather than looping forever.
@@ -265,6 +435,7 @@ async def run_deepagents(
     max_wall_seconds: float | None = None,
     max_run_tokens: int | None = _MAX_RUN_TOKENS,
     progress_probe: Any | None = None,
+    server_poll: Any | None = None,
     bio_sessions: Any | None = None,
     bio_literature: bool = False,
     curated_entities: "list[str] | None" = None,
@@ -286,6 +457,20 @@ async def run_deepagents(
     the loop stops at the next clean boundary — the deterministic replacement for wandering to the
     recursion limit. It is passed un-timed so these internal polls don't inflate the tool clock /
     ``tool_calls`` metric. ``None`` disables the check (the loop runs as before).
+
+    It is ALSO the finish gate's reader (``_finish_tool(..., probe=progress_probe)``), and those
+    reads run INSIDE a tool super-step rather than between them — so they can queue behind a live
+    or abandoned multistart. Worth stating because assuming otherwise is what made a flat per-call
+    bound on this handle look safe: it 408s the gate's read, ``_current_fit`` comes back empty, and
+    five refusals relabel a fully fitted run ``no_model_built``. The budget belongs in
+    ``clock._wrap_call_timeout``, which keeps the queue term.
+
+    ``server_poll`` (optional) is a zero-argument callable with ``Popen.poll`` semantics — ``None``
+    while the MCP server is running, an exit code once it is not. The loop consults it before
+    spending a resume attempt, because resuming into a dead server re-sends the whole history and
+    re-issues the pending fit for another full timeout (see ``_server_is_alive``). ``None`` here
+    means "no way to tell", and is NOT treated as death: omitting it silently leaves the run with
+    the old behaviour rather than ending it early.
 
     The model is served by OpenRouter via its OpenAI-compatible API (``base_url`` +
     ``api_key``). Returns ``{"stop_reason": ..., "n_tool_errors": ..., "disabled_tools": ...,
@@ -427,9 +612,10 @@ async def run_deepagents(
     # 0.85-0.89 normal) and ~33s, at a median trigger prompt of 169,266 tokens — 16% of the
     # 1M window this driver already assumes everywhere else (it deliberately runs no history
     # trimmer, and models.py pins 1M-context endpoints for exactly that reason). With the
-    # profile set, the trigger becomes 0.85 x window ≈ 891k, which no measured call has ever
-    # approached (all-time max 483k) — so compaction becomes what it should be: dead code on
-    # this workload, with the context-stop below as the backstop if a run ever gets there.
+    # profile set, the trigger becomes 0.85 x window ≈ 891k. Long large-model runs DO reach it
+    # now (lucarelli 845-927k, raimundez 862k on the 2026-08-20/21 sweeps), and that is by
+    # design: one compaction is cheaper than the explicit stop that used to fire at 0.8 and
+    # ended runs mid-improvement. The context-stop below is the true backstop, at 0.90.
     max_input_tokens = int(os.environ.get("PETAB_MCP_MAX_INPUT_TOKENS", 1_048_576))
     llm = _chat_model_class()(
         # Keeps the Phoenix span named `ChatOpenAI` despite the subclass -- see _chat_model_class.
@@ -564,12 +750,37 @@ async def run_deepagents(
     # it stands. We consume the stream only to drive the loop; Phoenix spans are the record.
     # The longest single super-step is a lead commit whose make_changes runs an n_starts multistart
     # fit (astream emits nothing until it returns), so the stall window must exceed one whole fit
-    # or a slow-but-healthy fit trips the watchdog. Size it to the same fit budget the transport's
-    # sse_read_timeout uses (fit_budget.py), floored at _STEP_STALL_TIMEOUT_S for the non-fit steps
-    # (a lead LLM call, an analyst sub-agent). A hung provider CALL is still caught fast by the
-    # 120s client timeout; this watchdog only backstops a wedged step.
-    from ..fit_budget import fit_time_budget
-    stall_timeout = max(_STEP_STALL_TIMEOUT_S, fit_time_budget(n_starts))
+    # or a slow-but-healthy fit trips the watchdog. That used to force ONE global wait wide enough
+    # for the largest possible fit, which is also how long a wedged NON-fit step (a lead LLM call,
+    # an analyst sub-agent) went undetected. The window is sized PER STEP now: `step_wait` in the
+    # loop below rises to the pending fit's own budget and otherwise sits at the floor below.
+    #
+    # Note what that does and does not buy. A wedged NON-fit step is still not detected in 600s --
+    # the floor is max(_STEP_STALL_TIMEOUT_S, fit_time_budget(run default)), so on the large
+    # examples it is the run default's fit budget, hours not minutes. What per-step sizing removes
+    # is the EXTRA widening: such a step used to be held open for the largest fit the run might
+    # ever ask for (2x the default, and still short of the scenario floors). Detection of a wedged
+    # non-fit step therefore roughly halves; it does not become prompt. Making it prompt needs the
+    # floor itself sized per step kind, which is a separate change -- a hung provider CALL is
+    # already caught in 120s by the client timeout, so what is left here is a genuinely wedged
+    # step, and those are rare enough that a late detection costs one resume.
+    from ..fit_budget import (FIT_WATCHDOG_MARGIN, fit_time_budget,
+                              fit_time_budget_for)
+    # Sized to the n_starts the step about to run ACTUALLY asked for -- see _pending_fit_starts.
+    #
+    # `n_starts` here is only the run's DEFAULT, and a watchdog sized to it kills legitimate
+    # fits: bachmann task 9 (job 52239407) ran a 300-start fit and died at exactly
+    # fit_time_budget(200)=7560s as "stalled: no step completed", losing ~22 node-hours. That was
+    # first patched with `fit_time_budget(2 * n_starts)`, which is a guess in both directions: it
+    # still sits below scenario.build_true_model's floors (bruno 400, fujita 300), and on a run
+    # whose agent never raises n_starts it doubles how long a genuinely wedged NON-fit step goes
+    # undetected, for nothing.
+    #
+    # There is no server-side cap to lean on either (one was tried and reverted; any cap near the
+    # default refuses the scenario floors above), so no multiplier can be right for a count the
+    # agent chooses at runtime. Read the count instead: `step_limit` in the loop below is
+    # fit_time_budget_for(pending fit, run default), which floors at the run default's own
+    # budget and rises only for a step that actually asked for more.
     # Self-imposed total-runtime budget (see the docstring): checked between super-steps, never
     # mid-step, so we always stop at a clean boundary rather than interrupting a live commit/fit.
     deadline = (time.monotonic() + max_wall_seconds) if max_wall_seconds is not None else None
@@ -581,6 +792,13 @@ async def run_deepagents(
     # token accounting for every one of them. So stop when there is not enough time left to
     # FINISH another step, using the same fit estimate the stall watchdog sizes itself to.
     # Capped at half the budget so a small budget still buys some work rather than stopping at 0.
+    # The DEFAULT n_starts, not the 2x cap. Sizing to the cap looked safer -- an agent may raise
+    # n_starts on its last step, and such a step is then CANCELLED at the hard deadline, losing
+    # the fit -- but it charges every run for a raise most never make: at the recorded bachmann
+    # config (n_starts=200, cap 400) that is fit_time_budget(400)-fit_time_budget(200) = 6720s
+    # reserved unconditionally, 12% of an isensee budget. A certain 12% tax against an occasional
+    # lost last fit is the wrong trade. The residual risk is real and accepted: an agent that
+    # doubles n_starts on the final step can still have it cancelled.
     step_headroom = (min(fit_time_budget(n_starts), max_wall_seconds * 0.5)
                      if max_wall_seconds is not None else 0.0)
     # THE deadline for every "may I start (or continue into) another step?" decision. The hard
@@ -620,6 +838,11 @@ async def run_deepagents(
     # captured so the post-loop relabel reuses it instead of re-probing. Only read when
     # stop_reason == "completed", which guarantees the intercept refreshed it that iteration.
     model_committed = True
+    # n_starts of the fit pending for the next super-step, or None if none is (see
+    # _pending_fit_starts). Lives OUTSIDE the resume loop so a resume re-enters with the last
+    # count observed rather than dropping back to the default mid-fit: astream re-emits from the
+    # checkpoint, but the first wait after `input=None` is armed before anything is emitted.
+    pending_fit: int | None = None
     if progress_probe is None:
         # The no-model-built guard (and the deterministic early-stop) both need the probe; without
         # it a silent no-model stop scores as an empty "completed" run instead of resuming to
@@ -632,30 +855,56 @@ async def run_deepagents(
         wall_budget_exceeded = False
         token_budget_exceeded = False
         early_stopped: str | None = None
+        # Bound BEFORE the try: the `except asyncio.TimeoutError` handler reports it, and on
+        # 3.11+ `asyncio.TimeoutError is TimeoutError`, so a TimeoutError raised anywhere in the
+        # block -- including from astream() itself, before the inner loop assigns this -- reaches
+        # that handler. Without a binding here the report raises UnboundLocalError and kills the
+        # run instead of resuming.
+        step_wait = float(_STEP_STALL_TIMEOUT_S)
         try:
             # Open the stream INSIDE the try so a synchronous raise from astream (e.g. on the
             # input=None resume path) is handled/degraded here, not left to abort the whole run.
             agen = agent.astream(stream_input, config=config, stream_mode="values").__aiter__()
             while True:
                 try:
+                    # How long this ONE step may take. fit_time_budget_for already floors at
+                    # the RUN-DEFAULT fit budget and caps at FIT_BUDGET_CEILING_S, and it is the
+                    # same function the per-call transport cut uses, so the two cannot disagree
+                    # about how long a given fit is allowed to take. The only thing left to add
+                    # is the absolute 600s floor for a run whose default fit budget is tiny;
+                    # the run-default term must not be applied a second time -- the function
+                    # already applies it.
+                    #
+                    # FIT_WATCHDOG_MARGIN keeps this STRICTLY ABOVE the transport cut for the
+                    # same fit. Tied, the watchdog always wins (it is armed a graph-dispatch
+                    # earlier) and an overrunning fit is cancelled mid-step as "stalled" instead
+                    # of returning the clean 408 that resumes without telling the model to
+                    # re-fit. Ordering: httpx ceiling > watchdog > per-call cut.
+                    step_limit = max(
+                        _STEP_STALL_TIMEOUT_S,
+                        fit_time_budget_for(pending_fit, n_starts) * FIT_WATCHDOG_MARGIN)
                     # Wait no longer than the time left in the wall-time budget. Without this the
                     # loop can only notice the deadline BETWEEN super-steps, so a step starting
-                    # just before it runs the loop up to `stall_timeout` (18 min at any n_starts)
-                    # PAST it -- against a default margin of 20 min, that leaves ~2 min for the
-                    # judge to restore and score a checkpoint. Observed: a fujita/v4-pro run was
-                    # hard-killed by Slurm at exactly 06:00:02 with NO result.json, losing the
-                    # whole run. Capping the wait hands control back at the deadline, so the
-                    # entire margin is available for scoring.
+                    # just before it runs the loop up to `step_limit` PAST it -- against a default
+                    # margin of 20 min, that leaves ~2 min for the judge to restore and score a
+                    # checkpoint. Observed: a fujita/v4-pro run was hard-killed by Slurm at
+                    # exactly 06:00:02 with NO result.json, losing the whole run. Capping the wait
+                    # hands control back at the deadline, so the entire margin is available for
+                    # scoring.
                     # The HARD deadline, deliberately — NOT `soft_deadline`. This bounds a step
                     # that is already running, and the whole point of the reserve is to let that
                     # step finish: capping the wait at the soft deadline cancels a commit step up
                     # to `step_headroom` (as much as half the budget) early and throws its fit
                     # away. Only the "may I START another step?" decisions use the soft deadline.
-                    step_wait = stall_timeout if deadline is None else max(
-                        1.0, min(stall_timeout, deadline - time.monotonic()))
-                    await asyncio.wait_for(agen.__anext__(), timeout=step_wait)
+                    step_wait = step_limit if deadline is None else max(
+                        1.0, min(step_limit, deadline - time.monotonic()))
+                    state = await asyncio.wait_for(agen.__anext__(), timeout=step_wait)
                 except StopAsyncIteration:
                     break
+                # Arm the NEXT wait from what this emission leaves pending. Deliberately after
+                # the await and before every break below: a step that ends the loop does not need
+                # a window, and a resume re-enters with whatever was last observed.
+                pending_fit = _pending_fit_starts(state, n_starts, guard_stats)
                 if soft_deadline is not None and time.monotonic() >= soft_deadline:
                     wall_budget_exceeded = True
                     break
@@ -668,14 +917,32 @@ async def run_deepagents(
                         >= max_run_tokens):
                     token_budget_exceeded = True
                     break
-                # Context backstop, checked at the same clean boundary: STOP the run before the
-                # summarization middleware would compact it (trigger 0.85 x window). A compaction
-                # is a silent quality event — it discards history mid-search and costs ~102k novel
-                # tokens — so a run that genuinely fills 80% of the window ends with an explicit,
-                # analyzable stop_reason instead. No measured call has reached half this line.
-                if token_accountant.max_prompt >= 0.8 * max_input_tokens:
+                # Context backstop, checked at the same clean boundary. This used to STOP at
+                # 0.8 x window to pre-empt the summarization middleware's 0.85 compaction, on the
+                # grounds that no call had ever approached it. Runs then reached it: on the
+                # 2026-08-20/21 sweeps the 0.8 stop ended 3 of 9 lucarelli runs (prompts 845-927k)
+                # and raimundez task 4 at dBIC +39.6 — still improving, 12h of budget left, ~30
+                # BIC from passing. A compaction is a real quality event (~102k novel tokens,
+                # history discarded mid-search) but it is strictly cheaper than ending the run:
+                # so compaction at 0.85 is now the first line of defence and this stop sits above
+                # it, at 0.90.
+                #
+                # `max_prompt` is an all-time monotonic maximum (token_usage never resets it),
+                # so this cannot mean "post-compaction the history still fills the window" -- one
+                # large prompt trips it permanently. The check also runs only at super-step
+                # boundaries, so whatever the line, a single step can cross the real 1M window
+                # before the next check and end as an unanalyzable provider 400.
+                #
+                # 0.90 is therefore a judgement, not a derivation: it keeps ~105k tokens of slack
+                # (against ~102k for one compaction), which is enough for the compaction path but
+                # NOT provably enough for a step that adds a large tool payload on top. It is
+                # chosen to sit above the 0.85 compaction trigger while giving back most of the
+                # margin the old 0.8 line cost -- that line ended 3 of 9 lucarelli runs and
+                # raimundez t4 at dBIC +39.6, still improving. Size it from the largest observed
+                # single-step prompt growth once that is measured.
+                if token_accountant.max_prompt >= 0.90 * max_input_tokens:
                     early_stopped = ("context_window_approached: largest prompt "
-                                     f"{token_accountant.max_prompt:,} tokens >= 80% of the "
+                                     f"{token_accountant.max_prompt:,} tokens >= 90% of the "
                                      f"{max_input_tokens:,}-token window")
                     break
                 # The gate gave up (too many no-fit finish attempts) — end promptly at this
@@ -709,8 +976,15 @@ async def run_deepagents(
                 wall_budget_exceeded = True
                 stop_reason = "wall_time_budget_exceeded"
             else:
-                retriable = (f"stalled: no step completed in {stall_timeout:.0f}s "
-                             "(hung provider call or wedged fit)")
+                # Report the window the step ACTUALLY had, not the run-default floor: with the
+                # window sized per step, those differ whenever a fit was pending, and a stall
+                # message naming the wrong number sends the next investigation to the wrong
+                # timeout. Name the pending fit too -- "wedged fit" and "wedged LLM turn" want
+                # different diagnoses, and this line is usually all a sweep post-mortem has.
+                waiting_on = (f"{pending_fit}-start fit pending" if pending_fit is not None
+                              else "no fit pending")
+                retriable = (f"stalled: no step completed in {step_wait:.0f}s "
+                             f"({waiting_on}; hung provider call or wedged fit)")
         except _TRANSIENT_ERRORS as exc:  # call-level retries exhausted -> resume the run
             retriable = f"{type(exc).__name__}: {exc}"
         except Exception as exc:
@@ -724,6 +998,14 @@ async def run_deepagents(
             # be routed to the retry path by a later branch.
             if (filtered := _content_filter_stop_reason(exc)) is not None:
                 stop_reason = filtered
+            elif _is_call_timeout(exc):
+                # A per-call fit timeout that escaped the breaker (e.g. raised at the `task`
+                # subagent boundary). Same reasoning as in the breaker: the server is still
+                # running the abandoned multistart, so RESUME from the checkpoint rather than
+                # ending the run -- and rather than letting the model re-issue a fit on top of
+                # one still holding the worker pool. It cannot join _TRANSIENT_ERRORS because
+                # that is a tuple of CLASSES and this is one status code within McpError.
+                retriable = f"fit call timed out: {exc}"
             elif (transient := _transient_provider_reason(exc)) is not None:
                 retriable = transient          # resume from the checkpoint, keeping every version
             else:
@@ -799,6 +1081,18 @@ async def run_deepagents(
             print(f"[agent] token budget ({max_run_tokens:,}) already exceeded at "
                   f"{token_accountant.prompt + token_accountant.completion:,} while handling "
                   f"'{retriable}' — stopping instead of resuming.")
+            break
+        # Is there still a server to resume against? Ask BEFORE spending a resume attempt: each
+        # one re-sends the whole history and re-issues the pending fit, so resuming into a dead
+        # server buys nothing and costs another full timeout per attempt. Checked here rather
+        # than in the handlers above so it covers every retriable path (stall, transient,
+        # per-call fit timeout) with one probe.
+        if _server_is_alive(server_poll) is False:
+            stop_reason = f"server_unreachable: {retriable}"
+            print(f"[agent] {retriable} — and the MCP server process has exited, so it is gone "
+                  "rather than slow. Not resuming: each resume re-sends the whole history and "
+                  "re-issues the pending fit, and every call to a dead server waits out its own "
+                  "timeout.")
             break
         if resume_left <= 0:
             stop_reason = retriable  # out of resume attempts — end with whatever was built
