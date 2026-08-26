@@ -32,7 +32,10 @@ BIOCURATOR_MAX_TURNS = 20
 # server (their names are unknown ahead of time), so it is built dynamically in
 # run_deepagents rather than listed in ANALYSTS.
 #
-# It is deliberately BLINDED to the modeling task: it holds ONLY the bio tools, never a petab
+# It is deliberately BLINDED to the modeling task: it holds the bio tools plus exactly ONE petab
+# read — `list_observables`, whose `observableName` states what each assay measures in
+# biology-only terms (phosphosites, proteoforms, assay type): the vocabulary a curator searches
+# with, and a surface the blinding already curates. Beyond that, never a petab
 # tool that would reveal the data/task (the STRUCTURAL half of the blind; the persona half is
 # prompts.BIOCURATOR_PROMPT, which never mentions a model, data, fitting or an experiment).
 
@@ -116,7 +119,9 @@ def _build_biocurator_subagent(bio_tools: list, entity_names: "list[str] | None"
     Unlike the three static analysts (whose tool NAMES are hard-coded and resolved from the
     petab server via ALLOWED_TOOLS), the biocurator's tools are whatever the bio-knowledge MCP
     server exposes — unknown until introspected — so they are passed as tool OBJECTS directly,
-    bypassing ALLOWED_TOOLS/_select_tools. Holding ONLY these bio tools (no petab tool) is the
+    bypassing ALLOWED_TOOLS/_select_tools. Holding no petab tool beyond the read-only
+    `list_observables` (appended by the caller; owner decision 2026-08-26 — the observable
+    DESCRIPTIONS are curated biology, and reading them beats relaying entities by hand) is the
     structural half of the task-blinding. See run_deepagents.
 
     ``entity_names`` (the hand-curated biological entities — see Scenario.biocurator_entities) is

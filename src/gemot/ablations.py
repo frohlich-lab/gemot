@@ -173,7 +173,8 @@ ABLATIONS: tuple[Ablation, ...] = (
         default_on=True,
         changes_prompt=True,
         effect="ON registers make_changes WITH `model_edits` (a BATCH of ID-addressed operations "
-               "— add_reaction, remove_reaction, set_rate_law, set_initial, rename — each an "
+               "— add_reaction, remove_reaction, set_rate_law, set_initial, set_assignment, "
+               "remove_assignment, rename — each an "
                "Antimony statement, applied server-side, all-or-nothing) + `base_version` (edit a "
                "prior version's stored source), adds `get_model` to the lead's toolset, and adds "
                "the edit-by-operation guidance to its prompt. Batched deliberately: one fit per "

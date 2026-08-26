@@ -95,7 +95,11 @@ _DIFF_EDITS_GUIDANCE = (
     "operations, each written as ANTIMONY and addressed by ID — "
     "`{op:'add_reaction', antimony:'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'}`, "
     "`{op:'remove_reaction', id}`, `{op:'set_rate_law', id, antimony:'k*EGF*EGFR'}`, "
-    "`{op:'set_initial', id, antimony:'5'}`, `{op:'rename', old, new}`. You write the model "
+    "`{op:'set_initial', id, antimony:'5'}`, "
+    "`{op:'set_assignment', id, antimony:'pAkt + pAkt_S6'}` (an `id := expr` rule holding at ALL "
+    "times — how a `readout_*` symbol an observable formula references is defined in terms of "
+    "YOUR states; `{op:'remove_assignment', id}` deletes one), `{op:'rename', old, new}`. "
+    "You write the model "
     "language you already know; you just say WHICH reaction, instead of quoting its text. "
     "EVERY reaction needs an id — an unnamed one cannot be changed later without re-authoring "
     "the whole model, so authoring is refused until they are all named. "
@@ -338,6 +342,19 @@ DEFAULT_TASK = (
     "model_authored: false). Build a mechanistic ODE model that explains the data, working "
     "the loop above until you reach the lowest-bic model whose residuals show no systematic "
     "structure, then report the model you built and its fit."
+    "\n\nSCORING: the run is scored on your BEST-bic fitted version AUTOMATICALLY, wherever HEAD "
+    "ends up. Every fitted version is kept; you never need to roll back to, re-commit, or end on "
+    "a good version — a worse attempt after it costs nothing."
+    "\n\nREADOUTS: a `readout_<name>` symbol in an observable formula is a MEASUREMENT "
+    "MAPPING, not a species. The observable table states WHAT the assay measured "
+    "(observableName); YOUR model says what that quantity is in terms of its own states, with "
+    "one assignment rule per readout — `readout_x := <expression of your species>` in the model "
+    "text, or the set_assignment op. It holds at all times (`:=`, never `=`, which would freeze "
+    "it as a constant), it is not estimated, and it must NEVER appear in a reaction: a readout "
+    "is a lens on your states, not a state — a species that is also assigned makes the model "
+    "over-determined and the commit is refused. Think about what the assay physically sees: an "
+    "antibody may count a phospho-protein both free and in complex; a channel readout may be a "
+    "nonlinear function of state occupancies; a fraction needs the right denominator."
 )
 
 
@@ -486,6 +503,10 @@ _BIOCURATOR_REPORT_CONTRACT = (
 )
 
 BIOCURATOR_PROMPT = (
+    "Start with `list_observables`: its `observableName` column states what each assay in this "
+    "problem MEASURES (assay type, phosphosites, proteoforms) — the precise vocabulary for your "
+    "literature and database lookups. It is your only view into the problem; you never see the "
+    "model, the fits, or the data.\n"
     "You are a biocurator: a biological reference desk. You are handed the NAMES of some "
     "biological entities — genes, proteins, metabolites, or other molecular species — and you "
     "report what is KNOWN about them from curated databases and the literature:\n"
@@ -598,7 +619,11 @@ TOOL_DESCRIPTIONS = {
                          "{op:'add_reaction', antimony:'act: EGFR => pEGFR; k*EGF*EGFR;'}, "
                          "{op:'remove_reaction', id}, "
                          "{op:'set_rate_law', id, antimony:'k*EGF*EGFR'}, "
-                         "{op:'set_initial', id, antimony:'5'}, {op:'rename', old, new}. "
+                         "{op:'set_initial', id, antimony:'5'}, "
+                         "{op:'set_assignment', id, antimony:'pAkt + pAkt_S6'} (an id := expr "
+                         "rule holding at ALL times — defines a readout_* symbol an observable "
+                         "formula references), {op:'remove_assignment', id}, "
+                         "{op:'rename', old, new}. "
                          "The DEFAULT route for every change after the first: nothing to quote, "
                          "in order, all-or-nothing, a bad id rejected with the valid ids listed. "
                          "Put the WHOLE change in ONE call — one call is one fit and one "
@@ -768,7 +793,12 @@ TOOL_DESCRIPTIONS = {
                       "and is what the run is scored on, so you never need to return to it."),
     "get_version": "Read a prior version's Antimony model + parameter table, to INSPECT it. Arg: version.",
     "get_fitting_log": "Tail of the pyPESTO/Fides multistart optimizer log (convergence, bound-pinning, ill-conditioning). Arg: tail_lines.",
-    "list_observables": "The observables being fitted: id, formula, and noise model.",
+    "list_observables": ("The observables being fitted: id, formula, noise model, and "
+                         "`observableName` — WHAT each one measures. A formula naming a "
+                         "`readout_*` symbol is a measurement mapping YOUR model must define "
+                         "(`readout_x := <expression of your states>`, or set_assignment); "
+                         "several observables may share one readout (one row per dataset/gel, "
+                         "differing only in shipped scalings), and one rule covers them all."),
     "get_measurements": ("Measurement data. Default returns a COMPACT SUMMARY (per observable×"
                          "condition: n, time span, value min/max/mean, preview points); pass "
                          "summarize=False for all raw points. Optional: condition_id, observable_id."),

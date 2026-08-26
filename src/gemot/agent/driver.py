@@ -578,12 +578,19 @@ async def run_deepagents(
     # in scenario.DEFAULT_SYSTEM_PROMPT — no runtime prompt splice, since the biocurator is
     # unconditional. biocurator_tools records what it actually got (empty = a dumb run) for analysis.
     # Hand the biocurator the scenario's HAND-CURATED biological entity NAMES DIRECTLY (see
-    # Scenario.biocurator_entities) — it holds no petab tool and cannot self-serve like the
+    # Scenario.biocurator_entities) — beyond list_observables it holds no petab tool and cannot self-serve like the
     # analysts, so this is its reliable input channel rather than a lead `description` /
     # silently-dropped `prompt=` (issue #91). Empty for a scenario with no lookupable biology (the
     # abstract toys): the biocurator then simply gets no injected entities (nothing to look up).
     biocurator_entities = list(curated_entities or [])
-    subagents.append(_build_biocurator_subagent(bio_tools, biocurator_entities))
+    # `list_observables` is the ONE petab tool the biocurator now holds (owner decision,
+    # 2026-08-26): the observable table's `observableName` states WHAT each assay measures in
+    # biology-only terms — exactly the vocabulary a curator searches literature with (phosphosites,
+    # proteoforms, assay type) — and it is a read the blinding already curates. The blinding
+    # boundary that matters is unchanged: no model access, no fit access, no measurements.
+    subagents.append(_build_biocurator_subagent(
+        bio_tools + [t for t in petab_tools if getattr(t, "name", None) == "list_observables"],
+        biocurator_entities))
     biocurator_tools = sorted(n for t in bio_tools if (n := getattr(t, "name", None)))
     print(f"[agent] biocurator on the panel with {len(biocurator_tools)} bio tool(s)"
           + (f": {biocurator_tools}" if biocurator_tools

@@ -280,14 +280,13 @@ def _sigma_ratio_band(n_points, k, n, reference, alpha):
     So this only ever RELAXES the old gate — never tightens it — and the relaxation is confined to
     sigmas whose df cannot support the old one.
 
-    Tolerance is MONOTONE in df: fewer points can only widen the band, never narrow it. That sounds
-    obvious and an earlier draft got it backwards — below ``NOISE_SIGMA_BAND_MIN_DF`` it switched to
-    the fixed factor, so at brannmark's shape a FIVE-point sigma was judged in [0.333, 3.0] while a
-    seven-point one got [0.154, 8.65]: the thinner evidence, the harsher test, and the very
-    false-failure this change exists to remove would have survived just below the floor. The floor
-    now clamps the df the band is COMPUTED at rather than switching regimes, so tolerance stops
-    widening below it instead of collapsing. A missing point count is the one case with no df at
-    all, and falls back to the fixed factor.
+    Tolerance is MONOTONE in df: fewer points can only widen the band, never narrow it. That is
+    why the floor clamps the df the band is COMPUTED at rather than switching to the fixed factor
+    below ``NOISE_SIGMA_BAND_MIN_DF``: a regime switch inverts the property — at brannmark's shape
+    a FIVE-point sigma would be judged in [0.333, 3.0] while a seven-point one gets [0.154, 8.65],
+    the thinner evidence drawing the harsher test. Clamping makes tolerance stop widening below
+    the floor instead of collapsing. A missing point count is the one case with no df at all, and
+    falls back to the fixed factor.
     """
     from scipy.stats import f as _f
 

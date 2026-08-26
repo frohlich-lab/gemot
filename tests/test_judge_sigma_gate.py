@@ -244,12 +244,11 @@ def test_the_sigma_band_widens_as_the_group_shrinks():
 
 
 def test_tolerance_never_tightens_as_the_group_gets_smaller():
-    """The property the band exists to have, and an earlier draft inverted: below
-    NOISE_SIGMA_BAND_MIN_DF it SWITCHED to the fixed factor, so at brannmark's shape a five-point
-    sigma was judged in [0.333, 3.0] while a seven-point one got [0.154, 8.65] — thinner evidence,
-    harsher test, and the false failure this whole change removes surviving just below the floor.
-    The floor now clamps the df the band is computed at, so tolerance stops widening rather than
-    collapsing."""
+    """The property the band exists to have: tolerance is monotone in df. Switching to the fixed
+    factor below NOISE_SIGMA_BAND_MIN_DF would invert it — at brannmark's shape a five-point sigma
+    judged in [0.333, 3.0] against a seven-point one's [0.154, 8.65]: thinner evidence, harsher
+    test. The floor therefore clamps the df the band is computed at, so tolerance stops widening
+    rather than collapsing."""
     bands = [_ref_flag(0.10, 0.10, n_points=m, k=17, n=43)["per_sigma"]["s"] for m in
              (3, 5, 7, 12, 20, 60)]
     lows = [b["band_low"] for b in bands]

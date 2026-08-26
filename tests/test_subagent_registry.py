@@ -55,7 +55,9 @@ def test_only_the_lead_holds_the_model_editors():
     for spec in agent.ANALYSTS:
         leaked = [e for e in _EDITORS if e in spec["tools"]]
         assert not leaked, f"analyst {spec['name']!r} holds model editor(s) {leaked}"
-    # The biocurator holds ONLY bio-server tools — never a petab tool (task-blinding).
+    # The biocurator holds the bio-server tools plus exactly ONE petab read — list_observables,
+    # appended by the CALLER (run_deepagents), so the builder itself adds nothing: handing it an
+    # empty tool list must yield an empty panel, or a petab tool could ride in unnoticed.
     assert agent._build_biocurator_subagent([], [])["tools"] == []
 
 

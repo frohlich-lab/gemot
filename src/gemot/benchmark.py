@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -83,32 +84,26 @@ def benchmark_dir(name: str, collection: Path | None = None) -> Path:
     return d
 
 
-def _load_problem(name: str, collection: Path | None):
-    """The published petab problem, flattened if it uses per-measurement output overrides."""
+def _load_problem(name: str, collection: Path | None, flatten: bool = True):
+    """The published petab problem — flattened only when AMICI genuinely requires it AND the
+    caller asks (the reference fit, which hands the problem to pypesto directly).
+
+    ``materialize`` passes ``flatten=False``: the shipped tables stay in the published compact
+    form (bachmann ships 20 observables; flattening would mint 101), and the SERVER flattens a
+    copy at its own AMICI boundary when needed (``petab_mcp.fitting.amici_facing_problem``).
+    Sharing the server's predicate matters: a looser one — grouping by observable alone — would
+    flatten three examples whose overrides only vary ACROSS conditions, which AMICI takes
+    natively.
+    """
     import petab.v1 as petab
 
+    from petab_mcp.fitting import needs_flattening
+
     prob = petab.Problem.from_yaml(str(benchmark_dir(name, collection) / f"{name}.yaml"))
-    if _needs_flatten(prob):
-        print(f"[setup] {name}: flattening per-measurement output overrides (petab)")
+    if flatten and needs_flattening(prob):
+        print(f"[setup] {name}: flattening timepoint-specific output overrides (petab)")
         petab.flatten_timepoint_specific_output_overrides(prob)
     return prob
-
-
-def _needs_flatten(prob) -> bool:
-    """True when the measurement table carries per-measurement observable/noise parameter overrides
-    that differ within an observable — AMICI cannot import these without flattening."""
-    from petab.v1.C import NOISE_PARAMETERS, OBSERVABLE_ID, OBSERVABLE_PARAMETERS
-
-    mdf = prob.measurement_df
-    for col in (OBSERVABLE_PARAMETERS, NOISE_PARAMETERS):
-        if col not in mdf.columns:
-            continue
-        # a string override (a parameter id / expression) that varies within one observable needs it
-        sub = mdf[[OBSERVABLE_ID, col]].dropna()
-        sub = sub[sub[col].apply(lambda v: isinstance(v, str))]
-        if not sub.empty and (sub.groupby(OBSERVABLE_ID)[col].nunique() > 1).any():
-            return True
-    return False
 
 
 def _write_problem_yaml(problem_dir: Path) -> None:
@@ -147,10 +142,378 @@ def _write_empty_sbml(problem_dir: Path) -> None:
         f"model {ANON_MODEL_ID}\nend\n")
 
 
+def _placeholder_re(oid: str) -> "re.Pattern[str]":
+    """The observation-parameter placeholders belonging to observable ``oid``.
+
+    PEtab defines a placeholder as ``<observable|noise>ParameterN_<observableId>``, so the
+    observable id is a SUFFIX -- which makes both boundaries load-bearing and easy to get wrong
+    in only one of the places that need this. Without the trailing ``\\b``, observable ``pAkt``
+    matches inside ``observableParameter1_pAkt_tot`` and mangles a different observable's
+    placeholder; without the leading one, a longer prefix could match into this id. Every site
+    that renames or canonicalises placeholders goes through here so they cannot drift apart.
+    """
+    return re.compile(rf"\b((?:observable|noise)Parameter\d+)_{re.escape(oid)}\b")
+
+
+def _merge_equivalent_observables(prob) -> dict[str, str]:
+    """Merge observables that are identical up to their own placeholder suffix, returning the
+    ``{old_id: new_id}`` mapping (empty when nothing merges).
+
+    Some published encodings mint one observable per DATASET even though the per-dataset
+    scaling/noise already rides the measurement table's ``observableParameters`` /
+    ``noiseParameters`` columns row by row — raimundez is 79 observables that are 5 formulas.
+    PEtab's placeholders (``observableParameterN_<observableId>``) resolve from those columns
+    per measurement, so observables whose formulas normalize to the same shape (and share
+    transformation + noise distribution) are one observable wearing many names, and the clones
+    cost every consumer: the agent re-reads 79 near-identical rows per turn, the blinding needs
+    79 spec entries, and a forgotten mapping errors once per clone.
+
+    GUARDED by the same predicate that gates AMICI flattening: a merge is taken only if the
+    merged problem still has at most one override per (observable, condition) pair —
+    ``petab_mcp.fitting.needs_flattening`` stays False. That refuses exactly the cases where the
+    clones carry information: replicate series measured in the SAME condition (bachmann's
+    foldA/B/C qRT-PCR replicates, its au1/au2 dose-response gels) keep their own observables.
+    Likelihood, n and k are untouched — same rows, same parameters, new labels.
+
+    The merged id is the members' cleaned common prefix (``pEGFR_ID3_...``/``pEGFR_ID6_...`` ->
+    ``pEGFR``) when that is unique, else the first member's id.
+    """
+
+    from petab.v1.C import (NOISE_DISTRIBUTION, NOISE_FORMULA, NOISE_PARAMETERS, OBSERVABLE_ID,
+                            OBSERVABLE_NAME, OBSERVABLE_PARAMETERS, OBSERVABLE_TRANSFORMATION,
+                            SIMULATION_CONDITION_ID)
+
+    from petab_mcp.fitting import needs_flattening
+
+    odf, mdf = prob.observable_df, prob.measurement_df
+    if odf is None or mdf is None or OBSERVABLE_PARAMETERS not in mdf.columns:
+        return {}
+
+    def norm(oid, s):
+        """Strip the observable's own placeholders so two rows differing only in WHICH
+        observable they belong to compare equal."""
+        return _placeholder_re(oid).sub(r"\1", str(s or ""))
+
+    groups: dict[tuple, list[str]] = {}
+    for oid, row in odf.iterrows():
+        key = (norm(oid, row.get("observableFormula")), norm(oid, row.get(NOISE_FORMULA)),
+               str(row.get(OBSERVABLE_TRANSFORMATION, "")), str(row.get(NOISE_DISTRIBUTION, "")))
+        groups.setdefault(key, []).append(str(oid))
+
+    mapping: dict[str, str] = {}
+    taken = {str(i) for i in odf.index}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        import os.path
+        prefix = os.path.commonprefix(members).rstrip("_")
+        # Cut at the first dataset-ish segment: `pEGFR_ID3_HS746T_FM` and friends share far more
+        # than the biological name, and a merged id of `MMET_ID10_HS746T_FM_EGF` (the common
+        # prefix of two members) is worse than no merge. Segments like ID3/ID10 mark where the
+        # per-dataset suffix starts.
+        parts = [s for s in prefix.split("_") if s]
+        for i, seg in enumerate(parts):
+            if re.fullmatch(r"ID\d*[a-z]?", seg):
+                parts = parts[:i]
+                break
+        prefix = "_".join(parts)
+        # Suffix `_obs`: a bare biological name (EGFR, pAKT) is exactly what the agent will call
+        # a SPECIES, and petab lint rejects an observable id that shadows a model entity — the
+        # e2e probe caught the unsuffixed form breaking every raimundez commit. The published
+        # per-dataset ids only avoided this by accident of their suffixes.
+        if prefix and not prefix.endswith(("_obs", "_au", "_rel", "_fold", "_count")):
+            prefix = f"{prefix}_obs"
+        new_id = prefix if (prefix and re.match(r"[A-Za-z_]\w*$", prefix)
+                            and (prefix not in taken or prefix in members)) else members[0]
+        # trial the merge on COPIES; keep it only if the flattening predicate stays quiet
+        trial = {m: new_id for m in members}
+        m2 = mdf.copy()
+        m2[OBSERVABLE_ID] = m2[OBSERVABLE_ID].map(lambda v: trial.get(str(v), v))
+
+        class _T:  # minimal problem view for the predicate
+            measurement_df = m2
+
+        if needs_flattening(_T()):
+            continue
+        mapping.update({m: new_id for m in members if m != new_id})
+        taken.add(new_id)
+
+    if not mapping:
+        return {}
+    # observable table: keep the FIRST row seen per merged id, placeholders renamed. Dedup on
+    # the merged ids directly — checking "did a sibling already map here" against the kept list
+    # missed the case where an alias row precedes its group's canonical row, which shipped a
+    # duplicate observable id.
+    keep, seen_new = [], set()
+    for oid in map(str, odf.index):
+        new = mapping.get(oid, oid)
+        if new in seen_new:
+            continue
+        seen_new.add(new)
+        keep.append(oid)
+    new_odf = odf.loc[keep].copy()
+    # The kept row is ONE arbitrary member of the group, so any per-dataset label it carries no
+    # longer describes the merged observable. raimundez's published observableName cells are the
+    # observable ids themselves (`EGFR_ID10_HS746T_FM_EGF_CET`), so keeping the first member's
+    # would name the merged row after one arbitrary gel -- misleading, and a dataset-identity
+    # leak on any future merging example that is not also blinded (blinding overwrites this cell,
+    # which is the only reason it is harmless today). The merged id is the honest label.
+    if OBSERVABLE_NAME in new_odf.columns:
+        new_odf[OBSERVABLE_NAME] = [mapping.get(oid, oid) for oid in keep]
+    new_index = []
+    for oid in keep:
+        new = mapping.get(oid, oid)
+        for col in new_odf.columns:
+            v = new_odf.loc[oid, col]
+            if isinstance(v, str):
+                new_odf.loc[oid, col] = _placeholder_re(oid).sub(rf"\1_{new}", v)
+        new_index.append(new)
+    new_odf.index = new_index
+    new_odf.index.name = odf.index.name
+    prob.observable_df = new_odf
+    mdf[OBSERVABLE_ID] = mdf[OBSERVABLE_ID].map(lambda v: mapping.get(str(v), v))
+    print(f"[setup] merged {len(mapping)} redundant per-dataset observables into "
+          f"{len(set(mapping.values()))} (per-row overrides already carried the difference)")
+    return mapping
+
+
+def _collapse_blinding(blinding: dict[str, dict], merged: dict[str, str]) -> dict[str, dict]:
+    """Rewrite a blinding spec through the observable merge that just happened.
+
+    When `_merge_equivalent_observables` folds N clone observables onto one id, the spec written
+    against the old ids has to follow — and the only thing in it that names an observable id is
+    the observation-parameter PLACEHOLDER (`observableParameter1_<oid>`), whose suffix is the
+    observable id by PEtab definition.
+
+    So the rewrite is anchored to exactly that shape, in exactly the formula keys. The obvious
+    version -- `v.replace(f"_{oid}", f"_{new}")` across every value -- is wrong three ways:
+
+    * it rewrites the `measures` PROSE, mangling any sentence containing the id after an
+      underscore, and that prose is what the agent reads;
+    * it rewrites an EXPLICIT `readout` symbol, which the run-path check keys on and which is
+      deliberately shared across the very observables being merged;
+    * it matches SUBSTRINGS, so with both `pAkt` and `pAkt_tot` in the spec, collapsing `pAkt`
+      corrupts the longer one's placeholder into `observableParameter1_pAkt_obs_tot`.
+
+    The DERIVED readout is the one exception, and it does have to move. A spec with no `readout`
+    key means `readout_<observableId>`, which :func:`_blind_observables` re-derives from the key
+    it is handed -- the MERGED id -- so leaving `readout_<oldId>` in the formula makes the two
+    disagree and the "must reference readout_<mergedId>" guard fires. Eleven of the blinded
+    examples omit the key, so this is not hypothetical, merely unreachable while raimundez is the
+    only example that merges. An explicit `readout` is left exactly as written.
+
+    Specs that collapse onto the same merged id must agree; disagreeing ones are a curation
+    error, not something to silently pick a winner for.
+    """
+    collapsed: dict[str, dict] = {}
+    for oid, spec in blinding.items():
+        new = merged.get(oid, oid)
+        ph = _placeholder_re(oid)
+        derived = None if spec.get("readout") else (
+            re.compile(rf"\breadout_{re.escape(oid)}\b"), f"readout_{new}")
+        renamed = dict(spec)
+        for key in ("formula", "noise"):
+            if isinstance(renamed.get(key), str):
+                renamed[key] = ph.sub(rf"\1_{new}", renamed[key])
+                if derived is not None:
+                    renamed[key] = derived[0].sub(derived[1], renamed[key])
+        existing = collapsed.setdefault(new, renamed)
+        if existing != renamed:
+            raise ValueError(f"observable merge: blinding specs for {oid!r} disagree "
+                             f"after collapsing onto {new!r}")
+    return collapsed
+
+
+def _blind_observables(prob, blinding: dict[str, dict]) -> None:
+    """Replace each blinded observable's MODEL-CONTENT with a ``readout_<observableId>`` symbol,
+    in place, and put the biology-only description in ``observableName``.
+
+    The published ``observableFormula`` is a structural leak: it is written in the REFERENCE
+    model's own vocabulary, so shipping it verbatim hands the agent species names (blasi's
+    ``x_k5k12`` acetylation states), complex composition (fujita's ``pAkt + pAkt_S6``) and even
+    stoichiometry (sneyd's ``(0.9*IPR_A + 0.1*IPR_O)^4`` — four subunits, two conducting states,
+    their conductances). Worse than informational: the model-less SEED declares one species per
+    formula identifier, so the leak becomes v0's species list. Discovering the measurement mapping
+    is part of the modelling task, so the formula the agent sees references a symbol IT must
+    define (an assignment rule, ``readout_x := <its own expression>``; the ``set_assignment`` edit
+    op), and ``observableName`` says WHAT was measured in assay/biology terms only.
+
+    WHAT ``measures`` MAY SAY. The line is ASSAY SELECTIVITY vs MODEL STRUCTURE, and it has to
+    be drawn deliberately, because both mistakes are expensive:
+
+    * KEEP assay selectivity -- what the assay binds and what it does not. "TOTAL X", "selective
+      for the phosphorylated form", "the antibody binds every X molecule", "a cytoplasmic
+      lysate", "(active or not)". Without it the readout is not merely unblinded, it is
+      UNDERDETERMINED: raimundez's reference counts each EGFR chain, so its dimeric species
+      carry a factor 2, and only "binds every EGFR molecule" makes those weights derivable.
+      Relative weights are not absorbable by the shipped scaling.
+    * REMOVE model structure -- the SPECIES the readout sums over and where they live.
+      "in whatever dimer/complex and compartment", "surface plus internalized", "summed over
+      whatever cell-cycle phase". That is the mapping, and choosing it is the task.
+
+    The failure mode in between is the dangerous one: a description that is neither leaky nor
+    accurate. Replacing schwen's "surface plus internalized pool" with "the total receptor pool"
+    removed the leak and silently renamed the quantity -- the reference readout is the OCCUPIED
+    receptor, and total receptor is conserved by that model, so the description asked for a
+    constant. Check every reworded description against the example's ``TRUE_ANT`` readout.
+
+    ``blinding`` is ``{observableId: {"formula": <blinded formula>, "measures": <description>}}``,
+    curated per example in its ``run.py`` (``OBSERVABLE_BLINDING``). Two optional keys:
+
+    * ``"readout"`` names the readout symbol when the derived ``readout_<observableId>`` is wrong
+      — the flattened benchmarks (isensee, bachmann, fiedler, ...) carry MANY observables per
+      biological readout (one per gel/dataset, distinct scalings), and deriving per-observable
+      symbols there would demand a hundred-odd identical mappings from the agent and seed as many
+      junk species into v0. A shared ``readout_pErk`` across every pErk gel is one mapping, which
+      is the biology. Must still start with ``readout_`` (the run-path check keys on the prefix).
+    * ``"noise"`` rewrites ``noiseFormula`` the same way, for the examples whose noise is
+      PROPORTIONAL to the signal (armistead's ``noiseParameter1_Cer_obs*Cer``): the sigma
+      STRUCTURE is kept exactly — the readout equals the expression it replaces — and only the
+      reference-model vocabulary goes. Without it those examples were unblindable (the guard
+      below refuses a noise formula referencing a blinded-away symbol). The blinded formula is given
+    EXPLICITLY, not derived: which part of a formula is assay scaling (kept — fujita's
+    ``observableParameter1_pAkt_tot * readout_pAkt_tot``) and which is model content (blinded) is
+    a judgement, and deriving it here would hide that judgement inside a heuristic.
+
+    Guards, each a leak or a break this function refuses to ship:
+
+    * an unknown observable id — a silently unblinded observable defeats the point;
+    * a blinded formula that does not reference ``readout_<observableId>`` — nothing for the
+      agent to define;
+    * a surviving model-content symbol: every non-readout identifier in the blinded formula must
+      already appear in the ORIGINAL formula (keeps scalings/offsets, and makes smuggling a new
+      hint in impossible) and must not be one the blinding was supposed to remove — i.e. the
+      original's identifiers minus the kept ones must all be gone;
+    * a ``noiseFormula`` that references a blinded-away symbol — the leak would just move into
+      the sigma column. Not hit by blasi/sneyd/fujita (placeholder sigmas), but the first
+      proportional-noise example would leak silently without the check.
+    """
+    from petab.v1.C import NOISE_FORMULA, OBSERVABLE_FORMULA, OBSERVABLE_NAME
+
+    from petab_mcp.reconcile import formula_identifiers
+
+    odf = prob.observable_df
+    # What counts as a MODEL entity: anything the published formulas name that is not a
+    # parameter-table row (the same rule `reconcile.seed_model_antimony` uses to decide what the
+    # seed declares as a species).
+    pdf = getattr(prob, "parameter_df", None)
+    table_rows = {str(p) for p in getattr(pdf, "index", [])}
+    seed_entities = set()
+    for value in odf[OBSERVABLE_FORMULA]:
+        seed_entities |= formula_identifiers(value)
+    seed_entities -= table_rows
+    if not table_rows:
+        # No parameter table to distinguish a shipped scaling from a model species — the check
+        # would flag every kept symbol. Skip it rather than refuse (materialize always has one;
+        # this is the hand-built-problem path).
+        seed_entities = set()
+    seed_entities = {i for i in seed_entities
+                     if not re.fullmatch(r"(?:observable|noise)Parameter\d+_.*", i)}
+    # The noise branch needs the same notion of "model entity", widened by the symbols only the
+    # SIGMA column names: a species appearing nowhere but a proportional noise formula is still
+    # reference-model content, and checking it against the observable-side set alone would miss it.
+    noise_seed_entities = set(seed_entities)
+    if table_rows and NOISE_FORMULA in odf.columns:
+        for value in odf[NOISE_FORMULA]:
+            noise_seed_entities |= formula_identifiers(value)
+        noise_seed_entities -= table_rows
+        # An OBSERVABLE ID in a noise formula is PEtab's relative-error idiom
+        # (`noiseParameter1_a * a`, where petab substitutes the simulated observable), not a
+        # model entity -- refusing it would reject a formula that leaks nothing.
+        noise_seed_entities -= {str(i) for i in odf.index}
+        noise_seed_entities = {i for i in noise_seed_entities
+                               if not re.fullmatch(r"(?:observable|noise)Parameter\d+_.*", i)}
+    # Once, before the loop: a shipped-but-empty observableName column is all-NaN float64, and
+    # writing a string into it raises under pandas 2 rather than upcasting.
+    if OBSERVABLE_NAME not in odf.columns:
+        odf[OBSERVABLE_NAME] = ""
+    elif odf[OBSERVABLE_NAME].dtype != object:
+        odf[OBSERVABLE_NAME] = odf[OBSERVABLE_NAME].astype(object)
+    for obs_id, spec in blinding.items():
+        if obs_id not in odf.index:
+            raise ValueError(f"observable blinding: no observable {obs_id!r} "
+                             f"(have: {sorted(map(str, odf.index))})")
+        readout = str(spec.get("readout") or f"readout_{obs_id}")
+        if not readout.startswith("readout_"):
+            raise ValueError(f"observable blinding: {obs_id!r}: readout symbol {readout!r} must "
+                             "start with 'readout_' — the commit-time check keys on the prefix")
+        blinded = str(spec["formula"])
+        original = str(odf.loc[obs_id, OBSERVABLE_FORMULA])
+        blinded_ids = formula_identifiers(blinded)
+        original_ids = formula_identifiers(original)
+        if readout not in blinded_ids:
+            raise ValueError(f"observable blinding: {obs_id!r}: the blinded formula must "
+                             f"reference {readout!r}, got {blinded!r}")
+        # every readout_* is agent-defined (a template may reference more than one -- schwen's
+        # ELISA form carries the intact-insulin AND fragments readouts); the commit-time check
+        # keys on the prefix, so none of them is a "kept" reference-model symbol.
+        kept = {i for i in blinded_ids if not i.startswith("readout_")}
+        if not kept <= original_ids:
+            raise ValueError(f"observable blinding: {obs_id!r}: {sorted(kept - original_ids)} "
+                             "do not appear in the published formula — only existing "
+                             "scaling/offset symbols may be kept")
+        # The guard above stops a NEW symbol being smuggled in; this one stops an old one being
+        # LEFT IN. Without it a spec of `scale * (readout_x + pAkt)` passed every check — `pAkt`
+        # is in the published formula, so "kept <= original" holds — and the species leaked into
+        # the shipped table AND the v0 seed, which is the whole failure this function prevents.
+        # A kept symbol must be a shipped observation parameter (a scaling/offset the assay
+        # gives), never a model entity.
+        removed = original_ids - kept
+        model_side = {i for i in kept if i in seed_entities}
+        if model_side:
+            raise ValueError(
+                f"observable blinding: {obs_id!r}: {sorted(model_side)} are reference-model "
+                "entities and must not survive the blinding — only shipped scaling/offset "
+                "parameters may be kept")
+        if "noise" in spec:
+            if NOISE_FORMULA not in odf.columns:
+                raise ValueError(f"observable blinding: {obs_id!r}: a 'noise' key was given but "
+                                 "the observable table has no noiseFormula column to blind")
+            noise_blinded = str(spec["noise"])
+            noise_original_ids = formula_identifiers(odf.loc[obs_id, NOISE_FORMULA])
+            # Same rule as the observable side, and for the same two reasons: EVERY `readout_*`
+            # is agent-defined, not just the one derived from this observable id (a proportional
+            # sigma may reference a shared readout the formula also uses), and a kept symbol must
+            # be a shipped scaling — never a model entity. Subtracting only `{readout}` refused
+            # legal multi-readout specs; omitting the model-side check let the leak the observable
+            # branch prevents walk straight back in through the sigma column, which is precisely
+            # what the guard below this block exists to stop.
+            noise_kept = {i for i in formula_identifiers(noise_blinded)
+                          if not i.startswith("readout_")}
+            if not noise_kept <= noise_original_ids:
+                raise ValueError(
+                    f"observable blinding: {obs_id!r}: noise {sorted(noise_kept - noise_original_ids)} "
+                    "do not appear in the published noiseFormula — only existing symbols may be kept")
+            noise_model_side = {i for i in noise_kept if i in noise_seed_entities}
+            if noise_model_side:
+                raise ValueError(
+                    f"observable blinding: {obs_id!r}: noise {sorted(noise_model_side)} are "
+                    "reference-model entities and must not survive the blinding — only shipped "
+                    "scaling/offset parameters may be kept")
+            odf.loc[obs_id, NOISE_FORMULA] = noise_blinded
+        if NOISE_FORMULA in odf.columns:
+            noise_ids = formula_identifiers(odf.loc[obs_id, NOISE_FORMULA])
+            # Two ways a sigma column leaks, and `removed` only catches the first:
+            #  * it keeps a symbol the observable side just blinded away;
+            #  * it names a model entity the observable formula never mentioned at all, so the
+            #    entity is not in `removed` and the check waved it through -- shipping the
+            #    reference-model species name straight to the agent via list_observables.
+            leaked = (noise_ids & removed) | (noise_ids & noise_seed_entities)
+            if leaked:
+                raise ValueError(
+                    f"observable blinding: {obs_id!r}: noiseFormula references "
+                    f"{sorted(leaked)}, which are reference-model entities the blinding must "
+                    "not ship — the leak would move into sigma. Blind the noise formula too "
+                    "(the 'noise' key), or keep the symbol.")
+        odf.loc[obs_id, OBSERVABLE_FORMULA] = blinded
+        odf.loc[obs_id, OBSERVABLE_NAME] = str(spec["measures"])
+
+
 def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
                 shipped_param_overrides: dict[str, dict] | None = None,
                 rename_ids: dict[str, str] | None = None,
                 preequilibration: dict[str, str] | None = None,
+                observable_blinding: dict[str, dict] | None = None,
                 collection: Path | None = None) -> dict[str, Any]:
     """Write ``example_dir/problem/`` from the pinned collection — the fast, no-fit path run by
     ``setup.py``. Copies the published measurements/observables/conditions VERBATIM (flattening
@@ -179,7 +542,7 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
 
     problem_dir = Path(example_dir) / "problem"
     problem_dir.mkdir(parents=True, exist_ok=True)
-    prob = _load_problem(name, collection)
+    prob = _load_problem(name, collection, flatten=False)
 
     def _relabel(v):
         if not isinstance(v, str):
@@ -197,6 +560,15 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
             prob.observable_df[_col] = prob.observable_df[_col].map(_relabel)
         for _col in prob.measurement_df.columns:
             prob.measurement_df[_col] = prob.measurement_df[_col].map(_relabel)
+
+    merged = _merge_equivalent_observables(prob)
+    if merged and observable_blinding:
+        observable_blinding = _collapse_blinding(observable_blinding, merged)
+
+    if observable_blinding:
+        # After rename_ids: the blinding spec is written in the RELABELLED vocabulary — the ids
+        # the agent will actually see.
+        _blind_observables(prob, observable_blinding)
 
     if preequilibration:
         from petab.v1.C import PREEQUILIBRATION_CONDITION_ID

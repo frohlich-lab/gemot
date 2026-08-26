@@ -109,16 +109,24 @@ def test_biocurator_report_contract_branches_the_report_form():
 
 
 def test_biocurator_prompt_stays_blind_after_the_branch():
-    """The follow-up handling must not hand the biocurator the modeling frame. The persona
-    (persona + report contract, no entity block) carries no model/data/fitting vocabulary.
+    """The follow-up handling must not hand the biocurator the modeling frame.
+
+    The persona now OPENS with its one sanctioned window — `list_observables`, whose
+    observableName states what each assay MEASURES (owner decision, 2026-08-26) — so the
+    measurement vocabulary in that opening paragraph is the exception, not a leak. What must
+    still be absent is the MODELING frame: the model, the fits, the simulations, the parameters.
+    The opening itself asserts the boundary ("you never see the model, the fits, or the data"),
+    so those words appear exactly once, in the sentence that forbids them — strip the opening
+    paragraph before scanning.
 
     Word boundaries, so legitimate desk vocabulary is not a false positive: 'databases' is not
-    'data', and the persona's existing 'judge fit before relying on a paper' is 'fit' = suitability,
-    not model-fitting — the modeling frame is 'fitting'/'fitted', which must be absent."""
-    p = agent.BIOCURATOR_PROMPT
-    frame = [r"\bmodel", r"\bdata\b", r"\bfitting\b", r"\bfitted\b", r"\bmeasure",
-             r"\bobservable\b", r"\bexperiment", r"\bsimulat", r"\bparameter"]
-    leaked = [f for f in frame if re.search(f, p, re.IGNORECASE)]
+    'data', and 'judge fit before relying on a paper' is 'fit' = suitability."""
+    opening, _, rest = agent.BIOCURATOR_PROMPT.partition("\n")
+    assert "list_observables" in opening and "never see the model" in opening, (
+        "the sanctioned-window opening moved; re-anchor this test")
+    frame = [r"\bmodel", r"\bdata\b", r"\bfitting\b", r"\bfitted\b",
+             r"\bexperiment", r"\bsimulat", r"\bparameter"]
+    leaked = [f for f in frame if re.search(f, rest, re.IGNORECASE)]
     assert not leaked, f"blind-breaking frame words leaked into the biocurator persona: {leaked}"
 
 
