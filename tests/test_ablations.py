@@ -124,6 +124,17 @@ _NOT_ABLATIONS = {
                                   "summarization middleware as a profile so its trigger is a "
                                   "fraction of the true window instead of a flat 170k fallback — "
                                   "changes when compaction fires, not what any answer is",
+    "PETAB_MCP_MAX_OUTPUT_TOKENS": "infrastructure, the output-side twin of MAX_INPUT_TOKENS: the "
+                                   "model's real max_completion_tokens, sent so a turn gets the "
+                                   "ceiling the model advertises rather than whatever default the "
+                                   "provider substitutes (Z.AI serves glm-5.3-flash at 65536, half "
+                                   "its stated 131072). Declared here rather than registered as an "
+                                   "arm because it does not change the task, the prompt, the tools "
+                                   "or the scoring — only how much room one reply has. Stated "
+                                   "plainly though: it CAN move an outcome, because a reply "
+                                   "truncated at the provider default emits nothing at all "
+                                   "(finish_reason 'length', no tool call). That is a capability "
+                                   "ceiling being set correctly, not a behavioural knob to A/B",
     "PETAB_MCP_REFERENCE_VALIDATION": "server validation mode; also a run.py flag, not an arm",
     "PETAB_MCP_REPO_ROOT": "path override for repo_root()",
     "PETAB_MCP_SKILLS_DIR": "path to the skills directory",

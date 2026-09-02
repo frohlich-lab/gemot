@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..prompts import BIOCURATOR_DESCRIPTION, BIOCURATOR_PROMPT, _biocurator_entity_block
-from .guards import _subagent_turn_limit
+from .guards import _reasoning_runaway_guard, _subagent_turn_limit
 from .subagents import ACTIVE_SPECS, _subagent_prompt_key
 
 #: Model calls one biocurator delegation may make before it must report.
@@ -113,7 +113,8 @@ LITERATURE_BIO_TOOLS = (
 _BIO_DISCOVERY_TIMEOUT_S = 30.0
 
 
-def _build_biocurator_subagent(bio_tools: list, entity_names: "list[str] | None" = None) -> dict[str, Any]:
+def _build_biocurator_subagent(bio_tools: list, entity_names: "list[str] | None" = None,
+                               stats: "dict[str, Any] | None" = None) -> dict[str, Any]:
     """Build the biocurator subagent spec from the RUNTIME-DISCOVERED bio-server tools.
 
     Unlike the three static analysts (whose tool NAMES are hard-coded and resolved from the
@@ -138,5 +139,8 @@ def _build_biocurator_subagent(bio_tools: list, entity_names: "list[str] | None"
         # Bounded like the analysts, and for the same reason -- but a touch longer: the
         # biocurator makes one external lookup per entity, and it is handed the whole entity
         # list at once, so its floor scales with that list rather than being a single question.
-        "middleware": [_subagent_turn_limit(BIOCURATOR_MAX_TURNS)],
+        # Runaway-guarded like the analysts, and for the same measured reason -- 3 of the 11
+        # subagent-side truncations were the biocurator's (see _build_subagents).
+        "middleware": ([_subagent_turn_limit(BIOCURATOR_MAX_TURNS)]
+                       + ([_reasoning_runaway_guard(stats)] if stats is not None else [])),
     }

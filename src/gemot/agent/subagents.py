@@ -45,7 +45,7 @@ from ..prompts import (
     SIGNAL_ENGINEER_PROMPT,
     SYSTEMS_SCIENTIST_PROMPT,
 )
-from .guards import _subagent_turn_limit
+from .guards import _reasoning_runaway_guard, _subagent_turn_limit
 from .tools import (
     MATHEMATICIAN_TOOLS,
     SIGNAL_ENGINEER_TOOLS,
@@ -121,7 +121,8 @@ def _subagent_prompt_key() -> str:
     return "system_prompt"
 
 
-def _build_subagents(tools_by_name: dict[str, Any]) -> list[dict[str, Any]]:
+def _build_subagents(tools_by_name: dict[str, Any],
+                     stats: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Analyst specs with each persona's tool NAMES resolved to the server's tool OBJECTS.
 
     deepagents' ``SubAgent`` spec takes ``tools`` as a sequence of ``BaseTool``/callable
@@ -144,7 +145,17 @@ def _build_subagents(tools_by_name: dict[str, Any]) -> list[dict[str, Any]]:
             "tools": tools,
             # Bound each delegation. Without this an analyst may explore until the parent's
             # limit or the credit runs out -- see the note on _subagent_turn_limit.
-            "middleware": [_subagent_turn_limit(ANALYST_MAX_TURNS)],
+            #
+            # The runaway guard rides along because deepagents builds each subagent its OWN
+            # middleware stack (graph.py: `spec.get("middleware", [])`) -- the lead's list does
+            # not reach here. A reasoning runaway is a property of the MODEL, not of the lead:
+            # of 32 length-terminated calls measured on glm-5.3-flash over bachmann/isensee/
+            # boehm, 11 were on analysts. Un-guarded, those surface as a blank `task` return
+            # that _empty_report_guard papers over with a marker, so the same defect was being
+            # diagnosed as an "empty report" instead of a truncation that a cheap reduced-effort
+            # retry recovers.
+            "middleware": ([_subagent_turn_limit(ANALYST_MAX_TURNS)]
+                           + ([_reasoning_runaway_guard(stats)] if stats is not None else [])),
         })
     return subagents
 

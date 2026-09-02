@@ -17,7 +17,7 @@ default — or to any fixed multiple of it — either kills a healthy fit or lea
 undetected for longer than it should.
 
 Fides defaults ``MAXTIME`` to ``inf``, so one stiff start would run unbounded, out-idle the 300s
-transport default, and the 600s stall watchdog would then kill an otherwise-healthy run. The fix
+transport default, and the stall watchdog would then kill an otherwise-healthy run. The fix
 is to give Fides a real per-start cap and derive the other two from this ONE function so they
 cannot drift — same formula, each evaluated at its own ``n_starts``.
 

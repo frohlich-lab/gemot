@@ -800,8 +800,14 @@ TOOL_DESCRIPTIONS = {
                          "several observables may share one readout (one row per dataset/gel, "
                          "differing only in shipped scalings), and one rule covers them all."),
     "get_measurements": ("Measurement data. Default returns a COMPACT SUMMARY (per observable×"
-                         "condition: n, time span, value min/max/mean, preview points); pass "
-                         "summarize=False for all raw points. Optional: condition_id, observable_id."),
+                         "condition: n, time span, value min/max/mean, preview points) — prefer "
+                         "it, and prefer condition_id/observable_id filters or query_data for a "
+                         "targeted slice. summarize=False returns raw points PAGED "
+                         "{rows, row_count, total_rows, offset, truncated, next_offset?}, "
+                         "max_rows=200 per page: an unpaged dump is 70-80k tokens on the large "
+                         "problems and re-enters your context every later turn, which has ended "
+                         "runs on 'prompt exceeds max length'. Optional: condition_id, "
+                         "observable_id, max_rows, offset."),
     "list_data_tables": "List the SQL tables query_data exposes and their columns.",
     # The column names are spelled out because guessing them was the single largest non-editing
     # error class measured (15 of 22 query_data failures in the 2026-08-17 sweep): PEtab is
@@ -815,7 +821,13 @@ TOOL_DESCRIPTIONS = {
                    "observableFormula, noiseFormula, observableTransformation, noiseDistribution), "
                    "parameters (parameterId, parameterScale, lowerBound, upperBound, nominalValue, "
                    "estimate), simulations (one row per point: measurement, simulation, residual, "
-                   "residual_weighted, noise), optimization_starts, optimization_trace. "
+                   "residual_weighted, noise), simulations_history (those same per-point rows for "
+                   "EVERY committed version, plus a `version` column — the ONLY way to compare "
+                   "model versions point-by-point, e.g. `SELECT observable_id, time, "
+                   "max(CASE WHEN version=3 THEN residual_weighted END) AS v3, "
+                   "max(CASE WHEN version=4 THEN residual_weighted END) AS v4 "
+                   "FROM simulations_history WHERE version IN (3,4) GROUP BY 1,2 "
+                   "ORDER BY abs(v4)-abs(v3) DESC`), optimization_starts, optimization_trace. "
                    "NOTE the join, and note that BOTH spellings are real, on different tables: "
                    "`measurements.simulationConditionId = conditions.conditionId`. measurements "
                    "has no `conditionId`; conditions has no `simulationConditionId`. `residual` "
@@ -828,8 +840,11 @@ TOOL_DESCRIPTIONS = {
                    "avg(s.residual_weighted) bias FROM measurements m JOIN simulations s USING "
                    "(observableId, simulationConditionId, time) GROUP BY 1, 2 ORDER BY abs(bias) "
                    "DESC LIMIT 20`. "
-                   "Prefer aggregations; rows capped at max_rows (default 50 — raise it only if you "
-                   "truly need many rows). Args: sql, max_rows."),
+                   "Prefer aggregations; rows capped at max_rows (default 50). When `truncated` "
+                   "is true the result carries `next_offset` — page with it rather than raising "
+                   "max_rows, since a big page re-enters your context every later turn. Add an "
+                   "explicit ORDER BY when paging or pages can overlap/skip. "
+                   "Args: sql, max_rows, offset."),
     "get_skill": "Read a skill in full. Args: name, file?.",
 }
 

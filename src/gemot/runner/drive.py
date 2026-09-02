@@ -201,6 +201,47 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                         # starts after it -- a run must say what it ran with rather than leaving
                         # it to be inferred from submission time.
                         "openrouter_extra_body": agent_out.get("openrouter_extra_body", {}),
+                        # Reasoning-runaway guard (agent/guards.py). A `runaway` is one turn the
+                        # model ended by spending its whole completion budget thinking and
+                        # emitting nothing -- no text, no tool call -- counted ONCE at detection,
+                        # so `recovered / runaways` is a true recovery rate. `retry_errors` counts
+                        # retries that raised (an endpoint rejecting `reasoning_effort`), where
+                        # the guard falls back to the original truncated turn: non-zero means the
+                        # ladder is inert for that model and the counters below understate it.
+                        # Recorded because this failure is otherwise INVISIBLE in the artifact --
+                        # it surfaces as `no_model_built` on the lead and as an empty report on an
+                        # analyst, which is how it was misdiagnosed for a whole campaign.
+                        # Tool-dispatch / task-arg guards. Absent from the artifact until now
+                        # despite being seeded since the guards were written: `tools_executed`
+                        # is the denominator for every per-run tool rate, and `idle_nudges` /
+                        # `gave_up_no_tools` are the difference between "the model finished"
+                        # and "the model never dispatched anything" — the distinction a
+                        # `no_tools_executed` post-mortem starts from.
+                        "tools_executed": agent_out.get("tools_executed", 0),
+                        "dropped_dup_tool_calls": agent_out.get("dropped_dup_tool_calls", 0),
+                        "idle_nudges": agent_out.get("idle_nudges", 0),
+                        "gave_up_no_tools": agent_out.get("gave_up_no_tools", False),
+                        "task_arg_rejections": agent_out.get("task_arg_rejections", 0),
+                        # How often the stall watchdog could not read the graph state and fell
+                        # back to the run-default fit window. driver.py's comment claimed this
+                        # reached result.json; it did not, so the precision loss it records was
+                        # invisible to exactly the sweep analysis it was added for.
+                        "unreadable_graph_state": agent_out.get("unreadable_graph_state", 0),
+                        # The per-run prompt-cache routing key. Nondeterministic (a fresh uuid
+                        # per run) and it shapes provider cache affinity, so a post-mortem into
+                        # a cache-hit collapse cannot reconstruct it from anything else.
+                        "prompt_cache_key": agent_out.get("prompt_cache_key"),
+                        "reasoning_runaways": agent_out.get("reasoning_runaways", 0),
+                        "reasoning_runaway_recovered":
+                            agent_out.get("reasoning_runaway_recovered", 0),
+                        "reasoning_runaway_retry_errors":
+                            agent_out.get("reasoning_runaway_retry_errors", 0),
+                        # The output ceiling actually sent as `max_tokens` (0 = not sent, so the
+                        # provider default applied). It CAN move an outcome -- a reply truncated
+                        # at the provider default emits nothing at all -- so a sweep spanning the
+                        # 2026-08-28 change, or a run that set PETAB_MCP_MAX_OUTPUT_TOKENS=0 to
+                        # restore the old behaviour, must be distinguishable from the artifact.
+                        "max_output_tokens": agent_out.get("max_output_tokens", 0),
                         # Which bio tools the biocurator actually got (empty = a "dumb" run — the
                         # biocurator ran on the model's own knowledge, no bio tools) — recorded to
                         # result.json so a sweep can see the biocurator's status.

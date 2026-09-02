@@ -155,6 +155,10 @@ it is **SQL over the data** via DuckDB, so you compute the breakdown you want:
   simulation`, in observable units), the **noise-weighted** residual (`residual_weighted` =
   `(m - s) / σ` on the observable scale — the χ² term, reproducing PEtab's `calculate_chi2`),
   and the evaluated noise σ (`noise`).
+- `simulations_history`: those same per-point rows for **every committed version**, plus a
+  `version` column — so model versions can be compared point-by-point in one query (which
+  residuals got worse between v3 and v4, and where). Assembled from the version store on
+  demand; a version whose fit failed stores no simulation and contributes no rows.
 - The last fit's **pyPESTO multistart** is queryable too: `optimization_starts` (one row per
   start, `start`=0 is best — `fval`, `time`, `n_fval`/`n_grad`/`n_hess`; the per-start
   `exitflag`/`message` are no longer columns — convergence is reported once per fit as an

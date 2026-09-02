@@ -31,6 +31,7 @@ MODELS: dict[str, tuple[str, float, float]] = {
     "v4-pro":     ("deepseek/deepseek-v4-pro",    0.435, 0.87),
     "minimax-m3": ("minimax/minimax-m3",          0.30, 1.20),
     "mimo":       ("xiaomi/mimo-v2.5",            0.168, 0.336),
+    "glm-flash":  ("z-ai/glm-5.3-flash",          0.075, 0.25),
     # The tier above the panel: ~10x luna per run, added to test whether capability buys
     # anything on the examples the panel cannot solve. Not defaults -- opt in with --models.
     "terra":      ("openai/gpt-5.6-terra",        1.00, 6.00),
@@ -39,9 +40,18 @@ MODELS: dict[str, tuple[str, float, float]] = {
     "gemini-pro":   ("google/gemini-3.1-pro-preview", 2.00, 12.00),
 }
 
-#: Default lead. 1M-token context; on this prompt-heavy workload (~95% prompt tokens) the blended
-#: cost tracks the $0.10/M prompt price of OpenAI's standard tier (see :func:`provider_routing`).
-DEFAULT = "luna-pro"
+#: Default lead. 1M-token context, single pinned provider (Z.AI), and the best measured accuracy
+#: on this benchmark: the 2026-08-28/29 campaign scored 71/78 (91%) across 18 examples, against
+#: luna's 55/90 (61%) on the same post-fix harness. It is also the only model to have passed
+#: bachmann (3/5) and lucarelli (4/4) on their current versions, both flat 0 for every other
+#: model tested. Headline prices are 25-58% below luna's, but cost parity is NOT the reason and
+#: is NOT established — cache reads are $0.015/M against luna's $0.010, and on a workload that is
+#: ~89% cache reads that one rate decides the comparison (see the routing note below).
+#:
+#: The accuracy figure depends on the reasoning-runaway guard: unguarded, this model scored 0/15
+#: on bachmann/isensee/boehm because it burned whole completion budgets thinking and returned
+#: nothing. Do not roll the default forward onto a harness without agent/guards.py.
+DEFAULT = "glm-flash"
 
 #: Per-model OpenRouter provider routing, needed only where a model is MIRRORED across providers at
 #: very different prices. OpenRouter serves the Luna family via OpenAI *and* Amazon Bedrock
@@ -76,6 +86,19 @@ DEFAULT = "luna-pro"
 #: by DigitalOcean, with Novita as the standby if it goes down. AkashML is deliberately absent —
 #: it serves the date-pinned ``-0731`` id but not this floating one.
 _ROUTING: dict[str, dict] = {
+    # glm-flash: ONE provider (Z.AI itself), so the pin is not about price mirrors -- it is a
+    # standing guarantee that a provider added later cannot silently take the traffic. Verified
+    # live 2026-08-28: `only: ["z-ai"]` returns HTTP 200 served by Z.AI, so unlike deepseek/mimo
+    # the cheap endpoint IS reachable under this account's data policy. Context is 1M+, clearing
+    # driver.py's 1M assumption with no fallback endpoint to worry about.
+    #
+    # Cache read is $0.015/M -- 1.5x luna's $0.010 -- and on this workload cache reads are ~89% of
+    # prompt tokens, so that one rate decides the comparison: measured over the 66-run luna
+    # campaign, GLM lands ~17% cheaper ($0.033 vs $0.038/run median) despite headline prices 25%
+    # and 58% below luna's. It needs a >=78% cache hit rate just to break even, and can only
+    # afford 1.16x luna's token consumption before it costs MORE. Treat cost parity as unproven
+    # until a real sweep reports its own cache_read_tokens.
+    "z-ai/glm-5.3-flash":       {"only": ["z-ai"]},
     "openai/gpt-5.6-luna":      {"only": ["openai"]},
     "openai/gpt-5.6-luna-pro":  {"only": ["openai"]},
     "deepseek/deepseek-v4-flash": {"order": ["digitalocean", "novita"],
@@ -201,6 +224,11 @@ def provider_routing(model_id: str) -> dict | None:
 
     For the Luna family this restricts routing to OpenAI (an allowlist), so a request can never
     silently route off OpenAI's standard $0.10/M tier onto the ~2-11x Bedrock/Azure copies — nor
-    onto any provider added later. Returns ``None`` for single-provider models (nothing to pin), so
-    the caller omits the ``provider`` field entirely."""
+    onto any provider added later.
+
+    EVERY panel model is pinned, single-provider ones included (``test_every_panel_model_is_pinned``
+    enforces it): the pin on a model with one endpoint today, like ``z-ai/glm-5.3-flash``, is a
+    standing guard against a second provider appearing later and silently taking the traffic at a
+    different price or data policy. ``None`` therefore means "not a panel model", not "nothing to
+    pin", and the caller omits the ``provider`` field for it."""
     return _ROUTING.get(model_id)

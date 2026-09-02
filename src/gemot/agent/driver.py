@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import uuid
 import functools
 import inspect
 import re
@@ -46,7 +47,7 @@ from .circuit_breaker import (
 )
 from .finish_gate import _finish_tool
 from .guards import (_empty_report_guard, _task_arg_guard,
-                     _tool_dispatch_guard)
+                     _tool_dispatch_guard, _reasoning_runaway_guard, new_guard_stats)
 from .literature import _wrap_literature_recorder
 from .probe import _model_committed, _structured
 from .subagents import (
@@ -78,13 +79,35 @@ _RUN_RESUME_ATTEMPTS = 3       # resume the graph from the last checkpoint after
 # never fired on). astream emits once per graph super-step (a lead LLM call, a tool, or a whole
 # analyst sub-agent), so if NO step completes within this window the loop is wedged — we cancel
 # it and RESUME from the last checkpoint (or, once resume attempts run out, end gracefully).
-# This is only the LOWER floor. run_deepagents takes max(this, fit_time_budget(run default)) as
-# its baseline and raises it per step to the budget of the fit that step is about to run
+# Floor for one super-step. run_deepagents takes max(this, fit_time_budget(run default)) as its
+# baseline and raises it per step to the budget of the fit that step is about to run
 # (fit_budget.py), since a lead commit's fit is one long super-step that legitimately streams
-# nothing back for minutes. So this 600s only binds when the run default's fit budget is smaller,
-# which it is not on the large examples -- a step with no fit pending still waits the DEFAULT
-# fit budget, not 600s.
-_STEP_STALL_TIMEOUT_S = 600.0
+# nothing back for minutes. On the large examples the fit-derived term is bigger and this floor
+# never binds; on the small ones it IS the window (blasi's fit term is ~1063s), so a genuinely
+# wedged non-fit step now goes undetected for 1800s where it used to be 1063s -- the accepted
+# price of telling "hung" from "thinking" on the slow provider measured below.
+# Sized from MEASURED provider latency, not from a guess: over 282
+# ChatOpenAI calls on z-ai/glm-5.3-flash the median is 58s, p90 352s, p99 772s and the slowest
+# SUCCESSFUL call 842s -- against openai/gpt-5.6-luna at median 5.1s / max 44.5s over 162 calls.
+# At the old 600s floor the watchdog could not tell "hung" from "thinking" on the slow provider,
+# and cancelling mid-call is expensive: the cancel unwinds through LangGraph -> model node ->
+# httpx (the innermost frame is a TLS read awaiting bytes that never came), which is where the
+# CancelledError spans on `model`/`tools`/subagent nodes come from -- one hung call produces four
+# to six of them, so they read as many failures when they are one.
+#
+# Retrying does NOT substitute for this. A stall is already retriable and resumes from the
+# checkpoint `_RUN_RESUME_ATTEMPTS` times; measured on a glm blasi run, all three resumes stalled
+# at the identical 1063s window because each resume re-sends the whole history and so re-hits the
+# same large prompt. That run spent 4252s of its 4968s wall waiting. More retries buy nothing
+# against a deterministic stall; a window wide enough for the provider's real tail does.
+_STEP_STALL_TIMEOUT_S = 1800.0
+
+#: Sentinel for "no emission has been observed yet", kept distinct from the ``None`` that
+#: :func:`_state_message_count` returns for an UNREADABLE state. Conflating them let a run whose
+#: very FIRST super-step hangs — nothing emitted, so no count — score the resume's checkpoint
+#: replay as progress (`count != None`) and wipe the escalation it had just earned, retrying at
+#: the same window that had already failed.
+_NO_EMISSION_YET = object()
 
 # Hard per-run token ceiling — the ONLY bound on how much a run can spend.
 #
@@ -145,6 +168,26 @@ _FIT_TOOLS = frozenset({"make_changes"}) & frozenset(ORCHESTRATOR_TOOLS)
 _PENDING_SCAN_DEPTH = 6
 
 
+def _env_token_limit(name: str, default: int, *, minimum: int) -> int:
+    """An int >= ``minimum`` from ``name``, or ``default`` for an unset, empty, or malformed
+    override — a bad value must degrade, never crash the run before the graph is built (an empty
+    ``NAME=`` in a submit script is the natural way to write "leave it alone"). Distinct from
+    fit_budget._env_int, which enforces >= 1: the output cap documents 0 as its OFF switch, so
+    it needs ``minimum=0``."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        val = int(raw.strip())
+    except ValueError:
+        print(f"[agent] ignoring {name}={raw!r} (not an integer); using {default}")
+        return default
+    if val < minimum:
+        print(f"[agent] ignoring {name}={val} (< {minimum}); using {default}")
+        return default
+    return val
+
+
 def _is_tool_result(msg: Any) -> bool:
     """True for a ToolMessage — matched by ``type``/``role``, not by class, so a serialized
     message reads the same as an object one and neither needs a langchain import here."""
@@ -152,6 +195,22 @@ def _is_tool_result(msg: Any) -> bool:
     if kind is None and isinstance(msg, dict):
         kind = msg.get("type") or msg.get("role")
     return str(kind or "") == "tool"
+
+
+def _state_message_count(state: Any) -> int | None:
+    """Number of messages in a ``stream_mode="values"`` emission, or ``None`` if unreadable.
+
+    Never raises: this feeds the stall watchdog's checkpoint-replay test. ``None`` is distinct
+    from ``0`` on purpose — an unreadable state must degrade to "treat this as progress" (the
+    behaviour before the replay test existed), whereas a real empty state is genuinely no
+    progress. Reporting 0 for both would leave the window permanently widened after one odd
+    emission.
+    """
+    if isinstance(state, dict):
+        msgs = state.get("messages")
+        if isinstance(msgs, list):
+            return len(msgs)
+    return None
 
 
 def _pending_fit_starts(state: Any, default: int, stats: dict | None = None) -> int | None:
@@ -476,8 +535,10 @@ async def run_deepagents(
     ``api_key``). Returns ``{"stop_reason": ..., "n_tool_errors": ..., "disabled_tools": ...,
     **guard_stats}`` — the stop reason, the circuit breaker's error tallies, and the guard
     counters (``tools_executed``, ``dropped_dup_tool_calls``, ``idle_nudges``, ``gave_up_no_tools``,
-    and the empty-report guard's ``empty_subagent_reports`` / ``empty_subagent_retries`` /
-    ``empty_subagent_markers``); the caller reads ``stop_reason`` and may ignore the
+    the empty-report guard's ``empty_subagent_reports`` / ``empty_subagent_retries`` /
+    ``empty_subagent_markers``, and the reasoning-runaway guard's ``reasoning_runaways`` /
+    ``reasoning_runaway_recovered`` / ``reasoning_runaway_retry_errors``); the caller reads
+    ``stop_reason`` and may ignore the
     rest. The orchestrator's messages, its ``task`` delegations, the analysts' private tool
     calls, and token usage are recorded by Phoenix tracing (set up by the runner), so this
     function just drives the loop to completion.
@@ -570,7 +631,13 @@ async def run_deepagents(
         [t for t in bio_tools if getattr(t, "name", None) in LITERATURE_BIO_TOOLS], literature_log
     )
     tools_by_name = {n: t for t in all_tools if (n := getattr(t, "name", None))}
-    subagents = _build_subagents(tools_by_name)  # each analyst carries its own tool OBJECTS
+    # Declared BEFORE the subagents are built: the panel shares this one dict, so the reasoning
+    # guard's counters aggregate over the lead AND every analyst rather than reporting the lead's
+    # share as the run's total.
+    # One definition, in guards.new_guard_stats — see there for why it is seeded up front.
+    guard_stats: dict[str, Any] = new_guard_stats()
+    # each analyst carries its own tool OBJECTS, and its own runaway guard (see below)
+    subagents = _build_subagents(tools_by_name, guard_stats)
     # The biocurator joins the panel on every deepagents run (its lack of any petab tool is the
     # structural half of the task-blinding — see _build_biocurator_subagent). It is never dropped:
     # if bio tools resolved it uses them, otherwise it runs "dumb", answering from the model's own
@@ -590,7 +657,7 @@ async def run_deepagents(
     # boundary that matters is unchanged: no model access, no fit access, no measurements.
     subagents.append(_build_biocurator_subagent(
         bio_tools + [t for t in petab_tools if getattr(t, "name", None) == "list_observables"],
-        biocurator_entities))
+        biocurator_entities, guard_stats))
     biocurator_tools = sorted(n for t in bio_tools if (n := getattr(t, "name", None)))
     print(f"[agent] biocurator on the panel with {len(biocurator_tools)} bio tool(s)"
           + (f": {biocurator_tools}" if biocurator_tools
@@ -623,7 +690,15 @@ async def run_deepagents(
     # now (lucarelli 845-927k, raimundez 862k on the 2026-08-20/21 sweeps), and that is by
     # design: one compaction is cheaper than the explicit stop that used to fire at 0.8 and
     # ended runs mid-improvement. The context-stop below is the true backstop, at 0.90.
-    max_input_tokens = int(os.environ.get("PETAB_MCP_MAX_INPUT_TOKENS", 1_048_576))
+    max_input_tokens = _env_token_limit("PETAB_MCP_MAX_INPUT_TOKENS", 1_048_576, minimum=1)
+    # Output ceiling. An explicit 0 leaves `max_tokens` OFF so the provider default applies (the
+    # behaviour before 2026-08-28); unset uses the 131_072 default — see the parameter below for
+    # why the provider default is not enough. minimum=0 is what makes the off-switch reachable:
+    # fit_budget's _env_int maps 0 back to the default, which would silently turn the cap ON.
+    max_output_tokens = _env_token_limit("PETAB_MCP_MAX_OUTPUT_TOKENS", 131_072, minimum=0)
+    # Bound once so the value sent to the provider is the value recorded in result.json — a
+    # fresh uuid inlined at the call site could not be reported afterwards.
+    prompt_cache_key = f"petab-{uuid.uuid4().hex[:12]}"
     llm = _chat_model_class()(
         # Keeps the Phoenix span named `ChatOpenAI` despite the subclass -- see _chat_model_class.
         name="ChatOpenAI",
@@ -639,11 +714,32 @@ async def run_deepagents(
         # leave _token_accountant recording 0 tokens for the whole run. Harmless when a call
         # isn't streamed.
         stream_usage=True,
+        # ASK FOR THE FULL OUTPUT BUDGET. Omitting max_tokens does not mean "unbounded" -- the
+        # provider substitutes its own default, and Z.AI's for z-ai/glm-5.3-flash is 65536,
+        # exactly HALF the 131072 the model advertises as max_completion_tokens. That default is
+        # what a reasoning runaway hits: measured across isensee and lucarelli, the lead returned
+        # completion_tokens=65536 of which reasoning_tokens=65504, content "", finish_reason
+        # "length" -- truncated mid-thought before emitting a single tool call, four turns in a
+        # row, ~25 minutes each. Downstream that is indistinguishable from a model choosing to
+        # stay silent, so the dispatch guard bounced it and the run ended `no_model_built` with
+        # zero make_changes attempted. Asking for the model's real ceiling doubles the room it
+        # has to reach a conclusion; `_reasoning_runaway_guard` covers the case where even the
+        # full budget is not enough.
+        **({"max_tokens": max_output_tokens} if max_output_tokens else {}),
         # Best-effort prompt-cache hint: asks the provider to route repeat requests to the
         # same backend so its prefix cache can hit (prompt tokens dominate this workload).
         # Whether it takes effect is provider-dependent (OpenRouter -> the served model) and
         # not guaranteed; it is harmless when ignored.
-        model_kwargs={"prompt_cache_key": "petab-mcp-agent"},
+        #
+        # PER RUN, not a global constant. The key exists to give routing AFFINITY to requests
+        # sharing a prefix family; the previous fixed "petab-mcp-agent" told the provider that
+        # every concurrent sweep task (up to ~17 at once, x5 agents each, with completely
+        # unrelated prompts) was ONE family — concentrating them on one backend where they evict
+        # each other's prefixes. One uuid per run keeps a run's own lead+subagent traffic
+        # together (they at least share tool schemas and skills) while isolating runs from each
+        # other. Deliberately NOT per-agent: the lead and its subagents share this one llm
+        # object, so a per-agent key would need per-call middleware for marginal gain.
+        model_kwargs={"prompt_cache_key": prompt_cache_key},
         # OpenRouter provider routing: for a model mirrored across providers (e.g. Luna is also on
         # Bedrock/Azure at ~2-11x) this excludes the pricey copies so the request stays on OpenAI's
         # standard tier. Sent verbatim in the request body via extra_body; included ONLY when the
@@ -694,12 +790,6 @@ async def run_deepagents(
     # 1M-token window and the recursion limit caps a run at ~120k tokens, so the old tool-result
     # trimmer only ever fired on a rare over-long run and, with prompt caching, cost more (a clear
     # invalidates the cached prefix) than the near-free cache_read history it removed.
-    guard_stats: dict[str, Any] = {"tools_executed": 0, "dropped_dup_tool_calls": 0,
-                                   "idle_nudges": 0, "gave_up_no_tools": False,
-                                   "unexpected_task_kwargs": [], "task_arg_rejections": 0,
-                                   "empty_subagent_reports": 0, "empty_subagent_retries": 0,
-                                   "empty_subagent_markers": 0,
-                                   "subagent_names": [], "general_purpose_subagent": None}
     guard_installed = "middleware" in params
     if guard_installed:
         kwargs["middleware"] = [
@@ -711,7 +801,19 @@ async def run_deepagents(
             # _empty_report_guard is placed INNERMOST (last) so its ONE-shot re-dispatch of a
             # subagent that returned "" hits the real tool directly, without re-entering
             # _tool_dispatch_guard and double-counting tools_executed for a single `task` call.
-            _task_arg_guard(guard_stats), _tool_dispatch_guard(guard_stats),
+            # _reasoning_runaway_guard is the only guard here that wraps the MODEL call rather
+            # than tool calls or tool results, so it does not compete with the others for
+            # ordering: _tool_dispatch_guard counts idle turns in `after_model`, which runs once
+            # per model NODE — after the whole wrap_model_call chain has returned — so it
+            # necessarily judges the POST-ladder result whatever the list order. Its position is
+            # therefore not load-bearing, and the note that used to be here had it backwards:
+            # first-in-list is OUTERMOST (factory.py "First handler wraps all others"), so the
+            # guards after it are INNER and each sees every call the ladder makes, truncated
+            # ones included — not only the final retry. Benign today (a truncated turn carries
+            # no tool calls, so _dedupe_response finds nothing to do), but stated correctly so a
+            # future reorder is not reasoned from a false invariant.
+            _task_arg_guard(guard_stats), _reasoning_runaway_guard(guard_stats),
+            _tool_dispatch_guard(guard_stats),
             _empty_report_guard(guard_stats),
         ]
     else:  # pragma: no cover - guards against a deepagents API drift
@@ -762,7 +864,7 @@ async def run_deepagents(
     # an analyst sub-agent) went undetected. The window is sized PER STEP now: `step_wait` in the
     # loop below rises to the pending fit's own budget and otherwise sits at the floor below.
     #
-    # Note what that does and does not buy. A wedged NON-fit step is still not detected in 600s --
+    # Note what that does and does not buy. A wedged NON-fit step is still not detected promptly --
     # the floor is max(_STEP_STALL_TIMEOUT_S, fit_time_budget(run default)), so on the large
     # examples it is the run default's fit budget, hours not minutes. What per-step sizing removes
     # is the EXTRA widening: such a step used to be held open for the largest fit the run might
@@ -838,6 +940,31 @@ async def run_deepagents(
 
     stream_input: Any = {"messages": [{"role": "user", "content": task}]}
     resume_left = _RUN_RESUME_ATTEMPTS if checkpointer is not None else 0
+    # DOUBLE the stall window on each resume. A resume re-sends the whole history, so a stall
+    # caused by the provider being SLOW on a large prompt reproduces at the same window every
+    # time -- measured on a glm blasi run, all three resumes stalled at an identical 1063s and
+    # the run spent 4252s of its 4968s wall waiting. Retrying at a fixed window can therefore
+    # only ever confirm the first verdict. Widening it instead makes the retries diagnostic: a
+    # merely slow call gets a real chance to land, while a genuinely wedged one still terminates.
+    #
+    # WORST CASE, stated honestly: with `--max-wall-seconds` unset (the CLI default) there is no
+    # deadline to cap against, so a wedged run waits 1800+3600+7200+14400 = 7.5h before ending,
+    # against 4x600s = 40min before this change. With a deadline set the waits are capped, but by
+    # the HARD deadline -- so a wedged run can still consume the `step_headroom` reserve meant for
+    # scoring. Escalation is therefore deliberately gated to stalls only, and reset on progress.
+    stall_backoff = 1.0
+    # Message count of the PREVIOUS emission, so a resume's checkpoint replay (which re-emits
+    # state we have already seen, at the same count) is distinguishable from a real step. Lives
+    # outside the resume loop for the same reason `pending_fit` does.
+    #
+    # Deliberately the last count, NOT a high-water mark: deepagents installs langchain's
+    # summarization middleware by default, and compaction emits RemoveMessage(REMOVE_ALL_MESSAGES)
+    # — the history collapses to a summary plus a short tail. Against a maximum, every step after
+    # the first compaction looks like "no new messages", so stall_backoff could never return to
+    # 1.0 and one early transient would leave the detector widened for the rest of the run: the
+    # exact failure the reset exists to prevent, reintroduced from the other side. Any CHANGE in
+    # count is progress; only an unchanged count is a replay.
+    last_message_count: Any = _NO_EMISSION_YET
     # A silent stop (graph ends on a no-tool turn) without a confirmed finish is bounced back
     # into the finish gate this many times; separate from resume_left, which is for transients.
     silent_bounces = 0
@@ -867,7 +994,26 @@ async def run_deepagents(
         # block -- including from astream() itself, before the inner loop assigns this -- reaches
         # that handler. Without a binding here the report raises UnboundLocalError and kills the
         # run instead of resuming.
-        step_wait = float(_STEP_STALL_TIMEOUT_S)
+        # Same expression as the in-loop floor, so a TimeoutError raised by astream() itself
+        # reports the window that was actually in force rather than the un-backed-off one.
+        step_wait = float(_STEP_STALL_TIMEOUT_S) * stall_backoff
+        # On the input=None resume path, langgraph emits the CHECKPOINT state before scheduling
+        # a single task (pregel/_loop.py: `if is_resuming: ... self._emit("values", ...)`), so
+        # the first __anext__ below returns in milliseconds without the provider having done
+        # anything. That emission must not count as progress: resetting stall_backoff on it
+        # re-runs every retry at the base window, and a stall caused by a SLOW provider on a
+        # large prompt then reproduces at the same window forever — the exact failure the
+        # escalation exists to break.
+        #
+        # Detected from the STATE rather than by assuming the emission happens: a replay carries
+        # no messages the previous attempt had not already produced. That keeps this correct
+        # when langgraph does NOT emit (`is_resuming` is False because no checkpoint had been
+        # written yet) — a bare "skip the first emission" flag would then swallow a real step —
+        # and it degrades to "count it as progress" if a future langgraph stops replaying.
+        # The count alone cannot cover ONE case — a resume after a stall that emitted nothing at
+        # all, where there is no previous count to compare against — so a resume additionally
+        # arms this for its first emission (see the check below).
+        replay_pending = stream_input is None
         try:
             # Open the stream INSIDE the try so a synchronous raise from astream (e.g. on the
             # input=None resume path) is handled/degraded here, not left to abort the whole run.
@@ -878,7 +1024,7 @@ async def run_deepagents(
                     # the RUN-DEFAULT fit budget and caps at FIT_BUDGET_CEILING_S, and it is the
                     # same function the per-call transport cut uses, so the two cannot disagree
                     # about how long a given fit is allowed to take. The only thing left to add
-                    # is the absolute 600s floor for a run whose default fit budget is tiny;
+                    # is the absolute _STEP_STALL_TIMEOUT_S floor for a run whose fit budget is tiny;
                     # the run-default term must not be applied a second time -- the function
                     # already applies it.
                     #
@@ -887,8 +1033,15 @@ async def run_deepagents(
                     # earlier) and an overrunning fit is cancelled mid-step as "stalled" instead
                     # of returning the clean 408 that resumes without telling the model to
                     # re-fit. Ordering: httpx ceiling > watchdog > per-call cut.
+                    # `stall_backoff` widens ONLY the floor, never the fit-derived term. The
+                    # fit term is already clamped at FIT_BUDGET_CEILING_S so a derived timeout
+                    # cannot switch the watchdog off, and it must stay strictly below the session
+                    # httpx ceiling (ordering above). Multiplying the whole max() breaks both: on
+                    # isensee at the 12000s cap the fit term is ~20286s, so x8 would be 162288s
+                    # (45h) -- past the 86400s clamp and past the httpx ceiling, leaving a wedged
+                    # step undetected for half a multi-day run.
                     step_limit = max(
-                        _STEP_STALL_TIMEOUT_S,
+                        _STEP_STALL_TIMEOUT_S * stall_backoff,
                         fit_time_budget_for(pending_fit, n_starts) * FIT_WATCHDOG_MARGIN)
                     # Wait no longer than the time left in the wall-time budget. Without this the
                     # loop can only notice the deadline BETWEEN super-steps, so a step starting
@@ -908,6 +1061,26 @@ async def run_deepagents(
                     state = await asyncio.wait_for(agen.__anext__(), timeout=step_wait)
                 except StopAsyncIteration:
                     break
+                # A step COMPLETED, so the provider is responsive: drop back to the base window.
+                # Without this one early transient leaves the detector permanently widened for
+                # the rest of the run -- a wedge 15 hours later would wait 2x or 8x by accident
+                # rather than by escalation. The one emission that says nothing about the
+                # provider is the checkpoint replay a resume starts with (see above) -- the
+                # widened window must survive it so the retry actually runs wider.
+                n_msgs = _state_message_count(state)
+                # Progress = this emission differs from the previous one. Two exceptions:
+                #   * an UNREADABLE state (None) degrades to "progress", the behaviour from
+                #     before the replay test existed — one odd emission must not leave the
+                #     window widened for good;
+                #   * the FIRST emission of a resume, when nothing was ever emitted before
+                #     (_NO_EMISSION_YET), is the checkpoint replay of work we never saw. It
+                #     looks "different" from nothing, but the provider has done nothing since
+                #     the stall, so it must not clear the escalation the stall just earned.
+                replay = replay_pending and last_message_count is _NO_EMISSION_YET
+                replay_pending = False
+                if not replay and (n_msgs is None or n_msgs != last_message_count):
+                    stall_backoff = 1.0
+                last_message_count = n_msgs
                 # Arm the NEXT wait from what this emission leaves pending. Deliberately after
                 # the await and before every break below: a step that ends the loop does not need
                 # a window, and a resume re-enters with whatever was last observed.
@@ -1105,9 +1278,15 @@ async def run_deepagents(
             stop_reason = retriable  # out of resume attempts — end with whatever was built
             break
         resume_left -= 1
+        # Escalate ONLY for a stall. The retry tail is shared with rate limits, connection drops
+        # and fit-call 408s, and none of those says anything about how long a healthy step takes
+        # -- widening the hang detector because the provider returned 429 three times would be
+        # unrelated cause and effect.
+        if retriable.startswith("stalled:"):
+            stall_backoff *= 2.0
         backoff = min(5.0 * (_RUN_RESUME_ATTEMPTS - resume_left), 30.0)
         print(f"[agent] {retriable} — resuming from last checkpoint in {backoff:.0f}s "
-              f"({resume_left} resume(s) left)")
+              f"({resume_left} resume(s) left, stall window x{stall_backoff:.0f})")
         await asyncio.sleep(backoff)
         stream_input = None  # resume pending work from the checkpoint
 
@@ -1165,5 +1344,10 @@ async def run_deepagents(
         "biocurator_entities": biocurator_entities,
         "biocurator_literature": literature_log,
         "token_usage": token_usage,
+        # The output ceiling actually sent (0 = not sent, provider default applied). Reported
+        # alongside openrouter_extra_body and for the same reason: what a run RAN WITH must be
+        # readable from its own artifact, not inferred from when it was submitted.
+        "max_output_tokens": max_output_tokens,
+        "prompt_cache_key": prompt_cache_key,
         **guard_stats,
     }

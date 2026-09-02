@@ -135,9 +135,13 @@ ORCHESTRATOR_TOOLS = [
     # and is a candidate for removal if the traces show it going unused. Baseline does not get
     # it: its re-author route never needs the committed text verbatim.
     "get_model",
-    # NOTE: the UNBOUNDED data/diagnostic tools (get_measurements, query_data, get_fitting_log,
+    # NOTE: the BULK data/diagnostic tools (get_measurements, query_data, get_fitting_log,
     # list_data_tables) are deliberately NOT here — they belong to the analyst subagents, since
-    # their large results would pile up in the lead's re-sent history (the input-token cost). The
+    # their results would pile up in the lead's re-sent history (the input-token cost). Note the
+    # reason is now VOLUME OVER A RUN, not a single unbounded call: get_measurements and
+    # query_data are paged (data_access.MAX_PAGE_ROWS), so no one call can blow the window. Many
+    # bounded pages still accumulate in a history re-sent every turn, which is what this
+    # restriction is about — the analysts read, the lead gets their summaries. The
     # lead instead has get_fit_diagnosis (a COMPACT, size-bounded read of both the residuals and
     # the parameter geometry) for cheap self-diagnosis, and DELEGATES the deep dives — full
     # residual SQL, the optimizer log, raw data characterization — to the analysts via `task`.

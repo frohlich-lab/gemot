@@ -45,10 +45,15 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
     p.add_argument("--model", default=models.DEFAULT,
                    help="OpenRouter model id, or a go-to alias (deepagents driver). Aliases: "
                         f"{', '.join(models.MODELS)} (see petab_harness/models.py). Default "
-                        f"'{models.DEFAULT}' = {models.resolve(models.DEFAULT)}: $0.10/M prompt, "
-                        "$0.60/M completion, 1M-token context. The Luna family is pinned to "
-                        "OpenAI (Bedrock/Azure copies excluded) so it serves at the documented "
-                        "$0.10/M standard tier.")
+                        f"'{models.DEFAULT}' = {models.resolve(models.DEFAULT)}: "
+                        # Derived from the MODELS table, not restated: a hardcoded price here
+                        # described luna-pro's tier and would have silently mis-described the
+                        # default the moment it moved.
+                        f"${models.MODELS[models.DEFAULT][1]:.3f}/M prompt, "
+                        f"${models.MODELS[models.DEFAULT][2]:.2f}/M completion, 1M-token context. "
+                        "Every aliased model is pinned to a single provider (see "
+                        "models.provider_routing) so a mirrored copy at another price cannot "
+                        "silently take the traffic.")
     p.add_argument("--base-url", default="https://openrouter.ai/api/v1",
                    help="OpenAI-compatible base URL for the LLM provider (default: OpenRouter).")
     p.add_argument("--api-key", default=None,

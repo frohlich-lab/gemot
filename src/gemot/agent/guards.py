@@ -49,6 +49,211 @@ _TURN_NOTICE_BROKEN = False
 _MAX_IDLE_MODEL_STEPS = 3   # consecutive no-tool turns to push back on before giving up
 
 
+#: Effort ladder for a reasoning runaway. Each retry steps DOWN one rung; the run keeps its
+#: normal (provider-default) effort everywhere else.
+#: Starts at "low", NOT "medium". The driver sets no reasoning_effort, so the baseline is the
+#: provider default — and for the gpt-5 family (luna, luna-pro, terra) that default IS medium.
+#: A "medium" first rung would re-issue a semantically identical request and burn a second
+#: full-budget call (~25 min, ~65k completion tokens on the measured runaways) with no chance
+#: of recovering from it. "low" is a real change on every model in the panel; the second rung
+#: is "minimal" for providers that accept it, and a provider that rejects an unknown value is
+#: handled by the retry's own except (see _retry_failed).
+_RUNAWAY_EFFORT_LADDER = ("low", "minimal")
+
+
+def _is_reasoning_runaway(result: Any) -> bool:
+    """Did the model burn its whole completion budget thinking and emit NOTHING?
+
+    The signature is exact and cheap to test: ``finish_reason == "length"`` with empty content
+    AND no tool calls. Measured on z-ai/glm-5.3-flash over isensee and lucarelli: four
+    consecutive turns each returning completion_tokens=65536 of which reasoning_tokens=65504,
+    content "", no tool call, ~25 minutes apiece. The provider truncates mid-thought at its own
+    65536 output cap (half the 131072 it advertises) before the model reaches a conclusion.
+
+    Downstream this is indistinguishable from a model that CHOSE to say nothing, so the dispatch
+    guard bounces it as an idle turn and the run ends `no_model_built` with zero make_changes
+    attempted -- a silent, expensive nothing. It is worth catching precisely rather than by
+    lowering reasoning effort globally, which would also remove the reasoning that makes this
+    model good on the examples where it does converge.
+    """
+    # `result` is a langchain ModelResponse (fields: .result — a list[BaseMessage] — and
+    # .structured_response) or, defensively, a bare AIMessage. Same contract as
+    # _dedupe_response below. Reading the wrong attribute here is silent: getattr degrades to
+    # the [result] fallback and the detector never fires — so this is pinned by
+    # tests/test_reasoning_runaway.py against the real ModelResponse class.
+    msgs = getattr(result, "result", None) or ([result] if result is not None else [])
+    # The verdict belongs to the TERMINAL message — the last one carrying a finish_reason —
+    # and to nothing before it. `.result` may hold more than one message (langchain appends a
+    # ToolMessage when a tool produced the structured output), and scanning past a healthy
+    # final message to convict on an earlier truncated one made the ladder discard a good
+    # answer and re-call the provider. Verified: [truncated(length,""), healthy("...", stop)]
+    # read as a runaway before this.
+    for m in reversed(list(msgs)):
+        # Skip on MESSAGE TYPE, not on whether finish_reason happens to be present: a healthy
+        # final AI turn whose provider/middleware set no finish_reason would otherwise be
+        # skipped, letting an earlier truncated turn decide — reinstating the very bug the
+        # terminal-message rule fixed. Only a trailing non-AI message (the ToolMessage
+        # langchain appends for structured output) is skippable.
+        if getattr(m, "type", None) != "ai":
+            continue
+        if getattr(m, "tool_calls", None):
+            return False
+        meta = getattr(m, "response_metadata", None) or {}
+        return (meta.get("finish_reason") == "length"
+                and _content_is_empty(getattr(m, "content", None)))
+    return False
+
+
+def _content_is_empty(content: Any) -> bool:
+    """Nothing a downstream consumer could act on: None, whitespace, or blocks with no text.
+
+    Reasoning models return content as a LIST of blocks as often as a bare string, and a
+    truncated turn can carry a reasoning block with no text field — both must read as empty or
+    the runaway detector misses exactly the responses it exists to catch.
+    """
+    if content is None:
+        return True
+    if isinstance(content, str):
+        return not content.strip()
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                if block.strip():
+                    return False
+            elif isinstance(block, dict):
+                if str(block.get("text") or "").strip():
+                    return False
+        return True
+    return False
+
+
+def _reasoning_runaway_guard(stats: dict[str, Any], *,
+                             ladder: "tuple[str, ...]" = _RUNAWAY_EFFORT_LADDER):
+    """Retry a truncated-mid-thought turn at reduced reasoning effort, then restore.
+
+    Only the offending CALL is retried, and only while it keeps coming back empty; the request
+    is otherwise untouched, so a run that never trips this never sees a changed effort. Bounded
+    by the ladder length, so a model that returns empty at every effort costs a fixed number of
+    extra calls rather than looping.
+    """
+    from langchain.agents.middleware.types import AgentMiddleware
+
+    stats.setdefault("reasoning_runaways", 0)
+    stats.setdefault("reasoning_runaway_recovered", 0)
+    stats.setdefault("reasoning_runaway_retry_errors", 0)
+
+    def _retry_settings(request, effort):
+        settings = dict(getattr(request, "model_settings", None) or {})
+        settings["reasoning_effort"] = effort
+        return settings
+
+    def _ladder_step(rung, request, result):
+        """One decision of the retry ladder, shared verbatim by the sync and async hooks so the
+        detection/counting/announce logic cannot diverge between them.
+
+        Given the result of the call at ``rung`` (0 = the original), return the override request
+        for the next rung, or None to hand ``result`` back — either because it is healthy (a
+        recovery, when rung > 0) or because the ladder is exhausted. A runaway is counted ONCE,
+        at detection, so ``reasoning_runaways`` counts events and ``reasoning_runaway_recovered``
+        the subset that a retry rescued.
+        """
+        if not _is_reasoning_runaway(result):
+            if rung > 0:
+                stats["reasoning_runaway_recovered"] += 1
+            return None
+        if rung == 0:
+            stats["reasoning_runaways"] += 1
+        if rung >= len(ladder):
+            return None  # empty at every effort: hand it back honestly rather than loop
+        effort = ladder[rung]
+        print(f"[reasoning guard] the model spent its whole completion budget thinking "
+              f"and returned nothing — retrying this call at reasoning_effort={effort}")
+        try:
+            return request.override(model_settings=_retry_settings(request, effort))
+        except Exception as exc:  # pragma: no cover - older/newer ModelRequest shapes
+            # Building the retry must not be able to end the run either. `override` is a
+            # langchain API (dataclasses.replace over a fixed override key set), so a rename or
+            # a dropped field would otherwise raise out of wrap_model_call into the driver's
+            # generic handler — the very outcome _retry_failed exists to prevent, reached one
+            # line before its try block. _subagent_turn_limit._augment guards the identical
+            # call the same way.
+            _retry_failed(rung, exc, result)
+            return None
+
+    def _retry_failed(rung, exc, original):
+        """A retry raised: hand back the ORIGINAL truncated result instead of propagating.
+
+        The guard must be strictly non-worsening. `reasoning_effort` is a request field not
+        every OpenRouter-served model accepts, and an exception escaping here would leave the
+        model node -> astream -> the driver's generic handler and end the whole run on a raw
+        exception string. Without the guard that same turn is merely an idle turn the dispatch
+        guard nudges, so swallowing the retry failure keeps the un-guarded behaviour as the
+        floor. Counted so an endpoint that rejects the parameter is visible rather than silent.
+        """
+        stats["reasoning_runaway_retry_errors"] = (
+            stats.get("reasoning_runaway_retry_errors", 0) + 1)
+        print(f"[reasoning guard] retry at rung {rung} failed ({type(exc).__name__}: {exc}); "
+              "keeping the original truncated turn and letting the dispatch guard handle it")
+        return original
+
+    class _ReasoningRunawayGuard(AgentMiddleware):
+        # The two hook bodies are the minimal sync/async shells around _ladder_step; only the
+        # await differs. The sync one is unreachable under this driver (it only ever calls
+        # agent.astream) but is part of the middleware contract, so it stays — as a shell.
+        def wrap_model_call(self, request, handler):
+            result, rung = handler(request), 0
+            while (retry := _ladder_step(rung, request, result)) is not None:
+                rung += 1
+                try:
+                    result = handler(retry)
+                except Exception as exc:
+                    return _retry_failed(rung, exc, result)
+            return result
+
+        async def awrap_model_call(self, request, handler):
+            result, rung = await handler(request), 0
+            while (retry := _ladder_step(rung, request, result)) is not None:
+                rung += 1
+                try:
+                    result = await handler(retry)
+                except Exception as exc:
+                    return _retry_failed(rung, exc, result)
+            return result
+
+    return _ReasoningRunawayGuard()
+
+
+def new_guard_stats() -> dict[str, Any]:
+    """A fresh, fully-seeded guard-stats dict — the ONE definition of what the guards record.
+
+    Seeded up front rather than by each guard as it first fires, so ``result.json`` carries an
+    explicit zero for every counter even when a guard never triggers (or, for a deepagents build
+    without the ``middleware`` parameter, is never constructed at all). Shared by the driver and
+    by the test that checks every key reaches ``result.json``: a counter added here and forgotten
+    in ``runner/drive.py``'s allowlist is a silent hole in the artifact, which is how six of these
+    went unrecorded — the previous test discovered keys by running the guard factories, and only
+    one factory seeds anything at construction time, so it policed three keys and missed the rest.
+    """
+    return {
+        # tool-dispatch guard
+        "tools_executed": 0, "dropped_dup_tool_calls": 0, "idle_nudges": 0,
+        "gave_up_no_tools": False,
+        # task-arg guard
+        "unexpected_task_kwargs": [], "task_arg_rejections": 0,
+        # empty-report guard
+        "empty_subagent_reports": 0, "empty_subagent_retries": 0, "empty_subagent_markers": 0,
+        # reasoning-runaway guard
+        "reasoning_runaways": 0, "reasoning_runaway_recovered": 0,
+        "reasoning_runaway_retry_errors": 0,
+        # driver-side: how often the stall watchdog could not read the graph state (it then
+        # falls back to the run-default fit window, so a non-zero count means some step was
+        # sized by the default rather than by its pending fit).
+        "unreadable_graph_state": 0,
+        # panel composition, not a counter
+        "subagent_names": [], "general_purpose_subagent": None,
+    }
+
+
 def _tool_dispatch_guard(stats: dict[str, Any], *, max_idle_steps: int = _MAX_IDLE_MODEL_STEPS):
     """Lead-only middleware implementing the two hardening steps described above.
 
