@@ -103,3 +103,33 @@ jobs:
         # even a single-file debug run spawn two workers -- each with its own session-scoped
         # amici_build_root, so the ~60-90s toy-model compile was paid twice for no parallelism.
         run: python -m pytest -v -n 2
+
+  lint:
+    name: lint (ruff)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # Deliberately NOT `pip install -e '.[dev]'`. The `test` job above spends minutes on the
+      # AMICI/C++ toolchain (compiler, CMake, Ninja, the pinned pip SWIG) because it has to
+      # COMPILE models; a linter parses Python and needs none of it. Installing ruff alone keeps
+      # this job at a few seconds, so a style slip is reported long before the test matrix
+      # finishes. The floor matches the `dev` extra's `ruff>=0.6` -- the version [tool.ruff]'s
+      # rule set was selected against -- so a local `ruff check .` and this job agree.
+      - name: Install ruff
+        run: python -m pip install --upgrade 'ruff>=0.6'
+
+      # Config (rule set, ignores, per-file exemptions, and the reason for each) is in
+      # pyproject.toml's [tool.ruff]; the rationale for what is deliberately NOT selected is in
+      # docs/STYLE_GUIDE.md.
+      - name: Run ruff
+        run: ruff check --output-format=github .

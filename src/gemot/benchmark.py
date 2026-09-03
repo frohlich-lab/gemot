@@ -179,9 +179,8 @@ def _merge_equivalent_observables(prob) -> dict[str, str]:
     ``pEGFR``) when that is unique, else the first member's id.
     """
 
-    from petab.v1.C import (NOISE_DISTRIBUTION, NOISE_FORMULA, NOISE_PARAMETERS, OBSERVABLE_ID,
-                            OBSERVABLE_NAME, OBSERVABLE_PARAMETERS, OBSERVABLE_TRANSFORMATION,
-                            SIMULATION_CONDITION_ID)
+    from petab.v1.C import (NOISE_DISTRIBUTION, NOISE_FORMULA, OBSERVABLE_ID,
+                            OBSERVABLE_NAME, OBSERVABLE_PARAMETERS, OBSERVABLE_TRANSFORMATION)
 
     from petab_mcp.fitting import needs_flattening
 

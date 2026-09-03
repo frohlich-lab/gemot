@@ -262,7 +262,7 @@ def test_scripts_only_import_names_our_packages_actually_define():
         for node in ast.walk(ast.parse(path.read_text())):
             if not isinstance(node, ast.ImportFrom) or not node.module:
                 continue
-            if node.level or not node.module.split(".")[0] in ("petab_mcp", "petab_harness"):
+            if node.level or node.module.split(".")[0] not in ("petab_mcp", "petab_harness"):
                 continue
             target = root / "src" / Path(node.module.replace(".", "/"))
             source = (target.with_suffix(".py") if target.with_suffix(".py").is_file()

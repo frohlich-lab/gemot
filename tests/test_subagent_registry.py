@@ -99,10 +99,10 @@ def test_create_deep_agent_does_not_add_the_general_purpose_subagent(monkeypatch
 # lesson these exist for: an arm's tool can be silently filtered out of the panel (ALLOWED_TOOLS
 # omission) with every in-process test green, because the roster assertions compare subagent
 # NAMES, never their resolved tools.
-import os
-import subprocess
-import sys
-import textwrap
+import os  # noqa: E402 - section-local: these serve the subprocess arm documented above
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+import textwrap  # noqa: E402
 
 
 def _arm_on(script: str) -> str:

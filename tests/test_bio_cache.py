@@ -12,8 +12,6 @@ from __future__ import annotations
 import asyncio
 import pickle
 
-import pytest
-
 from petab_harness import bio_cache
 
 
