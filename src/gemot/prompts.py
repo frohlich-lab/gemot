@@ -334,6 +334,17 @@ DEFAULT_SYSTEM_PROMPT = (
     "final bic/neg_log_likelihood and the model you built."
 )
 
+# Appended to the lead's task after a scenario's `known_constants` (Scenario.agent_task): how the
+# blinded readout_* observables are defined through the lead's tools. Harness-owned so a
+# scenario's note carries only what is specific to that problem.
+KNOWN_CONSTANTS_READOUT_NOTE = (
+    "\nMEASUREMENT MAPPINGS: each observable formula references a readout_* symbol your model "
+    "must define with an assignment rule (`readout_x := <expression of your species>`, or the "
+    "set_assignment edit op). list_observables says what each readout measures biologically "
+    "(observableName); deciding what that quantity IS in terms of your model's states is part "
+    "of the modelling."
+)
+
 # The TASK, not a second copy of the loop: the system prompt above owns how to work, so this
 # states only what this particular problem is and what "done" looks like.
 DEFAULT_TASK = (
@@ -1190,6 +1201,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
     "lead": {
         "petab-lead-system": DEFAULT_SYSTEM_PROMPT,
         "petab-lead-task": DEFAULT_TASK,
+        "petab-lead-readout-note": KNOWN_CONSTANTS_READOUT_NOTE,
     },
     # The three analyst personas, plus the one-liners the LEAD reads when picking one.
     "analysts": {

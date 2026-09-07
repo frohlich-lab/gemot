@@ -53,6 +53,7 @@ def collect_prompts() -> dict[str, str]:
 _PROMPT_ROLES = {
     "petab-lead-system": "system",
     "petab-lead-task": "user",
+    "petab-lead-readout-note": "user",
     "petab-analyst-mathematician": "system",
     "petab-analyst-systems-scientist": "system",
     "petab-analyst-signal-engineer": "system",

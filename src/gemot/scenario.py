@@ -27,7 +27,7 @@ from typing import Any, Awaitable, Callable
 # The lead's prompt + task moved to prompts.py, where the WHOLE agent-facing prompt surface now
 # lives. Re-exported here because they are this dataclass's field defaults and callers (and the
 # Phoenix prompt registry) have always read them off this module.
-from .prompts import DEFAULT_SYSTEM_PROMPT, DEFAULT_TASK
+from .prompts import DEFAULT_SYSTEM_PROMPT, DEFAULT_TASK, KNOWN_CONSTANTS_READOUT_NOTE
 
 # A bound MCP caller: ``await call("get_fit_summary")`` / ``await call("make_changes",
 # antimony=..., justification=..., references=[...])``.
@@ -222,8 +222,12 @@ class Scenario:
     @property
     def agent_task(self) -> str:
         """The task handed to the deepagents driver: the base task plus any scenario-specific
-        ``known_constants`` note (so the agent is told about shipped fixed constants)."""
-        return f"{self.task}\n\n{self.known_constants}" if self.known_constants else self.task
+        ``known_constants`` note (so the agent is told about shipped fixed constants) and, with
+        it, the readout-mapping note (a benchmark problem ships blinded ``readout_*``
+        observables; the synthetic demos carry no note)."""
+        if not self.known_constants:
+            return self.task
+        return f"{self.task}\n\n{self.known_constants}{KNOWN_CONSTANTS_READOUT_NOTE}"
 
     def reference(self) -> dict[str, Any] | None:
         """The true-model fit reference {nll, k, n} from ``problem/reference.json``.

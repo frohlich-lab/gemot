@@ -162,6 +162,41 @@ def test_the_surface_covers_every_kind_of_prompt():
     assert P.FINISH_REFUSED_NO_FIT in tracked["petab-finish-gate"]
 
 
+def _known_constants_of_every_example() -> "dict[str, str]":
+    """Each example's ``KNOWN_CONSTANTS`` literal, read by AST (importing a run.py pulls in AMICI)."""
+    import ast
+
+    out = {}
+    for f in sorted((Path(__file__).parents[1] / "examples").glob("*/run.py")):
+        for node in ast.parse(f.read_text()).body:
+            if isinstance(node, ast.Assign) and any(
+                    getattr(x, "id", None) == "KNOWN_CONSTANTS" for x in node.targets):
+                assert isinstance(node.value, ast.Constant), f"{f}: KNOWN_CONSTANTS is not a literal"
+                out[f.parent.name] = node.value.value
+    assert out, "no example defines KNOWN_CONSTANTS"
+    return out
+
+
+def test_no_example_carries_its_own_copy_of_the_readout_note():
+    """A scenario's ``known_constants`` states facts about THAT problem; the readout-mapping
+    instruction is one harness-owned constant, so it is versioned once and cannot drift per
+    example."""
+    for name, note in _known_constants_of_every_example().items():
+        assert "MEASUREMENT MAPPINGS" not in note, name
+    assert "MEASUREMENT MAPPINGS" in P.KNOWN_CONSTANTS_READOUT_NOTE
+
+
+def test_the_lead_gets_the_readout_note_with_its_constants():
+    """``agent_task`` appends the note to a scenario that HAS constants (every benchmark problem
+    ships blinded readouts) and to nothing else (the synthetic demos have no blinding)."""
+    from petab_harness.scenario import Scenario
+
+    kw = dict(problem_dir=Path("/x/problem"), scripted_fix=None)
+    with_note = Scenario(name="a", known_constants="KNOWN CONSTANTS: k.", **kw).agent_task
+    assert with_note.endswith("KNOWN CONSTANTS: k." + P.KNOWN_CONSTANTS_READOUT_NOTE)
+    assert Scenario(name="b", **kw).agent_task == P.DEFAULT_TASK
+
+
 # -- versioning ------------------------------------------------------------
 def test_prompt_version_is_stable_and_12_chars():
     v = P.prompt_version()
