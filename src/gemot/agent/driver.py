@@ -33,10 +33,9 @@ import time
 from typing import Any
 
 from .biocurator import (
-    DEFAULT_BIO_TOOLS,
     LITERATURE_BIO_TOOLS,
-    _BIO_DISCOVERY_TIMEOUT_S,
     _build_biocurator_subagent,
+    discover_bio_tools,
 )
 from .circuit_breaker import (
     _disabled_tool_filter,
@@ -560,60 +559,9 @@ async def run_deepagents(
     # counted as "LLM+overhead" in the metrics split rather than tool time (a known caveat now
     # that the biocurator runs by default; wrap each bio session's call_tool into the clock too
     # if that split matters).
-    bio_tools: list = []
-    if bio_sessions:
-        petab_names = {n for t in petab_tools if (n := getattr(t, "name", None))}
-        # The biocurator's tool selection: the curated DEFAULT_BIO_TOOLS (a lean, deliberate set
-        # spanning the default BioContextAI server + OmniPath: identity/domains/interactions/
-        # pathways/GO/ontology + OmniPath's SQL tool), plus the literature tools when the operator
-        # opted in with PETAB_BIO_LITERATURE=1. It is an allowlist of NAMES, not a numeric cap, so it can
-        # never drop the one tool the biocurator needs.
-        allow = set(DEFAULT_BIO_TOOLS)
-        if bio_literature:
-            allow |= set(LITERATURE_BIO_TOOLS)
-        # Discover tools across ALL bio servers, dropping any whose name COLLIDES with a petab tool
-        # (would shadow it in tools_by_name for the lead/analysts) or DUPLICATES one already seen
-        # from another bio server (keep the first). Bio tools keep their FULL server descriptions
-        # (not _trim_descriptions, which is petab-oriented and would truncate usage/arg notes).
-        discovered: list = []
-        seen: set = set()
-        for bs in bio_sessions:
-            # Bounded + guarded: a bio server that is slow or whose (isolated) session has already
-            # died must drop only its own tools, never abort the run (issue #86). A discovery
-            # failure here is an ordinary Exception (the session is isolated in its own task, so it
-            # never surfaces as a run-cancelling anyio group) — skip that server and continue.
-            try:
-                bs_tools = await asyncio.wait_for(load_mcp_tools(bs),
-                                                  timeout=_BIO_DISCOVERY_TIMEOUT_S)
-            except Exception as exc:
-                print(f"[bio] WARNING: tool discovery on a bio server failed "
-                      f"({type(exc).__name__}: {exc}); skipping that server's tools.")
-                continue
-            for t in bs_tools:
-                nm = getattr(t, "name", None)
-                if nm in petab_names:
-                    print(f"[bio] WARNING: bio tool {nm!r} collides with a petab tool name; "
-                          "dropping it so it cannot shadow the petab tool.")
-                    continue
-                if nm in seen:
-                    print(f"[bio] duplicate bio tool {nm!r} from another bio server; keeping the "
-                          "first.")
-                    continue
-                seen.add(nm)
-                discovered.append((nm, t))
-        names = [nm for nm, _ in discovered]
-        if not discovered:
-            print("[bio] the bio server(s) exposed no tools; the biocurator will run 'dumb' "
-                  "(the model's own biology knowledge).")
-        else:
-            # No all-tools fallback: hand the biocurator ONLY the curated tools that actually
-            # resolved on the connected server(s). If none match it still runs (below) — just
-            # 'dumb' — and the empty biocurator_tools in result.json flags that for analysis.
-            bio_tools = [t for nm, t in discovered if nm in allow]
-            if not bio_tools:
-                shown = f"{names[:12]}{' …' if len(names) > 12 else ''}"
-                print(f"[bio] none of the curated tool names matched the connected server(s)' "
-                      f"{len(names)} tools ({shown}); the biocurator will run 'dumb'.")
+    bio_tools: list = await discover_bio_tools(
+        bio_sessions, literature=bio_literature,
+        exclude_names={n for t in petab_tools if (n := getattr(t, "name", None))})
     all_tools = petab_tools + bio_tools
     # Wrap the tool objects with the repeated-error circuit breaker BEFORE they are handed to
     # the lead and the analyst subagents (both reference these same objects), so a tool that

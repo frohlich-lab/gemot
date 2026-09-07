@@ -113,6 +113,64 @@ LITERATURE_BIO_TOOLS = (
 _BIO_DISCOVERY_TIMEOUT_S = 30.0
 
 
+async def discover_bio_tools(bio_sessions, *, literature: bool,
+                             exclude_names: "set[str] | frozenset[str]" = frozenset(),
+                             holder: str = "the biocurator") -> list:
+    """The curated bio tools that resolved on the connected server(s), as tool objects.
+
+    ``DEFAULT_BIO_TOOLS`` plus ``LITERATURE_BIO_TOOLS`` when ``literature`` — an allowlist of
+    NAMES, not a numeric cap, so it can never drop the one tool the holder needs. Per-server
+    discovery is bounded and guarded (issue #86): a slow or already-dead server costs only its
+    own tools. A name in ``exclude_names`` (a petab tool it would shadow in ``tools_by_name``) or
+    a duplicate from a second server is dropped with a warning. Tools keep their FULL server
+    descriptions — ``_trim_descriptions`` is petab-oriented and would truncate usage notes.
+
+    Nothing resolved returns ``[]``: there is no all-tools fallback, and ``holder`` then runs
+    "dumb" on the model's own biology knowledge, which the empty ``biocurator_tools`` in
+    ``result.json`` flags for analysis.
+    """
+    import asyncio
+
+    from langchain_mcp_adapters.tools import load_mcp_tools
+
+    if not bio_sessions:
+        return []
+    allow = set(DEFAULT_BIO_TOOLS)
+    if literature:
+        allow |= set(LITERATURE_BIO_TOOLS)
+    discovered: list = []
+    seen: set = set()
+    for bs in bio_sessions:
+        try:
+            bs_tools = await asyncio.wait_for(load_mcp_tools(bs), timeout=_BIO_DISCOVERY_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001 - one server's failure must not end the run
+            print(f"[bio] WARNING: tool discovery on a bio server failed "
+                  f"({type(exc).__name__}: {exc}); skipping that server's tools.")
+            continue
+        for t in bs_tools:
+            nm = getattr(t, "name", None)
+            if nm in exclude_names:
+                print(f"[bio] WARNING: bio tool {nm!r} collides with a petab tool name; "
+                      "dropping it so it cannot shadow the petab tool.")
+                continue
+            if nm in seen:
+                print(f"[bio] duplicate bio tool {nm!r} from another bio server; keeping the first.")
+                continue
+            seen.add(nm)
+            discovered.append((nm, t))
+    names = [nm for nm, _ in discovered]
+    if not discovered:
+        print(f"[bio] the bio server(s) exposed no tools; {holder} will run 'dumb' "
+              "(the model's own biology knowledge).")
+        return []
+    bio_tools = [t for nm, t in discovered if nm in allow]
+    if not bio_tools:
+        shown = f"{names[:12]}{' …' if len(names) > 12 else ''}"
+        print(f"[bio] none of the curated tool names matched the connected server(s)' "
+              f"{len(names)} tools ({shown}); {holder} will run 'dumb'.")
+    return bio_tools
+
+
 def _build_biocurator_subagent(bio_tools: list, entity_names: "list[str] | None" = None,
                                stats: "dict[str, Any] | None" = None) -> dict[str, Any]:
     """Build the biocurator subagent spec from the RUNTIME-DISCOVERED bio-server tools.
