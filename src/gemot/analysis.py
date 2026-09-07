@@ -65,10 +65,11 @@ from . import paths
 def run_cost(token_usage: dict | None) -> float | None:
     """Dollars for one run, as the provider billed it: ``token_usage["cost_usd"]``.
 
-    Recorded, not estimated. A hand-kept price table used to sit here and price every run from
-    its token counts; it carried no date, went stale unnoticed, and was removed in #170. The
-    harness does not record the billed figure yet (#178), so until it does every run reads
-    ``None`` — never 0.0, which would read as "free" in a mean — and the cost columns print ``-``.
+    Recorded, not estimated: the driver asks OpenRouter for the bill on every call and
+    ``token_usage`` sums it (#178). A hand-kept price table used to sit here and price every run
+    from its token counts; it carried no date, went stale unnoticed, and was removed in #170. A
+    run archived before the figure was recorded, or one whose provider reported none, reads
+    ``None`` — never 0.0, which would read as "free" in a mean — and its cost column prints ``-``.
     """
     cost = (token_usage or {}).get("cost_usd")
     try:

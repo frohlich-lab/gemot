@@ -120,6 +120,18 @@ that prices runs wrong silently is worse than a `-`. Fetching current prices at 
 was rejected too: it reprices old runs at today's rates, and the analysis path is offline by
 design. The fix is to record the billed figure at run time (#178). Do not add a price table back.
 
+#178 A run's cost is what OpenRouter billed, recorded per LLM call at run time: `agent/driver.py`
+sends `usage: {include: true}` on every request and `agent/token_usage.py` sums each response's
+`usage.cost` into `token_usage.cost_usd`. Recorded, never computed from a price table, because
+only the recorded figure stays true: it is the amount actually charged at the moment it was
+charged, so it survives every later price change and every re-pin of an endpoint, no code has to
+be kept in step with a catalog, and an archived `result.json` can still be priced years later
+without reconstructing anything. The table it replaces had drifted from the pinned endpoints
+unnoticed and priced runs wrong silently (#170) -- which is why `models.MODELS` carries ids alone
+and why `_MAX_RUN_TOKENS` counts tokens rather than dollars. A run none of whose calls carried a
+figure records `None`, never 0.0: 0.0 would read as free in a mean, which is the same class of
+quiet wrong answer the price table gave.
+
 #169 Added the RATIONALE.md file as a location to record non-obvious implementation
 decisions and reduce the volume of inline comments in the source code written by coding
 agents.

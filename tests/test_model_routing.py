@@ -17,7 +17,7 @@ def test_every_pinned_id_is_one_we_actually_use():
     `deepseek-v4-flash-0731` -- silently orphans its routing entry and the next sweep runs
     unpinned at whatever the default route costs. Nothing else would report that.
     """
-    in_use = {entry[0] for entry in MODELS.values()}
+    in_use = set(MODELS.values())
     orphaned = set(_ROUTING) - in_use
     assert not orphaned, (
         f"{sorted(orphaned)} have routing but no alias points at them -- an alias was "
@@ -60,7 +60,7 @@ def test_every_panel_model_is_pinned():
     and picked neither the cheapest nor a consistent provider for the others. A new alias with
     no routing entry is the regression this catches.
     """
-    unpinned = sorted(a for a, e in MODELS.items() if provider_routing(e[0]) is None)
+    unpinned = sorted(a for a, e in MODELS.items() if provider_routing(e) is None)
     assert not unpinned, (
         f"{unpinned} route by default -- pick an endpoint deliberately (ZDR eligibility, "
         "context length and cache-read price all have to be checked live)"
@@ -81,7 +81,7 @@ def test_every_reasoning_entry_names_a_model_on_the_panel():
     a model no longer in MODELS is dead config that silently does nothing."""
     from petab_harness.models import MODELS, _REASONING
 
-    in_use = {entry[0] for entry in MODELS.values()}
+    in_use = set(MODELS.values())
     orphaned = set(_REASONING) - in_use
     assert not orphaned, f"{sorted(orphaned)} have reasoning config but are not on the panel"
 
@@ -105,15 +105,18 @@ def test_models_without_an_entry_keep_the_provider_default():
 
 
 def test_extra_body_carries_routing_and_reasoning_independently():
-    """Each field appears only when its table has an entry, so a model with neither sends a bare
-    request exactly as before this mechanism existed."""
+    """Routing and reasoning appear only when their table has an entry; the billed-cost flag is on
+    every request, so a model with neither sends exactly that."""
     from petab_harness.agent.driver import _extra_body
 
     luna = _extra_body("openai/gpt-5.6-luna-pro")
-    assert set(luna) == {"provider"}, "pinned but no reasoning entry -> provider only"
+    assert set(luna) == {"provider", "usage"}, \
+        "pinned but no reasoning entry -> the pin and the cost flag, nothing else"
     assert luna["provider"]["only"] == ["openai"]
+    assert luna["usage"] == {"include": True}
 
-    assert _extra_body("some/unpinned-model") == {}, "neither -> send nothing"
+    assert _extra_body("some/unpinned-model") == {"usage": {"include": True}}, \
+        "neither -> the cost flag alone"
 
 
 def test_extra_body_includes_reasoning_when_a_model_has_it(monkeypatch):

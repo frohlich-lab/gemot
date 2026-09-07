@@ -120,10 +120,8 @@ _NO_EMISSION_YET = object()
 # full price on a weakly-caching model.
 #
 # 20M is ~1.5x the largest legitimate run measured across 339 runs (13.2M, luna-pro on schwen at
-# 155 calls) and below all three observed runaways (24.4M / 43.4M / 107.9M). Counting TOTAL
-# tokens rather than estimated dollars deliberately: the per-model prices in models.py are
-# documentation and carry no cache rates, so a cost estimate would be wrong by up to 10x on
-# exactly the cache-friendly models least in need of a guard.
+# 155 calls) and below all three observed runaways (24.4M / 43.4M / 107.9M). Counted in tokens,
+# not billed dollars.
 _MAX_RUN_TOKENS = 20_000_000
 
 # Provider content-policy refusals, matched on the response text because they arrive as a plain
@@ -342,10 +340,9 @@ def _content_filter_stop_reason(exc: BaseException) -> str | None:
 
 
 def _extra_body(model: str) -> dict[str, Any]:
-    """OpenRouter-specific request fields: provider pinning, and reasoning where it is not on
-    by default. Both are omitted entirely when unset, so a model with neither sends a bare
-    request exactly as before."""
-    body: dict[str, Any] = {}
+    """OpenRouter-specific request fields: the billed-cost flag (``usage.include``, always), and
+    provider pinning and reasoning where the model has an entry."""
+    body: dict[str, Any] = {"usage": {"include": True}}
     if (routing := models.provider_routing(model)) is not None:
         body["provider"] = routing
     if (reasoning := models.reasoning_config(model)) is not None:
@@ -368,6 +365,9 @@ def _chat_model_class():
     fields as extras), so this only copies it where the callbacks can read it. Everything else is
     ``super()``'s. Best-effort by construction: any failure leaves the unmodified result, since
     provenance capture must never break a run.
+
+    It also copies a stream's usage chunk onto ``response_metadata["token_usage"]``, where a
+    non-streamed response already carries it.
 
     ``lru_cache``d, and the caller passes ``name="ChatOpenAI"`` -- both for reasons that bite
     silently. LangChain derives a run's name (and openinference the SPAN name) from the class name,
@@ -399,6 +399,16 @@ def _chat_model_class():
             except Exception:  # pragma: no cover - provenance must never break a run
                 pass
             return result
+
+        def _convert_chunk_to_generation_chunk(self, chunk, *args, **kwargs):
+            gen = super()._convert_chunk_to_generation_chunk(chunk, *args, **kwargs)
+            try:
+                usage = chunk.get("usage") if isinstance(chunk, dict) else None
+                if gen is not None and isinstance(usage, dict):
+                    gen.message.response_metadata["token_usage"] = usage
+            except Exception:  # pragma: no cover - provenance must never break a run
+                pass
+            return gen
 
     return _ChatOpenAIRecordingProvider
 
@@ -686,10 +696,7 @@ async def run_deepagents(
         # other. Deliberately NOT per-agent: the lead and its subagents share this one llm
         # object, so a per-agent key would need per-call middleware for marginal gain.
         model_kwargs={"prompt_cache_key": prompt_cache_key},
-        # OpenRouter provider routing: for a model mirrored across providers (e.g. Luna is also on
-        # Bedrock/Azure at ~2-11x) this excludes the pricey copies so the request stays on OpenAI's
-        # standard tier. Sent verbatim in the request body via extra_body; included ONLY when the
-        # model needs pinning (models.provider_routing returns None otherwise). See models.py.
+        # OpenRouter request fields, sent verbatim in the body: see _extra_body and models.py.
         extra_body=_extra_body(model),
     )
     # Transient provider errors that should RESUME the run (below) rather than end it, when they
@@ -1271,6 +1278,11 @@ async def run_deepagents(
     if token_usage["n_llm_calls"] == 0 and guard_stats.get("tools_executed", 0) > 0:
         print("[agent] WARNING: token accounting captured 0 LLM calls despite tool activity — "
               "token_usage in result.json is understated (usage not reported for this run).")
+    elif token_usage["n_uncosted_calls"]:
+        print(f"[agent] WARNING: {token_usage['n_uncosted_calls']} of "
+              f"{token_usage['n_llm_calls']} LLM calls carried no billed cost — "
+              "token_usage.cost_usd "
+              + ("is absent" if token_usage["cost_usd"] is None else "understates the run") + ".")
 
     return {
         "stop_reason": stop_reason,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 def _token_accountant():
     """A LangChain callback that sums token usage across EVERY LLM call in a run.
 
@@ -9,10 +11,11 @@ def _token_accountant():
     analyst + biocurator subgraphs — so this totals the lead AND the subagents, matching
     Phoenix's per-trace rollup, but in-process so the counts can be written straight to
     result.json without re-deriving them from the (huge) span database. Records prompt,
-    completion, and cache-read tokens; ``cache_read`` is the provider-reported cached-prompt
-    count (``usage_metadata.input_token_details.cache_read``), which is what makes an offline
-    cost estimate cache-aware. One instance is reused across resume iterations so the totals
-    cover the whole run. Never raises — token accounting must not break a run.
+    completion, and cache-read tokens (``cache_read`` is the provider-reported cached-prompt
+    count, ``usage_metadata.input_token_details.cache_read``) and the billed cost (OpenRouter's
+    per-response ``usage.cost``, summed into ``cost_usd``). One instance is reused across resume
+    iterations so the totals cover the whole run. Never raises — token accounting must not break
+    a run.
     """
     from langchain_core.callbacks import AsyncCallbackHandler
 
@@ -28,9 +31,21 @@ def _token_accountant():
         except (TypeError, ValueError):
             return 0
 
+    def _as_float(x) -> float | None:
+        """A billed amount, or None when absent, unparseable, boolean or non-finite — a NaN or an
+        inf would propagate into ``cost_usd`` and poison every aggregate taken over it."""
+        if x is None or isinstance(x, bool):
+            return None
+        try:
+            value = float(x)
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
     class _Accountant(AsyncCallbackHandler):
         def __init__(self):
             self.prompt = self.completion = self.cache_read = self.n_calls = 0
+            self.cost, self.n_costed = 0.0, 0     # billed USD, and the calls that reported one
             self.max_prompt = 0          # largest single-call prompt — the context-stop signal
             # (upstream provider, service tier) -> calls served by it. See `endpoints()`.
             self.served: dict[tuple, int] = {}
@@ -62,9 +77,31 @@ def _token_accountant():
             key = (provider, tier)
             self.served[key] = self.served.get(key, 0) + 1
 
+        def _response_cost(self, response) -> float | None:
+            """OpenRouter's ``usage.cost`` for this response, from the ``token_usage`` block of
+            ``llm_output`` or of a generation's ``response_metadata``, whichever carries it first;
+            None if none does."""
+            out = getattr(response, "llm_output", None)
+            blocks = [out.get("token_usage")] if isinstance(out, dict) else []
+            for gens in getattr(response, "generations", None) or []:
+                for gen in gens or []:
+                    meta = getattr(getattr(gen, "message", None), "response_metadata", None)
+                    if isinstance(meta, dict):
+                        blocks.append(meta.get("token_usage"))
+            for tu in blocks:
+                if isinstance(tu, dict) and (cost := _as_float(tu.get("cost"))) is not None:
+                    return cost
+            return None
+
         async def on_llm_end(self, response, **kwargs):  # noqa: D401 - LangChain hook
             try:
                 self._record_endpoint(response)
+            except Exception:  # pragma: no cover - accounting must never break a run
+                pass
+            try:
+                if (cost := self._response_cost(response)) is not None:
+                    self.cost += cost
+                    self.n_costed += 1
             except Exception:  # pragma: no cover - accounting must never break a run
                 pass
             try:
@@ -111,7 +148,7 @@ def _token_accountant():
             return {
                 "prompt_tokens": self.prompt,
                 "completion_tokens": self.completion,
-                "cache_read_tokens": self.cache_read,   # cached prompt tokens (for cache-aware cost)
+                "cache_read_tokens": self.cache_read,   # cached prompt tokens
                 "total_tokens": self.prompt + self.completion,
                 # The COMPUTE-priced number. Every estimate in the 2026-08-14 token review that
                 # quoted prompt tokens overstated its saving 5-10x because ~80-90% are cache
@@ -119,6 +156,8 @@ def _token_accountant():
                 "novel_tokens": max(self.prompt - self.cache_read, 0),
                 "max_prompt_tokens": self.max_prompt,
                 "n_llm_calls": self.n_calls,
+                "cost_usd": self.cost if self.n_costed else None,   # billed USD; None if none reported
+                "n_uncosted_calls": max(self.n_calls - self.n_costed, 0),
             }
 
         def endpoints(self):

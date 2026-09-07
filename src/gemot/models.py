@@ -8,36 +8,26 @@ it serves OpenAI's documented standard tier, never the Bedrock/Azure copies. (We
 ``sort: price``, which would opt into OpenAI's cheaper but undocumented ``flex`` tier.)
 
 ``MODELS`` maps a short alias to its OpenRouter id so ``--model luna`` works; :func:`resolve`
-passes a full id through unchanged. The per-alias prices ($/1M tokens, prompt / completion) are
-the OpenAI-direct listing at the time of writing and are documentation only — OpenRouter's live
-catalog is the source of truth for what a request actually costs.
+passes a full id through unchanged.
 """
 
 from __future__ import annotations
 
-#: alias -> (OpenRouter id, prompt $/M, completion $/M). The panel's go-to leads.
-#:
-#: Every entry here is PINNED (see ``_ROUTING``), so each price is the price of the endpoint the
-#: pin actually reaches — NOT the catalog's default-route price, which for several of these is a
-#: different number entirely (deepseek v4-flash lists $0.14 but DigitalOcean serves it at $0.084).
-#: v4-pro and minimax-m3 are the two where the pin costs MORE than the catalog suggests: their
-#: cheapest endpoints are not available under a zero-data-retention policy, so the reachable
-#: floor is Novita's, and both are ~$0.37-0.39 per run rather than the ~$0.15 the headline
-#: prompt price implies. Prices are documentation only — nothing computes with them.
-MODELS: dict[str, tuple[str, float, float]] = {
-    "luna":       ("openai/gpt-5.6-luna",         0.10, 0.60),
-    "luna-pro":   ("openai/gpt-5.6-luna-pro",     0.10, 0.60),
-    "v4-flash":   ("deepseek/deepseek-v4-flash",  0.084, 0.168),
-    "v4-pro":     ("deepseek/deepseek-v4-pro",    0.435, 0.87),
-    "minimax-m3": ("minimax/minimax-m3",          0.30, 1.20),
-    "mimo":       ("xiaomi/mimo-v2.5",            0.168, 0.336),
-    "glm-flash":  ("z-ai/glm-5.3-flash",          0.075, 0.25),
+#: alias -> OpenRouter id. The panel's go-to leads, every one pinned to an endpoint (``_ROUTING``).
+MODELS: dict[str, str] = {
+    "luna":       "openai/gpt-5.6-luna",
+    "luna-pro":   "openai/gpt-5.6-luna-pro",
+    "v4-flash":   "deepseek/deepseek-v4-flash",
+    "v4-pro":     "deepseek/deepseek-v4-pro",
+    "minimax-m3": "minimax/minimax-m3",
+    "mimo":       "xiaomi/mimo-v2.5",
+    "glm-flash":  "z-ai/glm-5.3-flash",
     # The tier above the panel: ~10x luna per run, added to test whether capability buys
     # anything on the examples the panel cannot solve. Not defaults -- opt in with --models.
-    "terra":      ("openai/gpt-5.6-terra",        1.00, 6.00),
-    "grok":       ("x-ai/grok-4.20",              1.25, 2.50),
-    "gemini-flash": ("google/gemini-3.6-flash",       1.50, 7.50),
-    "gemini-pro":   ("google/gemini-3.1-pro-preview", 2.00, 12.00),
+    "terra":        "openai/gpt-5.6-terra",
+    "grok":         "x-ai/grok-4.20",
+    "gemini-flash": "google/gemini-3.6-flash",
+    "gemini-pro":   "google/gemini-3.1-pro-preview",
 }
 
 #: Default lead. 1M-token context, single pinned provider (Z.AI), and the best measured accuracy
@@ -215,8 +205,7 @@ def reasoning_config(model_id: str) -> dict | None:
 
 def resolve(name: str) -> str:
     """Expand a go-to alias (``luna``) to its OpenRouter id; return a full id unchanged."""
-    entry = MODELS.get(name)
-    return entry[0] if entry else name
+    return MODELS.get(name, name)
 
 
 def provider_routing(model_id: str) -> dict | None:
