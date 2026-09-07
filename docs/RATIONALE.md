@@ -1,5 +1,26 @@
 # Rationale Log
 
+#242 `runner.provenance._agent_meta` spreads the agent driver's WHOLE return into `result.json`
+rather than copying the fields it wants. The 26-key hand copy in `runner/drive.py` that it
+replaces never named `openrouter_endpoints`, so `metrics._flatten_served_endpoints` read `None`
+on every run ever recorded and `served_provider` / `served_n_distinct` / `served_drifted` stayed
+blank for the whole life of the field — including the one column that says whether a run was
+split across two upstream endpoints, i.e. whether it is one measurement at all. Six guard
+counters (`tools_executed`, `dropped_dup_tool_calls`, `idle_nudges`, `gave_up_no_tools`,
+`task_arg_rejections`, `unreadable_graph_state`) had already been lost the same way, and the rule
+was "enforced" by a regex over `drive.py`'s source text, which any occurrence of the name — a
+comment included — satisfies. Deliberately NOT a filter with an allowlist, however documented:
+the driver measures a run and the artifact records it, so anything between the two is a hole that
+opens silently. The test is now the artifact itself (`tests/test_run_loop_no_model.py`): a real
+`run_deepagents` return, written by the real writer, compared key by key.
+
+#242 `guards._reasoning_runaway_guard` no longer re-seeds its three counters with `setdefault`.
+It duplicated `new_guard_stats`'s only job and made a partly-seeded stats dict look healthy,
+which is how the seeding contract went unexamined while six of its keys were being dropped
+downstream. The driver seeds once, before any guard is built; a caller that hands the guards a
+bare `{}` now fails on the first increment instead of writing an artifact with three counters in
+it and thirteen missing.
+
 #167 No scalar weight on the complexity penalty in `petab_mcp.criteria` — named penalties and
 nothing between them. One was built and then removed: every effect-size threshold in the loop
 (`NEW_BEST_MIN_DELTA_SCORE`, `PLATEAU_MIN_SCORE_GAIN`, `dedup.WORSE_SCORE_MARGIN`, the benchmark's

@@ -190,3 +190,22 @@ def test_the_subclass_is_built_once():
     from petab_harness.agent.driver import _chat_model_class
 
     assert _chat_model_class() is _chat_model_class()
+
+
+def test_the_block_travels_from_the_agent_output_to_the_history_column(tmp_path):
+    """The tally reaching `endpoints()` is only half of it: the runner has to carry it into
+    result.json, and for every run until now it did not — so `served_drifted`, the column a
+    benchmark filters on, was blank whatever the accountant measured."""
+    from petab_harness import metrics
+    from petab_harness.runner.provenance import _agent_meta
+
+    agent_out = {"stop_reason": "completed",
+                 "openrouter_endpoints": {
+                     "served": [{"provider": "OpenAI", "service_tier": "default", "n_calls": 2},
+                                {"provider": "Azure", "service_tier": "default", "n_calls": 1}],
+                     "n_distinct": 2, "drifted": True}}
+    meta = _agent_meta({"scenario": "sneyd"}, agent_out, "completed")
+    path = metrics.append_history([metrics.build_row(meta)], tmp_path / "history.csv")
+    row = dict(zip(*(line.split(",") for line in path.read_text().splitlines()[:2])))
+    assert row["served_provider"] == "Azure/default+OpenAI/default"   # sorted, so it is stable
+    assert (row["served_n_distinct"], row["served_drifted"]) == ("2", "True")

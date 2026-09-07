@@ -243,3 +243,13 @@ def _base_meta(scenario: Scenario, args: argparse.Namespace,
         "run_started_at": run_started_at or _now_iso(),
         "phoenix_project": None, "phoenix_trace_id": None,
     }
+
+
+def _agent_meta(base_meta: dict, agent_out: dict, stop_reason: str) -> dict:
+    """:func:`_base_meta` plus EVERYTHING :func:`petab_harness.agent.run_deepagents` reported.
+
+    Spread wholesale rather than copied field by field, so a measurement the driver adds reaches
+    ``result.json`` without a second edit here (docs/RATIONALE.md). ``stop_reason`` is restated
+    because the caller resolves the driver's default before printing it.
+    """
+    return {**base_meta, **agent_out, "stop_reason": stop_reason}

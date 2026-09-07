@@ -138,10 +138,6 @@ def _reasoning_runaway_guard(stats: dict[str, Any], *,
     """
     from langchain.agents.middleware.types import AgentMiddleware
 
-    stats.setdefault("reasoning_runaways", 0)
-    stats.setdefault("reasoning_runaway_recovered", 0)
-    stats.setdefault("reasoning_runaway_retry_errors", 0)
-
     def _retry_settings(request, effort):
         settings = dict(getattr(request, "model_settings", None) or {})
         settings["reasoning_effort"] = effort
@@ -228,11 +224,10 @@ def new_guard_stats() -> dict[str, Any]:
 
     Seeded up front rather than by each guard as it first fires, so ``result.json`` carries an
     explicit zero for every counter even when a guard never triggers (or, for a deepagents build
-    without the ``middleware`` parameter, is never constructed at all). Shared by the driver and
-    by the test that checks every key reaches ``result.json``: a counter added here and forgotten
-    in ``runner/drive.py``'s allowlist is a silent hole in the artifact, which is how six of these
-    went unrecorded — the previous test discovered keys by running the guard factories, and only
-    one factory seeds anything at construction time, so it policed three keys and missed the rest.
+    without the ``middleware`` parameter, is never constructed at all). The guards increment these
+    keys in place, so a caller that builds one by hand seeds it from here; the driver spreads the
+    whole dict into its return, and ``runner.provenance._agent_meta`` spreads that into
+    ``result.json``, so a counter added here needs no second edit to be recorded.
     """
     return {
         # tool-dispatch guard

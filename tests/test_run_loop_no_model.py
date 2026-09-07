@@ -6,6 +6,10 @@ with a fake agent whose graph "completes" without ever authoring a model, assert
 run "no_model_built" once the budget is exhausted — the behaviour the finish gate cannot reach
 because a no-tool turn ends the graph without calling the `finish` tool.
 
+The same fake-driven run also pins the artifact contract: everything the driver RETURNS is
+written to result.json, checked against the real return of a real run rather than against
+runner/drive.py's source text.
+
 Heavy examples-harness deps (deepagents, langchain_openai, langchain_mcp_adapters, openai) are
 monkeypatched/needed; skip cleanly where absent.
 """
@@ -228,3 +232,31 @@ def test_no_liveness_signal_does_not_end_the_run(monkeypatch):
 
     assert not result["stop_reason"].startswith("server_unreachable")
     assert len(agent.inputs) == 1 + mod.driver._RUN_RESUME_ATTEMPTS
+
+
+# --- the artifact contract -------------------------------------------------------------------
+
+@requires_harness
+def test_result_json_carries_every_key_the_driver_returns(monkeypatch, tmp_path):
+    """A measurement the driver reports and result.json drops is invisible to every sweep.
+
+    `agent_out` here is a REAL run_deepagents return and the writer is the real one, so this
+    fails on a key the artifact loses — which is what a per-field copy in the runner did to
+    `openrouter_endpoints` for its whole life (docs/RATIONALE.md). Both writers spread `meta`
+    (runner/judge.py and _write_degraded_result), so either proves the propagation.
+    """
+    import json
+    from types import SimpleNamespace
+
+    from petab_harness.runner.failure import _write_degraded_result
+    from petab_harness.runner.provenance import _agent_meta
+
+    mod = _load_agent_module()
+    agent_out, _ = _run(mod, monkeypatch, _Probe(model_authored=True))
+
+    meta = _agent_meta({"driver": "deepagents"}, agent_out, agent_out["stop_reason"])
+    _write_degraded_result(tmp_path, meta, SimpleNamespace(name="toy"), "test")
+    written = json.loads((tmp_path / "result.json").read_text())
+
+    missing = sorted(k for k in agent_out if k not in written)
+    assert not missing, f"the driver reported these and result.json dropped them: {missing}"

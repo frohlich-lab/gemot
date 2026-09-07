@@ -13,7 +13,8 @@ pytest.importorskip("langchain")
 from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage, ToolMessage
 
-from petab_harness.agent.guards import _is_reasoning_runaway, _reasoning_runaway_guard
+from petab_harness.agent.guards import (_is_reasoning_runaway, _reasoning_runaway_guard,
+                                        new_guard_stats)
 
 
 def _resp(content="", finish="length", tool_calls=None) -> ModelResponse:
@@ -78,7 +79,7 @@ class _Request:
 
 
 def test_ladder_retries_at_reduced_effort_and_recovers():
-    stats: dict = {}
+    stats = new_guard_stats()
     guard = _reasoning_runaway_guard(stats)
     seen_efforts: list = []
 
@@ -95,7 +96,7 @@ def test_ladder_retries_at_reduced_effort_and_recovers():
 
 
 def test_ladder_is_bounded_when_every_effort_fails():
-    stats: dict = {}
+    stats = new_guard_stats()
     guard = _reasoning_runaway_guard(stats)
     calls = 0
 
@@ -116,7 +117,7 @@ def test_ladder_is_bounded_when_every_effort_fails():
 def test_sync_hook_shares_the_ladder():
     # The sync wrap_model_call is unreachable under the astream-only driver but is part of the
     # middleware contract; it must behave identically to the async hook.
-    stats: dict = {}
+    stats = new_guard_stats()
     guard = _reasoning_runaway_guard(stats)
     seen_efforts: list = []
 
@@ -164,7 +165,7 @@ def test_a_trailing_tool_message_is_skipped():
 def test_a_failing_retry_falls_back_to_the_original_turn():
     # A provider that rejects reasoning_effort must not turn a survivable idle turn into a dead
     # run: the guard swallows the error and hands back the original truncated result.
-    stats: dict = {}
+    stats = new_guard_stats()
     guard = _reasoning_runaway_guard(stats)
     calls = 0
 
@@ -182,7 +183,7 @@ def test_a_failing_retry_falls_back_to_the_original_turn():
 
 
 def test_healthy_call_passes_through_untouched():
-    stats: dict = {}
+    stats = new_guard_stats()
     guard = _reasoning_runaway_guard(stats)
     calls = 0
 
@@ -232,36 +233,3 @@ def test_state_message_count_distinguishes_unreadable_from_empty():
     assert _state_message_count({}) is None
     assert _state_message_count("not a state") is None
     assert _state_message_count({"messages": "nope"}) is None
-
-
-def test_every_guard_counter_reaches_result_json():
-    """Seeding a counter in guard_stats is NOT enough to record it.
-
-    runner/drive.py builds result.json from an EXPLICIT allowlist (`agent_out.get(key, ...)`
-    per field), not a `**guard_stats` spread — so a new counter is silently dropped from the
-    artifact while every unit test still passes. That is exactly what happened to the three
-    reasoning-runaway counters: seeded, returned, and absent from all five boehm results.
-    """
-    import inspect
-    import re
-    from pathlib import Path
-
-    from petab_harness.agent import guards as G
-
-    # From the driver's actual seed, not from running the guard factories: only ONE factory
-    # seeds anything at construction time (the others mutate stats when they first fire), so
-    # the factory-probing version of this test policed 3 keys and silently missed the 6 that
-    # were in fact being dropped — tools_executed, dropped_dup_tool_calls, idle_nudges,
-    # gave_up_no_tools, task_arg_rejections and unreadable_graph_state.
-    seeded = G.new_guard_stats()
-
-    drive_src = Path(inspect.getfile(__import__(
-        "petab_harness.runner.drive", fromlist=["drive"]))).read_text(encoding="utf-8")
-    # As a dict KEY (`"name":`), not merely mentioned: the counter is read from agent_out by the
-    # same name, so a bare substring test passes even when the key it is stored under was
-    # renamed — which is the near-miss version of this very bug.
-    missing = [k for k in seeded
-               if not re.search(rf'"{re.escape(k)}"\s*:', drive_src)]
-    assert not missing, (
-        f"guard counters seeded but never recorded in result.json: {missing}. "
-        "Add them to the meta dict in runner/drive.py.")

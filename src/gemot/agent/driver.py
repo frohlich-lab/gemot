@@ -532,13 +532,11 @@ async def run_deepagents(
 
     The model is served by OpenRouter via its OpenAI-compatible API (``base_url`` +
     ``api_key``). Returns ``{"stop_reason": ..., "n_tool_errors": ..., "disabled_tools": ...,
-    **guard_stats}`` — the stop reason, the circuit breaker's error tallies, and the guard
-    counters (``tools_executed``, ``dropped_dup_tool_calls``, ``idle_nudges``, ``gave_up_no_tools``,
-    the empty-report guard's ``empty_subagent_reports`` / ``empty_subagent_retries`` /
-    ``empty_subagent_markers``, and the reasoning-runaway guard's ``reasoning_runaways`` /
-    ``reasoning_runaway_recovered`` / ``reasoning_runaway_retry_errors``); the caller reads
-    ``stop_reason`` and may ignore the
-    rest. The orchestrator's messages, its ``task`` delegations, the analysts' private tool
+    **guard_stats}`` — the stop reason, the circuit breaker's error tallies, what was sent and
+    what served it, the token totals, and the guard counters (``guards.new_guard_stats``). ALL of
+    it lands in ``result.json`` (``runner.provenance._agent_meta``), so a measurement added to
+    this dict is recorded without a second edit in the runner.
+    The orchestrator's messages, its ``task`` delegations, the analysts' private tool
     calls, and token usage are recorded by Phoenix tracing (set up by the runner), so this
     function just drives the loop to completion.
     """
