@@ -32,7 +32,8 @@ _CONFIG_KEYS = (
 # Outcome -> W&B summary metrics.
 _METRIC_KEYS = (
     "success", "delta_bic", "bic", "bic_reference", "chi2", "chi2_dof", "chi2_gof_pvalue",
-    "final_nll", "baseline_nll", "delta", "k", "n", "head_version", "n_errors", "tool_calls",
+    "final_nll", "baseline_nll", "delta", "k", "n", "k_eff", "head_version", "n_errors",
+    "tool_calls",
     "wall_seconds", "compute_seconds", "llm_seconds",
     "compile_seconds", "fit_seconds", "n_compiles", "n_fits",
 )

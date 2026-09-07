@@ -300,6 +300,17 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     head = await _head_version(call)
     diff = (await call("diff_versions", from_version=0, to_version=head)
             if head is not None and head > 0 else {})
+    # The effective parameter count of the SCORED fit (identifiability.effective_parameter_count):
+    # k_eff well below k says the data did not determine that many parameters. Read off the STORED
+    # version, like the sigma reports in the scan above — it is on no result the agent sees, and
+    # deriving it needs the built objective. Report-only: a store without it records None.
+    k_eff = None
+    try:
+        stored = await call("get_version", version=head) if head is not None else None
+        sim = stored.get("simulation") if isinstance(stored, dict) else None
+        k_eff = sim.get("k_eff") if isinstance(sim, dict) else None
+    except Exception:  # noqa: BLE001 - report-only
+        k_eff = None
     errors = await call("get_errors", limit=20)
     # baseline.nll is None for a zero-shot build (no model shipped → nothing to score).
     delta = (baseline.nll - final_nll) if (baseline.nll is not None and final_nll is not None) else None
@@ -353,9 +364,10 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     _bl = f"{baseline.nll:.6g}" if baseline.nll is not None else "n/a (zero-shot)"
     _dl = f"{delta:.6g}" if delta is not None else "n/a"
     _nll = f"{final_nll:.6g}" if final_nll is not None else "n/a (no valid fit)"
-    print(f"  fit: nll={_nll}  chi2={chi2:.6g}  k={k}  n={n}  (baseline nll {_bl}, Δnll {_dl})"
+    _keff = f"  k_eff={k_eff:.3g}" if isinstance(k_eff, (int, float)) else ""
+    print(f"  fit: nll={_nll}  chi2={chi2:.6g}  k={k}{_keff}  n={n}  (baseline nll {_bl}, Δnll {_dl})"
           if chi2 is not None else
-          f"  fit: nll={_nll}  k={k}  n={n}  (baseline nll {_bl}, Δnll {_dl})")
+          f"  fit: nll={_nll}  k={k}{_keff}  n={n}  (baseline nll {_bl}, Δnll {_dl})")
     if delta_bic is not None:
         print(f"  BIC:  candidate {bic_cand:.6g} | true-model {bic_ref:.6g} | "
               f"ΔBIC {delta_bic:+.6g}  (accept if <= {scenario.bic_threshold:g})")
@@ -430,6 +442,7 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         "chi2": chi2,
         "k": k,
         "n": n,
+        "k_eff": k_eff,
         "bic": bic_cand,
         "bic_reference": bic_ref,
         "delta_bic": delta_bic,

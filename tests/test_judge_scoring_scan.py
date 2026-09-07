@@ -73,7 +73,10 @@ class _Store:
 
     def __init__(self, versions: "dict[int, tuple[float, float]]", head: int,
                  checkpoint: "int | None", *, can_list: bool = True,
-                 stores_reports: bool = True):
+                 stores_reports: bool = True, k_eff: "float | None" = None):
+        # The effective parameter count stored with a version (never on a tool result the agent
+        # reads). None = a fit that produced none (or a server predating it).
+        self.k_eff = k_eff
         self.versions = versions          # version -> (nll, fitted sigma)
         self.head = head
         self.checkpoint = checkpoint
@@ -103,6 +106,7 @@ class _Store:
                 return {"simulation": {"neg_log_likelihood": self.versions[kwargs["version"]][0]}}
             nll, sigma = self.versions[kwargs["version"]]
             return {"simulation": {"neg_log_likelihood": nll,
+                                   **({"k_eff": self.k_eff} if self.k_eff is not None else {}),
                                    "noise_sigma_report": _report(sigma)}}
         if name == "get_fit_summary":
             nll, sigma = self.versions[self.head]
@@ -122,6 +126,19 @@ class _Store:
 def _run(work: Path, store: _Store):
     return asyncio.run(_judge(_Scenario(work), store, _Baseline(), work, {},
                               _ToolClock(), time.monotonic()))
+
+
+def test_the_effective_parameter_count_is_read_off_the_stored_version(tmp_path):
+    """`k_eff` rides into result.json off the STORED scored version — never off `get_fit_summary`,
+    which the agent reads, and never re-derived (it needs the built objective) — and is None, not
+    0, not k, when the store has none."""
+    store = _Store({4: (140.117, _CLEAN_SIGMA)}, head=4, checkpoint=4, k_eff=9.5)
+    _, result = _run(tmp_path, store)
+    assert result["k_eff"] == 9.5 and result["k"] == 12
+
+    store = _Store({4: (140.117, _CLEAN_SIGMA)}, head=4, checkpoint=4)
+    _, result = _run(tmp_path, store)
+    assert result["k_eff"] is None
 
 
 def test_the_judge_scores_the_best_version_whose_sigma_would_pass_the_gate(tmp_path):
@@ -174,8 +191,9 @@ def test_every_fitted_version_is_a_candidate_not_just_the_first_few(tmp_path):
     code, result = _run(tmp_path, store)
 
     assert store.head == 12 and result["success"] is True
-    assert [kw["version"] for n, kw in store.calls if n == "get_version"] == list(range(1, 13)), \
-        "stopped scanning before the last version"
+    # Every version read once by the scan, then the chosen one read again for the record (k_eff).
+    assert [kw["version"] for n, kw in store.calls if n == "get_version"] == \
+        list(range(1, 13)) + [12], "stopped scanning before the last version"
     assert store.restored == [12], "the scan is a READ — only the chosen version is restored"
 
 
@@ -200,8 +218,9 @@ def test_the_scan_reads_stored_reports_instead_of_rolling_through_the_versions(t
     _run(tmp_path, store)
 
     assert store.restored == [5]
-    # v5 is best-BIC AND clean, so the scan stops there: one read, one restore, nothing else touched
-    assert [kw["version"] for n, kw in store.calls if n == "get_version"] == [5]
+    # v5 is best-BIC AND clean, so the scan stops there: one read to choose it, one restore, and one
+    # more read of the SCORED version for the record (its stored k_eff) — no other version touched.
+    assert [kw["version"] for n, kw in store.calls if n == "get_version"] == [5, 5]
 
 
 def test_a_store_without_saved_sigma_reports_scores_the_best_bic_version(tmp_path):

@@ -390,7 +390,7 @@ _RESULT_METRIC_KEYS = (
     "scenario", "example_version", "model", "driver", "stop_reason", "success",
     "baseline_nll", "final_nll", "delta",
     "chi2", "chi2_dof", "chi2_gof_pvalue",
-    "k", "n", "bic", "bic_reference", "delta_bic", "bic_threshold",
+    "k", "n", "k_eff", "bic", "bic_reference", "delta_bic", "bic_threshold",
     "head_version", "n_errors", "tool_calls",
     "wall_seconds", "compute_seconds", "llm_seconds",
     "compile_seconds", "fit_seconds", "n_compiles", "n_fits",

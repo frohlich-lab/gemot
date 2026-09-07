@@ -437,6 +437,15 @@ def write_reference_from_problem(
     # fixed observation params are NOT counted), n = number of measurements.
     k = sum(int(float(pdf.loc[pid, ESTIMATE])) == 1 for pid in pdf.index)
     ref = {"nll": float(nll), "k": int(k), "n": int(len(problem.measurement_df))}
+    # The reference fit's EFFECTIVE parameter count, at the point that produced the recorded nll
+    # (petab_mcp.identifiability.effective_parameter_count) — the truth's own k vs k_eff, beside
+    # the candidate's. Advisory like the sigmas below: None when the objective cannot be evaluated
+    # there, and the BIC bar is written regardless.
+    from petab_mcp.identifiability import effective_parameter_count
+
+    x_best = (pp.get_reduced_vector(x_full_used) if x_full_used is not None
+              else np.asarray(result.optimize_result.list[0]["x"], dtype=float)[pp.x_free_indices])
+    ref["k_eff"] = effective_parameter_count(pp, x_best, k=int(k))
     # The reference fit's own NOISE SIGMAS — the only defensible "true sigma" for an ESTIMATED
     # sigma, whose nominalValue is merely a start point (8 of 12 benchmark examples estimate their
     # sigma, and e.g. perelson's nominalValue is a linear placeholder for a log10-space sd). The
