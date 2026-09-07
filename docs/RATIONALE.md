@@ -79,6 +79,13 @@ conclusion the statistic exists to be able to contradict. Inner-solved parameter
 rather than dropped because a profiled parameter the data pin is exactly the case where the count
 and the trace agree — where TIC and AIC coincide. Measured cost: 0.085 s on blasi's k=11, n=252.
 
+#170 `petab_harness.analysis` has no price table, deliberately. `run_cost` returns the cost a
+run recorded (`token_usage.cost_usd`) and `None` otherwise. The hand-kept OpenRouter table it
+replaced carried no date and was suspected stale within a week of being consolidated; a table
+that prices runs wrong silently is worse than a `-`. Fetching current prices at analysis time
+was rejected too: it reprices old runs at today's rates, and the analysis path is offline by
+design. The fix is to record the billed figure at run time (#178). Do not add a price table back.
+
 #169 Added the RATIONALE.md file as a location to record non-obvious implementation
 decisions and reduce the volume of inline comments in the source code written by coding
 agents.

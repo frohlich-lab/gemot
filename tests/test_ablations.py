@@ -147,7 +147,12 @@ _NOT_ABLATIONS = {
                                    "ceiling being set correctly, not a behavioural knob to A/B",
     "PETAB_MCP_REFERENCE_VALIDATION": "server validation mode; also a run.py flag, not an arm",
     "PETAB_MCP_REPO_ROOT": "path override for repo_root()",
+    "PETAB_MCP_SCRATCH": "where array_task.sh stages a task's working directory; read back by "
+                         "analysis.default_work_root() to find it again. Read-side only — by the "
+                         "time anything reads it here the run is over",
     "PETAB_MCP_SKILLS_DIR": "path to the skills directory",
+    "PETAB_MCP_WORK_ROOT": "the shared-server refactor's name for PETAB_MCP_SCRATCH; same path, "
+                           "same read-side-only role",
     "PETAB_MCP_YAML": "path to the PEtab problem",
     "PETAB_REQUIRE_COLLECTOR": "refuse to fall back to a throwaway in-process Phoenix when no "
                                "shared collector is configured — a safety interlock on the "

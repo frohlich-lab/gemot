@@ -55,6 +55,7 @@ def _assert_light(importline: str) -> None:
     "from petab_harness import prompts",
     "from petab_harness import bio_sessions",
     "from petab_harness import experiments",
+    "from petab_harness import analysis",
     "from petab_harness import fit_budget",
     "from petab_harness.explorer import bundle",
     "from petab_harness.runner import endpoints",
