@@ -1,5 +1,18 @@
 # Rationale Log
 
+#243 A `make_changes` result carries no flat `warnings` list. The payload diet cut it at the tool
+boundary only (17% of payload bytes, duplicated on 62.8% of 915 payloads), so `bundle_result` kept
+computing a key `server.make_changes` popped straight back off while four docstrings went on
+promising it. Do not reintroduce it — filter `messages` by level. The operations-layer `warnings`
+is a DIFFERENT field and stays.
+
+#243 `test_doc_consistency.test_the_editor_never_promises_a_result_field_it_does_not_return`
+harvests the real key set with `auto_fit=False`, since a real fit is six minutes. So it is NOT
+exhaustive: a key only a fitted call produces goes in `_UNHARVESTABLE_RESULT_FIELDS`.
+
+#243 `error` is the FIRST error on the stack, not the last — `errors_from_exception` appends a
+rejection's `issues` after it — and is not derived from the stack at all.
+
 #242 `runner.provenance._agent_meta` spreads the agent driver's WHOLE return into `result.json`
 rather than copying the fields it wants. The 26-key hand copy in `runner/drive.py` that it
 replaces never named `openrouter_endpoints`, so `metrics._flatten_served_endpoints` read `None`
