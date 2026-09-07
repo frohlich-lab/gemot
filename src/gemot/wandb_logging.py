@@ -31,7 +31,11 @@ _CONFIG_KEYS = (
 )
 # Outcome -> W&B summary metrics.
 _METRIC_KEYS = (
-    "success", "delta_bic", "bic", "bic_reference", "chi2", "chi2_dof", "chi2_gof_pvalue",
+    "success", "delta_bic", "bic", "bic_reference",
+    # The delta that actually DECIDED `success` (canonical `delta_bic` above only does so when
+    # BIC is the criterion), and the criterion it was measured under.
+    "criterion", "criterion_value", "criterion_reference", "delta_criterion",
+    "chi2", "chi2_dof", "chi2_gof_pvalue",
     "final_nll", "baseline_nll", "delta", "k", "n", "k_eff", "head_version", "n_errors",
     "tool_calls",
     "wall_seconds", "compute_seconds", "llm_seconds",

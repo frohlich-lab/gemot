@@ -359,6 +359,10 @@ def run_experiments(
 # single (model, temperature, repeat) for one example, so a cell's repeats are just the
 # runs that share (example, model, temperature).
 _ROW_FIELDS = ("example", "model", "temperature", "success", "delta_bic",
+               # The delta the GATE used, and the criterion it used — `delta_bic` is only the
+               # gating number when BIC is that criterion, so aggregating it beside `success`
+               # would report one comparison next to a verdict from another.
+               "delta_criterion", "criterion",
                "chi2_gof_pvalue", "stop_reason", "n_ops", "n_fits",
                "prompt_version", "skills_version", "git_sha")
 
@@ -467,6 +471,8 @@ def fetch_experiment_rows(base_url: str = "http://localhost:6006") -> list[dict[
                     "temperature": md.get("temperature"),
                     "success": out.get("success"),
                     "delta_bic": out.get("delta_bic"),
+                    "delta_criterion": out.get("delta_criterion"),
+                    "criterion": out.get("criterion"),
                     "chi2_gof_pvalue": out.get("chi2_gof_pvalue"),
                     "stop_reason": out.get("stop_reason"),
                     # Modeling-work signals used to tell an instant infrastructure abort from a
@@ -540,7 +546,10 @@ def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool 
         group = cells[key]
         n = len(group)
         passes = sum(1 for g in group if g.get("success"))
-        dbs = [g.get("delta_bic") for g in group]
+        # The gate's delta, falling back to canonical BIC for a row written before it existed
+        # (they are the same number whenever BIC is the criterion).
+        dbs = [g.get("delta_criterion", g.get("delta_bic")) if g.get("delta_criterion") is not None
+               else g.get("delta_bic") for g in group]
         lines.append(
             f"{_fmt(ex):<16} {_fmt(model):<26} {_fmt(temp, 'g'):>4} {n:>3} "
             f"{passes}/{n:<3} {_fmt(_med(dbs), '+.3g'):>9} "

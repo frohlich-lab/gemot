@@ -119,6 +119,16 @@ _NOT_ABLATIONS = {
     "PATH": "the shell's own",
     "PETAB_BIO_CACHE_DIR": "plumbing: where a bio answer is read from, not what it says",
     "PETAB_MCP_BUILD_ROOT": "path for AMICI build artefacts",
+    "PETAB_MCP_CRITERION": "the complexity penalty the server ranks models by "
+                           "(bic/caic/aic/aicc/hqc/tic). "
+                           "By the membership test above this IS an arm — it changes what answer "
+                           "the run prefers — but `Ablation` is binary (`default_on`/`enabled()`, "
+                           "`state() -> dict[str, bool]`, `arm()` off on/off) and cannot express a "
+                           "four-valued switch. It is RECORDED like one meanwhile: `criterion` "
+                           "rides on every fit result and lands in result.json, the metrics CSV, "
+                           "the W&B summary and the run span, so two criterion arms never pool. "
+                           "What it lacks is the catalogue entry, which needs a multi-valued "
+                           "Ablation — register it here the moment the registry grows one",
     "PETAB_MCP_PROVENANCE_DIR": "path for provenance logs",
     "PETAB_MCP_MAX_INPUT_TOKENS": "infrastructure: the model's real context window, fed to the "
                                   "summarization middleware as a profile so its trigger is a "

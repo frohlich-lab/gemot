@@ -1,5 +1,52 @@
 # Rationale Log
 
+#167 No scalar weight on the complexity penalty in `petab_mcp.criteria` — named penalties and
+nothing between them. One was built and then removed: every effect-size threshold in the loop
+(`NEW_BEST_MIN_DELTA_SCORE`, `PLATEAU_MIN_SCORE_GAIN`, `dedup.WORSE_SCORE_MARGIN`, the benchmark's
+own bar) is a fixed number of deviance units calibrated on BIC. Those carry over when the penalty
+is SWAPPED, because every criterion here is on the same 2·Δnll scale, but not when it is SCALED:
+at half weight a 2-unit "positive evidence" bar swamps the penalty under study, at double weight
+it is noise beside it, so re-weighting silently changes what every gate means. Deriving those
+thresholds from the criterion instead of writing them as literals in `constants.py` is the
+precondition for reintroducing the knob.
+
+#167 Criteria considered for `petab_mcp.criteria` and deliberately left out. ICOMP (Bozdogan's
+information complexity) is pointwise off the same Fisher matrix and is the one measure that
+charges for parameter INTERDEPENDENCE — this project's actual failure mode — but it is not a
+per-parameter deviance penalty: zero for any number of orthogonal parameters and infinite on a
+rank-deficient FIM, so no fixed effect-size threshold means anything under it. It belongs beside
+`k_eff` as a diagnostic, not in the table. Anything integrating over parameter space is excluded
+by construction, since a fit here is one optimum and not a posterior: marginal likelihood and
+Bayes factors, DIC, WAIC, PSIS-LOO, Rissanen's stochastic complexity. FPE, Mallows' Cp and
+GCV/PRESS are Gaussian rewrites of AIC/TIC on the same leverages and would rank nothing
+differently. EBIC needs a countable model space, which a freely authored reaction network is not.
+
+#167 The criterion is session state (`PetabSession.criterion`, resolved once by
+`criteria.resolve`), not a module-level global. Review feedback on the PR. The first version kept
+it in `criteria._active` behind `configure()`, set at import from the environment and again at
+server construction: two servers in one process then shared it, so one caller's
+`criterion="aicc"` re-scored every server built after it, and because the default call passes
+`None` there was nothing to observe the leak by. Threading the object to each scorer costs a
+parameter and removes the failure mode outright.
+
+#167 `Criterion.parameter_price` returns `None` under TIC rather than AIC's 1. What deleting a
+parameter takes off `k_eff` is only knowable after the refit, and for the pair a merge hint
+targets — two parameters the data cannot separate — it is about zero, because TIC never charged
+for that parameter in the first place. Pricing the merge at 1 would promise a saving that is not
+there.
+
+#167 The judge grades under the criterion the SERVER reported on the scored fit, while recording
+canonical BIC for every run whatever the criterion. Grading by anything else would assess a run
+on a penalty it never optimised; reading the label off the fit rather than re-resolving the
+environment keeps the judge from disagreeing with the process that did the ranking. Canonical BIC
+stays on every result so a criterion sweep's arms remain comparable on one fixed scale — without
+it the arms pool in `metrics_history.csv` as if they were one configuration, the failure
+`example_version`/`git_sha` already exist for. Where the criterion has no value for the reference
+(aicc at n <= k+1, tic against a reference written without a `k_eff`) the gate falls back to
+canonical BIC and says so in `criterion_note`, rather than failing every run on that example as
+"could not evaluate".
+
+
 #179 `identifiability.effective_parameter_count` does not take the `hess` the objective reports,
 because AMICI's `ReturnData::fFIM` is `sresᵀ·sres` alone: its own source comment (`rdata.cpp`)
 derives the exact expected Hessian and then drops the `(∂σ∂σᵀ)(2r² − σ²)/σ⁴` term, since that
@@ -30,7 +77,7 @@ change to refuse.
 standing in for a missing measurement reads as "the data determine every parameter", the one
 conclusion the statistic exists to be able to contradict. Inner-solved parameters are charged
 rather than dropped because a profiled parameter the data pin is exactly the case where the count
-and the trace agree. Measured cost: 0.085 s on blasi's k=11, n=252.
+and the trace agree — where TIC and AIC coincide. Measured cost: 0.085 s on blasi's k=11, n=252.
 
 #169 Added the RATIONALE.md file as a location to record non-obvious implementation
 decisions and reduce the volume of inline comments in the source code written by coding

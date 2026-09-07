@@ -424,10 +424,11 @@ def load_variants(run_dir: Path, n_data_points: int | None) -> list[dict]:
         nll = meta.get("neg_log_likelihood")
         k = _k_from_params(params) if params else (
             len(meta.get("fitted_parameters") or {}) or None)
-        bic = None
-        if nll is not None and k is not None and n:
-            from ..scenario import bic as _bic  # one BIC definition (2·nll + k·ln(n))
-            bic = _bic(nll, k, n)
+        # ONE BIC definition, in `petab_mcp.criteria`. It returns None for any missing or
+        # impossible input, so no separate guard is needed here.
+        from petab_mcp.criteria import CANONICAL
+
+        bic = CANONICAL["bic"].value(nll, k, n)
         variants.append({
             "index": len(variants),
             "version": meta.get("version", _vnum(d.name)),

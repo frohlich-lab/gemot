@@ -112,11 +112,11 @@ def _render_merge(hints) -> str:
     here: a missing field or an odd shape means "no merge to report", never a raised finish — and one
     unreadable row does not silence the readable ones.
 
-    ``dbic`` is NEGATIVE when the merge wins and the template says "LOWERS bic by", so the slot takes
-    the MAGNITUDE — through :func:`_dbic_magnitude`, because ``abs(hint["dbic"] or 0.0)`` rendered
-    "LOWERS bic by 0.0" for a tie that beats the price by under 5e-4 nll (its dbic rounds to -0.0,
+    ``dscore`` is NEGATIVE when the merge wins and the template says "LOWERS the score by", so the slot takes
+    the MAGNITUDE — through :func:`_dscore_magnitude`, because ``abs(hint["dscore"] or 0.0)`` rendered
+    "LOWERS the score by 0.0" for a tie that beats the price by under 5e-4 nll (it rounds to -0.0,
     which is FALSY) while telling the lead the model was not finished. An edit whose stated payoff is
-    zero is not an argument; the same ``or`` swallowed a genuinely absent dbic into the same 0.0.
+    zero is not an argument; the same ``or`` swallowed a genuinely absent value into the same 0.0.
     """
     if not isinstance(hints, (list, tuple)):
         return ""
@@ -130,7 +130,7 @@ def _render_merge(hints) -> str:
                 continue
             ties.append(prompts.FINISH_ARMED_MERGE_TIE_TMPL.format(
                 parameters=" == ".join(params), dnll=hint.get("dnll"),
-                dbic=_dbic_magnitude(hint.get("dbic")), move=hint.get("move_scaled")))
+                dscore=_dscore_magnitude(hint.get("dscore")), move=hint.get("move_scaled")))
         except Exception:  # noqa: BLE001 - an advisory line never fails a finish
             continue
     if not ties:
@@ -141,13 +141,13 @@ def _render_merge(hints) -> str:
         return ""      # mistake must cost the advisory line, never every finish in the run
 
 
-def _dbic_magnitude(dbic) -> str:
-    """How much bic the merge LOWERS, as displayed: the magnitude, ``unknown`` when there is none,
-    and a BOUND rather than ``0.0`` when the win is real but below the reported resolution (dbic is
+def _dscore_magnitude(dscore) -> str:
+    """How much score the merge LOWERS, as displayed: the magnitude, ``unknown`` when there is
+    none, and a BOUND rather than ``0.0`` when the win is real but below the resolution shown (it is
     ``2*(dnll - price)`` rounded to 3 dp, and the hint only exists where ``dnll < price``)."""
-    if not isinstance(dbic, (int, float)) or isinstance(dbic, bool):
+    if not isinstance(dscore, (int, float)) or isinstance(dscore, bool):
         return "unknown"
-    magnitude = abs(float(dbic))
+    magnitude = abs(float(dscore))
     return f"{magnitude:g}" if round(magnitude, 3) else "less than 0.001"
 
 
@@ -212,13 +212,19 @@ def _finish_tool(session, finish_state=None, probe=None):
         nll = fit.get("neg_log_likelihood")
         bic = fit.get("bic")
         version = fit.get("version")
-        # Require a finite BIC — the score the harness actually finishes on. A finite nll is
-        # necessary but not sufficient: get_fit_summary reports bic=None when n_data_points/k
-        # are incomplete, and finishing then would report "bic=n/a" while the refusal text
-        # promises "there is no bic to report". Gate on the score that must exist.
-        has_fit = _finite(nll) and _finite(bic)
+        # Require a finite score under the criterion the RUN RANKS BY (`criterion_value`, which
+        # equals `bic` under the default BIC), not canonical bic. A finite nll is necessary but not
+        # sufficient: get_fit_summary reports no score when n_data_points/k are incomplete, and
+        # finishing then would report "n/a" while the refusal text promises there is none to
+        # report. It has to be the RANKED score because that is the one `record_fit_progress`
+        # checkpoints on: gating on bic instead would let a run finish on a fit the session never
+        # scored, wherever the two disagree (aicc is undefined at n <= k+1, hqc below n = 3, and
+        # bic is finite at both). Falls back to bic for a server predating the configurable
+        # criterion — absent, not None, so an unscoreable fit still reads as unscoreable.
+        score = fit.get("criterion_value", bic)
+        has_fit = _finite(nll) and _finite(score)
         # Block finish when there is no valid fit to finish on (nothing built, a non-finite
-        # objective, or no computable bic) — a genuine failure, not a goodness-of-fit
+        # objective, or no computable score) — a genuine failure, not a goodness-of-fit
         # judgement. We do NOT gate on chi2_gof_pvalue/reduced_chi2 (see the docstring): they
         # are uninformative when the noise sigmas are estimated, and chasing p ≥ 0.05 costs
         # the best-BIC model.
@@ -237,7 +243,7 @@ def _finish_tool(session, finish_state=None, probe=None):
                 return prompts.FINISH_GAVE_UP_NO_FIT_TMPL.format(
                     attempts=state["no_fit_refusals"])
             print(f"[finish BLOCKED {state['no_fit_refusals']}/{_MAX_NO_FIT_FINISH_ATTEMPTS}] "
-                  "no valid fit (no model built, non-finite objective, or no bic)")
+                  "no valid fit (no model built, non-finite objective, or no score)")
             return prompts.FINISH_REFUSED_NO_FIT
         # A valid fit exists -> reset the no-fit give-up counter.
         state["no_fit_refusals"] = 0

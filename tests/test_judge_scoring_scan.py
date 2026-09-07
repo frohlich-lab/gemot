@@ -3,7 +3,7 @@
 ``_judge`` scores ONE version, and until #154 that was the server's best-BIC checkpoint. Two
 independent mechanisms then conspired to score a model the run had already improved on:
 
-* the checkpoint only moves when a fit beats it by ``NEW_BEST_MIN_DELTA_BIC`` (2.0), which is right
+* the checkpoint only moves when a fit beats it by ``NEW_BEST_MIN_DELTA_SCORE`` (2.0), which is right
   for the streak/plateau logic and wrong for a final decision;
 * the sigma gate that decides success is asked against the TRUE model's fitted sigmas, which the
   session cannot see — so the server has no way to prefer a version that would clear it.
@@ -54,11 +54,12 @@ class _Scenario:
     bic_threshold = 10.0
     diagnostics = None
 
-    def __init__(self, work: Path):
+    def __init__(self, work: Path, ref: "dict | None" = None):
         self.example_dir = work / "ex"
+        self._ref = dict(_REF if ref is None else ref)
 
     def reference(self):
-        return dict(_REF)
+        return dict(self._ref)
 
 
 class _Baseline:
@@ -73,11 +74,20 @@ class _Store:
 
     def __init__(self, versions: "dict[int, tuple[float, float]]", head: int,
                  checkpoint: "int | None", *, can_list: bool = True,
-                 stores_reports: bool = True, k_eff: "float | None" = None):
-        # The effective parameter count stored with a version (never on a tool result the agent
-        # reads). None = a fit that produced none (or a server predating it).
-        self.k_eff = k_eff
+                 stores_reports: bool = True,
+                 criterion_values: "dict[int, float] | None" = None,
+                 criterion: "str | None" = "bic", k_eff: "float | None" = None):
         self.versions = versions          # version -> (nll, fitted sigma)
+        # The effective parameter count the server reports on a fit — TIC's input. None = a fit
+        # that produced none (or a server predating it).
+        self.k_eff = k_eff
+        # version -> the score under the run's OWN criterion, as the server records it beside the
+        # canonical bic. None = a store predating it, which is the bic-fallback path.
+        self.criterion_values = criterion_values
+        # The criterion label the server reports on every fit — what the judge's gate reads to
+        # decide which penalty to grade under. None = report NOTHING, the shape of a run that
+        # never produced a fit to report one.
+        self.criterion = criterion
         self.head = head
         self.checkpoint = checkpoint
         self.can_list = can_list
@@ -93,7 +103,10 @@ class _Store:
         if name == "list_versions":
             if not self.can_list:
                 raise RuntimeError("this server has no list_versions")
-            return [{"version": v, "bic": self._bic(v), "kind": "fit"} for v in self.versions]
+            cv = self.criterion_values or {}
+            return [{"version": v, "bic": self._bic(v), "kind": "fit",
+                     **({"criterion_value": cv[v]} if v in cv else {})}
+                    for v in self.versions]
         if name == "restore_version":
             self.head = kwargs["version"]
             return {"version": self.head}
@@ -111,6 +124,7 @@ class _Store:
         if name == "get_fit_summary":
             nll, sigma = self.versions[self.head]
             return {"neg_log_likelihood": nll, "n_data_points": 43, "chi2": 40.0,
+                    **({"criterion": self.criterion} if self.criterion else {}),
                     "noise_sigma_report": _report(sigma)}
         if name == "get_parameters":
             return _PARAMS
@@ -123,8 +137,8 @@ class _Store:
         return [kw["version"] for n, kw in self.calls if n == "restore_version"]
 
 
-def _run(work: Path, store: _Store):
-    return asyncio.run(_judge(_Scenario(work), store, _Baseline(), work, {},
+def _run(work: Path, store: _Store, ref: "dict | None" = None):
+    return asyncio.run(_judge(_Scenario(work, ref), store, _Baseline(), work, {},
                               _ToolClock(), time.monotonic()))
 
 
@@ -144,7 +158,7 @@ def test_the_effective_parameter_count_is_read_off_the_stored_version(tmp_path):
 def test_the_judge_scores_the_best_version_whose_sigma_would_pass_the_gate(tmp_path):
     """The case the scan is for. Both versions beat the reference on BIC; the better one is
     sigma-collapsed and the other is clean, and the checkpoint points at the collapsed one because
-    the clean version improved on it by less than NEW_BEST_MIN_DELTA_BIC (brannmark 9285a352 hit
+    the clean version improved on it by less than NEW_BEST_MIN_DELTA_SCORE (brannmark 9285a352 hit
     exactly that hysteresis). The run passes on the clean model instead of failing on the collapsed
     one."""
     store = _Store({4: (140.467, _COLLAPSED_SIGMA), 5: (140.117, _CLEAN_SIGMA)},
@@ -165,6 +179,123 @@ def test_the_best_bic_version_is_scored_when_its_sigma_is_already_clean(tmp_path
 
     assert store.head == 5 and result["success"] is True
     assert store.restored == [5], "walked past the best-BIC version"
+
+
+def test_the_pass_gate_grades_under_the_criterion_the_run_searched_by(tmp_path):
+    """A run that searched by AICc is graded by AICc, not by canonical BIC: it would otherwise be
+    optimising one penalty and assessed on another. Both candidate and reference are re-scored
+    under the criterion the server REPORTS, and canonical BIC is still recorded beside it."""
+    store = _Store({4: (140.117, _CLEAN_SIGMA)}, head=4, checkpoint=4, criterion="aicc")
+    code, result = _run(tmp_path, store)
+
+    assert result["criterion"] == "aicc"
+    assert result["delta_criterion"] == pytest.approx(
+        result["criterion_value"] - result["criterion_reference"])
+    # The DELTA itself moves, not just the absolute scores — the candidate is leaner than the
+    # truth (k=12 vs 22 on n=43), so the two penalties disagree about how much that is worth:
+    # ΔBIC -41.2 against ΔAICc -63.7. A gate still reading canonical BIC would report -41.2 here.
+    assert result["delta_criterion"] == pytest.approx(-63.744, abs=0.01)
+    assert result["delta_bic"] == pytest.approx(-41.156, abs=0.01)
+    # ...and canonical BIC is still recorded beside it.
+    assert result["bic"] is not None and result["bic_reference"] is not None
+
+
+def test_a_run_that_reports_no_criterion_records_none_not_bic(tmp_path):
+    """The gate FALLS BACK to canonical BIC when no criterion is readable, but the run must not
+    RECORD that fallback as its arm: an aborted AICc run filed under `criterion: "bic"` pools with
+    the real BIC arm in metrics_history.csv, which is the mislabelling the column exists to stop."""
+    store = _Store({4: (140.117, _CLEAN_SIGMA)}, head=4, checkpoint=4, criterion=None)
+    code, result = _run(tmp_path, store)
+
+    assert result["criterion"] is None, "recorded the gate's fallback as the run's arm"
+    # ...while the gate itself still graded, on canonical BIC.
+    assert result["delta_criterion"] == result["delta_bic"] is not None
+
+
+def test_every_criterion_is_recorded_candidate_against_reference(tmp_path):
+    """`result.json` carries the whole table, not just the gate's row and canonical BIC — so a run
+    can be read under a criterion it was neither run nor graded with, and a criterion sweep's arms
+    can be put on each other's scale. The two flat rows the CSV/W&B allowlists take must agree
+    with it."""
+    from petab_mcp.criteria import PENALTIES
+
+    store = _Store({4: (140.117, _CLEAN_SIGMA)}, head=4, checkpoint=4, criterion="aicc")
+    _, result = _run(tmp_path, store)
+
+    table = result["criteria"]
+    assert set(table) == set(PENALTIES)
+    assert table["bic"] == {"candidate": result["bic"], "reference": result["bic_reference"],
+                            "delta": result["delta_bic"]}
+    assert table["aicc"]["delta"] == pytest.approx(result["delta_criterion"])
+    assert table["caic"]["delta"] == pytest.approx(result["delta_bic"] + (12 - 22))
+    # No k_eff on either side: TIC has no value, and says so with None rather than a number.
+    assert result["k_eff"] is None
+    assert table["tic"] == {"candidate": None, "reference": None, "delta": None}
+
+
+def test_a_tic_run_against_a_reference_without_a_k_eff_is_graded_by_bic_and_says_so(tmp_path):
+    """The reference.json files in the tree predate `k_eff`; a TIC arm on one of those must not
+    fail every run as "could not evaluate". Canonical BIC grades it, the note names the fallback,
+    and the arm is still RECORDED as tic — with its own TIC score, which is computable."""
+    store = _Store({4: (140.117, _CLEAN_SIGMA)}, head=4, checkpoint=4, criterion="tic", k_eff=11.0)
+    _, result = _run(tmp_path, store)
+
+    assert result["criterion"] == "tic"
+    assert result["k_eff"] == 11.0
+    assert "tic has no value for the reference" in result["criterion_note"]
+    assert result["delta_criterion"] == result["delta_bic"]
+    assert result["criteria"]["tic"]["candidate"] == pytest.approx(2 * 140.117 + 2 * 11.0)
+    assert result["criteria"]["tic"]["reference"] is None
+
+
+def test_a_tic_run_against_a_regenerated_reference_is_graded_by_tic(tmp_path):
+    """Once `setup.py --refit` has recorded the reference fit's own k_eff, the gate follows the
+    criterion: a candidate whose fit the data see as 11 parameters against a truth seen as 20."""
+    store = _Store({4: (140.117, _CLEAN_SIGMA)}, head=4, checkpoint=4, criterion="tic", k_eff=11.0)
+    _, result = _run(tmp_path, store, ref={**_REF, "k_eff": 20.0})
+
+    assert result["criterion_note"] is None
+    assert result["criterion_reference"] == pytest.approx(2 * 141.889 + 2 * 20.0)
+    assert result["delta_criterion"] == pytest.approx(
+        (2 * 140.117 + 2 * 11.0) - (2 * 141.889 + 2 * 20.0))
+    assert result["delta_criterion"] == pytest.approx(result["criteria"]["tic"]["delta"])
+    assert result["success"] is True
+
+
+def test_the_pass_gate_is_canonical_bic_under_the_default_criterion(tmp_path):
+    """The default must be byte-identical: `criterion_value == bic` and the gate is unchanged."""
+    store = _Store({4: (140.117, _CLEAN_SIGMA)}, head=4, checkpoint=4)
+    code, result = _run(tmp_path, store)
+
+    assert result["criterion"] == "bic"
+    assert result["criterion_value"] == result["bic"]
+    assert result["delta_criterion"] == result["delta_bic"]
+
+
+def test_the_scan_ranks_candidates_by_the_runs_own_criterion_not_by_bic(tmp_path):
+    """The scan complements the session's best-SCORE checkpoint, so "best first" has to be the
+    run's own criterion. Here v4 is the better model under that criterion while v5 is the better
+    one on canonical bic (nll 145.0 vs 140.117) — both sigma-clean, so ordering alone decides
+    which gets scored. Ranking by bic would score v5, the one the run never preferred."""
+    store = _Store({4: (145.0, _CLEAN_SIGMA), 5: (140.117, _CLEAN_SIGMA)}, head=5, checkpoint=4,
+                   criterion_values={4: 100.0, 5: 300.0})
+    code, result = _run(tmp_path, store)
+
+    assert store.restored == [4], "ordered by bic instead of the run's criterion"
+    assert store.head == 4
+
+
+def test_the_scan_falls_back_to_bic_for_the_WHOLE_set_when_any_version_lacks_a_score(tmp_path):
+    """A store spanning this upgrade carries `criterion_value` on its LATER versions only. Mixing
+    the two keys in one sort would compare v4's canonical BIC against v5's AICc — different
+    scales, arbitrary order — so the fallback is all-or-nothing. v5's criterion value would put it
+    LAST if it were honoured; because v4 has none, the whole ordering reverts to bic and v5 (the
+    lower-bic model) is scored."""
+    store = _Store({4: (145.0, _CLEAN_SIGMA), 5: (140.117, _CLEAN_SIGMA)}, head=4, checkpoint=4,
+                   criterion_values={5: 9_999.0})   # v4 predates it — v5's score must be ignored
+    code, result = _run(tmp_path, store)
+
+    assert store.restored == [5], "honoured a criterion value the rest of the store cannot match"
 
 
 def test_an_all_gamed_run_is_still_reported_on_its_own_best_bic_model(tmp_path):

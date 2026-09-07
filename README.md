@@ -43,6 +43,7 @@ petab-mcp --petab-yaml path/to/problem.yaml
 # --provenance-dir DIR   --reference-validation {required,best_effort,off}
 # --build-root DIR       --skills-dir DIR
 # --transport {stdio,sse,streamable-http}
+# --criterion {bic,caic,aic,aicc,hqc,tic}   (env PETAB_MCP_CRITERION; default bic)
 ```
 
 Provenance is written to `<problem_dir>/.petab_mcp/` by default and is durable — restarting
@@ -75,7 +76,8 @@ benchmark sweep, run explorer). Each submodule is documented in its own docstrin
 [`examples/`](examples/) holds 21 zero-shot model-building demos: a PEtab problem that ships
 without a model, which an LLM agent panel must build from the data alone. Each has a
 deliberate trap, so fitting the numbers isn't enough — an independent judge scores the built
-mechanism by BIC against a true or published reference. Three are synthetic
+mechanism against a true or published reference under the run's own complexity criterion
+(BIC by default). Three are synthetic
 (`enzyme_kinetics/`, `predator_prey/`, `repressilator/`); eighteen are real published models
 materialized from the PEtab Benchmark-Models collection (`python examples/setup.py`). See
 [`examples/README.md`](examples/README.md) (harness, tracing, judging) and
@@ -121,7 +123,16 @@ Principles to hold onto when extending this package.
 - **Fit inspection is SQL, not a growing menu.** A new way to look at a fit should be a
   `query_data` query over the DuckDB tables, not a new bespoke tool.
 - **Comparisons must be valid before they're reported.** A commit that isn't nested in what
-  it's compared against is flagged, not silently ranked by BIC.
+  it's compared against is flagged, not silently ranked by score.
+- **One score, named, on one scale.** Models are ranked by a complexity-penalised score of the
+  form `2·nll + penalty` — `bic` by default; `caic`, `aic`, `aicc`, `hqc` or `tic` (Takeuchi,
+  charging the effective parameter count `k_eff = tr(J·H⁻¹)` the server computes) via
+  `--criterion`. Every fit reports every score plus `criterion`/`criterion_value`, and every
+  gate — new best, plateau stop, de-dup, merge price, the harness judge — reads that one
+  value, so they cannot disagree; canonical BIC is recorded on every run regardless, and
+  `result.json` carries the whole table. Named penalties and nothing between them: the fixed
+  effect-size thresholds carry over when the penalty is swapped, not when it is scaled. See
+  [`src/petab_mcp/criteria.py`](src/petab_mcp/criteria.py) before adding one.
 
 ## Development
 

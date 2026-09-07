@@ -1,10 +1,15 @@
-"""The independent verdict: score the built model against the true model by BIC.
+"""The independent verdict: score the built model against the true model by the run's criterion.
 
 Deliberately structure-agnostic — it does not check whether the agent found "the" mechanism, only
-whether what it built explains the data at a competitive parameter count (``delta_bic <=
+whether what it built explains the data at a competitive parameter count (``delta_criterion <=
 scenario.bic_threshold``), with the noise-sigma plausibility gate as the second condition so a
-good BIC bought with a gamed noise model does not pass. The scenario's own ``diagnostics`` run
+good score bought with a gamed noise model does not pass. The scenario's own ``diagnostics`` run
 report-only alongside.
+
+The gate uses the complexity criterion the SERVER ranked models by (``bic`` unless configured —
+:mod:`petab_mcp.criteria`), so a run that searched by AICc is graded by AICc. Canonical BIC is
+recorded on every run regardless (``bic`` / ``delta_bic``), which keeps arms comparable on one
+fixed scale; under the default criterion the two are the same number.
 
 Scores the run's BEST checkpoint, not whatever HEAD happens to be: a run that ended on a worse
 model is rolled back first.
@@ -18,7 +23,7 @@ import time
 from pathlib import Path
 
 from .clock import _ToolClock
-from .provenance import _bic_reference, _now_iso
+from .provenance import _bic_reference, _now_iso, _reference_score
 from ..scenario import Baseline, JudgeContext, Scenario
 from .scoring import _noise_sigma_flag, _reference_sigma_flag, _residual_structure_fields
 
@@ -57,13 +62,14 @@ async def _restore_best_checkpoint(call, reference=None) -> None:
     "Best" is NOT simply the lowest BIC. A model whose estimated sigma is implausible against the
     reference's own fitted sigmas fails :func:`_judge`'s integrity gate, so scoring it throws the run
     away while a clean, nearly-as-good version sits unscored in the same version store. The scan
-    therefore walks EVERY fitted version best-BIC first and stops at the first one that would clear
-    the gate, falling back to the plain best-BIC model when NONE is clean (an all-gamed run is still
-    reported on its own lowest-BIC model, exactly as before, and still fails).
+    therefore walks EVERY fitted version best-first under the RUN'S OWN criterion (see
+    :func:`_scoreable_versions`; identical to best-BIC under the default) and stops at the first one
+    that would clear the gate, falling back to the plain best-scoring model when NONE is clean (an
+    all-gamed run is still reported on its own best model, exactly as before, and still fails).
 
     Why the candidate set is every fitted version and not the server's ``best_version`` checkpoint
     (brannmark, run 9285a352): ``v5`` scored bic 344.175 but improved on ``v4`` by only 0.70 — under
-    ``NEW_BEST_MIN_DELTA_BIC`` (2.0) — so the checkpoint stayed at ``v4`` (bic 344.875) and the judge
+    ``NEW_BEST_MIN_DELTA_SCORE`` (2.0) — so the checkpoint stayed at ``v4`` (bic 344.875) and the judge
     scored the worse model. That run failed on the sigma gate either way (all six of its versions
     fitted sigmaYDosR at 0.24-0.28 of the reference's, well under the 1/3 floor), so the hysteresis
     cost it nothing there; it is a pass waiting to be discarded the first time the two versions
@@ -139,24 +145,43 @@ def _stored_k_and_n(stored) -> "tuple[int | None, int | None]":
 
 
 async def _scoreable_versions(call) -> "list[int]":
-    """Every FITTED version, best BIC first — the candidate set for the scoring scan.
+    """Every FITTED version, best first UNDER THE RUN'S OWN CRITERION — the candidate set for
+    the scoring scan.
 
     Read off ``list_versions`` rather than ``get_progress`` so a version the checkpoint's
     minimum-improvement threshold skipped is still a candidate (see :func:`_restore_best_checkpoint`).
-    A version with no finite bic was never scored and cannot be scored now, so it is dropped.
+    A version with no finite score was never scored and cannot be scored now, so it is dropped.
+
+    Ordered by ``criterion_value`` (identical to ``bic`` under the default BIC), NOT by canonical
+    bic: this scan complements the session's own best-score checkpoint, so its notion of "best
+    first" has to be the same one the run used to build that checkpoint — otherwise, under a
+    non-BIC criterion, the scan would start from a model the run itself never preferred. What
+    the chosen version is then JUDGED on stays canonical BIC (see
+    :mod:`petab_mcp.criteria`): the criterion picks the candidate, the benchmark grades
+    it. ``bic`` is the fallback when ANY version predates the recorded criterion, applied to the
+    WHOLE set rather than per-version so one ordering never mixes two scales.
     """
     try:
         versions = await call("list_versions")
     except Exception:  # pragma: no cover - older server: caller falls back to the checkpoint
         return []
+    rows = [v for v in versions if isinstance(v, dict)] if isinstance(versions, list) else []
+    # Rows that could be ranked AT ALL. One carrying neither score is dropped by the loop below
+    # either way, so it must not get a vote on which key the rest are sorted by.
+    rows = [v for v in rows if "criterion_value" in v or "bic" in v]
+    # ONE scale for the WHOLE ordering: `criterion_value` only when every candidate carries it,
+    # else canonical `bic` for all of them. Falling back per-version instead would sort a store
+    # that spans this upgrade on two scales at once — an early version's BIC against a later
+    # one's AICc — leaving the candidate order arbitrary between the two groups. A row whose
+    # `criterion_value` is present but NULL still counts as carrying it: that fit is unscoreable
+    # under this criterion and is meant to be dropped, not to trigger a fallback.
+    key = "criterion_value" if all("criterion_value" in v for v in rows) else "bic"
     scored = []
-    for v in versions if isinstance(versions, list) else ():
-        if not isinstance(v, dict):
-            continue
-        bic, num = v.get("bic"), v.get("version")
-        if isinstance(bic, (int, float)) and not isinstance(bic, bool) and math.isfinite(bic) \
-                and isinstance(num, int):
-            scored.append((float(bic), num))
+    for v in rows:
+        score, num = v.get(key), v.get("version")
+        if isinstance(score, (int, float)) and not isinstance(score, bool) \
+                and math.isfinite(score) and isinstance(num, int):
+            scored.append((float(score), num))
     scored.sort()
     return [num for _, num in scored]
 
@@ -221,10 +246,12 @@ async def _restore_checkpoint_only(call) -> None:
 
 async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta: dict,
                  clock: "_ToolClock", t0: float) -> "tuple[int, dict]":
-    """Judge the repaired model against the true model by BIC (structure-agnostic).
+    """Judge the repaired model against the true model by the run's criterion (structure-agnostic).
 
     Success ⇔ the repaired model can't be rejected relative to the true (data-generating)
-    model — ``BIC(candidate) - BIC(true) <= scenario.bic_threshold`` — AND its estimated noise
+    model — ``score(candidate) - score(true) <= scenario.bic_threshold``, both scored under the
+    complexity criterion the SERVER ranked models by (``bic`` unless configured — see
+    :mod:`petab_mcp.criteria` and ``docs/RATIONALE.md``) — AND its estimated noise
     sigma is plausible (not inflated to absorb misfit or collapsed to overfit the noise; see
     ``_noise_sigma_flag``). The sigma check is a HIDDEN integrity gate: it never reaches the agent,
     so a good BIC bought with an implausible noise model can't slip through and can't be gamed
@@ -237,7 +264,9 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     the machine-readable result dict (also written to ``work/result.json``), so the caller
     can stamp the outcome onto the run span.
     """
-    from ..scenario import bic, chi2_gof_pvalue
+    from petab_mcp.criteria import CANONICAL, Criterion
+
+    from ..scenario import chi2_gof_pvalue
 
     # Restore + score the best model this judge can legitimately score — not whatever was committed
     # last, and not a lower-BIC version whose noise model the gate below would reject while a clean
@@ -334,12 +363,51 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     sigma_implausible = bool(noise_sigma_flag
                              and (noise_sigma_flag["inflated"] or noise_sigma_flag["collapsed"]))
 
-    # BIC gate against the true-model reference, AND the hidden sigma-plausibility gate.
-    bic_cand = bic(final_nll, k, n) if (n and final_nll is not None) else None
+    # Canonical BIC of candidate and reference, RECORDED for every run whatever the criterion
+    # (docs/RATIONALE.md) even though the gate below follows the criterion.
+    bic_cand = CANONICAL["bic"].value(final_nll, k, n)
     bic_ref = _bic_reference(ref)
     delta_bic = (bic_cand - bic_ref) if (bic_cand is not None and bic_ref is not None) else None
-    bic_pass = delta_bic is not None and delta_bic <= scenario.bic_threshold
-    success = bic_pass and not sigma_implausible
+
+    # EVERY criterion, candidate against reference, so a run can be read under any of them
+    # afterwards. `None` wherever a side has no value: aicc at n <= k+1, tic without a k_eff —
+    # which the reference only carries once regenerated with `setup.py --refit`.
+    criteria_scores = {}
+    for name, crit in CANONICAL.items():
+        cand = crit.value(final_nll, k, n, k_eff) if (n and final_nll is not None) else None
+        refv = _reference_score(ref, crit)
+        criteria_scores[name] = {
+            "candidate": cand, "reference": refv,
+            "delta": (cand - refv) if (cand is not None and refv is not None) else None}
+
+    # The GATE runs under the criterion the server actually ranked models by, learned from the
+    # `criterion` the scored fit reports (docs/RATIONALE.md). An unreadable or absent label falls
+    # back to canonical BIC, which is also what the default reports.
+    reported_criterion = final.get("criterion") if isinstance(final, dict) else None
+    criterion = Criterion.from_name(reported_criterion)
+    score_ref = _reference_score(ref, criterion) if criterion is not None else bic_ref
+    criterion_note = None
+    if criterion is not None and score_ref is None and bic_ref is not None:
+        # The criterion has no value for the TRUE model — aicc is undefined at n <= k+1, tic needs
+        # a k_eff the reference was written without — so it cannot grade against it either: fall
+        # back to canonical BIC for BOTH sides and say so (docs/RATIONALE.md).
+        criterion_note = (f"{criterion.name} has no value for the reference "
+                          f"(k={ref.get('k')}, n={ref.get('n')}, k_eff={ref.get('k_eff')}) — "
+                          "graded by canonical bic")
+        criterion, score_ref = None, bic_ref
+    score_cand = (criterion.value(final_nll, k, n, k_eff)
+                  if (criterion is not None and n and final_nll is not None) else bic_cand)
+    delta_score = ((score_cand - score_ref)
+                   if (score_cand is not None and score_ref is not None) else None)
+    # One threshold for both: every criterion here is on the same deviance scale (2·Δnll), which
+    # is what lets the benchmark's evidence bar carry over unchanged when the penalty is swapped.
+    score_pass = delta_score is not None and delta_score <= scenario.bic_threshold
+    success = score_pass and not sigma_implausible
+    # What the gate COMPUTED under, for the verdict text — "bic" whenever no other criterion was
+    # readable or usable. Deliberately NOT what the run RECORDS as its arm (`reported_criterion`
+    # below): a run that died before any fit has no label to report, and calling that "bic" would
+    # file an aborted AICc run under the BIC arm.
+    criterion_label = criterion.name if criterion is not None else "bic"
     # χ² goodness-of-fit vs the known noise (reported, not gating).
     dof = max(0, n - k)
     p_gof = chi2_gof_pvalue(chi2, dof)
@@ -368,14 +436,26 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     print(f"  fit: nll={_nll}  chi2={chi2:.6g}  k={k}{_keff}  n={n}  (baseline nll {_bl}, Δnll {_dl})"
           if chi2 is not None else
           f"  fit: nll={_nll}  k={k}{_keff}  n={n}  (baseline nll {_bl}, Δnll {_dl})")
-    if delta_bic is not None:
-        print(f"  BIC:  candidate {bic_cand:.6g} | true-model {bic_ref:.6g} | "
-              f"ΔBIC {delta_bic:+.6g}  (accept if <= {scenario.bic_threshold:g})")
+    # `ljust(5) + " "` keeps the historic "BIC:  candidate" column (two spaces) byte-identical
+    # while a longer label just takes the one space it needs.
+    _label = criterion_label.upper()
+    _col = f"{_label}:".ljust(5) + " "
+    if criterion_note:
+        print(f"  note: {criterion_note}")
+    if delta_score is not None:
+        print(f"  {_col}candidate {score_cand:.6g} | true-model {score_ref:.6g} | "
+              f"Δ{_label} {delta_score:+.6g}  (accept if <= {scenario.bic_threshold:g})")
     else:
-        # A reference that parses but lacks nll/k/n makes bic_ref None while `ref` is a truthy
-        # dict — report that as "malformed", not "ok", so the real cause of the missing gate shows.
-        ref_state = "missing" if not ref else ("ok" if bic_ref is not None else "malformed")
-        print(f"  BIC:  unavailable (reference {ref_state}, n={n})")
+        # A reference that parses but lacks nll/k/n makes the reference score None while `ref` is a
+        # truthy dict — report that as "malformed", not "ok", so the real cause of the missing gate
+        # shows.
+        ref_state = "missing" if not ref else ("ok" if score_ref is not None else "malformed")
+        print(f"  {_col}unavailable (reference {ref_state}, n={n})")
+    # Canonical BIC alongside whenever it is NOT the gate — recorded for every run
+    # (docs/RATIONALE.md), and worth seeing next to the score that actually decided.
+    if criterion_label != "bic" and delta_bic is not None:
+        print(f"  BIC:  candidate {bic_cand:.6g} | true-model {bic_ref:.6g} | "
+              f"ΔBIC {delta_bic:+.6g}  (recorded, not the gate)")
     if p_gof is not None:
         print(f"  chi2 GoF:             p={p_gof:.3g} (dof={dof}) "
               f"— {'consistent with noise' if p_gof >= 0.05 else 'worse than noise'}")
@@ -414,22 +494,25 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         for line in str(ant_diff).splitlines():
             print("    " + line)
     if success:
-        verdict = (f"not rejectable vs the true model (ΔBIC {delta_bic:+.3g} <= "
+        verdict = (f"not rejectable vs the true model (Δ{criterion_label} {delta_score:+.3g} <= "
                    f"{scenario.bic_threshold:g}); the repair explains the data as well as the truth.")
     elif final_nll is None:
         verdict = "no valid fit (the model was never built or produced a non-finite objective)."
-    elif delta_bic is None:
-        verdict = "could not evaluate BIC (missing reference.json or no data points)."
-    elif bic_pass and sigma_implausible:
+    elif delta_score is None:
+        verdict = (f"could not evaluate {criterion_label} "
+                   "(missing reference.json or no data points).")
+    elif score_pass and sigma_implausible:
         which = " and ".join(
             w for w, on in (("inflated (absorbing misfit)", noise_sigma_flag["inflated"]),
                             ("collapsed (overfitting the noise)", noise_sigma_flag["collapsed"]))
             if on)
-        verdict = (f"BIC passes (ΔBIC {delta_bic:+.3g}) but the estimated noise sigma is {which} — "
-                   "the good score rests on an implausible noise model, so it does not count.")
+        verdict = (f"{criterion_label} passes (Δ{criterion_label} {delta_score:+.3g}) but the "
+                   f"estimated noise sigma is {which} — the good score rests on an implausible "
+                   "noise model, so it does not count.")
     else:
-        verdict = (f"rejectable: ΔBIC {delta_bic:+.3g} > {scenario.bic_threshold:g} — the fit is "
-                   "decisively worse than the true model.")
+        verdict = (f"rejectable: Δ{criterion_label} {delta_score:+.3g} > "
+                   f"{scenario.bic_threshold:g} — the fit is decisively worse than the true "
+                   "model.")
     print(f"\n  {'SUCCESS' if success else 'NOT FIXED'}: {verdict}")
     print("=" * 70)
 
@@ -447,6 +530,22 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         "bic_reference": bic_ref,
         "delta_bic": delta_bic,
         "bic_threshold": scenario.bic_threshold,
+        # Candidate, reference and delta under EVERY named criterion — the flat `bic*` triple and
+        # the `criterion*` quadruple above are the two rows of this table that the CSV/W&B/span
+        # allowlists flatten; the rest is here for reading a run under a criterion it was not run
+        # or graded with.
+        "criteria": criteria_scores,
+        # The GATE's own numbers, under the criterion the server ranked by and read off the
+        # scored fit rather than re-derived here (docs/RATIONALE.md). The `bic*` fields above stay
+        # CANONICAL BIC for every run; under the default criterion the two sets are equal.
+        # `criterion` is what the SERVER reported — `None` when the run never produced a fit to
+        # report one, so an aborted run is not filed under the wrong arm — and `criterion_note`
+        # says when the gate had to grade under something else.
+        "criterion": reported_criterion,
+        "criterion_note": criterion_note,
+        "criterion_value": score_cand,
+        "criterion_reference": score_ref,
+        "delta_criterion": delta_score,
         "chi2_dof": dof,
         "chi2_gof_pvalue": p_gof,
         "residual_structure": residual_structure,

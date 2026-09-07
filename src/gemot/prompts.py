@@ -724,7 +724,7 @@ TOOL_DESCRIPTIONS = {
     } if DIFF_EDITS_ENABLED else {}),
     "get_fit_summary": ("Current fit metrics only (neg_log_likelihood, chi2, n_data_points) — a "
                         "cheap score check. Carries `merge_hints` when the fit has parameter pairs "
-                        "the data cannot separate whose merges bic would pay for."),
+                        "the data cannot separate whose merges the criterion would pay for."),
     "get_fit_diagnosis": ("The DETAIL behind the verdicts fit already gave you, in TWO sections — "
                           "`sections`: 'residuals' (the DEFAULT), 'parameters', or 'all' (one call, "
                           "both). RESIDUALS is the DEFAULT (~2-7 kB, 0.01-0.12 s, no new "
@@ -750,21 +750,21 @@ TOOL_DESCRIPTIONS = {
                           "constrain (k_cat*E_tot -> one Vmax), or by giving both ONE SHARED "
                           "value (one symbol replaces two); either way the survivor is "
                           "interpretable. `merge_candidates` prices the SHARED-VALUE tie and only "
-                          "that one: dnll cheapest first, merge_improves_bic for a tie cheaper "
+                          "that one: dnll cheapest first, merge_improves_score for a tie cheaper "
                           "than the parameter it drops, and move_scaled for how far the tie has to "
                           "move a parameter (cheap but many decades is not an edit that survives "
                           "a refit). READ IT rather than guessing a tie from a flat direction's "
                           "member list, which names members, not which tie is cheap; the fit "
                           "result's `merge_hints` are the cheapest few of these rows worth taking — "
                           "each with its "
-                          "parameters, dnll, move_scaled, and dbic (a NEGATIVE dbic is the win: it "
+                          "parameters, dnll, move_scaled, and dscore (a NEGATIVE dscore is the win: it "
                           "is how much the merge LOWERS bic) — so a hint on your last fit means a "
                           "free parameter is sitting there. "
                           "Merges are the ENDGAME, not the fix for an underfit: while the residuals "
                           "are still systematically structured, spend the call on the mechanism and "
                           "leave these — a tie is a parameter the data cannot separate, never a "
                           "missing rate law. Once the residuals are clean, take only what was "
-                          "PRICED. Each dbic is the cost of tying THAT PAIR and nothing else, so: "
+                          "PRICED. Each dscore is the cost of tying THAT PAIR and nothing else, so: "
                           "hints that share NO parameter are independent edits — take them together "
                           "in one make_changes call; hints that SHARE one are not, and collapsing "
                           "three symbols into a single value is an edit the FIM never priced. Its "
@@ -933,7 +933,7 @@ FINISH_DESCRIPTION = (
     "carrying no lof_df at all, does not show the form is right. And bic bottoming out does NOT "
     "mean finished while `merge_hints` stand on your last fit (or the ARM message names "
     "OUTSTANDING MERGES): each is a pair of parameters the data cannot tell apart, and tying them "
-    "into one symbol LOWERS bic — its `dbic` is the change, so a NEGATIVE dbic is the win — at a "
+    "into one symbol LOWERS the score — its `dscore` is the change, so a NEGATIVE dscore is the win — at a "
     "cost of `dnll` in fit. Take the ones that were PRICED and let the refit adjudicate before you "
     "finish: pairs sharing no parameter go in ONE make_changes call, an overlapping group one "
     "cheapest pair at a time (collapsing three symbols into one is priced by nothing). Two things "
@@ -947,7 +947,7 @@ FINISH_DESCRIPTION = (
     "false. Merge only what could plausibly BE one physical quantity (two isoforms' binding rates, "
     "dephosphorylation of sibling states). This is NOT a blanket exemption, and declining every "
     "hint on it is not credible: for EACH hint you decline, name the two parameters and the "
-    "distinct physical processes they measure, in the rationale. Where a hint's priced `dbic` is "
+    "distinct physical processes they measure, in the rationale. Where a hint's priced `dscore` is "
     "large, take it and let the refit adjudicate rather than arguing it away — a large priced "
     "gain means the distinction you are defending is not in the data. "
     "Finishing takes TWO calls: the "
@@ -1068,8 +1068,8 @@ FINISH_ARMED_MERGE_TMPL = (
 
 #: One tie inside :data:`FINISH_ARMED_MERGE_TMPL`.
 FINISH_ARMED_MERGE_TIE_TMPL = (
-    " {parameters} — tying them into ONE symbol costs {dnll} of neg_log_likelihood and LOWERS bic "
-    "by {dbic} (it moves a parameter {move} on its estimation scale — many decades there means a "
+    " {parameters} — tying them into ONE symbol costs {dnll} of neg_log_likelihood and LOWERS the "
+    "score by {dscore} (it moves a parameter {move} on its estimation scale — many decades there means a "
     "flat direction, not an edit that survives a refit)."
 )
 

@@ -4,7 +4,8 @@ A *scenario* is everything that distinguishes one repair demo from another: the 
 (broken) PEtab problem, the orchestrator prompt + task string handed to the modeling lead,
 a deterministic ``scripted_fix`` (the canonical repair, used by ``--driver scripted`` as a
 no-LLM self-test), a ``bic_threshold``, and an optional ``diagnostics`` hook. Success itself is
-decided generically by the runner's BIC gate (``delta_bic <= bic_threshold`` in ``_judge``), not
+decided generically by the runner's criterion gate (``delta_criterion <= bic_threshold`` in
+``_judge``, under whichever complexity criterion the server ranked by), not
 by the scenario; ``diagnostics`` is report-only. Everything else — cleanup, the stateful MCP
 server, the deepagents panel, Phoenix tracing, baseline scoring, the RESULT report, and
 ``result.json`` — lives in :mod:`runner` and is identical across examples.
@@ -71,13 +72,6 @@ class JudgeContext:
 # describing the MECHANISM the agent landed on (e.g. the rate-law form). Report-only — it
 # does NOT decide success; the BIC gate does. ``None`` skips it.
 Diagnostics = Callable[[JudgeContext], Awaitable["tuple[list[str], dict[str, Any]]"]]
-
-
-def bic(nll: float, k: int, n: int) -> float:
-    """Bayesian Information Criterion from a neg-log-likelihood: 2·nll + k·ln(n)."""
-    import math
-
-    return 2.0 * float(nll) + int(k) * math.log(max(int(n), 1))
 
 
 def chi2_gof_pvalue(chi2: float | None, dof: int) -> float | None:
@@ -203,9 +197,12 @@ class Scenario:
     # biocurator is then handed no entities (nothing to look up).
     biocurator_entities: list[str] = field(default_factory=list)
     # Success gate: a repair is accepted iff it can't be rejected against the true model —
-    # BIC(candidate) - BIC(true) <= bic_threshold. ~10 = "very strong evidence against"
-    # (Kass & Raftery); the verdict is insensitive here (genuine repairs sit at ΔBIC≈0,
-    # broken/near-miss models are hundreds off).
+    # score(candidate) - score(true) <= bic_threshold, both under the criterion the server ranked
+    # by (BIC by default). ~10 = "very strong evidence against" (Kass & Raftery); the verdict is
+    # insensitive here (genuine repairs sit at Δ≈0, broken/near-miss models are hundreds off).
+    # ONE threshold for every criterion: they share the deviance scale (2·Δnll), so the bar
+    # carries over unchanged when the penalty is swapped. Named for BIC because that is the
+    # default and the scale the number was calibrated on.
     bic_threshold: float = 10.0
     # Short human description of the canonical repair (for the scripted driver's log).
     fix_summary: str = ""

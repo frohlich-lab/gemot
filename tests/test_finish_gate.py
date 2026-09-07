@@ -86,6 +86,20 @@ async def test_finish_refused_without_valid_fit():
 
 
 @pytest.mark.asyncio
+async def test_finish_needs_the_RANKED_score_not_merely_a_finite_bic():
+    """The gate finishes on `criterion_value` — the score `record_fit_progress` checkpoints on —
+    not on canonical bic. The two part exactly where the run has NO scored model: aicc is
+    undefined at n <= k+1 and hqc below n = 3, and bic is finite at both. Gating on bic there
+    would let a run finish on a fit the session never scored, leaving the judge no checkpoint."""
+    mod = _agent
+    refused = await _finish(_tool_for(mod, _fit(criterion_value=None)))
+    assert "FINISH REFUSED" in refused and "no valid fit" in refused
+    # ...and a finite ranked score arms as usual, even when it differs from bic.
+    armed = await _finish(_tool_for(mod, _fit(criterion_value=205.0)))
+    assert "FINISH ARMED" in armed
+
+
+@pytest.mark.asyncio
 async def test_no_fit_finish_refuses_then_gives_up_never_accepts():
     """A finish with no valid fit is refused (never accepted as a finish), and after
     _MAX_NO_FIT_FINISH_ATTEMPTS consecutive tries the gate GIVES UP — flags the run for the
@@ -435,11 +449,11 @@ async def test_one_diagnosis_call_serves_both_the_parsimony_gate_and_the_arm():
 
 
 #: A `merge_hints` row as the server puts it on a fit result AND on get_fit_summary.
-_HINT = {"parameters": ["ac16", "ac8"], "dnll": 0.001, "dbic": -5.528, "move_scaled": 0.002}
+_HINT = {"parameters": ["ac16", "ac8"], "dnll": 0.001, "dscore": -5.528, "move_scaled": 0.002}
 #: The other two rows of a redundant GROUP, as the server sends them cheapest-first.
 _HINTS = [_HINT,
-          {"parameters": ["ac16", "ac9"], "dnll": 0.004, "dbic": -5.522, "move_scaled": 0.01},
-          {"parameters": ["dc1", "dc2"], "dnll": 0.02, "dbic": -5.49, "move_scaled": 0.3}]
+          {"parameters": ["ac16", "ac9"], "dnll": 0.004, "dscore": -5.522, "move_scaled": 0.01},
+          {"parameters": ["dc1", "dc2"], "dnll": 0.02, "dscore": -5.49, "move_scaled": 0.3}]
 
 
 @pytest.mark.asyncio
@@ -451,8 +465,8 @@ async def test_the_armed_finish_names_an_outstanding_merge():
     mod = _agent
     armed = await _finish(_tool_for(mod, _fit(merge_hints=[_HINT])))
     assert "FINISH ARMED" in armed and "OUTSTANDING MERGE" in armed
-    assert "ac16 == ac8" in armed and "5.528" in armed        # ...and stated as a bic DECREASE
-    assert "lowers bic" in armed.lower() and "-5.528" not in armed
+    assert "ac16 == ac8" in armed and "5.528" in armed       # ...and stated as a score DECREASE
+    assert "lowers the score" in armed.lower() and "-5.528" not in armed
     assert "0.002" in armed                                   # the move the panel must sanity-check
     # a clean fit says nothing: the line is absent, not "no merge found"
     assert "OUTSTANDING MERGE" not in await _finish(_tool_for(mod, _fit()))
@@ -504,11 +518,11 @@ async def test_a_broken_merge_template_costs_the_line_not_the_finish():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("hint", [
-    # REGRESSION: `abs(hint["dbic"] or 0.0)` — a tie beating the ln(n)/2 price by under 5e-4 nll
+    # REGRESSION: `abs(hint["dscore"] or 0.0)` — a tie beating the ln(n)/2 price by under 5e-4 nll
     # rounds to -0.0, which is FALSY, so the arm printed "LOWERS bic by 0.0" while telling the lead
     # to take the merge. A merge whose stated payoff is zero is not an argument.
-    {**_HINT, "dbic": -0.0},
-    {**_HINT, "dbic": None},          # ...and a genuinely absent dbic was swallowed the same way
+    {**_HINT, "dscore": -0.0},
+    {**_HINT, "dscore": None},          # ...and a genuinely absent dscore was swallowed the same way
 ])
 async def test_the_armed_merge_never_advertises_a_zero_payoff(hint):
     mod = _agent

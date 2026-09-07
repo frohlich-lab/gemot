@@ -438,8 +438,9 @@ def write_reference_from_problem(
     k = sum(int(float(pdf.loc[pid, ESTIMATE])) == 1 for pid in pdf.index)
     ref = {"nll": float(nll), "k": int(k), "n": int(len(problem.measurement_df))}
     # The reference fit's EFFECTIVE parameter count, at the point that produced the recorded nll
-    # (petab_mcp.identifiability.effective_parameter_count) — the truth's own k vs k_eff, beside
-    # the candidate's. Advisory like the sigmas below: None when the objective cannot be evaluated
+    # (petab_mcp.identifiability.effective_parameter_count) — the truth's own k vs k_eff beside the
+    # candidate's, and the bar a TIC-ranked run is graded against (petab_mcp.criteria).
+    # Advisory like the sigmas below: None when the objective cannot be evaluated
     # there, and the BIC bar is written regardless.
     from petab_mcp.identifiability import effective_parameter_count
 

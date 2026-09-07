@@ -112,13 +112,32 @@ def _bic_reference(ref) -> float | None:
     ``scenario.reference()`` catches JSON *parse* errors but not a ``reference.json`` that parses
     yet lacks ``nll``/``k``/``n`` (or carries ``null``). Guard here so an author-side reference
     problem degrades to "no BIC gate" rather than raising a ``KeyError``/``TypeError`` that
-    ``_drive``'s broad handler would misreport as an aborted (provider) run — and so the live
-    marker and the judge compute the reference identically."""
+    ``_drive``'s broad handler would misreport as an aborted (provider) run.
+
+    CANONICAL BIC, which is what the live marker publishes. The judge grades under the run's own
+    criterion via :func:`_reference_score`, so the marker's live ΔBIC panel and the final verdict
+    are on the same scale only when BIC is that criterion.
+    """
+    return _reference_score(ref, None)
+
+
+def _reference_score(ref, criterion) -> float | None:
+    """The true-model reference scored under ``criterion`` — canonical BIC when it is ``None``.
+
+    The reference carries ``nll``/``k``/``n``, from which every criterion but TIC is computable,
+    so the judge can grade a candidate under whatever criterion the run searched by; TIC also
+    needs the reference fit's ``k_eff``, which :func:`simulate.write_reference_from_problem`
+    records and an older ``reference.json`` lacks (``None`` then — no TIC gate, and the judge
+    says so). Same fail-soft contract as above: an author-side reference problem degrades to "no
+    gate", never an exception.
+    """
     if not ref:
         return None
-    from ..scenario import bic
+    from petab_mcp.criteria import CANONICAL
+
     try:
-        return bic(ref["nll"], ref["k"], ref["n"])
+        return (criterion or CANONICAL["bic"]).value(
+            ref["nll"], ref["k"], ref["n"], ref.get("k_eff"))
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -136,6 +155,8 @@ def _write_live_marker(work: Path, meta: dict, scenario: Scenario) -> None:
     run's ``cleanup()`` wipes ``work/`` and with it any stale marker.
     """
     try:
+        from petab_mcp.criteria import CANONICAL
+
         ref = scenario.reference()
         bic_ref = _bic_reference(ref)
         marker = {
@@ -146,6 +167,15 @@ def _write_live_marker(work: Path, meta: dict, scenario: Scenario) -> None:
             "reference": ref,
             "bic_reference": bic_ref,
             "bic_threshold": scenario.bic_threshold,
+            # CANONICAL BIC above (no fit exists yet to report a criterion), so the live panel
+            # can say which scale it is showing rather than implying it is the gate's.
+            "reference_criterion": "bic",
+            # ...and the reference under EVERY criterion, so a live view can put the fits of a
+            # run that ranks by another one against the right bar. `None` where the reference
+            # has no value under it (aicc at n <= k+1; tic until the reference is regenerated
+            # with a k_eff).
+            "criteria_reference": {name: _reference_score(ref, crit)
+                                   for name, crit in CANONICAL.items()},
         }
         (work / "run_live.json").write_text(json.dumps(marker, indent=2, default=str))
     except Exception:

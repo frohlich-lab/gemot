@@ -861,14 +861,20 @@ function turnEl(t) {
         : (String(m.stop_reason || "").includes("aborted") ? ["warn", "aborted"] : ["bad", "not fixed"]);
       badges.append(el("span", { class: `pill ${verdict[0]}`, text: verdict[1] }));
     }
-    let dbic = m.delta_bic;
+    // The delta that DECIDED the verdict, and the scale it is on: `delta_criterion` once the
+    // judge has run, else canonical ΔBIC (the same number whenever BIC is the criterion). Showing
+    // ΔBIC beside a verdict decided on ΔAICc put a passing run outside its own bar.
+    let dbic = m.delta_criterion != null ? m.delta_criterion : m.delta_bic;
+    let dlabel = (m.delta_criterion != null ? (m.criterion || "criterion")
+                                            : (m.reference_criterion || "bic")).toUpperCase();
     if (dbic == null && m.bic_reference != null) {
       const fb = vs.filter(v => v.bic != null).map(v => v.bic);
-      if (fb.length) dbic = Math.min(...fb) - m.bic_reference;  // best-so-far while live
+      // best-so-far while live: the marker publishes canonical BIC only, so say BIC.
+      if (fb.length) { dbic = Math.min(...fb) - m.bic_reference; dlabel = "BIC"; }
     }
     let kv = m.k;
     if (kv == null) { const fv = vs.filter(v => v.nll != null); if (fv.length) kv = fv[fv.length - 1].k; }
-    addB(`<b>ΔBIC</b> ${dbic == null ? "—" : (dbic >= 0 ? "+" : "") + fmt(dbic)}`
+    addB(`<b>Δ${dlabel}</b> ${dbic == null ? "—" : (dbic >= 0 ? "+" : "") + fmt(dbic)}`
       + (m.bic_threshold != null ? ` <span class="muted">/ ${fmt(m.bic_threshold, 0)}</span>` : ""));
     addB(`<b>k</b> ${kv ?? "—"}<span class="muted"> vs ${m.reference?.k ?? "—"}</span>`);
     const T = tot.total || {};
