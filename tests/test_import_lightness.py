@@ -52,6 +52,7 @@ def _assert_light(importline: str) -> None:
     "import petab_harness",
     "from petab_harness import agent",
     "from petab_harness.agent import dedup, guards",
+    "from petab_harness.agent import sandbox",
     "from petab_harness import prompts",
     "from petab_harness import bio_sessions",
     "from petab_harness import experiments",
