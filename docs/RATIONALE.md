@@ -1,5 +1,31 @@
 # Rationale Log
 
+#245 `identifiability._compute_fim` inverts the FIM built from the residual rows
+(`_fim_from_rows`), not the objective's `hess`, and `effective_parameter_count` takes its `H` and
+its scores off that same call. A deliberate change to agent-facing statistics, not a refactor: the
+two built one matrix at one point two different ways, and the half-curvature `hess` the entry below
+documents as wrong for a statistic was the one behind `se_scaled`, the correlations and every merge
+price. Measured at a fitted optimum, joint problem: with sigmas FIXED the two agree to 3.6e-17
+relative, so nothing moves on any shipped example (all four synthetic sigmas are `estimate=0`); with
+one ESTIMATED only its own diagonal moves, x2.0000. Hence `se_scaled` falls by sqrt(2) (toy sigma_B
+.0038 -> .0027), a sigma-sigma tie DOUBLES (predator_prey 1.026 -> 2.093 nll, `dscore` -2.33 ->
+-0.196 against BIC's 2.191 charge), and non-sigma ties move only in the third decimal — the
+mean-sigma block of `H` is the score equation, zero AT an optimum. `k_eff` and every committed
+`reference.json` are unchanged: that path already used these rows. `(H, S)` rather than the FIM
+alone, because the scores are free off the same arrays and splitting them evaluates twice.
+
+#245 The three eigenvalue floors this one matrix now feeds — `pinv` in `_identifiability_stats`,
+truncation in `effective_parameter_count`, the CLAMP in `merge_candidates` — are deliberately NOT
+unified. Truncating in `merge_candidates` prices the one FREE merge as the most expensive in the
+report (see its docstring). Unifying the FIM is not a licence to unify its inverses.
+
+#245 `identifiability.identifiability` computes the FIM under `session.lock`. Building it flips
+AMICI's `add_sigma_residuals`, and `fitting.estimation_problem` caches ONE pyPESTO problem per
+session — so that objective is the one every simulate goes through, not something private to the
+frozen record. The flag is restored in a `finally`, leaving one hazard: a `get_fit_diagnosis`
+overlapping a simulate on another thread, which would double that simulation's residual vector.
+`effective_parameter_count` already made this mutation under the lock on the fit path.
+
 #200 Anthropic caches nothing unless the request marks breakpoints, so
 `driver._apply_cache_breakpoints` marks two -- the system prompt and the last markable message --
 for any model in `models._CACHING`. On the CONVERTED payload, because `langchain_openai` keeps
