@@ -615,3 +615,46 @@ def test_a_time_written_as_1_and_1_0_is_the_same_held_out_row(monkeypatch, tmp_p
 
     with pytest.raises(ValueError, match="also in the TRAINING table"):
         benchmark._check_held_out_rows("Toy", _V(), _problem(_rows("c1")), _table(1))
+
+
+# ------------------------------------------- the point a caller hands in, matched by name
+def test_a_view_with_fewer_parameter_rows_is_served_not_refused():
+    """The caller fitted the TRAINING problem; the held-out view can carry fewer parameter rows
+    than that (petab refuses rows nothing references, and swapping a curated held-out table in
+    retires the overrides the training rows carried). `pp.x_names` is then a strict subset of the
+    caller's, which list equality would refuse outright — so it is matched by name."""
+    from petab_mcp.validation_data import _reduced_from_named
+
+    class _PP:
+        x_names = ["k", "sigma"]                 # the view dropped the training scalings
+        x_free_indices = [0, 1]
+
+    reduced = _reduced_from_named(
+        _PP(), [1.0, 2.0, 3.0], ["k", "sigma", "s_blot_retired"])
+    assert reduced == [1.0, 2.0]                 # in pp.x_names order, the extra name ignored
+
+
+def test_a_name_the_view_needs_and_the_caller_omitted_is_refused():
+    """The other direction is still a hard error: a vector that does not cover what the problem
+    needs would be evaluated permuted and report a plausible, wrong likelihood."""
+    from petab_mcp.validation_data import _reduced_from_named
+
+    class _PP:
+        x_names = ["k", "sigma", "scale"]
+        x_free_indices = [0, 1, 2]
+
+    with pytest.raises(ValueError, match="do not match the held-out problem's"):
+        _reduced_from_named(_PP(), [1.0, 2.0, 3.0], ["k", "sigma", "unrelated"])
+
+
+def test_arity_is_reported_as_arity_not_as_a_name_mismatch():
+    """A vector already reduced to free coordinates is a LENGTH mistake. Zipping it against the
+    full name list would truncate silently and then blame the names."""
+    from petab_mcp.validation_data import _reduced_from_named
+
+    class _PP:
+        x_names = ["k", "sigma", "scale"]
+        x_free_indices = [0]
+
+    with pytest.raises(ValueError, match="must be the FULL vector"):
+        _reduced_from_named(_PP(), [0.5], ["k", "sigma", "scale"])
