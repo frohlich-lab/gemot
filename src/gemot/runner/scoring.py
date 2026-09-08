@@ -14,6 +14,7 @@ threshold — but nothing from ``mcp``, so a test of these projections needs no 
 
 from __future__ import annotations
 
+
 # The collapse threshold lives in petab_mcp.constants so the session's adequacy gate and this
 # judge gate share ONE value (re-exported under the old name for callers/tests).
 from petab_mcp.constants import NOISE_SIGMA_COLLAPSE_FRACTION as _NOISE_SIGMA_COLLAPSE_FRACTION
@@ -31,7 +32,104 @@ __all__ = [
     "_noise_sigma_flag",
     "_reference_sigma_flag",
     "_residual_structure_fields",
+    "_validation_fields",
 ]
+
+
+def _validation_fields(payload, reference, *, asked: bool = False) -> dict | None:
+    """The HELD-OUT (validation) block for result.json, or ``None`` when this run has no such check.
+
+    ``payload`` is what ``evaluate_validation_data`` returned (:mod:`petab_mcp.validation_data`);
+    ``reference`` is ``reference.json``, whose ``validation`` block holds the same number for the
+    true model. The figure worth reading is ``delta_nll`` = candidate − reference: POSITIVE means
+    the candidate predicts the held-out conditions worse than the true model does, with no
+    complexity term, because neither side spent a parameter on this data.
+
+    REPORT-ONLY, deliberately rather than provisionally: a threshold would need a distribution of
+    this number across runs and examples, and recording it is how that gets collected.
+
+    Every failure keeps its own ``status`` rather than collapsing to a null ``nll``.
+    ``unavailable`` means the tool was absent or unreadable. ``asked`` says the judge DID attempt
+    the call, which separates a run with no held-out set (``None``) from one whose check was
+    attempted and failed while the reference had no bar yet — a silent ``null`` there is
+    indistinguishable from a clean skip. The rest come from the scorer and are statements about the
+    run. ``n_mismatch`` and ``mode_mismatch`` guard the subtraction itself —
+    the two sides are computed at different times from different files, and a score of one KIND
+    must not be subtracted from a score of another — and withhold ``delta_nll`` when they fire.
+
+    NO goodness-of-fit p-value, even though the held-out noise is known: it would be a constant.
+    The true model's own held-out reduced chi2 on fujita is 36.5, so the test rejects the truth as
+    decisively as anything and every run would record ``p = 0`` — a property of the DATASET, which
+    belongs in BENCHMARK_NOTES. ``reference_chi2`` is carried instead.
+    """
+    ref_block = (reference or {}).get("validation") if isinstance(reference, dict) else None
+    ref_block = ref_block if isinstance(ref_block, dict) else {}
+    # The REFERENCE side's own status, carried through so a refit whose held-out scoring FAILED
+    # (`status: error`, written by `simulate.write_reference_from_problem`) is distinguishable from
+    # a reference that simply predates the feature. Both leave `reference_nll` blank, and without
+    # this the two are byte-identical in the history CSV — which would make the guarded refit's
+    # whole point ("record the failure rather than drop it") invisible per-run.
+    # No default: a block that does not SAY it succeeded is reported as `None`, not as "ok".
+    # Folding "the block is silent" into the affirmative case would defeat the point of carrying
+    # the status at all, which is to separate "the refit's held-out scoring failed" from "no bar
+    # exists". Every block `validation_data.score_problem` writes carries one.
+    ref_status = ref_block.get("status") if ref_block else None
+    # EVERY value is gated on the status, `n` included. Reading `n` from a block whose likelihood
+    # we just refused to read would let `n_mismatch` assert "the two sides counted different
+    # numbers of held-out points" on the authority of a reference declared unusable one line
+    # above — a positive claim derived from data we do not trust.
+    trusted = ref_status == "ok"
+    ref_nll = ref_block.get("nll") if trusted else None
+    ref_n = ref_block.get("n") if trusted else None
+    ref_chi2 = ref_block.get("chi2") if trusted else None
+    # A block written before modes existed is a fixed-θ block; the payload always says its own.
+    ref_mode = (ref_block.get("mode") or "fixed") if ref_block else None
+
+    if not isinstance(payload, dict) or not payload.get("status"):
+        # No held-out check ran. Distinguished from a check that ran and failed: an example with no
+        # validation set must not look like one whose model would not integrate.
+        # `asked` covers the third case — the judge DID call and got nothing back, with the
+        # reference not yet refit — which must not read as a clean skip.
+        if not ref_block and not asked:
+            return None
+        # `reference_chi2` rides along with the other reference fields: the block's SHAPE must not
+        # depend on whether the tool answered, or every consumer special-cases the failure.
+        return {
+            "status": "unavailable",
+            "reason": (
+                "the server reported no held-out score (no evaluate_validation_data "
+                "tool, or the call failed)"
+            ),
+            "mode": ref_mode,
+            "reference_status": ref_status,
+            "reference_nll": ref_nll,
+            "reference_chi2": ref_chi2,
+            "reference_n": ref_n,
+        }
+
+    mode = str(payload.get("mode") or "fixed")
+    out = {"status": str(payload["status"]),
+           "mode": mode,
+           "nll": payload.get("nll"),
+           "n": payload.get("n"),
+           "chi2": payload.get("chi2"),
+           "n_conditions": payload.get("n_conditions"),
+           "reference_status": ref_status,
+           "reference_nll": ref_nll,
+           "reference_chi2": ref_chi2,
+           "reference_n": ref_n}
+    if payload.get("reason"):
+        out["reason"] = payload["reason"]
+
+    nll, n = payload.get("nll"), payload.get("n")
+    if ref_mode is not None and ref_mode != mode:
+        out["mode_mismatch"] = True
+    elif isinstance(ref_n, int) and isinstance(n, int) and ref_n != n:
+        out["n_mismatch"] = True
+    elif isinstance(nll, (int, float)) and isinstance(ref_nll, (int, float)):
+        out["delta_nll"] = float(nll) - float(ref_nll)
+    return out
+
 
 def _residual_structure_fields(diagnosis, rollup=None) -> dict | None:
     """A compact, bounded residual-structure block for result.json, or ``None`` when neither half

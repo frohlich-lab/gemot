@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from petab_harness import benchmark
+from petab_harness.runner.scoring import _validation_fields
 
 
 def _problem(measurements, *, observables=("obs_A",), conditions=("c_train", "c_test")):
@@ -275,6 +276,82 @@ def test_the_held_out_table_lands_outside_the_problem_directory():
     assert path.parent.name == benchmark.VALIDATION_DIR
     assert path.parent.name != "problem"
     assert path.name == benchmark.VALIDATION_MEASUREMENTS
+
+
+def test_delta_is_candidate_minus_reference_and_positive_means_worse():
+    out = _validation_fields({"status": "ok", "nll": 560.0, "n": 276, "chi2": None}, _REF)
+    assert out["delta_nll"] == pytest.approx(60.0)
+    assert out["reference_nll"] == 500.0 and out["n"] == 276
+
+
+
+def test_a_held_out_n_that_disagrees_with_the_reference_withholds_the_difference():
+    """The two sides are computed at different times from different files — the reference at
+    ``setup.py --refit``, the candidate at run time. A held-out set that changed in between would
+    otherwise yield a plausible difference of two likelihoods over different data."""
+    out = _validation_fields({"status": "ok", "nll": 560.0, "n": 200, "chi2": None}, _REF)
+    assert out["n_mismatch"] is True
+    assert "delta_nll" not in out
+
+
+
+def test_a_model_that_cannot_integrate_the_unseen_conditions_keeps_its_own_status():
+    """`non_finite` is a RESULT about the model — the ODEs blew up under an EGF pulse — not an
+    infrastructure gap. Folding it into a null nll would make it indistinguishable from an example
+    that ships no held-out data at all."""
+    out = _validation_fields(
+        {"status": "non_finite", "reason": "could not integrate"}, _REF)
+    assert out["status"] == "non_finite" and out["reason"] == "could not integrate"
+    assert "delta_nll" not in out and out["reference_nll"] == 500.0
+
+
+
+def test_no_reference_block_and_no_payload_is_no_check_at_all():
+    """An example with no held-out data must produce None, so `val_status` stays EMPTY in the
+    history CSV rather than claiming a check ran."""
+    assert _validation_fields(None, {"nll": 1.0, "k": 2, "n": 10}) is None
+    assert _validation_fields({}, {}) is None
+
+
+
+def test_a_missing_tool_on_an_example_that_HAS_a_bar_is_reported_as_unavailable():
+    """The other direction: the reference has a held-out bar but the run produced no score. That is
+    a broken run, not an example without validation, and it must not read as one."""
+    out = _validation_fields(None, _REF)
+    assert out["status"] == "unavailable" and out["reference_nll"] == 500.0
+
+
+
+def test_the_held_out_chi2_is_carried_for_both_sides_and_no_p_value_is_invented():
+    """The truth's own held-out reduced chi2 on fujita is 36.5, so an absolute goodness-of-fit test
+    against the training noise model rejects the TRUE model too and every run would record p = 0.
+    Both chi2 values are carried instead, so the candidate reads against the truth on one scale."""
+    out = _validation_fields({"status": "ok", "nll": 500.0, "n": 276, "chi2": 4000.0}, _REF)
+    assert out["chi2"] == 4000.0 and out["reference_chi2"] == 1000.0
+    assert "chi2_gof_pvalue" not in out and "chi2_dof" not in out
+
+
+
+def test_a_reference_block_that_does_not_claim_success_is_not_reported_as_ok():
+    """`status` is carried to separate "the refit's held-out scoring FAILED" from "no bar exists".
+    Defaulting a silent block to `ok` would fold a third case — "the answer key does not say" —
+    into the affirmative one, and then read its `nll` on the strength of that default."""
+    silent = {"nll": 1.0, "k": 2, "n": 10, "validation": {"nll": 400.0, "n": 12}}
+    out = _validation_fields({"status": "ok", "nll": 500.0, "n": 12, "chi2": 1.0}, silent)
+    assert out["reference_status"] is None
+    assert out["reference_nll"] is None and "delta_nll" not in out
+
+
+def test_an_attempted_check_with_no_reference_bar_is_reported_not_skipped():
+    """A judge that CALLED the tool and got nothing back must not look like an example with no
+    held-out set. Without `asked` the two are the same `None`, so a reference that has not been
+    refit yet turns every failed call into a silent clean skip — undiagnosable from result.json."""
+    assert _validation_fields(None, {}) is None                      # genuinely no check exists
+    out = _validation_fields(None, {}, asked=True)
+    assert out["status"] == "unavailable" and "no held-out score" in out["reason"]
+    # and the shape does not depend on whether the tool answered
+    assert "reference_chi2" in _validation_fields(
+        None, {"validation": {"status": "ok", "nll": 1.0, "n": 4, "chi2": 2.0}})
 
 
 def test_a_time_written_as_1_and_1_0_is_the_same_held_out_row(monkeypatch, tmp_path):
