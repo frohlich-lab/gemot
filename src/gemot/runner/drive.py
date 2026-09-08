@@ -180,6 +180,7 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                     # Hand-curated biological entities for the blinded biocurator (issue #91);
                     # empty for scenarios with no lookupable biology (the abstract toys).
                     curated_entities=getattr(scenario, "biocurator_entities", None),
+                    biocurator_model=getattr(args, "biocurator_model", None),
                 )
                 stop_reason = agent_out.get("stop_reason", "completed")
                 if stop_reason != "completed":

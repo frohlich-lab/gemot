@@ -548,6 +548,7 @@ async def run_deepagents(
     bio_sessions: Any | None = None,
     bio_literature: bool = False,
     curated_entities: "list[str] | None" = None,
+    biocurator_model: "str | None" = None,
 ) -> dict[str, Any]:
     """Drive the orchestrator (+ analyst subagents) against ``session``'s tools.
 
@@ -573,6 +574,10 @@ async def run_deepagents(
     bound on this handle look safe: it 408s the gate's read, ``_current_fit`` comes back empty, and
     five refusals relabel a fully fitted run ``no_model_built``. The budget belongs in
     ``clock._wrap_call_timeout``, which keeps the queue term.
+
+    ``biocurator_model`` (optional) puts the biocurator on its OWN model — an alias or a full
+    OpenRouter id — leaving the lead and the three analysts on ``model``. ``None`` keeps the whole
+    panel on one model, which is the default and what every earlier run did.
 
     ``server_poll`` (optional) is a zero-argument callable with ``Popen.poll`` semantics — ``None``
     while the MCP server is running, an exit code once it is not. The loop consults it before
@@ -652,9 +657,10 @@ async def run_deepagents(
     # biology-only terms — exactly the vocabulary a curator searches literature with (phosphosites,
     # proteoforms, assay type) — and it is a read the blinding already curates. The blinding
     # boundary that matters is unchanged: no model access, no fit access, no measurements.
-    subagents.append(_build_biocurator_subagent(
+    biocurator_spec = _build_biocurator_subagent(
         bio_tools + [t for t in petab_tools if getattr(t, "name", None) == "list_observables"],
-        biocurator_entities, guard_stats))
+        biocurator_entities, guard_stats)
+    subagents.append(biocurator_spec)
     biocurator_tools = sorted(n for t in bio_tools if (n := getattr(t, "name", None)))
     print(f"[agent] biocurator on the panel with {len(biocurator_tools)} bio tool(s)"
           + (f": {biocurator_tools}" if biocurator_tools
@@ -696,51 +702,73 @@ async def run_deepagents(
     # Bound once so the value sent to the provider is the value recorded in result.json — a
     # fresh uuid inlined at the call site could not be reported afterwards.
     prompt_cache_key = f"petab-{uuid.uuid4().hex[:12]}"
-    llm = _chat_model_class()(
-        # Keeps the Phoenix span named `ChatOpenAI` despite the subclass -- see _chat_model_class.
-        name="ChatOpenAI",
-        profile={"max_input_tokens": max_input_tokens},
-        model=model,
-        temperature=temperature,
-        base_url=base_url,
-        api_key=api_key,
-        timeout=_LLM_TIMEOUT_S,          # fail a hung provider call fast (was unbounded)
-        max_retries=_LLM_MAX_RETRIES,
-        # Ask for token usage even on streamed responses (adds stream_options.include_usage):
-        # OpenAI-compatible providers omit usage from a stream unless requested, which would
-        # leave _token_accountant recording 0 tokens for the whole run. Harmless when a call
-        # isn't streamed.
-        stream_usage=True,
-        # ASK FOR THE FULL OUTPUT BUDGET. Omitting max_tokens does not mean "unbounded" -- the
-        # provider substitutes its own default, and Z.AI's for z-ai/glm-5.3-flash is 65536,
-        # exactly HALF the 131072 the model advertises as max_completion_tokens. That default is
-        # what a reasoning runaway hits: measured across isensee and lucarelli, the lead returned
-        # completion_tokens=65536 of which reasoning_tokens=65504, content "", finish_reason
-        # "length" -- truncated mid-thought before emitting a single tool call, four turns in a
-        # row, ~25 minutes each. Downstream that is indistinguishable from a model choosing to
-        # stay silent, so the dispatch guard bounced it and the run ended `no_model_built` with
-        # zero make_changes attempted. Asking for the model's real ceiling doubles the room it
-        # has to reach a conclusion; `_reasoning_runaway_guard` covers the case where even the
-        # full budget is not enough.
-        **({"max_tokens": max_output_tokens} if max_output_tokens else {}),
-        # Prompt-cache hint: OpenRouter's fallback STICKY-ROUTING key when no `session_id` is
-        # sent, so repeat requests reach the same backend and its prefix cache (prompt tokens
-        # dominate this workload). Without a key it hashes the opening messages instead, which an
-        # agent loop rewrites. Harmless where a provider ignores it, redundant on a model pinned
-        # to one endpoint.
-        #
-        # PER RUN, not a global constant. The key exists to give routing AFFINITY to requests
-        # sharing a prefix family; the previous fixed "petab-mcp-agent" told the provider that
-        # every concurrent sweep task (up to ~17 at once, x5 agents each, with completely
-        # unrelated prompts) was ONE family — concentrating them on one backend where they evict
-        # each other's prefixes. One uuid per run keeps a run's own lead+subagent traffic
-        # together (they at least share tool schemas and skills) while isolating runs from each
-        # other. Deliberately NOT per-agent: the lead and its subagents share this one llm
-        # object, so a per-agent key would need per-call middleware for marginal gain.
-        model_kwargs={"prompt_cache_key": prompt_cache_key},
-        # OpenRouter request fields, sent verbatim in the body: see _extra_body and models.py.
-        extra_body=_extra_body(model),
-    )
+
+    def _build_llm(model_id: str):
+        """One panel model, configured identically whichever agent holds it.
+
+        The biocurator may run a DIFFERENT (cheaper) model from the lead — see
+        ``biocurator_model`` — and everything below is per-model rather than per-agent: the
+        provider pin comes from ``_extra_body(model_id)``, and the output ceiling is the ceiling
+        of whatever model is being asked.
+        """
+        return _chat_model_class()(
+            # Keeps the Phoenix span named `ChatOpenAI` despite the subclass -- see _chat_model_class.
+            name="ChatOpenAI",
+            profile={"max_input_tokens": max_input_tokens},
+            model=model_id,
+            temperature=temperature,
+            base_url=base_url,
+            api_key=api_key,
+            timeout=_LLM_TIMEOUT_S,          # fail a hung provider call fast (was unbounded)
+            max_retries=_LLM_MAX_RETRIES,
+            # Ask for token usage even on streamed responses (adds stream_options.include_usage):
+            # OpenAI-compatible providers omit usage from a stream unless requested, which would
+            # leave _token_accountant recording 0 tokens for the whole run. Harmless when a call
+            # isn't streamed.
+            stream_usage=True,
+            # ASK FOR THE FULL OUTPUT BUDGET. Omitting max_tokens does not mean "unbounded" -- the
+            # provider substitutes its own default, and Z.AI's for z-ai/glm-5.3-flash is 65536,
+            # exactly HALF the 131072 the model advertises as max_completion_tokens. That default is
+            # what a reasoning runaway hits: measured across isensee and lucarelli, the lead returned
+            # completion_tokens=65536 of which reasoning_tokens=65504, content "", finish_reason
+            # "length" -- truncated mid-thought before emitting a single tool call, four turns in a
+            # row, ~25 minutes each. Downstream that is indistinguishable from a model choosing to
+            # stay silent, so the dispatch guard bounced it and the run ended `no_model_built` with
+            # zero make_changes attempted. Asking for the model's real ceiling doubles the room it
+            # has to reach a conclusion; `_reasoning_runaway_guard` covers the case where even the
+            # full budget is not enough.
+            **({"max_tokens": max_output_tokens} if max_output_tokens else {}),
+            # Prompt-cache hint: OpenRouter's fallback STICKY-ROUTING key when no `session_id` is
+            # sent, so repeat requests reach the same backend and its prefix cache (prompt tokens
+            # dominate this workload). Without a key it hashes the opening messages instead, which an
+            # agent loop rewrites. Harmless where a provider ignores it, redundant on a model pinned
+            # to one endpoint.
+            #
+            # PER RUN, not a global constant. The key exists to give routing AFFINITY to requests
+            # sharing a prefix family; the previous fixed "petab-mcp-agent" told the provider that
+            # every concurrent sweep task (up to ~17 at once, x5 agents each, with completely
+            # unrelated prompts) was ONE family — concentrating them on one backend where they evict
+            # each other's prefixes. One uuid per run keeps a run's own lead+subagent traffic
+            # together (they at least share tool schemas and skills) while isolating runs from each
+            # other. Deliberately NOT per-agent: the lead and its subagents share this one llm
+            # object, so a per-agent key would need per-call middleware for marginal gain.
+            model_kwargs={"prompt_cache_key": prompt_cache_key},
+            # OpenRouter request fields, sent verbatim in the body: see _extra_body and models.py.
+            extra_body=_extra_body(model_id),
+        )
+
+    llm = _build_llm(model)
+    # The biocurator's model, when the caller named one. It is the panel's heaviest reader —
+    # entity lookups return whole database entries, which then ride its context — and its job is
+    # retrieval and summary rather than modelling, so it is the one seat where a cheaper model is
+    # worth measuring. ``None`` (the default) leaves it on the lead's model, so nothing changes
+    # unless asked. Recorded in result.json either way.
+    bio_model_id = models.resolve(biocurator_model) if biocurator_model else model
+    if bio_model_id != model:
+        # Set on the spec built above rather than passed to it: the spec is assembled before any
+        # model exists, and deepagents reads `model` off it when it builds the subagent graph.
+        biocurator_spec["model"] = _build_llm(bio_model_id)
+        print(f"[agent] biocurator runs {bio_model_id} (lead: {model})")
     # Transient provider errors that should RESUME the run (below) rather than end it, when they
     # escape the OpenAI client's own retries — e.g. a malformed non-JSON body the client won't
     # retry. Non-transient errors (bad request, recursion-limit) are deliberately excluded.
@@ -1341,6 +1369,7 @@ async def run_deepagents(
         # several of its members and still honour the pin.
         "openrouter_endpoints": token_accountant.endpoints(),
         "biocurator_tools": biocurator_tools,
+        "biocurator_model": bio_model_id,
         "biocurator_entities": biocurator_entities,
         "biocurator_literature": literature_log,
         "token_usage": token_usage,

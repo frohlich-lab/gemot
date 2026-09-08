@@ -172,7 +172,8 @@ async def discover_bio_tools(bio_sessions, *, literature: bool,
 
 
 def _build_biocurator_subagent(bio_tools: list, entity_names: "list[str] | None" = None,
-                               stats: "dict[str, Any] | None" = None) -> dict[str, Any]:
+                               stats: "dict[str, Any] | None" = None,
+                               model: "Any | None" = None) -> dict[str, Any]:
     """Build the biocurator subagent spec from the RUNTIME-DISCOVERED bio-server tools.
 
     Unlike the three static analysts (whose tool NAMES are hard-coded and resolved from the
@@ -183,13 +184,17 @@ def _build_biocurator_subagent(bio_tools: list, entity_names: "list[str] | None"
     DESCRIPTIONS are curated biology, and reading them beats relaying entities by hand) is the
     structural half of the task-blinding. See run_deepagents.
 
+    ``model`` puts this subagent on its own chat model rather than the lead's — the biocurator is
+    the panel's heaviest reader (entity lookups return whole database entries) and its job is
+    retrieval, not modelling, so it is the seat where a cheaper model is worth measuring.
+
     ``entity_names`` (the hand-curated biological entities — see Scenario.biocurator_entities) is
     injected into the persona prompt so the biocurator is handed its input DIRECTLY rather than
     relying on the lead relaying it through the ``task`` ``description`` (issue #91). ``None``/
     empty leaves the prompt unchanged (no entities to look up — e.g. an abstract problem).
     """
     prompt_key = _subagent_prompt_key()
-    return {
+    spec: dict[str, Any] = {
         "name": BIOCURATOR_NAME,
         "description": BIOCURATOR_DESCRIPTION,
         prompt_key: BIOCURATOR_PROMPT + _biocurator_entity_block(entity_names or []),
@@ -202,3 +207,8 @@ def _build_biocurator_subagent(bio_tools: list, entity_names: "list[str] | None"
         "middleware": ([_subagent_turn_limit(BIOCURATOR_MAX_TURNS)]
                        + ([_reasoning_runaway_guard(stats)] if stats is not None else [])),
     }
+    # deepagents reads `model` off the spec and falls back to the lead's, so an unset key is the
+    # single-model panel unchanged (``spec.get("model", model)`` in its graph builder).
+    if model is not None:
+        spec["model"] = model
+    return spec

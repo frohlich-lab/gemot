@@ -298,3 +298,22 @@ def test_task_arg_guard_end_to_end_bounces_then_retry_dispatches():
     assert stats["tools_executed"] == 1                       # the bounced call was NOT counted
     assert stats["task_arg_rejections"] == 1
     assert stats["unexpected_task_kwargs"] == ["prompt"]
+
+
+# --------------------------------------------------------------------------- its own model
+def test_the_biocurator_spec_carries_a_model_only_when_one_is_given():
+    """`--biocurator-model` puts the panel's heaviest reader on a cheaper model while the lead and
+    analysts keep theirs. deepagents reads `model` off the spec and falls back to the lead's, so an
+    ABSENT key must mean "same model as the lead" — setting it to None would hand deepagents a null
+    model instead."""
+    from petab_harness.agent.biocurator import _build_biocurator_subagent
+
+    plain = _build_biocurator_subagent([], ["EGFR"], None)
+    assert "model" not in plain
+
+    sentinel = object()
+    with_model = _build_biocurator_subagent([], ["EGFR"], None, model=sentinel)
+    assert with_model["model"] is sentinel
+    # everything else is unchanged by the override
+    assert {k: v for k, v in with_model.items() if k != "model"}.keys() == plain.keys()
+    assert with_model["name"] == plain["name"]

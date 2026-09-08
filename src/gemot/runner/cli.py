@@ -49,6 +49,13 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
                         "Every aliased model is pinned to a single provider (see "
                         "models.provider_routing) so a mirrored copy at another price cannot "
                         "silently take the traffic.")
+    p.add_argument("--biocurator-model", default=None,
+                   help="Run the BIOCURATOR on its own model (alias or OpenRouter id), leaving "
+                        "the lead and analysts on --model. It is the panel's heaviest reader — "
+                        "entity lookups return whole database entries that then ride its context "
+                        "— and its job is retrieval, not modelling, so a cheaper model here is "
+                        "worth measuring (e.g. --biocurator-model glm-flash). Default: the "
+                        "lead's model. Recorded per run as `biocurator_model`.")
     p.add_argument("--base-url", default="https://openrouter.ai/api/v1",
                    help="OpenAI-compatible base URL for the LLM provider (default: OpenRouter).")
     p.add_argument("--api-key", default=None,
