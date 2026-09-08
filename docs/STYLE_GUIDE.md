@@ -11,6 +11,10 @@ references the source code where the implementation lives. The explanation names
 failure that motivated it** — with the issue or PR number, the sweep date, or the measured
 cost, whichever exists.
 
+**Writing one is the exception.** Most PRs add nothing; the budget when they do is one entry
+of two or three sentences, and a "why" that belongs to one module that still exists goes in that
+module's docstring instead. See the header of [RATIONALE.md](RATIONALE.md) before adding one.
+
 Two rules follow:
 
 - **Negative knowledge is load-bearing.** "Deliberately NOT x", "do not add this back", "the
