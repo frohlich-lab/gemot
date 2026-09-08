@@ -1,7 +1,8 @@
-"""OpenRouter's ``usage.cost`` from the wire to ``token_usage.cost_usd``, through the real
-``ChatOpenAI`` subclass in ``agent.driver`` and the real callback in ``agent.token_usage``, over
-a mocked HTTP transport. Non-streamed and streamed, which langchain_openai shapes differently;
-test_token_accounting covers the callback on hand-built records, this file the assembly."""
+"""What the driver's ``ChatOpenAI`` subclass puts on the wire, and what comes back off it, over a
+mocked HTTP transport: OpenRouter's ``usage.cost`` through to ``token_usage.cost_usd`` (non-streamed
+and streamed, which langchain_openai shapes differently) and the cache breakpoints of
+``models._CACHING``. test_token_accounting covers the callback on hand-built records and
+test_model_routing the tables; this file is the assembly, where a langchain rename shows up."""
 
 from __future__ import annotations
 
@@ -13,8 +14,10 @@ import pytest
 pytest.importorskip("langchain_openai", reason="harness-only dependency")
 
 import openai  # noqa: E402
-from langchain_core.messages import HumanMessage  # noqa: E402
+from langchain_core.messages import (AIMessage, HumanMessage,  # noqa: E402
+                                     SystemMessage, ToolMessage)
 
+from petab_harness import models  # noqa: E402
 from petab_harness.agent.driver import _chat_model_class, _extra_body  # noqa: E402
 from petab_harness.agent.token_usage import _token_accountant  # noqa: E402
 
@@ -59,10 +62,10 @@ def _stream(request: _httpx.Request) -> _httpx.Response:
                           content=text.encode())
 
 
-def _llm(handler):
+def _llm(handler, model=MODEL):
     return _chat_model_class()(
-        name="ChatOpenAI", model=MODEL, base_url="https://openrouter.ai/api/v1", api_key="x",
-        stream_usage=True, extra_body=_extra_body(MODEL),
+        name="ChatOpenAI", model=model, base_url="https://openrouter.ai/api/v1", api_key="x",
+        stream_usage=True, extra_body=_extra_body(model),
         http_async_client=openai.DefaultAsyncHttpxClient(transport=_httpx.MockTransport(handler)))
 
 
@@ -86,3 +89,27 @@ async def test_streamed_response_records_the_billed_cost():
     assert t["cost_usd"] == pytest.approx(0.00123)
     assert t["n_llm_calls"] == 1 and t["n_uncosted_calls"] == 0
     assert t["cache_read_tokens"] == 800
+
+
+@pytest.mark.parametrize("model_id", sorted(models._CACHING))
+@pytest.mark.asyncio
+async def test_a_cached_model_sends_its_breakpoints_on_the_wire(model_id):
+    """Placed by overriding ``_get_request_payload``, so a langchain rename would leave the
+    table tests green while every request went out unmarked."""
+    sent: dict = {}
+
+    def handler(request: _httpx.Request) -> _httpx.Response:
+        sent.update(json.loads(request.content))
+        return _completion(request)
+
+    await _llm(handler, model=model_id).ainvoke(
+        [SystemMessage("sys text"), HumanMessage("task"),
+         AIMessage("", tool_calls=[{"name": "t", "args": {}, "id": "c1"}]),
+         ToolMessage("tool output", tool_call_id="c1")])
+
+    marked = {m["role"]: b for m in sent["messages"] if isinstance(m.get("content"), list)
+              for b in m["content"] if isinstance(b, dict) and "cache_control" in b}
+    assert set(marked) == {"system", "tool"}, "the system prompt and the end of the history"
+    for role, block in marked.items():
+        assert block["cache_control"] == models.caching_config(model_id), f"{role}: wrong ttl/type"
+    assert "cache_control" not in sent, "the top-level field is never sent"

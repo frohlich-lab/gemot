@@ -11,11 +11,11 @@ def _token_accountant():
     analyst + biocurator subgraphs — so this totals the lead AND the subagents, matching
     Phoenix's per-trace rollup, but in-process so the counts can be written straight to
     result.json without re-deriving them from the (huge) span database. Records prompt,
-    completion, and cache-read tokens (``cache_read`` is the provider-reported cached-prompt
-    count, ``usage_metadata.input_token_details.cache_read``) and the billed cost (OpenRouter's
-    per-response ``usage.cost``, summed into ``cost_usd``). One instance is reused across resume
-    iterations so the totals cover the whole run. Never raises — token accounting must not break
-    a run.
+    completion, both cache columns (``usage_metadata.input_token_details.cache_read`` and
+    ``.cache_creation``) and the billed cost (OpenRouter's per-response ``usage.cost``, summed
+    into ``cost_usd``). The cache columns explain the bill; ``cost_usd`` is the bill. One instance
+    is reused across resume iterations so the totals cover the whole run. Never raises — token
+    accounting must not break a run.
     """
     from langchain_core.callbacks import AsyncCallbackHandler
 
@@ -46,6 +46,7 @@ def _token_accountant():
         def __init__(self):
             self.prompt = self.completion = self.cache_read = self.n_calls = 0
             self.cost, self.n_costed = 0.0, 0     # billed USD, and the calls that reported one
+            self.cache_write = 0         # prompt tokens WRITTEN to the cache (billed at a premium)
             self.max_prompt = 0          # largest single-call prompt — the context-stop signal
             # (upstream provider, service tier) -> calls served by it. See `endpoints()`.
             self.served: dict[tuple, int] = {}
@@ -131,15 +132,21 @@ def _token_accountant():
                         self.completion += _as_int(um.get("output_tokens"))
                         self.cache_read += _as_int(
                             (um.get("input_token_details") or {}).get("cache_read"))
+                        self.cache_write += _as_int(
+                            (um.get("input_token_details") or {}).get("cache_creation"))
                 if not found:
                     # Older/non-usage_metadata responses carry an aggregate in llm_output.
-                    tu = (getattr(response, "llm_output", None) or {}).get("token_usage") or {}
+                    # isinstance, not `or {}` -- see _record_endpoint.
+                    out = getattr(response, "llm_output", None)
+                    tu = (out if isinstance(out, dict) else {}).get("token_usage") or {}
                     if tu:
                         self.prompt += _as_int(tu.get("prompt_tokens"))
                         self.max_prompt = max(self.max_prompt, _as_int(tu.get("prompt_tokens")))
                         self.completion += _as_int(tu.get("completion_tokens"))
                         self.cache_read += _as_int(
                             (tu.get("prompt_tokens_details") or {}).get("cached_tokens"))
+                        self.cache_write += _as_int(
+                            (tu.get("prompt_tokens_details") or {}).get("cache_write_tokens"))
                         self.n_calls += 1
             except Exception:  # pragma: no cover - accounting must never break a run
                 pass
@@ -148,7 +155,9 @@ def _token_accountant():
             return {
                 "prompt_tokens": self.prompt,
                 "completion_tokens": self.completion,
-                "cache_read_tokens": self.cache_read,   # cached prompt tokens
+                "cache_read_tokens": self.cache_read,    # cached prompt tokens
+                # 0 wherever caching is implicit; elsewhere the tokens billed at the premium.
+                "cache_write_tokens": self.cache_write,
                 "total_tokens": self.prompt + self.completion,
                 # The COMPUTE-priced number. Every estimate in the 2026-08-14 token review that
                 # quoted prompt tokens overstated its saving 5-10x because ~80-90% are cache

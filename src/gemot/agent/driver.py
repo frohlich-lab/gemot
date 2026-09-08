@@ -341,13 +341,47 @@ def _content_filter_stop_reason(exc: BaseException) -> str | None:
 
 def _extra_body(model: str) -> dict[str, Any]:
     """OpenRouter-specific request fields: the billed-cost flag (``usage.include``, always), and
-    provider pinning and reasoning where the model has an entry."""
+    provider pinning and reasoning where the model has an entry.
+
+    Caching is not here: see :func:`_apply_cache_breakpoints`.
+    """
     body: dict[str, Any] = {"usage": {"include": True}}
     if (routing := models.provider_routing(model)) is not None:
         body["provider"] = routing
     if (reasoning := models.reasoning_config(model)) is not None:
         body["reasoning"] = reasoning
     return body
+
+
+def _mark_cacheable(message: dict, config: dict) -> bool:
+    """Put a cache breakpoint on one OpenAI-format message; ``False`` if it has no non-blank text
+    to mark, in which case the caller walks further back."""
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        message["content"] = [{"type": "text", "text": content, "cache_control": config}]
+        return True
+    if isinstance(content, list):
+        for block in reversed(content):
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            text = block.get("text")
+            if isinstance(text, str) and text.strip():
+                block["cache_control"] = config
+                return True
+    return False
+
+
+def _apply_cache_breakpoints(payload: dict, config: dict) -> None:
+    """Mark the system message and the last markable message of ``payload`` as cache breakpoints
+    — two of Anthropic's four, on the CONVERTED payload (docs/RATIONALE.md)."""
+    messages = payload.get("messages") or []
+    for message in messages:
+        if isinstance(message, dict) and message.get("role") == "system":
+            _mark_cacheable(message, config)
+            break
+    for message in reversed(messages):
+        if isinstance(message, dict) and _mark_cacheable(message, config):
+            break
 
 
 @functools.lru_cache(maxsize=None)
@@ -380,6 +414,13 @@ def _chat_model_class():
     from langchain_openai import ChatOpenAI
 
     class _ChatOpenAIRecordingProvider(ChatOpenAI):
+        def _get_request_payload(self, input_, *, stop=None, **kwargs):
+            payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+            config = models.caching_config(payload.get("model") or self.model_name)
+            if config is not None:
+                _apply_cache_breakpoints(payload, config)
+            return payload
+
         def _create_chat_result(self, response, generation_info=None):
             result = super()._create_chat_result(response, generation_info)
             try:
@@ -682,10 +723,11 @@ async def run_deepagents(
         # has to reach a conclusion; `_reasoning_runaway_guard` covers the case where even the
         # full budget is not enough.
         **({"max_tokens": max_output_tokens} if max_output_tokens else {}),
-        # Best-effort prompt-cache hint: asks the provider to route repeat requests to the
-        # same backend so its prefix cache can hit (prompt tokens dominate this workload).
-        # Whether it takes effect is provider-dependent (OpenRouter -> the served model) and
-        # not guaranteed; it is harmless when ignored.
+        # Prompt-cache hint: OpenRouter's fallback STICKY-ROUTING key when no `session_id` is
+        # sent, so repeat requests reach the same backend and its prefix cache (prompt tokens
+        # dominate this workload). Without a key it hashes the opening messages instead, which an
+        # agent loop rewrites. Harmless where a provider ignores it, redundant on a model pinned
+        # to one endpoint.
         #
         # PER RUN, not a global constant. The key exists to give routing AFFINITY to requests
         # sharing a prefix family; the previous fixed "petab-mcp-agent" told the provider that

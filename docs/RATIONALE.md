@@ -1,5 +1,14 @@
 # Rationale Log
 
+#200 Anthropic caches nothing unless the request marks breakpoints, so
+`driver._apply_cache_breakpoints` marks two -- the system prompt and the last markable message --
+for any model in `models._CACHING`. On the CONVERTED payload, because `langchain_openai` keeps
+`cache_control` only on system and human blocks and the last message in this loop is almost always
+a tool result. NOT the top-level `cache_control` field: on the endpoints this account can reach
+that bills the 1h write premium and still returns `cached: 0`. One endpoint tag, no `order`
+fallback, and a 1h TTL, because each provider caches separately and the longest gap between two
+calls here is a fit, not a turn. Measured: cold $2.51/M, then $0.22/M reading 6014 of 6026 tokens.
+
 #243 A `make_changes` result carries no flat `warnings` list. The payload diet cut it at the tool
 boundary only (17% of payload bytes, duplicated on 62.8% of 915 payloads), so `bundle_result` kept
 computing a key `server.make_changes` popped straight back off while four docstrings went on
@@ -79,7 +88,6 @@ it the arms pool in `metrics_history.csv` as if they were one configuration, the
 (aicc at n <= k+1, tic against a reference written without a `k_eff`) the gate falls back to
 canonical BIC and says so in `criterion_note`, rather than failing every run on that example as
 "could not evaluate".
-
 
 #179 `identifiability.effective_parameter_count` does not take the `hess` the objective reports,
 because AMICI's `ReturnData::fFIM` is `sresᵀ·sres` alone: its own source comment (`rdata.cpp`)

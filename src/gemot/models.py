@@ -9,6 +9,11 @@ it serves OpenAI's documented standard tier, never the Bedrock/Azure copies. (We
 
 ``MODELS`` maps a short alias to its OpenRouter id so ``--model luna`` works; :func:`resolve`
 passes a full id through unchanged.
+
+Three per-model request tables live here, each keyed by OpenRouter id and omitted from the request
+when a model has no entry: ``_ROUTING`` (:func:`provider_routing`) pins the endpoint,
+``_REASONING`` (:func:`reasoning_config`) turns thinking on where it ships off, and ``_CACHING``
+(:func:`caching_config`) asks for prompt caching where the provider does not do it implicitly.
 """
 
 from __future__ import annotations
@@ -28,6 +33,9 @@ MODELS: dict[str, str] = {
     "grok":         "x-ai/grok-4.20",
     "gemini-flash": "google/gemini-3.6-flash",
     "gemini-pro":   "google/gemini-3.1-pro-preview",
+    # Anthropic, also opt-in: the only models whose caching is not implicit (``_CACHING``).
+    "sonnet":       "anthropic/claude-sonnet-5",
+    "opus":         "anthropic/claude-opus-5",
 }
 
 #: Default lead. 1M-token context, single pinned provider (Z.AI), and the best measured accuracy
@@ -151,6 +159,10 @@ _ROUTING: dict[str, dict] = {
                                                 "google-vertex/eu"],
                                       "only":  ["google-vertex/global", "google-vertex",
                                                 "google-vertex/eu"]},
+    # Anthropic: one tag, no `order` fallback -- pinned for the cache namespace, not the price.
+    # `anthropic`, `claude-on-aws` and `azure/*` are ZDR-blocked here (404, verified per tag).
+    "anthropic/claude-sonnet-5": {"only": ["google-vertex/global"]},
+    "anthropic/claude-opus-5":   {"only": ["google-vertex/global"]},
 }
 
 
@@ -169,6 +181,21 @@ def reasoning_config(model_id: str) -> dict | None:
     """The OpenRouter ``reasoning`` block for ``model_id``, or ``None`` to leave it at the
     provider default (which for most models already means thinking is on)."""
     return _REASONING.get(model_id)
+
+
+#: Per-model ``cache_control`` block for a provider that caches nothing unless asked, placed as
+#: message breakpoints by ``driver._apply_cache_breakpoints``. See docs/RATIONALE.md.
+_CACHING: dict[str, dict] = {
+    "anthropic/claude-sonnet-5": {"type": "ephemeral", "ttl": "1h"},
+    "anthropic/claude-opus-5":   {"type": "ephemeral", "ttl": "1h"},
+}
+
+
+def caching_config(model_id: str) -> dict | None:
+    """The ``cache_control`` block for ``model_id``, or ``None`` where the provider caches on its
+    own — which is not "do not cache". Do not add an entry for one of those: Gemini bills cache
+    writes only against explicit breakpoints, so it would start charging for what is free."""
+    return _CACHING.get(model_id)
 
 
 # ---------------------------------------------------------------- why gemini-2.5-flash-lite is out

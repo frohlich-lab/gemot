@@ -1,5 +1,5 @@
 """Unit tests for agent._token_accountant — the callback that sums per-run token usage
-(prompt / completion / cache_read) written into result.json. langchain_core is a
+(prompt / completion / cache_read / cache_write) written into result.json. langchain_core is a
 harness-only dependency, so skip where absent."""
 
 from __future__ import annotations
@@ -26,9 +26,11 @@ def _resp(usage_list=None, llm_output=None, metas=None):
     return type("R", (), {"generations": generations, "llm_output": llm_output})()
 
 
-def _um(inp, out, cache=0):
+def _um(inp, out, cache=0, written=0):
+    """langchain's UsageMetadata. `cache_creation` is where langchain_openai puts OpenRouter's
+    `prompt_tokens_details.cache_write_tokens` — the premium-priced column."""
     return {"input_tokens": inp, "output_tokens": out,
-            "input_token_details": {"cache_read": cache}}
+            "input_token_details": {"cache_read": cache, "cache_creation": written}}
 
 
 @pytest.mark.asyncio
@@ -50,6 +52,23 @@ async def test_missing_cache_read_defaults_to_zero():
     await acc.on_llm_end(_resp([{"input_tokens": 500, "output_tokens": 20}]))  # no details
     t = acc.totals()
     assert t["prompt_tokens"] == 500 and t["cache_read_tokens"] == 0
+    # Zero rather than a missing key: "never writes" and "we failed to record it" must differ.
+    assert t["cache_write_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_sums_cache_writes_separately_from_reads():
+    """Reads bill ~0.1x input and writes 1.25-2x, so summing them hides a cache that kept going
+    cold — which `cost_usd` shows only as a bigger bill."""
+    acc = _token_usage._token_accountant()
+    await acc.on_llm_end(_resp([_um(10_000, 100, cache=8_000, written=1_500)]))
+    await acc.on_llm_end(_resp([_um(12_000, 80, cache=11_000, written=900)]))
+    t = acc.totals()
+    assert t["cache_read_tokens"] == 19_000
+    assert t["cache_write_tokens"] == 2_400
+    # novel = prompt - cache_read: the writes are the part of it charged at the premium, not a
+    # third disjoint bucket, so they are NOT subtracted twice.
+    assert t["novel_tokens"] == 3_000
 
 
 @pytest.mark.asyncio
@@ -57,10 +76,12 @@ async def test_falls_back_to_llm_output_when_no_usage_metadata():
     acc = _token_usage._token_accountant()
     await acc.on_llm_end(_resp(llm_output={"token_usage": {
         "prompt_tokens": 700, "completion_tokens": 30,
-        "prompt_tokens_details": {"cached_tokens": 400}}}))
+        "prompt_tokens_details": {"cached_tokens": 400, "cache_write_tokens": 250}}}))
     t = acc.totals()
     assert t["prompt_tokens"] == 700 and t["completion_tokens"] == 30
     assert t["cache_read_tokens"] == 400 and t["n_llm_calls"] == 1
+    # The raw OpenRouter spelling, not langchain's: this path reads the provider's own record.
+    assert t["cache_write_tokens"] == 250
 
 
 @pytest.mark.asyncio
