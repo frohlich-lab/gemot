@@ -155,3 +155,8 @@ slurm/_probes/
 
 # Sweep figures rendered at the repo root by slurm/sweep_heatmap.py -o.
 sweep_*.png
+
+# Held-out (validation) measurements materialized from the pinned collection alongside
+# problem/ — same provenance, same reason to stay untracked. Deliberately OUTSIDE problem/ so the
+# tree the MCP server is pointed at never contains the data the model is scored against.
+examples/*/validation/

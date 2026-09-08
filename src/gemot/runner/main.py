@@ -14,6 +14,7 @@ from pathlib import Path
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
+from .. import benchmark
 from ..bio_sessions import open_bio_sessions
 from ..explorer.archive import archive_run
 from ..fit_budget import (FIT_BUDGET_CEILING_S, FIT_N_WORKERS, FIT_PER_START_TIMEOUT_S,
@@ -50,10 +51,16 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
     # (wiped each run) to avoid recompiling identical models on repeat runs.
     build_root = scenario.example_dir / ".amici_build"
     host, port = "127.0.0.1", _free_port()
+    # HELD-OUT data, if this example has any: read from the example dir, NOT from `work/` — `work/`
+    # is a copy of `problem/` and the held-out table is deliberately not in there (see
+    # `benchmark.VALIDATION_DIR`). Passed as "" when absent, in which case the server registers no
+    # `evaluate_validation_data` tool at all — and the judge, gated on the same file, does not ask
+    # for one, so the seventeen examples without held-out data are untouched by any of this.
+    validation_tsv = benchmark.validation_measurements_path(scenario.example_dir)
     server_cmd = [
         sys.executable, "-c", _SERVER_BOOTSTRAP,
         str(work_yaml), str(build_root), args.reference_validation, host, str(port),
-        str(args.n_starts),
+        str(args.n_starts), str(validation_tsv) if validation_tsv.is_file() else "",
     ]
     server_log_path = work / "server.log"
     amici_log_path = work / "amici_build.log"

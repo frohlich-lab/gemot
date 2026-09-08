@@ -13,7 +13,12 @@ import time
 from pathlib import Path
 
 # --------------------------------------------------------------------------- server
-# Launched with: python -c <bootstrap> <yaml> <build_root> <ref_mode> <host> <port> <n_starts>
+# Launched with:
+#   python -c <bootstrap> <yaml> <build_root> <ref_mode> <host> <port> <n_starts> <validation_tsv>
+# <validation_tsv> is "" for an example with no held-out data, and every argument is always passed —
+# positional and fixed-arity, so a missing one is a hard ValueError ("not enough values to unpack")
+# at startup rather than a server that silently comes up without the judge's held-out read
+# registered.
 _SERVER_BOOTSTRAP = (
     "import sys, os, threading, time\n"
     # Parent-death watchdog: if run.py dies (incl. SIGKILL by the batch watchdog, which skips
@@ -33,12 +38,13 @@ _SERVER_BOOTSTRAP = (
     # AMICI's C++ build-toolchain output (captured to work/amici_build.log).
     "uvicorn.Config = lambda *a, **k: _Config(*a, **{**k, 'access_log': False})\n"
     "from petab_mcp.server import create_server\n"
-    "yaml_path, build_root, ref_mode, host, port, n_starts = sys.argv[1:7]\n"
+    "yaml_path, build_root, ref_mode, host, port, n_starts, validation_tsv = sys.argv[1:8]\n"
     # The agent's own commits don't pass n_starts, so make the server's
     # default multistart count match --n-starts — otherwise agent fits use the low library
     # default (5), too few for the harder several-parameter oscillator fits.
     "srv = create_server(yaml_path, build_root=build_root, reference_mode=ref_mode,\n"
-    "                    auto_fit_starts=int(n_starts))\n"
+    "                    auto_fit_starts=int(n_starts),\n"
+    "                    validation_measurements=validation_tsv or None)\n"
     # fastmcp >=3.4 dropped `srv.settings`; host/port are passed to run() (forwarded to the
     # streamable-http transport's run_http_async(host=, port=)).
     "srv.run(transport='streamable-http', host=host, port=int(port))\n"

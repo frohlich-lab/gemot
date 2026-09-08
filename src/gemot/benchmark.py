@@ -508,11 +508,129 @@ def _blind_observables(prob, blinding: dict[str, dict]) -> None:
         odf.loc[obs_id, OBSERVABLE_NAME] = str(spec["measures"])
 
 
+#: Where an example's HELD-OUT measurements land, relative to its example dir. A sibling of
+#: ``problem/``, deliberately NOT inside it: the runner copies ``problem/`` wholesale into ``work/``
+#: and points the MCP server at it, so a file placed there is one directory listing away from the
+#: agent. Nothing about the current server would expose it — but "the held-out data is not in the
+#: tree the server is given" is a property worth having structurally rather than by audit.
+VALIDATION_DIR = "validation"
+
+#: The held-out measurement table inside :data:`VALIDATION_DIR`.
+VALIDATION_MEASUREMENTS = "measurements.tsv"
+
+
+def validation_measurements_path(example_dir: Path) -> Path:
+    """Where :func:`materialize` writes this example's held-out measurements (may not exist)."""
+    return Path(example_dir) / VALIDATION_DIR / VALIDATION_MEASUREMENTS
+
+
+def _validation_measurement_df(*, name: str, validation_yaml: str, collection: Path | None,
+                               published, training_measurement_df):
+    """The held-out measurement table for ``name``, in the PUBLISHED vocabulary, fully checked.
+
+    ``validation_yaml`` is a path relative to the benchmark's directory in the collection — fujita's
+    ``test_data/...yaml``, the published problem for the EGF pulse + ramp protocols. That yaml points
+    at the SAME model, condition, observable and parameter files and differs only in its measurement
+    files, which is why a held-out score is comparable: the model is re-tested, not re-specified.
+    CHECKED here rather than trusted.
+
+    ``published`` is the PRISTINE training problem — before ``materialize`` relabels, merges or
+    blinds it — because that is what the held-out yaml must match; ``training_measurement_df`` is
+    the training table in the same vocabulary, for the disjointness check.
+
+    Returned in the PUBLISHED vocabulary: ``rename_ids`` and the observable merge are applied by the
+    CALLER (only ``materialize`` has the map, and the reference side must not apply them at all).
+    Blinding is never applied — it only touches the observable table.
+
+    Also the one place the FLATTENING hazard can be caught, because deciding it needs the
+    UNFLATTENED problem, which is what ``published`` is on both call paths; by score time the
+    reference's copy is already flattened and the verdict is unrecoverable.
+    """
+    import petab.v1 as petab
+
+    bdir = benchmark_dir(name, collection)
+    path = bdir / validation_yaml
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{name}: validation_yaml {validation_yaml!r} does not exist under {bdir}")
+    vprob = petab.Problem.from_yaml(str(path))
+
+    # The held-out problem must differ from the training one ONLY in its measurements. Compared on
+    # the tables that define the estimation problem; the visualization table is deliberately not
+    # compared (it describes plots, and the collection's held-out variants do carry their own).
+    for label, mine, theirs in (("observable", published.observable_df, vprob.observable_df),
+                                ("condition", published.condition_df, vprob.condition_df),
+                                ("parameter", published.parameter_df, vprob.parameter_df)):
+        if theirs is None or not mine.equals(theirs):
+            raise ValueError(
+                f"{name}: the validation problem's {label} table differs from the published "
+                f"training one. A held-out set must re-use the SAME problem (same model, same "
+                f"observables, same conditions, same parameters) and change only the measurements "
+                f"— otherwise the two scores are not comparable.")
+
+    vmeas = vprob.measurement_df
+    if vmeas is None or vmeas.empty:
+        raise ValueError(f"{name}: validation_yaml {validation_yaml!r} lists no measurements")
+    _check_held_out_rows(name, vprob, published, training_measurement_df)
+    return vmeas
+
+
+def _check_held_out_rows(name: str, vprob, published, training_measurement_df) -> None:
+    """The checks every held-out set passes at SETUP, whichever kind it is: petab's own lint on both
+    measurement tables, the flattening refusal, and row-level disjointness from the training data.
+    """
+    import pandas as pd
+    from petab.v1.C import OBSERVABLE_ID, SIMULATION_CONDITION_ID, TIME
+    from petab.v1.lint import check_measurement_df
+
+    from petab_mcp.fitting import needs_flattening
+
+    vmeas = vprob.measurement_df
+    # petab's own measurement-table lint on BOTH operands (required columns, observable ids, override
+    # counts, numeric measurements) before the disjointness check below indexes them.
+    for label, frame, odf in (("validation", vmeas, vprob.observable_df),
+                              ("published training", training_measurement_df,
+                               published.observable_df)):
+        try:
+            check_measurement_df(frame, odf)
+        except (AssertionError, ValueError) as exc:
+            raise ValueError(
+                f"{name}: the {label} measurement table fails petab's lint: {exc}") from exc
+
+    # Flattening: refused at SETUP, where `published` is still unflattened (see the docstring).
+    for label, prob_ in (("published training", published), ("validation", vprob)):
+        if needs_flattening(prob_):
+            raise ValueError(
+                f"{name}: the {label} measurement table needs petab's timepoint-specific "
+                f"flattening, which mints one observable per distinct override — so the training "
+                f"and held-out tables would flatten to different observable sets and their "
+                f"likelihoods could not be compared. Held-out scoring is not supported for this "
+                f"problem; drop VALIDATION_YAML.")
+
+    # HELD OUT means held out: a row the model was fitted to cannot also test it. Checked at row
+    # level rather than by condition, because a held-out set may legitimately withhold later
+    # timepoints of a condition the training set also uses.
+    # TIME is compared as a FLOAT, not stringified: the two tables are parsed from different TSVs,
+    # so the same instant can arrive as 1 in one and 1.0 in the other, and `.astype(str)` would
+    # make those different keys — letting a genuinely in-sample row past the check.
+    def _keys(frame):
+        ids = frame[[OBSERVABLE_ID, SIMULATION_CONDITION_ID]].astype(str)
+        times = pd.to_numeric(frame[TIME], errors="coerce").astype(float)
+        return set(zip(ids[OBSERVABLE_ID], ids[SIMULATION_CONDITION_ID], times))
+
+    shared = _keys(vmeas) & _keys(training_measurement_df)
+    if shared:
+        raise ValueError(
+            f"{name}: {len(shared)} held-out measurement row(s) are also in the TRAINING table "
+            f"(e.g. {sorted(shared)[:3]}); the score would be partly in-sample")
+
+
 def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
                 shipped_param_overrides: dict[str, dict] | None = None,
                 rename_ids: dict[str, str] | None = None,
                 preequilibration: dict[str, str] | None = None,
                 observable_blinding: dict[str, dict] | None = None,
+                validation_yaml: str | None = None,
                 collection: Path | None = None) -> dict[str, Any]:
     """Write ``example_dir/problem/`` from the pinned collection — the fast, no-fit path run by
     ``setup.py``. Copies the published measurements/observables/conditions VERBATIM (flattening
@@ -536,12 +654,35 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     time-dependent stimulus can be switched OFF during preequilibration; the model then RELAXES to
     the basal steady state rather than hard-coding it as closed-form ICs. Needed when the shipped
     data starts at a stimulus-free steady state whose IC↔rate-constant constraint the agent's freely
-    built model would otherwise lack (see fiedler)."""
+    built model would otherwise lack (see fiedler).
+
+    ``validation_yaml`` names a published PEtab problem inside the benchmark's own directory whose
+    measurements are HELD OUT — data from the same experiment under conditions the training set does
+    not cover (fujita's ``test_data/`` EGF pulse + ramp protocols). Its measurement table is written
+    to ``<example_dir>/validation/measurements.tsv``, OUTSIDE ``problem/`` so it never enters the
+    tree the MCP server is pointed at, and the judge scores the finished model against it
+    report-only (see :mod:`petab_mcp.validation_data`). Everything else about the example is
+    unchanged: the agent is handed exactly the same problem, so runs with and without this are
+    directly comparable and an example's ``Scenario.version`` does not move for it.
+
+    """
     from petab.v1.C import CONDITION_NAME
+
 
     problem_dir = Path(example_dir) / "problem"
     problem_dir.mkdir(parents=True, exist_ok=True)
     prob = _load_problem(name, collection, flatten=False)
+
+    # BEFORE any rewriting: `prob` is still exactly as the collection ships it, which is what the
+    # held-out yaml has to be checked against — so it serves as BOTH `published` and the training
+    # table, and nothing is re-parsed. (Handing `_validation_measurement_df` a second
+    # freshly-loaded copy cost another full SBML + four-TSV parse for tables identical to these.)
+    # `prob` is mutated in place from here on.
+    validation_meas = None
+    if validation_yaml:
+        validation_meas = _validation_measurement_df(
+            name=name, validation_yaml=validation_yaml, collection=collection,
+            published=prob, training_measurement_df=prob.measurement_df)
 
     def _relabel(v):
         if not isinstance(v, str):
@@ -559,8 +700,19 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
             prob.observable_df[_col] = prob.observable_df[_col].map(_relabel)
         for _col in prob.measurement_df.columns:
             prob.measurement_df[_col] = prob.measurement_df[_col].map(_relabel)
+        if validation_meas is not None:
+            # The held-out table speaks the SAME vocabulary as the shipped one or it references
+            # observables/parameters that no longer exist. Same rewrite, same map.
+            for _col in validation_meas.columns:
+                validation_meas[_col] = validation_meas[_col].map(_relabel)
 
     merged = _merge_equivalent_observables(prob)
+    if merged and validation_meas is not None:
+        # Same fold, same table. `_merge_equivalent_observables` rewrites the TRAINING measurement
+        # table's observableId in place; a held-out table left unfolded would reference the retired
+        # per-dataset ids and fail the observable check in `validation_data._table_mismatch`.
+        from petab.v1.C import OBSERVABLE_ID as _OID
+        validation_meas[_OID] = validation_meas[_OID].map(lambda v: merged.get(str(v), v))
     if merged and observable_blinding:
         observable_blinding = _collapse_blinding(observable_blinding, merged)
 
@@ -573,6 +725,16 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
         from petab.v1.C import PREEQUILIBRATION_CONDITION_ID
         # Every measurement preequilibrates at the synthesized basal condition (added to `cond` below).
         prob.measurement_df[PREEQUILIBRATION_CONDITION_ID] = preequilibration["preeq_condition_id"]
+        if validation_meas is not None:
+            # EVERY measurement means the held-out ones too. Left off, the training data would be
+            # fitted from the basal steady state while the held-out data was predicted from the
+            # model's declared t=0 — and a model built to RELAX to that steady state (which is the
+            # whole point of this knob, see fiedler) predicts from the wrong initial state. The
+            # two scores would then describe different simulations and `delta_nll` would be a
+            # silent, arbitrarily wrong number. The synthesized condition is in the shipped
+            # condition table either way, so nothing else has to change.
+            validation_meas[PREEQUILIBRATION_CONDITION_ID] = \
+                preequilibration["preeq_condition_id"]
 
     prob.measurement_df.to_csv(problem_dir / "measurements.tsv", sep="\t", index=False)
     prob.observable_df.reset_index().to_csv(problem_dir / "observables.tsv", sep="\t", index=False)
@@ -622,11 +784,25 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
 
     _write_empty_sbml(problem_dir)
     _write_problem_yaml(problem_dir)
+    out = {"measurements": len(prob.measurement_df), "observables": len(prob.observable_df),
+           "conditions": len(prob.condition_df)}
     print(f"[setup] {name}: materialized {len(prob.measurement_df)} measurements, "
           f"{len(prob.observable_df)} observables, {len(prob.condition_df)} condition(s); "
           f"shipped params {shipped_param_ids}")
-    return {"measurements": len(prob.measurement_df), "observables": len(prob.observable_df),
-            "conditions": len(prob.condition_df)}
+    vpath = validation_measurements_path(example_dir)
+    if validation_meas is not None:
+        from petab.v1.C import SIMULATION_CONDITION_ID
+        vpath.parent.mkdir(parents=True, exist_ok=True)
+        validation_meas.to_csv(vpath, sep="\t", index=False)
+        out["validation_measurements"] = len(validation_meas)
+        # Disjointness is enforced at ROW level (`_check_held_out_rows`), so a held-out condition
+        # may legitimately also appear in training with other timepoints — hence "condition(s)",
+        # with no claim that they are absent from the training data.
+        print(f"[setup] {name}: held-out validation set -> {vpath.name}: "
+              f"{len(validation_meas)} measurement(s) over "
+              f"{validation_meas[SIMULATION_CONDITION_ID].nunique()} condition(s), none of them a "
+              f"training row (from {validation_yaml})")
+    return out
 
 
 def _apply_param_overrides(problem, name: str, param_overrides: dict[str, dict] | None) -> None:
@@ -660,7 +836,9 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
                         per_start_timeout: float | None = None,
                         collection: Path | None = None,
                         free_parameters: list[str] | None = None,
-                        param_overrides: dict[str, dict] | None = None) -> dict[str, Any]:
+                        param_overrides: dict[str, dict] | None = None,
+                        validation_yaml: str | None = None,
+                        ) -> dict[str, Any]:
     """Regenerate the committed ``reference.json`` (the BIC bar): fit the PRISTINE published PEtab
     problem EXACTLY as it ships. Run only via ``setup.py --refit`` — slow, and its output is committed.
 
@@ -709,11 +887,13 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     NOT be used to carry the candidate's IC / parametrisation conventions into the reference: that is
     the reconcile-mirroring #90 warns about, and it cancels shared handicaps instead of measuring
     them. Every use needs an entry in ``examples/BENCHMARK_NOTES.md`` (see oliveira).
+
+    ``validation_yaml`` additionally records the reference's HELD-OUT score under ``validation`` —
+    the predictive bar. It is the SAME argument ``materialize`` takes, re-resolved here from the
+    collection rather than read off the materialized copy, so the reference is never scored against
+    a stale ``validation/measurements.tsv`` left behind by an earlier definition of the example.
+
     """
-    import json
-
-    from petab.v1.C import ESTIMATE
-
     from .simulate import write_reference_from_problem
 
     problem_dir = Path(example_dir) / "problem"
@@ -728,12 +908,45 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     # compare two different problems.
     _apply_param_overrides(problem, name, param_overrides)
 
+    # The held-out table in the PUBLISHED vocabulary — this side fits the pristine collection
+    # problem, whose observable ids are the original ones, so the relabel/merge that
+    # `materialize` applies for the AGENT's copy must NOT be applied here. Loaded unflattened for
+    # the same reason `materialize` compares unflattened tables: flattening is an AMICI detail
+    # applied downstream, and the yaml's own tables are what the identity check is about.
+    validation_meas = None
+    if validation_yaml:
+        pristine = _load_problem(name, collection, flatten=False)
+        validation_meas = _validation_measurement_df(
+            name=name, validation_yaml=validation_yaml, collection=collection,
+            published=pristine, training_measurement_df=pristine.measurement_df)
+
     if not free_parameters:
-        return write_reference_from_problem(
+        ref = write_reference_from_problem(
             problem, build_dir=build_dir / "pristine",
             model_name=f"{name}_pristine", path=problem_dir / "reference.json",
             n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout,
         )
+    else:
+        ref = _write_freed_reference(
+            name=name, problem=problem, problem_dir=problem_dir, build_dir=build_dir,
+            collection=collection, free_parameters=free_parameters,
+            param_overrides=param_overrides, validation_meas=validation_meas,
+            n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout)
+    return ref
+
+
+def _write_freed_reference(*, name: str, problem, problem_dir: Path, build_dir: Path,
+                           collection: Path | None, free_parameters: list[str],
+                           param_overrides: dict[str, dict] | None, validation_meas,
+                           n_starts: int, n_workers: int | None,
+                           per_start_timeout: float | None) -> dict[str, Any]:
+    """The ``REFERENCE_FREE_PARAMS`` arm of :func:`write_reference_for` (alkan, bachmann,
+    raimundez): fit the published split and the freed one, keep the better, write the result."""
+    import json
+
+    from petab.v1.C import ESTIMATE
+
+    from .simulate import write_reference_from_problem
 
     missing = [p for p in free_parameters if p not in problem.parameter_df.index]
     if missing:

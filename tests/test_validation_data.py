@@ -11,6 +11,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from petab_harness import benchmark
 
 
 def _problem(measurements, *, observables=("obs_A",), conditions=("c_train", "c_test")):
@@ -210,3 +211,87 @@ def test_the_server_only_registers_the_tool_when_given_held_out_data(monkeypatch
     assert len(calls) == 1
     assert isinstance(calls[0], validation_data.HeldOut)
     assert len(calls[0].measurement_df) == 2
+
+
+def test_a_held_out_row_that_is_also_a_training_row_is_refused(monkeypatch, tmp_path):
+    """The whole claim of the number is that the model never saw this data. An overlap makes it
+    partly in-sample, which no downstream check could detect — the likelihoods would simply be a bit
+    too good, indistinguishable from a model that predicts well."""
+    train = _rows("c_train")
+    published = _problem(train)
+    overlapping = pd.concat([_rows("c_test"), _rows("c_train")], ignore_index=True)
+
+    monkeypatch.setattr(benchmark, "benchmark_dir", lambda *a, **k: tmp_path)
+    (tmp_path / "held_out.yaml").write_text("format_version: 1\n")
+
+    import petab.v1 as petab
+    held = _problem(overlapping)
+    monkeypatch.setattr(petab.Problem, "from_yaml", staticmethod(lambda *a, **k: held))
+
+    with pytest.raises(ValueError, match="also in the TRAINING table"):
+        benchmark._validation_measurement_df(
+            name="X", validation_yaml="held_out.yaml", collection=None,
+            published=published, training_measurement_df=train)
+
+
+
+def test_a_held_out_problem_that_changed_the_model_tables_is_refused(monkeypatch, tmp_path):
+    """A held-out set is the SAME problem's data under unseen conditions. If its condition or
+    observable table differs, the two scores are computed over two different models and their
+    difference means nothing — so this refuses rather than scoring it."""
+    train = _rows("c_train")
+    published = _problem(train)
+    # same measurements-are-disjoint story, but the held-out problem declares an extra condition
+    held = _problem(_rows("c_test"), conditions=("c_train", "c_test", "c_extra"))
+
+    monkeypatch.setattr(benchmark, "benchmark_dir", lambda *a, **k: tmp_path)
+    (tmp_path / "held_out.yaml").write_text("format_version: 1\n")
+    import petab.v1 as petab
+    monkeypatch.setattr(petab.Problem, "from_yaml", staticmethod(lambda *a, **k: held))
+
+    with pytest.raises(ValueError, match="condition table differs"):
+        benchmark._validation_measurement_df(
+            name="X", validation_yaml="held_out.yaml", collection=None,
+            published=published, training_measurement_df=train)
+
+
+
+def test_an_absent_validation_yaml_names_itself(monkeypatch, tmp_path):
+    """A typo'd path must say which path, at setup time. Falling through to "no held-out data" would
+    leave the example silently unvalidated for as long as nobody read the setup log."""
+    monkeypatch.setattr(benchmark, "benchmark_dir", lambda *a, **k: tmp_path)
+    with pytest.raises(FileNotFoundError, match="nope.yaml"):
+        benchmark._validation_measurement_df(
+            name="X", validation_yaml="nope.yaml", collection=None,
+            published=_problem(_rows("c_train")), training_measurement_df=_rows("c_train"))
+
+
+
+def test_the_held_out_table_lands_outside_the_problem_directory():
+    """Structural, not incidental: the runner copies ``problem/`` into ``work/`` and points the MCP
+    server at it, so a held-out table inside ``problem/`` would sit in the tree the agent's server
+    reads. The path helper is what every writer and reader goes through, so pin it."""
+    path = benchmark.validation_measurements_path(benchmark.Path("/tmp/ex"))
+    assert path.parent.name == benchmark.VALIDATION_DIR
+    assert path.parent.name != "problem"
+    assert path.name == benchmark.VALIDATION_MEASUREMENTS
+
+
+def test_a_time_written_as_1_and_1_0_is_the_same_held_out_row(monkeypatch, tmp_path):
+    """The two tables are parsed from different TSVs, so one can render a timepoint as `1` and the
+    other as `1.0`. Stringifying the key made those different rows and let a genuinely in-sample
+    row past the disjointness check — the one guard that keeps the held-out score out-of-sample."""
+    import pandas as pd
+
+    def _table(time_value):
+        return pd.DataFrame({"observableId": ["obs_A"], "simulationConditionId": ["c1"],
+                             "time": [time_value], "measurement": [1.0]})
+
+    class _V:
+        measurement_df = _table(1.0)
+        observable_df = _problem(_rows("c1")).observable_df
+    monkeypatch.setattr("petab.v1.lint.check_measurement_df", lambda *a, **k: None)
+    monkeypatch.setattr("petab_mcp.fitting.needs_flattening", lambda *a, **k: False)
+
+    with pytest.raises(ValueError, match="also in the TRAINING table"):
+        benchmark._check_held_out_rows("Toy", _V(), _problem(_rows("c1")), _table(1))
