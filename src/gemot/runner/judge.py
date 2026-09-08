@@ -121,6 +121,32 @@ async def _restore_best_checkpoint(call, reference=None) -> None:
               f"(v{fallback} scores better but its sigma would fail the gate)")
 
 
+def _candidate_k(params, final) -> "tuple[int, int, list[str]]":
+    """``(k, k_estimated, hardcoded_constants)`` for the model being scored.
+
+    ``k_estimated`` counts ``get_parameters`` rows with ``estimate`` truthy — NOT
+    ``len(fitted_parameters)``, which also counts fixed params (noise σ, the reconcile's parametric
+    initial conditions) and would inflate the penalty and diverge from how reference.json counts k.
+    Rows the read appends for parameters the PROBLEM ships but the model never declared
+    (``in_model: false``, since #131) are not free parameters of the model being scored and are
+    skipped — counting them charged a candidate that left a shipped estimated row undeclared for
+    a parameter it never had (brannmark ships eight such rows), and made this k disagree with the
+    server's ``n_estimated`` by exactly those rows. ``hardcoded_constants`` is the list
+    ``get_fit_summary`` reports (petab_mcp.literals): the
+    numeric literals in the model's math outside the free structural set, each of which the
+    server's own bic prices as one parameter. The judge adds them too, else the headline ΔBIC would
+    reward replacing the parameter vector with numerals (issue #180). Re-derived here from the two
+    reads rather than copied off the server's ``k``, so the two stay independently derived yet
+    equal. A summary that lacks the list (a server predating it) charges none.
+    """
+    k_estimated = (sum(1 for p in params
+                       if isinstance(p, dict) and p.get("estimate") and p.get("in_model", True))
+                   if isinstance(params, list) else 0)
+    hardcoded = final.get("hardcoded_constants") if isinstance(final, dict) else None
+    hardcoded = [str(c) for c in hardcoded] if isinstance(hardcoded, list) else []
+    return k_estimated + len(hardcoded), k_estimated, hardcoded
+
+
 def _stored_k_and_n(stored) -> "tuple[int | None, int | None]":
     """``(k, n)`` for a stored version: its ESTIMATED-parameter count and its data-point count.
 
@@ -297,9 +323,13 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     # k = number of ESTIMATED parameters (estimate=1), NOT len(fitted_parameters): the latter
     # also counts fixed params (noise σ, and the reconcile-added parametric initial
     # conditions), which would inflate the penalty and diverge from how reference.json counts
-    # k. Both sides must count free parameters the same way.
+    # k. Both sides must count free parameters the same way. PLUS the candidate's hardcoded
+    # constants (petab_mcp.literals): a fitted value frozen into a rate law is priced as the
+    # parameter it is, exactly as the server's own bic prices it — otherwise the headline ΔBIC
+    # would reward replacing the parameter vector with numerals (issue #180). The reference has
+    # none by construction: its published constants are fixed rows or the author's literals.
     params = await call("get_parameters")
-    k = sum(1 for p in params if p.get("estimate")) if isinstance(params, list) else 0
+    k, k_estimated, hardcoded = _candidate_k(params, final)
     chi2 = final.get("chi2") if isinstance(final, dict) else None
     chi2 = float(chi2) if chi2 is not None else None
     # Residual-structure tests (sign, runs, replicate lack-of-fit) of the SCORED model — the checkpoint was already
@@ -580,6 +610,9 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         "delta": delta,
         "chi2": chi2,
         "k": k,
+        # k's two addends, so a k above the estimated-row count is auditable after the fact.
+        "k_estimated": k_estimated,
+        "hardcoded_constants": hardcoded,
         "n": n,
         "k_eff": k_eff,
         "bic": bic_cand,

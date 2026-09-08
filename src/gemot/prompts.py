@@ -215,7 +215,12 @@ DEFAULT_SYSTEM_PROMPT = (
         "space, or BOTH when a structural change needs bounds; at least one is required. ") +
     "Your step "
     "budget is the scarce resource, so put a whole coherent change in one call rather than "
-    "dribbling it out. The result IS the fit (`bic`, `neg_log_likelihood`, `n_estimated` = k). "
+    "dribbling it out. The result IS the fit (`bic`, `neg_log_likelihood`, `k` = `n_estimated` + "
+    "`hardcoded_constants`: a numeric literal in your model's math is a parameter too, bar a few "
+    "structural ones, and the result lists the ones you are being charged for. So freezing a "
+    "value you fitted costs what estimating it costs and buys none of the flexibility, an "
+    "ultra-narrow box does not dodge it either, and a constant that is genuinely known is one "
+    "the problem ships FIXED \u2014 reference it by name). "
     "When a call does NOT produce a version, READ the result before retrying — never resubmit "
     "the same failing model; the result says whether the change is GONE (`applied: false` — "
     "rejected, or reverted because it could not be scored, so fix what the error names) or in "

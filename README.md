@@ -133,6 +133,11 @@ Principles to hold onto when extending this package.
   `result.json` carries the whole table. Named penalties and nothing between them: the fixed
   effect-size thresholds carry over when the penalty is swapped, not when it is scaled. See
   [`src/petab_mcp/criteria.py`](src/petab_mcp/criteria.py) before adding one.
+- **A hardcoded constant is not free.** `k` is the estimated parameters plus every numeric
+  literal in the model's math bar a few structural ones (each distinct value once — see
+  [`src/petab_mcp/literals.py`](src/petab_mcp/literals.py)), so freezing a fitted value costs
+  what estimating it costs and there is no threshold to round past. A genuinely known constant
+  ships as a fixed row: the problem author's call, not the agent's.
 
 ## Development
 

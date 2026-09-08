@@ -35,7 +35,7 @@ _RESULT_FIELDS = (
     "scenario", "example_version", "model", "driver", "success", "stop_reason",
     "baseline_nll", "final_nll", "delta",
     "chi2", "chi2_dof", "chi2_gof_pvalue",
-    "k", "n", "k_eff", "bic", "bic_reference", "delta_bic", "bic_threshold",
+    "k", "k_estimated", "n", "k_eff", "bic", "bic_reference", "delta_bic", "bic_threshold",
     "criterion", "criterion_note", "criterion_value", "criterion_reference", "delta_criterion",
     "head_version", "n_errors", "n_tool_errors", "tool_calls",
     # Edits the server REFUSED. Flat columns, not the nested `edit_rejects` dict from result.json:

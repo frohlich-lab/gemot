@@ -523,7 +523,9 @@ def load_variants_from_spans(df, n_default: int | None) -> list[dict]:
             "nll": fit.get("neg_log_likelihood"),
             "chi2": fit.get("chi2"),
             "bic": fit.get("bic"),
-            "k": fit.get("n_estimated"),
+            # `k` (n_estimated + hardcoded constants) where the payload carries it; older
+            # traces only have n_estimated, which was k then.
+            "k": fit.get("k") if fit.get("k") is not None else fit.get("n_estimated"),
             "n": fit.get("n_data_points") or n_default,
             "is_new_best": improvement.get("is_new_best"),
             # The FIT's timestamp — a variant IS a fit snapshot, and that is what the on-disk

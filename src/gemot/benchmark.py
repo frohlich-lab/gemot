@@ -831,12 +831,25 @@ def _apply_param_overrides(problem, name: str, param_overrides: dict[str, dict] 
           f"{sorted(param_overrides)} (see BENCHMARK_NOTES.md)")
 
 
+def charge_hardcoded_parameters(ref: dict[str, Any],
+                                hardcoded: dict[str, str] | None) -> dict[str, Any]:
+    """Price the published model's FITTED literals into the reference's ``k`` (see
+    ``write_reference_for``): one parameter per literal, the literals recorded on the result as
+    ``hardcoded_constants`` so a reference whose ``k`` exceeds its estimated-row count is
+    auditable. Pure, so the charge is the same whichever fit stage won."""
+    if not hardcoded:
+        return ref
+    return {**ref, "k": int(ref["k"]) + len(hardcoded),
+            "hardcoded_constants": sorted(hardcoded)}
+
+
 def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
                         n_workers: int | None = None,
                         per_start_timeout: float | None = None,
                         collection: Path | None = None,
                         free_parameters: list[str] | None = None,
                         param_overrides: dict[str, dict] | None = None,
+                        hardcoded_parameters: dict[str, str] | None = None,
                         validation_yaml: str | None = None,
                         ) -> dict[str, Any]:
     """Regenerate the committed ``reference.json`` (the BIC bar): fit the PRISTINE published PEtab
@@ -888,6 +901,16 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     the reconcile-mirroring #90 warns about, and it cancels shared handicaps instead of measuring
     them. Every use needs an entry in ``examples/BENCHMARK_NOTES.md`` (see oliveira).
 
+    ``hardcoded_parameters`` ``{literal: why}`` names numeric literals in the PUBLISHED model that
+    are FITTED values, not knowledge — a degree of freedom the published fit spent and then wrote
+    into the math. Each adds one to the reference's ``k`` and is recorded as ``hardcoded_constants``
+    in reference.json, so the bar pays for them exactly as the server prices a candidate's literals
+    (``petab_mcp.literals``, #180). The published fit is unchanged; only its count is. It is a
+    per-example judgment, not a scan: a unit conversion (raimundez's ``0.161`` ng/mL -> nM) or a
+    measured total (boehm's ``207.6``) is knowledge and is NOT charged — a candidate absorbs the one
+    into its kinetics for free and is shipped the other as a fixed row. See fujita's ``68190``: the
+    author's fitted ``pro_EGFR`` (BioModels BIOMD0000000262), inlined by the collection.
+
     ``validation_yaml`` additionally records the reference's HELD-OUT score under ``validation`` —
     the predictive bar. It is the SAME argument ``materialize`` takes, re-resolved here from the
     collection rather than read off the materialized copy, so the reference is never scored against
@@ -933,6 +956,13 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
             collection=collection, free_parameters=free_parameters,
             param_overrides=param_overrides, validation_meas=validation_meas,
             n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout)
+    # After both arms, so a freed reference pays for the published literals too, and rewritten
+    # because charging changes the `k` the arm above already wrote to reference.json.
+    if hardcoded_parameters:
+        import json
+
+        ref = charge_hardcoded_parameters(ref, hardcoded_parameters)
+        (problem_dir / "reference.json").write_text(json.dumps(ref, indent=2) + "\n")
     return ref
 
 
