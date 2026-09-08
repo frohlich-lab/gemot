@@ -86,6 +86,44 @@ def test_scoring_never_mutates_the_problem_it_was_handed(monkeypatch):
     assert problem.visualization_df is not None
 
 
+def test_the_held_out_view_keeps_the_training_estimate_split(monkeypatch):
+    """The view handed to the importer must mark exactly the parameters the training table marks.
+
+    AMICI compiles a NON-estimated parameter as a model constant, so a compiled module is a
+    function of the SBML plus the free/fixed split — not of the SBML alone. ``score_session``
+    therefore hands over the build target the training problem was compiled with and reuses that
+    module, which is correct only while the view's split matches. This pins the copy that keeps it
+    matching; a view that freed or fixed a parameter would silently evaluate against constants
+    baked in for a different split.
+    """
+    import pypesto.petab
+
+    from petab_mcp import validation_data
+
+    problem = _problem(_rows("c_train"))
+    captured = {}
+
+    class _Stop(RuntimeError):
+        pass
+
+    def _importer(petab_problem, **kwargs):
+        captured["view"] = petab_problem
+        captured["kwargs"] = kwargs
+        raise _Stop
+
+    monkeypatch.setattr(pypesto.petab, "PetabImporter", _importer)
+    with pytest.raises(_Stop):
+        validation_data.score_problem(problem, _rows("c_test"),
+                                      build_dir="/tmp/train_build", model_name="train_module")
+
+    view = captured["view"]
+    assert view.parameter_df["estimate"].to_dict() == problem.parameter_df["estimate"].to_dict()
+    # ...and the target is passed through untouched, so score_session naming the TRAINING pair is
+    # what makes the reuse land on the training module.
+    assert captured["kwargs"]["output_folder"] == "/tmp/train_build"
+    assert captured["kwargs"]["model_name"] == "train_module"
+
+
 def test_an_empty_or_foreign_held_out_table_is_declined_before_any_build(monkeypatch):
     """The guards run BEFORE the importer, so a bad table costs nothing and names its own problem
     rather than surfacing from inside AMICI's parameter mapping."""
@@ -124,3 +162,51 @@ _JUDGE_REF = {"nll": 100.0, "k": 3, "n": 50,
 
 
 _RAISES = object()
+
+
+# ------------------------------------------------------------------- the agent cannot see it
+def test_the_validation_tool_is_not_exposed_to_the_panel():
+    """Two things have to stay out of the agent's context for the held-out score to mean anything:
+    the data and the SCORE. The score would be a fitness signal — read it, edit, read it again, and
+    the held-out set is training data. ``ALLOWED_TOOLS`` is a strict allowlist, so absence from it is
+    the enforcement; this pins that it stays absent, since adding a tool to that set is a one-line
+    change someone could make while tidying."""
+    pytest.importorskip("langchain_core", reason="agent stack not installed")
+    from petab_harness.agent.tools import ALLOWED_TOOLS
+
+    assert "evaluate_validation_data" not in ALLOWED_TOOLS
+
+
+
+def test_the_server_only_registers_the_tool_when_given_held_out_data(monkeypatch, yaml_path,
+                                                                    tmp_path):
+    """No held-out file, no tool — so an example without a validation set cannot accidentally be
+    scored against a stale or unrelated table, and the judge's "unavailable" status is reached by
+    the tool genuinely not existing.
+
+    Asserted through the registrar actually being CALLED, not by grepping ``create_server``'s
+    source: a reformat must not fail this, and an equivalent rewrite must not pass it while
+    dropping the gate."""
+    import inspect
+
+    from petab_mcp import server as server_mod
+    from petab_mcp import validation_data
+    from petab_mcp.server import create_server
+
+    calls = []
+    monkeypatch.setattr(server_mod, "_register_validation_data_tools",
+                        lambda mcp, ctx, held_out: calls.append(held_out))
+    assert "validation_measurements" in inspect.signature(create_server).parameters
+
+    create_server(yaml_path, build_root=str(tmp_path / "b1"),
+                  provenance_dir=str(tmp_path / "prov1"))
+    assert calls == []
+
+    meas = tmp_path / "held.tsv"
+    _rows("c_test").to_csv(meas, sep="\t", index=False)
+    create_server(yaml_path, build_root=str(tmp_path / "b2"),
+                  provenance_dir=str(tmp_path / "prov2"),
+                  validation_measurements=str(meas))
+    assert len(calls) == 1
+    assert isinstance(calls[0], validation_data.HeldOut)
+    assert len(calls[0].measurement_df) == 2
