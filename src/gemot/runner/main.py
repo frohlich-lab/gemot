@@ -61,6 +61,10 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
         sys.executable, "-c", _SERVER_BOOTSTRAP,
         str(work_yaml), str(build_root), args.reference_validation, host, str(port),
         str(args.n_starts), str(validation_tsv) if validation_tsv.is_file() else "",
+        # <score_shipped>: "0" here because a zero-shot run builds its model through the server
+        # and has nothing shipped to score. Passed anyway, never omitted -- the bootstrap unpacks
+        # a fixed arity so a dropped argument fails loudly at startup.
+        "0",
     ]
     server_log_path = work / "server.log"
     amici_log_path = work / "amici_build.log"
