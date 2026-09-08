@@ -54,7 +54,7 @@ class JudgeContext:
     ``call`` is the bound MCP caller; ``baseline`` is the pre-repair snapshot; the rest is
     the current (post-repair) state the runner has already gathered (from get_fit_summary +
     get_model_structure) so a hook doesn't re-fetch it. Success itself is decided
-    generically by the runner's BIC gate, not here — diagnostics is report-only.
+    generically by the runner's criterion gate, not here — diagnostics is report-only.
     """
 
     call: Call
@@ -70,7 +70,7 @@ class JudgeContext:
 
 # A diagnostics hook: given the post-repair state, return (report_lines, extra_fields)
 # describing the MECHANISM the agent landed on (e.g. the rate-law form). Report-only — it
-# does NOT decide success; the BIC gate does. ``None`` skips it.
+# does NOT decide success; the criterion gate does. ``None`` skips it.
 Diagnostics = Callable[[JudgeContext], Awaitable["tuple[list[str], dict[str, Any]]"]]
 
 
@@ -142,7 +142,8 @@ async def build_true_model(
 
 
 async def topology_diagnostics(ctx: "JudgeContext") -> tuple[list[str], dict]:
-    """Report-only: how many species and reactions the agent built (success is decided by BIC).
+    """Report-only: how many species and reactions the agent built (success is decided by the
+    criterion gate).
 
     The default :attr:`Scenario.diagnostics`. Eight examples each defined their own copy of
     exactly this, differing only in whether the species names were interpolated into the line;
@@ -233,7 +234,7 @@ class Scenario:
         """The true-model fit reference {nll, k, n} from ``problem/reference.json``.
 
         Written by the example's ``generate_data.py`` (it fits the TRUE structure to the
-        data). ``None`` if absent — the runner then can't compute ΔBIC and says so.
+        data). ``None`` if absent — the runner then can't score the run and says so.
         """
         import json
 

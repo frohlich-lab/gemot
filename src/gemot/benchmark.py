@@ -25,8 +25,9 @@ by copying the REAL published tables **verbatim**:
     model IS the effective published model), and a bound-railed one is FREED in the reference via
     ``write_reference_for(free_parameters=...)`` so both sides estimate it. See BENCHMARK_NOTES.
 
-``reference.json`` (the BIC bar — the true structure fit to the data) is NOT materialized: it is the
-committed answer key, regenerated only via ``setup.py --refit`` (see :func:`write_reference_for`).
+``reference.json`` (the reference bar — the true structure fit to the data) is NOT materialized: it
+is the committed answer key, regenerated only via ``setup.py --refit`` (see
+:func:`write_reference_for`).
 
 The collection is pinned to ``COLLECTION_PIN`` for reproducibility; override its location with
 ``$BENCHMARK_MODELS_PETAB`` (a local clone) if offline.
@@ -852,8 +853,9 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
                         hardcoded_parameters: dict[str, str] | None = None,
                         validation_yaml: str | None = None,
                         ) -> dict[str, Any]:
-    """Regenerate the committed ``reference.json`` (the BIC bar): fit the PRISTINE published PEtab
-    problem EXACTLY as it ships. Run only via ``setup.py --refit`` — slow, and its output is committed.
+    """Regenerate the committed ``reference.json`` (the reference bar): fit the PRISTINE published
+    PEtab problem EXACTLY as it ships. Run only via ``setup.py --refit`` — slow, and its output is
+    committed.
 
     The reference is the benchmark's OWN model — the shipped SBML + the published parameter table
     (the paper's true free/fixed split, bounds and priors; ``nominalValue`` = the published optimum)

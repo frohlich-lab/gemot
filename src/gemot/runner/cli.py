@@ -11,9 +11,9 @@ Given a :class:`~scenario.Scenario`, the pipeline is always the same:
   (c) drive the chosen driver — ``deepagents`` (an OpenRouter-hosted model with the
       analyst panel from :mod:`agent` — three analysts + the biocurator) or
       ``scripted`` (the scenario's canonical
-      repair, no LLM) — then judge the result INDEPENDENTLY via the BIC gate in ``_judge``
-      (``delta_bic <= scenario.bic_threshold`` against the true model; ``scenario.diagnostics``
-      is report-only).
+      repair, no LLM) — then judge the result INDEPENDENTLY via the criterion gate in ``_judge``
+      (``delta_criterion <= scenario.bic_threshold`` against the true model;
+      ``scenario.diagnostics`` is report-only).
 
 HTTP (not stdio) is used because AMICI's C++ build toolchain writes to the server's
 stdout while compiling, which would corrupt a stdio JSON-RPC channel; that stdout is

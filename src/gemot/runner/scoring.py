@@ -277,7 +277,7 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
     # model. Until then, decline the whole basis as the unpairable-sigma case below does, so `_judge`
     # falls through to the data-driven band -- the test that was right all along here: it never
     # flagged any of the 116 runs scored on it, while this basis silently failed 17 fiedler runs that
-    # had BEATEN the BIC bar. See reconcile.sigma_scale_coupled.
+    # had BEATEN the reference bar. See reconcile.sigma_scale_coupled.
     if any(e.get("scale_coupled") for e in report.values() if isinstance(e, dict)):
         return None
     # Prefer the EFFECTIVE sd on BOTH sides: for a composite/proportional noiseFormula the raw
@@ -434,11 +434,11 @@ def _min_fraction_of_data_std(report) -> float | None:
 def _noise_sigma_flag(report) -> dict | None:
     """Report-only integrity marker: is any ESTIMATED noise sigma implausible relative to the data
     — INFLATED past its data-driven cap (absorbing model misfit) or COLLAPSED far below the data
-    std (overfitting the noise for a suspiciously good BIC)? Returns
+    std (overfitting the noise for a suspiciously good score)? Returns
     ``{inflated, collapsed, max_fraction_of_data_std, min_fraction_of_data_std}`` or ``None`` when
     the problem has no estimated sigma.
 
-    An inflated/collapsed sigma DISQUALIFIES an otherwise-passing BIC (see _judge) — a hidden
+    An inflated/collapsed sigma DISQUALIFIES an otherwise-passing score (see _judge) — a hidden
     integrity gate applied post-run and never surfaced to the agent. The full block is also written
     to result.json so a gated (or borderline) run is auditable. The collapse threshold
     ``_NOISE_SIGMA_COLLAPSE_FRACTION`` is a heuristic — tune it if a genuinely better, more flexible

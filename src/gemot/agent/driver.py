@@ -1234,7 +1234,7 @@ async def run_deepagents(
             break
         if early_stopped is not None:
             print(f"[agent] early-stop: {early_stopped} — stopping at this step boundary; "
-                  "the judge restores + scores the best-BIC checkpoint.")
+                  "the judge restores + scores the best-scoring checkpoint.")
             break
         if finish_state["gave_up"]:
             print("[agent] finish gate gave up (no fittable model after repeated attempts) — "

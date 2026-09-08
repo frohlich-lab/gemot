@@ -177,7 +177,7 @@ def _finish_tool(session, finish_state=None, probe=None):
     Whenever the observable noise sigmas are estimated (as in the issue-#54 benchmarks — though
     not every problem frees them), χ² pins near the data-point count by construction and its
     p-value is uninformative, so gating ``finish`` on p ≥ 0.05 made the panel abandon its
-    best-BIC model to chase an unreachable target (issue #54). Where χ² cannot be computed at
+    best-scoring model to chase an unreachable target (issue #54). Where χ² cannot be computed at
     all, the tool SAYS so rather than surfacing it as a fit rejection.
     """
     from langchain_core.tools import StructuredTool
@@ -227,7 +227,7 @@ def _finish_tool(session, finish_state=None, probe=None):
         # objective, or no computable score) — a genuine failure, not a goodness-of-fit
         # judgement. We do NOT gate on chi2_gof_pvalue/reduced_chi2 (see the docstring): they
         # are uninformative when the noise sigmas are estimated, and chasing p ≥ 0.05 costs
-        # the best-BIC model.
+        # the best-scoring model.
         if not has_fit:
             # NEVER relented into an accepted finish: the harness does not record an unfitted
             # model as finished (there is no bic to score). But it does not refuse FOREVER

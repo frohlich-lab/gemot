@@ -44,7 +44,7 @@ async def _head_version(call) -> "int | None":
     return int(desc.get("current_version", -1)) if isinstance(desc, dict) else None
 
 
-#: How many fitted versions the scoring scan will inspect, best-BIC first — EVERY one of them.
+#: How many fitted versions the scoring scan will inspect, best-scoring first — EVERY one of them.
 #: Each costs a restore and a score read (no fit, no compile), and the count is already bounded by
 #: the run's own turn budget: a version exists only where a `make_changes` call fitted one, so the
 #: recursion limit caps the list at a few hundred in the worst case and at 10-30 in practice. A
@@ -61,7 +61,7 @@ async def _restore_best_checkpoint(call, reference=None) -> None:
     last-committed one. Runs on ANY termination that reaches the judge (early-stop, wall-time,
     recursion limit, clean finish). Best-effort throughout — any probe failure leaves HEAD in place.
 
-    "Best" is NOT simply the lowest BIC. A model whose estimated sigma is implausible against the
+    "Best" is NOT simply the lowest score. A model whose estimated sigma is implausible against the
     reference's own fitted sigmas fails :func:`_judge`'s integrity gate, so scoring it throws the run
     away while a clean, nearly-as-good version sits unscored in the same version store. The scan
     therefore walks EVERY fitted version best-first under the RUN'S OWN criterion (see
@@ -97,7 +97,7 @@ async def _restore_best_checkpoint(call, reference=None) -> None:
         # `None` is unassessable — no stored report, or one the gate cannot read. The gate will not
         # fail that version either, so it is scoreable and the scan stops on it exactly as it does
         # on a clean one. (A whole store of them, e.g. a version dir written before the report was
-        # persisted, therefore lands on the best-BIC version: the pre-scan behaviour.)
+        # persisted, therefore lands on the best-scoring version: the pre-scan behaviour.)
         if flagged is not True:
             chosen, clean = version, True
             break
@@ -112,13 +112,13 @@ async def _restore_best_checkpoint(call, reference=None) -> None:
         print(f"[judge] could not restore v{chosen}; scoring HEAD v{head} instead")
         return
     if not clean:
-        # Every candidate would fail the sigma gate. Score the plain best-BIC one: the run's own
-        # lowest-BIC model is the honest thing to report, and the gate still fails it.
+        # Every candidate would fail the sigma gate. Score the plain best-scoring one: the run's
+        # own lowest-scoring model is the honest thing to report, and the gate still fails it.
         print(f"[judge] none of the run's {len(candidates)} fitted versions has a plausible noise "
-              f"sigma — scoring best-bic v{fallback}")
+              f"sigma — scoring best-scoring v{fallback}")
     elif chosen != fallback:
-        print(f"[judge] scoring v{chosen} — the best-BIC version whose noise sigma is plausible "
-              f"(v{fallback} scores better but its sigma would fail the gate)")
+        print(f"[judge] scoring v{chosen} — the best-scoring version whose noise sigma is "
+              f"plausible (v{fallback} scores better but its sigma would fail the gate)")
 
 
 def _candidate_k(params, final) -> "tuple[int, int, list[str]]":
@@ -158,7 +158,7 @@ def _stored_k_and_n(stored) -> "tuple[int | None, int | None]":
     parameters the PROBLEM ships that the model never declared (``in_model: false``), and brannmark
     ships eight all-estimated rows a candidate may leave undeclared. The consequence is bounded: k
     enters only as the scale factor ``1 - k/n`` on a band's degrees of freedom, so a handful of rows
-    shifts a band slightly and cannot move a sigma across it the way a wrong k would move a BIC.
+    shifts a band slightly and cannot move a sigma across it the way a wrong k would move a score.
     ``(None, None)`` when either is unreadable: the band then has no df to work from and applies the
     fixed tolerance factor, so the sigma is still judged, just without df-awareness.
     """
@@ -183,11 +183,11 @@ async def _scoreable_versions(call) -> "list[int]":
     Ordered by ``criterion_value`` (identical to ``bic`` under the default BIC), NOT by canonical
     bic: this scan complements the session's own best-score checkpoint, so its notion of "best
     first" has to be the same one the run used to build that checkpoint — otherwise, under a
-    non-BIC criterion, the scan would start from a model the run itself never preferred. What
-    the chosen version is then JUDGED on stays canonical BIC (see
-    :mod:`petab_mcp.criteria`): the criterion picks the candidate, the benchmark grades
-    it. ``bic`` is the fallback when ANY version predates the recorded criterion, applied to the
-    WHOLE set rather than per-version so one ordering never mixes two scales.
+    non-BIC criterion, the scan would start from a model the run itself never preferred. The same
+    criterion then GRADES the chosen version in :func:`_judge`, with canonical BIC recorded
+    alongside (see :mod:`petab_mcp.criteria`). ``bic`` is the fallback when ANY version predates
+    the recorded criterion, applied to the WHOLE set rather than per-version so one ordering never
+    mixes two scales.
     """
     try:
         versions = await call("list_versions")
@@ -225,8 +225,8 @@ async def _sigma_flagged(call, version: int, reference) -> "bool | None":
 
     Anything unreadable is ``None``: an unassessable version must not be silently skipped in favour
     of a worse one, since the gate will not fail it either. A version stored before the report was
-    persisted reads that way too, which is what makes the scan degrade to plain best-BIC on an old
-    store rather than mis-rank it.
+    persisted reads that way too, which is what makes the scan degrade to plain best-scoring on an
+    old store rather than mis-rank it.
     """
     try:
         stored = await call("get_version", version=version)
@@ -269,7 +269,7 @@ async def _restore_checkpoint_only(call) -> None:
     if best == head:
         return  # already on the best model
     if await _restore(call, best, head):
-        print(f"[judge] restored best-BIC checkpoint v{best} (was HEAD v{head}) before scoring")
+        print(f"[judge] restored best-scoring checkpoint v{best} (was HEAD v{head}) before scoring")
 
 
 async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta: dict,
@@ -282,11 +282,12 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     :mod:`petab_mcp.criteria` and ``docs/RATIONALE.md``) — AND its estimated noise
     sigma is plausible (not inflated to absorb misfit or collapsed to overfit the noise; see
     ``_noise_sigma_flag``). The sigma check is a HIDDEN integrity gate: it never reaches the agent,
-    so a good BIC bought with an implausible noise model can't slip through and can't be gamed
+    so a good score bought with an implausible noise model can't slip through and can't be gamed
     around. We don't require any particular rate-law FORM (models need not be structurally
-    identifiable) and we don't special-case invented species — BIC's ``k·ln(n)`` penalty makes an
-    extra parameter earn its keep. A χ² goodness-of-fit p-value (residuals vs the known noise) is
-    reported alongside. The scenario's optional ``diagnostics`` hook adds report-only detail.
+    identifiable) and we don't special-case invented species — the criterion's complexity penalty
+    (BIC's ``k·ln(n)``) makes an extra parameter earn its keep. A χ² goodness-of-fit p-value
+    (residuals vs the known noise) is reported alongside. The scenario's optional ``diagnostics``
+    hook adds report-only detail.
 
     Returns ``(exit_code, result)``: the process exit code (0 on success, 1 otherwise) and
     the machine-readable result dict (also written to ``work/result.json``), so the caller
@@ -297,8 +298,8 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     from ..scenario import chi2_gof_pvalue
 
     # Restore + score the best model this judge can legitimately score — not whatever was committed
-    # last, and not a lower-BIC version whose noise model the gate below would reject while a clean
-    # one sits unscored (see the helper). Handed the reference so the scan asks the SAME sigma
+    # last, and not a lower-scoring version whose noise model the gate below would reject while a
+    # clean one sits unscored (see the helper). Handed the reference so the scan asks the SAME sigma
     # question the gate does.
     await _restore_best_checkpoint(call, scenario.reference())
 
@@ -311,7 +312,7 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     # A degenerate or never-built model (e.g. the agent authored nothing, or a fit that produced
     # a nan/inf objective) has no usable neg_log_likelihood — get_fit_summary returns None, or a
     # non-finite value. Treat any of those as "no valid fit" (final_nll = None) and score the run
-    # as a clean failure below, rather than crashing the judge on float(None) / a non-finite BIC.
+    # as a clean failure below, rather than crashing the judge on float(None) / a non-finite score.
     raw_nll = final.get("neg_log_likelihood") if isinstance(final, dict) else None
     try:
         final_nll = float(raw_nll)
@@ -334,7 +335,7 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     chi2 = float(chi2) if chi2 is not None else None
     # Residual-structure tests (sign, runs, replicate lack-of-fit) of the SCORED model — the checkpoint was already
     # restored above, so this is the fit that gets judged. Recorded for post-hoc analysis: e.g.
-    # whether runs that passed the BIC gate also had structure-free residuals, and whether the
+    # whether runs that passed the criterion gate also had structure-free residuals, and whether the
     # tests were underpowered. Report-only: a diagnosis failure must never fail the run (which
     # would leave no result.json at all — the exact unscored-run outcome the harness avoids), so
     # the call is guarded and degrades. The rolled-up verdict comes from `final` (get_fit_summary,
@@ -376,9 +377,9 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     # baseline.nll is None for a zero-shot build (no model shipped → nothing to score).
     delta = (baseline.nll - final_nll) if (baseline.nll is not None and final_nll is not None) else None
 
-    # Estimated-noise-sigma plausibility of the SCORED model. A wrong model can reach a good BIC
+    # Estimated-noise-sigma plausibility of the SCORED model. A wrong model can reach a good score
     # by making the noise model implausible — inflating sigma to absorb misfit, or collapsing it to
-    # overfit the noise — so an implausible sigma disqualifies an otherwise-passing BIC. This is a
+    # overfit the noise — so an implausible sigma disqualifies an otherwise-passing score. This is a
     # HIDDEN integrity gate: applied post-run in the judge and NEVER surfaced to the agent (which
     # only ever sees its own noise_sigma_report, not this verdict), so it can't be gamed around.
     # The raw report is stored in result.json too (it wasn't before) to audit gaming after the fact.
@@ -643,7 +644,7 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         # `None` on an example that ships no held-out data.
         "validation": validation,
         # Noise-sigma plausibility of the scored model: GATES success (an inflated/collapsed sigma
-        # disqualifies an otherwise-passing BIC; see the gate above) but is never shown to the agent.
+        # disqualifies an otherwise-passing score; see the gate above) but never shown to the agent.
         "noise_sigma_report": noise_sigma_report,
         "noise_sigma_flag": noise_sigma_flag,
         # which comparison produced the flag: "reference" (vs the true model's own

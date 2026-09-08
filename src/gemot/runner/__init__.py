@@ -9,7 +9,7 @@ Given a :class:`~petab_harness.scenario.Scenario`, the pipeline is always the sa
       stateful process shared by the whole run), and
   (c) drive the chosen driver — ``deepagents`` (an OpenRouter-hosted model with the analyst
       panel from :mod:`petab_harness.agent`) or ``scripted`` (the scenario's canonical repair,
-      no LLM) — then judge the result INDEPENDENTLY by BIC.
+      no LLM) — then judge the result INDEPENDENTLY by the run's criterion.
 
 An example's ``run.py`` is a thin wrapper: build the ``Scenario`` and call
 :func:`run_scenario`.

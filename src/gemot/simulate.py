@@ -172,7 +172,7 @@ def fit_reference(
     """Best-fit the TRUE structure with pyPESTO + **Fides** — the SAME optimizer the server
     runs on candidate models — and return (fitted values, best nll).
 
-    The BIC reference must be fit at least as well as any candidate, or ΔBIC measures the
+    The reference bar must be fit at least as well as any candidate, or ΔBIC measures the
     optimizer, not the structure. This project fits candidates with Fides everywhere; scipy
     L-BFGS-B is materially weaker on stiff/degenerate ODE likelihoods (it under-converged every
     reference by 2.5–5.7 nll, so the true structure "beat" its own reference by ΔBIC −5 to −11),
@@ -202,13 +202,14 @@ def fit_reference(
     pdf = parameter_df
     if pdf.index.name != PARAMETER_ID and PARAMETER_ID in pdf.columns:
         pdf = pdf.set_index(PARAMETER_ID)
-    # BIC is likelihood-based, and the server scores the CANDIDATE on the pure AMICI log-likelihood
-    # (engine.evaluate_objective -> -llh), NOT the MAP objective. So the reference must be a pure-
-    # likelihood fit too: drop any objectivePrior columns here so pyPESTO's fval is the neg-log-
-    # likelihood, not likelihood+prior. Without this the prior's normalization constant (~½·log 2πσ²
-    # per prior) inflates only the reference nll and spuriously handicaps it — schwen (the one example
-    # that ships priors) read ΔBIC ≈ −8 instead of ≈ 0. The priors still ship VERBATIM in the problem
-    # (faithful) and still regularize the candidate's own fit; they just don't enter the BIC bar.
+    # Every criterion is likelihood-based, and the server scores the CANDIDATE on the pure AMICI
+    # log-likelihood (engine.evaluate_objective -> -llh), NOT the MAP objective. So the reference
+    # must be a pure-likelihood fit too: drop any objectivePrior columns here so pyPESTO's fval is
+    # the neg-log-likelihood, not likelihood+prior. Without this the prior's normalization constant
+    # (~½·log 2πσ² per prior) inflates only the reference nll and spuriously handicaps it — schwen
+    # (the one example that ships priors) read ΔBIC ≈ −8 instead of ≈ 0. The priors still ship
+    # VERBATIM in the problem (faithful) and still regularize the candidate's own fit; they just
+    # don't enter the reference bar.
     pdf = pdf.drop(columns=[c for c in ("objectivePriorType", "objectivePriorParameters")
                             if c in pdf.columns])
     odf = observable_df
@@ -314,10 +315,10 @@ def write_reference(
     seed: int = 0,
     seed_at_nominal: bool = False,
 ) -> dict:
-    """Fit the TRUE structure to the data and write a BIC reference to ``path``.
+    """Fit the TRUE structure to the data and write the reference bar to ``path``.
 
-    The judge accepts a repaired model iff it can't be rejected against the true model by
-    BIC, so each example ships ``problem/reference.json`` = ``{nll, k, n}`` for the true
+    The judge accepts a repaired model iff it can't be rejected against the true model under the
+    run's criterion, so each example ships ``problem/reference.json`` = ``{nll, k, n}`` for the true
     (data-generating) structure fitted with its natural free parameters: ``nll`` the best
     neg-log-likelihood, ``k`` the number of estimated parameters, ``n`` the number of data
     points. ``parameter_df`` should mark exactly the true model's free parameters as
@@ -372,17 +373,18 @@ def write_reference_from_problem(
 ) -> dict:
     """Fit a PRISTINE collection PEtab problem EXACTLY as it ships and write ``{nll, k, n}``.
 
-    The BIC bar is the published benchmark's OWN best fit: its shipped SBML model + the published
-    parameter table (the paper's true free/fixed split and bounds; ``nominalValue`` = the published
-    optimum) + the published data — NOT a hand-authored ``TRUE_ANT`` and NOT the server's
+    The reference bar is the published benchmark's OWN best fit: its shipped SBML model + the
+    published parameter table (the paper's true free/fixed split and bounds; ``nominalValue`` = the
+    published optimum) + the published data — NOT a hand-authored ``TRUE_ANT`` and NOT the server's
     ``reconcile``. This anchors the reference to the genuine ground truth, independent of the IC /
     parametrisation conventions the CANDIDATE is scored under (so ΔBIC measures real closeness to
     the truth, not reproduction of a reconcile-mirrored reference).
 
     Fit with the same pyPESTO + Fides multistart the server runs on candidates. ``seed_at_nominal``
     seeds start-0 at the published optimum (adopted only if it beats the random multistart), so the
-    reference reliably lands in the true basin. BIC is likelihood-based and the server scores the
-    candidate on the pure AMICI ``-llh``, so any ``objectivePrior*`` columns are dropped here.
+    reference reliably lands in the true basin. Every criterion is likelihood-based and the server
+    scores the candidate on the pure AMICI ``-llh``, so any ``objectivePrior*`` columns are dropped
+    here.
 
     ``per_start_timeout`` overrides the global Fides ``MAXTIME`` cap for this fit — the reference is
     the one fit that must be run to convergence rather than to a shared budget, and what "long
@@ -450,7 +452,7 @@ def write_reference_from_problem(
     # (petab_mcp.identifiability.effective_parameter_count) — the truth's own k vs k_eff beside the
     # candidate's, and the bar a TIC-ranked run is graded against (petab_mcp.criteria).
     # Advisory like the sigmas below: None when the objective cannot be evaluated
-    # there, and the BIC bar is written regardless.
+    # there, and the reference bar is written regardless.
     from petab_mcp.identifiability import effective_parameter_count
 
     # Through `_recorded_vector` like every other derived statistic, rather than indexing the
@@ -468,10 +470,10 @@ def write_reference_from_problem(
     try:
         ref["noise_sigma"] = _reference_noise_sigmas(problem, pp, result, pdf, x_full_used)
         ref["noise_sigma_effective"] = _effective_reference_sigmas(problem, ref["noise_sigma"])
-    except Exception as exc:  # noqa: BLE001 - advisory extra; the BIC bar is what must be written
+    except Exception as exc:  # noqa: BLE001 - advisory extra; the reference bar must be written
         print(f"[reference] could not record reference noise sigmas ({type(exc).__name__}: {exc})")
     if validation_measurement_df is not None:
-        # Guarded, for the same reason the sigmas above are: the BIC bar is what this function
+        # Guarded, for the same reason the sigmas above are: the reference bar is what this function
         # exists to produce, and it must not be lost to an advisory extra. Letting a raise through
         # here would discard a multistart that had already CONVERGED — hours of it on the large
         # examples — and write nothing at all, because `path` is written below.
@@ -485,7 +487,7 @@ def write_reference_from_problem(
             ref["validation"] = _reference_validation(
                 problem, pp, result, x_full_used, validation_measurement_df,
                 build_dir=build_dir, model_name=model_name)
-        except Exception as exc:  # noqa: BLE001 - advisory extra; the BIC bar is what must be written
+        except Exception as exc:  # noqa: BLE001 - advisory extra; the reference bar must be written
             # `runner.scoring._validation_fields` carries this status into result.json as
             # `reference_status`, and `metrics` into the `val_reference_status` column — so the
             # failure is visible per-run, not only to whoever opens reference.json.
