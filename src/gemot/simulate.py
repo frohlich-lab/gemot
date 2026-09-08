@@ -368,6 +368,7 @@ def write_reference_from_problem(
     per_start_timeout: float | None = None,
     seed: int = 0,
     seed_at_nominal: bool = True,
+    validation_measurement_df=None,
 ) -> dict:
     """Fit a PRISTINE collection PEtab problem EXACTLY as it ships and write ``{nll, k, n}``.
 
@@ -387,6 +388,14 @@ def write_reference_from_problem(
     the one fit that must be run to convergence rather than to a shared budget, and what "long
     enough" means is a property of the individual model (see
     :func:`~petab_harness.fit_budget.fides_maxtime_options`).
+
+    ``validation_measurement_df`` additionally scores this reference against HELD-OUT measurements
+    and records the result under ``validation`` — the predictive bar the judge compares a candidate
+    against (see :mod:`petab_mcp.validation_data`). It is evaluated at the vector that produced the
+    recorded ``nll``, whichever of the two it was, so the training and held-out numbers describe ONE
+    fitted model. Only the SCORE is recorded, not the vector — re-deriving the held-out bar means
+    re-running this refit, exactly as re-deriving the training bar does (see
+    :func:`_reference_validation`).
     """
     import json
     import logging as _logging
@@ -444,8 +453,11 @@ def write_reference_from_problem(
     # there, and the BIC bar is written regardless.
     from petab_mcp.identifiability import effective_parameter_count
 
-    x_best = (pp.get_reduced_vector(x_full_used) if x_full_used is not None
-              else np.asarray(result.optimize_result.list[0]["x"], dtype=float)[pp.x_free_indices])
+    # Through `_recorded_vector` like every other derived statistic, rather than indexing the
+    # optimizer's `x` directly: that is where the full-dimensional invariant is enforced, so a
+    # pyPESTO that ever returned a reduced or reordered vector fails fast here too instead of
+    # computing k_eff at a silently wrong point.
+    x_best = pp.get_reduced_vector(_recorded_vector(result, x_full_used, pp))
     ref["k_eff"] = effective_parameter_count(pp, x_best, k=int(k))
     # The reference fit's own NOISE SIGMAS — the only defensible "true sigma" for an ESTIMATED
     # sigma, whose nominalValue is merely a start point (8 of 12 benchmark examples estimate their
@@ -458,20 +470,99 @@ def write_reference_from_problem(
         ref["noise_sigma_effective"] = _effective_reference_sigmas(problem, ref["noise_sigma"])
     except Exception as exc:  # noqa: BLE001 - advisory extra; the BIC bar is what must be written
         print(f"[reference] could not record reference noise sigmas ({type(exc).__name__}: {exc})")
+    if validation_measurement_df is not None:
+        # Guarded, for the same reason the sigmas above are: the BIC bar is what this function
+        # exists to produce, and it must not be lost to an advisory extra. Letting a raise through
+        # here would discard a multistart that had already CONVERGED — hours of it on the large
+        # examples — and write nothing at all, because `path` is written below.
+        #
+        # But not silently, either: a missing validation bar makes the judge's held-out comparison
+        # unavailable on every future run of this example, and the only place an omitted key would
+        # show is an empty CSV column. So the failure is RECORDED as a status rather than dropped —
+        # `runner.scoring._validation_fields` reads any non-`ok` reference status as "no bar" and
+        # withholds the difference instead of computing one against a number that isn't there.
+        try:
+            ref["validation"] = _reference_validation(
+                problem, pp, result, x_full_used, validation_measurement_df,
+                build_dir=build_dir, model_name=model_name)
+        except Exception as exc:  # noqa: BLE001 - advisory extra; the BIC bar is what must be written
+            # `runner.scoring._validation_fields` carries this status into result.json as
+            # `reference_status`, and `metrics` into the `val_reference_status` column — so the
+            # failure is visible per-run, not only to whoever opens reference.json.
+            ref["validation"] = {"status": "error",
+                                 "reason": f"{type(exc).__name__}: {exc}"}
+            print(f"[reference] could not score the held-out validation set "
+                  f"({type(exc).__name__}: {exc}); the nll/k/n bar is still written, but no "
+                  f"held-out bar — re-run --refit once the cause is fixed")
+        else:
+            print(f"[reference] held-out validation: nll={ref['validation'].get('nll')} "
+                  f"n={ref['validation'].get('n')} status={ref['validation'].get('status')}")
     Path(path).write_text(json.dumps(ref, indent=2) + "\n")
     return ref
+
+
+def _recorded_vector(result, x_full_used, pp):
+    """The FULL scaled parameter vector the recorded ``nll`` actually belongs to.
+
+    ``write_reference_from_problem`` reports ``min(multistart best, published nominal point)``, so
+    the committed ``nll`` belongs to one of two different parameter vectors and everything derived
+    from that fit has to be read off the same one. ``x_full_used`` is non-``None`` exactly when the
+    nominal point won; otherwise the best start's ``x`` is it.
+
+    ONE definition, because every consumer of it makes the same mistake differently: pairing the
+    recorded training nll with the OTHER vector's sigmas (:func:`_reference_noise_sigmas`) or with
+    the other vector's held-out score (:func:`_reference_validation`) reports one model's fit beside
+    another model's properties, which is precisely the mismatch that makes those numbers
+    uninterpretable. If the ``min()`` above ever gains a third case, it has to be taught here and
+    nowhere else.
+
+    ``pp`` is taken only to CHECK the promise both callers rely on — that the vector is
+    full-dimensional in ``pp.x_names`` order. They zip it against those names and index it by free
+    position, so a pypesto that started returning a reduced or reordered ``x`` would surface as
+    wrong sigmas and a wrong held-out score rather than as an error. Asserting the length is what
+    makes the docstring enforceable instead of merely stated.
+    """
+    import numpy as np
+
+    x = (np.asarray(x_full_used, dtype=float) if x_full_used is not None
+         else np.asarray(result.optimize_result.list[0]["x"], dtype=float))
+    if x.shape != (len(pp.x_names),):
+        raise ValueError(
+            f"the recorded reference vector has shape {x.shape} for {len(pp.x_names)} parameters; "
+            "it must be the FULL vector (fixed parameters included), in pp.x_names order")
+    return x
+
+
+def _reference_validation(problem, pp, result, x_full_used, validation_measurement_df, *,
+                          build_dir, model_name) -> dict:
+    """Score the reference fit against HELD-OUT measurements, at the vector its ``nll`` came from.
+
+    Which vector that is matters and is easy to get wrong; :func:`_recorded_vector` owns that
+    choice and says why.
+
+    The VECTOR itself is deliberately not recorded. Writing it into ``reference.json`` would put the
+    reference fit's full optimum into a committed file to serve a re-score path that does not exist
+    — unread state in an answer key, free to go stale against the next refit. Re-deriving the
+    held-out bar means re-running ``setup.py --refit``, which is also the only way the training bar
+    beside it can be re-derived, so the two cannot drift apart.
+    """
+    from petab_mcp import validation_data
+
+    x = _recorded_vector(result, x_full_used, pp)
+    return validation_data.score_problem(
+        problem, validation_measurement_df, build_dir=build_dir, model_name=model_name,
+        x_full=[float(v) for v in x], x_names=[str(n) for n in pp.x_names])
 
 
 def _reference_noise_sigmas(problem, pp, result, pdf, x_full_used=None) -> dict:
     """``{sigma_parameter_id: fitted linear value}`` for the reference fit — the noise level the
     TRUE model needs to explain this data.
 
-    Values come from whichever vector produced the recorded ``nll``: the published optimum when
-    seeding at nominal beat the multistart, else the best start. Returned on the LINEAR scale
+    Values come from whichever vector produced the recorded ``nll`` — see
+    :func:`_recorded_vector`, which owns that choice. Returned on the LINEAR scale
     (un-scaled from each parameter's estimation scale), matching what the server reports for a
     candidate. Only parameters the observation model uses as a noise sigma are included.
     """
-    import numpy as np
     from petab.v1.C import NOMINAL_VALUE
     from petab.v1.parameters import unscale
 
@@ -480,10 +571,7 @@ def _reference_noise_sigmas(problem, pp, result, pdf, x_full_used=None) -> dict:
     sigma_ids = _reconcile.plausibility_sigma_ids(problem)
     if not sigma_ids:
         return {}
-    if x_full_used is not None:
-        x = np.asarray(x_full_used, dtype=float)
-    else:
-        x = np.asarray(result.optimize_result.list[0]["x"], dtype=float)
+    x = _recorded_vector(result, x_full_used, pp)
     scales = list(pp.x_scales)
     out: dict[str, float] = {}
     for name, value, scale_name in zip(pp.x_names, x, scales):

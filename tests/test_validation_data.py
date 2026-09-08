@@ -497,6 +497,74 @@ def test_the_span_and_the_csv_cannot_disagree_about_the_held_out_columns(monkeyp
     assert "petab.val_delta_nll" in stamped and stamped["petab.val_delta_nll"] == 1.0
 
 
+def test_an_explicit_point_must_come_with_matching_names(monkeypatch):
+    """A caller-supplied vector is in ITS problem's x_names order. The two problems are built from
+    the same parameter table so they agree today, but a silent re-ordering would evaluate a permuted
+    vector and report a plausible, wrong likelihood — so the names are checked, not assumed."""
+    from petab_mcp import validation_data
+
+    problem = _problem(_rows("c_train"))
+    with pytest.raises(ValueError, match="both x_full and x_names, or neither"):
+        validation_data.score_problem(problem, _rows("c_test"), build_dir="/tmp/x",
+                                      model_name="m", x_full=[0.5])
+
+
+# --------------------------------------------- the guards the last two reviews added
+# Each of these exists because its ABSENCE was a silent-wrong-number risk, so each needs a test
+# that fails if it is relaxed back. (The repo's own lesson: 15 defects survived a green suite
+# because the plumbing around the statistic went untested — this IS the plumbing.)
+def test_a_short_x_full_is_refused_rather_than_evaluated_misaligned(monkeypatch):
+    """The name check compares `x_names` against the problem's; it says NOTHING about how many
+    values arrived with them. A shorter vector whose free indices all happen to be in range would
+    otherwise be silently indexed and reported as a plausible held-out likelihood for a parameter
+    point nobody chose."""
+    import pypesto.petab
+
+    from petab_mcp import validation_data
+
+    class _FakePP:
+        x_names = ["k", "sigma", "scale"]
+        x_free_indices = [0]
+
+        def objective(self, *a, **k):  # pragma: no cover - must not be reached
+            raise AssertionError("the objective must not be evaluated on a bad vector")
+
+    class _FakeImporter:
+        def __init__(self, *a, **k):
+            pass
+
+        def create_problem(self):
+            return _FakePP()
+
+    monkeypatch.setattr(pypesto.petab, "PetabImporter", _FakeImporter)
+    problem = _problem(_rows("c_train"))
+
+    with pytest.raises(ValueError, match="must be the FULL vector"):
+        validation_data.score_problem(
+            problem, _rows("c_test"), build_dir="/tmp/x", model_name="m",
+            x_full=[0.5],                        # one value for three parameters
+            x_names=["k", "sigma", "scale"])     # ...but the NAMES match, so only length catches it
+
+
+
+def test_the_recorded_reference_vector_must_be_full_dimensional():
+    """`_recorded_vector`'s two callers zip it against `pp.x_names` and index it by free position,
+    so a reduced or reordered `x` would surface as wrong sigmas and a wrong held-out score rather
+    than as an error."""
+    from petab_harness.simulate import _recorded_vector
+
+    class _PP:
+        x_names = ["a", "b", "c"]
+
+    class _Result:
+        class optimize_result:
+            list = [{"x": [1.0, 2.0]}]           # pypesto returning a REDUCED vector
+
+    assert list(_recorded_vector(_Result(), [1.0, 2.0, 3.0], _PP())) == [1.0, 2.0, 3.0]
+    with pytest.raises(ValueError, match="must be the FULL vector"):
+        _recorded_vector(_Result(), None, _PP())
+
+
 
 def test_a_failed_reference_refit_is_distinguishable_from_no_bar_at_all(tmp_path):
     """Both leave `val_reference_nll` blank. Without `val_reference_status` the two are byte-

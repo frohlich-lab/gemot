@@ -925,6 +925,7 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
             problem, build_dir=build_dir / "pristine",
             model_name=f"{name}_pristine", path=problem_dir / "reference.json",
             n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout,
+            validation_measurement_df=validation_meas,
         )
     else:
         ref = _write_freed_reference(
@@ -1011,6 +1012,7 @@ def _write_freed_reference(*, name: str, problem, problem_dir: Path, build_dir: 
         problem, build_dir=build_dir / "pristine",
         model_name=f"{name}_pristine", path=scratch / "published.json",
         n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout,
+        validation_measurement_df=validation_meas,
     )
     freed = _load_problem(name, collection)
     _apply_param_overrides(freed, name, param_overrides)  # same table on both stages
@@ -1030,6 +1032,7 @@ def _write_freed_reference(*, name: str, problem, problem_dir: Path, build_dir: 
         freed, build_dir=build_dir / f"pristine_freed_{split}",
         model_name=f"{name}_pristine_freed", path=scratch / "freed.json",
         n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout,
+        validation_measurement_df=validation_meas,
     )
 
     # k is the FREED count either way — that is the parameter space the candidate is scored in —
