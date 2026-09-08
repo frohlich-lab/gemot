@@ -11,6 +11,7 @@ import subprocess
 import sys
 from datetime import timedelta
 from pathlib import Path
+from typing import AsyncIterator
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
@@ -37,19 +38,36 @@ def cleanup(scenario: Scenario) -> Path:
     return work
 
 
-# --------------------------------------------------------------------------- main
-async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[int, dict]":
-    work = cleanup(scenario)
+# --------------------------------------------------------------------------- server
+class _ServerHandle:
+    """What :func:`_petab_server` hands its caller: the server process and a live MCP session."""
 
-    # Capture the true run start once, before the server launch, so every degraded-result path
-    # (including a teardown-time abort in this function) reports the real start instead of
-    # re-stamping it at abort time.
-    started_at = _now_iso()
+    def __init__(self, proc: subprocess.Popen, url: str) -> None:
+        self.proc = proc
+        self.url = url
+        self.session: ClientSession | None = None
 
-    work_yaml = work / "problem.yaml"
-    # AMICI builds are keyed by SBML hash and never go stale, so keep them OUTSIDE work/
-    # (wiped each run) to avoid recompiling identical models on repeat runs.
-    build_root = scenario.example_dir / ".amici_build"
+
+@contextlib.asynccontextmanager
+async def _petab_server(work: Path, build_root: Path, args: argparse.Namespace, *,
+                        scenario: Scenario,
+                        score_shipped_model: bool = False,
+                        listen_timeout: float = 120.0,
+                        yaml_path: Path | None = None,
+                        handle_out: dict | None = None) -> AsyncIterator[_ServerHandle]:
+    """Launch the petab-mcp server on ``work/problem.yaml``, open one initialized MCP session to
+    it, and tear both down afterwards. Shared by :func:`_main_async` (server before the driver)
+    and the barebones pipeline (server after, on the delivered problem, with
+    ``score_shipped_model``). ``handle_out`` receives the handle as soon as the process exists so a
+    caller's ``except`` can read ``proc.poll()`` even for a startup failure; ``listen_timeout``
+    bounds that startup; ``yaml_path`` defaults to ``work/problem.yaml`` (logs always go to
+    ``work``). A failure to spawn the subprocess re-raises untouched.
+
+    ``scenario`` is required rather than defaulted: it locates the held-out measurement table
+    (below), and a caller that forgot it would silently launch a server with no
+    ``evaluate_validation_data`` tool registered.
+    """
+    work_yaml = yaml_path or work / "problem.yaml"
     host, port = "127.0.0.1", _free_port()
     # HELD-OUT data, if this example has any: read from the example dir, NOT from `work/` — `work/`
     # is a copy of `problem/` and the held-out table is deliberately not in there (see
@@ -61,10 +79,10 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
         sys.executable, "-c", _SERVER_BOOTSTRAP,
         str(work_yaml), str(build_root), args.reference_validation, host, str(port),
         str(args.n_starts), str(validation_tsv) if validation_tsv.is_file() else "",
-        # <score_shipped>: "0" here because a zero-shot run builds its model through the server
-        # and has nothing shipped to score. Passed anyway, never omitted -- the bootstrap unpacks
-        # a fixed arity so a dropped argument fails loudly at startup.
-        "0",
+        # <score_shipped>: "1" only for a problem that arrives finished (the barebones judge
+        # path). Passed either way, never omitted -- the bootstrap unpacks a fixed arity so a
+        # dropped argument fails loudly at startup.
+        "1" if score_shipped_model else "0",
     ]
     server_log_path = work / "server.log"
     amici_log_path = work / "amici_build.log"
@@ -99,9 +117,11 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
             with contextlib.suppress(Exception):
                 handle.close()
         raise
+    handle = _ServerHandle(proc, f"http://{host}:{port}/mcp")
+    if handle_out is not None:
+        handle_out["handle"] = handle
     try:
-        _wait_until_listening(host, port, proc, server_log_path)
-        url = f"http://{host}:{port}/mcp"
+        _wait_until_listening(host, port, proc, server_log_path, timeout=listen_timeout)
         # A single make_changes commit fits the model with an n_starts multistart that streams
         # nothing back for its whole duration; the client's default sse_read_timeout (300s) would
         # drop that response and hang the call.
@@ -142,7 +162,7 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
         async with contextlib.AsyncExitStack() as stack:
             read, write, _ = await stack.enter_async_context(
                 streamablehttp_client(
-                    url,
+                    handle.url,
                     # Above the CEILING *and* above this run's own default budget: a 1-worker
                     # run with a large --n-starts can compute a default budget past the ceiling
                     # (the ceiling bounds what the MODEL may ask for, not what the operator
@@ -161,6 +181,42 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
                 read_timeout_seconds=timedelta(
                     seconds=fit_time_budget_for(None, args.n_starts))))
             await session.initialize()
+            handle.session = session
+            yield handle
+    finally:
+        # Tear down without masking any in-flight exception.
+        with contextlib.suppress(Exception):
+            proc.terminate()
+            proc.wait(timeout=10)
+        if proc.poll() is None:
+            with contextlib.suppress(Exception):
+                proc.kill()
+                proc.wait(timeout=5)
+        for handle_ in (server_log, amici_log):
+            with contextlib.suppress(Exception):
+                handle_.close()
+
+
+# --------------------------------------------------------------------------- main
+async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[int, dict]":
+    work = cleanup(scenario)
+
+    # Capture the true run start once, before the server launch, so every degraded-result path
+    # (including a teardown-time abort in this function) reports the real start instead of
+    # re-stamping it at abort time.
+    started_at = _now_iso()
+
+    # AMICI builds are keyed by SBML hash and never go stale, so keep them OUTSIDE work/
+    # (wiped each run) to avoid recompiling identical models on repeat runs.
+    build_root = scenario.example_dir / ".amici_build"
+    launched: dict = {}
+    try:
+        async with _petab_server(work, build_root, args, scenario=scenario,
+                                 handle_out=launched) as server:
+            proc = server.proc
+            session = server.session
+            if session is None:
+                raise RuntimeError("petab-mcp session was not initialized")
             # SECONDARY MCP sessions: the blinded bio-knowledge server(s) for the biocurator, on
             # the deepagents panel every run. The endpoints are HARDCODED (BIO_MCP_URLS:
             # BioContextAI + OmniPath) — no custom-endpoint config. Each is opened in its OWN
@@ -202,21 +258,8 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
         # `_drive`'s guard exactly; `_should_reraise` still lets a real interrupt through.
         if _should_reraise(exc):
             raise
-        # ``proc`` is always bound here: this guard's try-block starts only after the server
-        # subprocess was launched (its own launch failure re-raises separately above).
-        rc = proc.poll()
+        server = launched.get("handle")  # absent only if the subprocess never spawned
+        rc = server.proc.poll() if server is not None else None
         result = _write_degraded_result(work, _base_meta(scenario, args, started_at),
                                         scenario, _summarize_exc(exc), server_returncode=rc)
         return 1, result
-    finally:
-        # Tear down without masking any in-flight exception.
-        with contextlib.suppress(Exception):
-            proc.terminate()
-            proc.wait(timeout=10)
-        if proc.poll() is None:
-            with contextlib.suppress(Exception):
-                proc.kill()
-                proc.wait(timeout=5)
-        for handle in (server_log, amici_log):
-            with contextlib.suppress(Exception):
-                handle.close()
