@@ -23,9 +23,11 @@ import time
 from pathlib import Path
 
 from .clock import _ToolClock
+from .. import benchmark
 from .provenance import _bic_reference, _now_iso, _reference_score
 from ..scenario import Baseline, JudgeContext, Scenario
-from .scoring import _noise_sigma_flag, _reference_sigma_flag, _residual_structure_fields
+from .scoring import (_noise_sigma_flag, _reference_sigma_flag,
+                      _residual_structure_fields, _validation_fields)
 
 
 async def _head_version(call) -> "int | None":
@@ -352,6 +354,35 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     # The raw report is stored in result.json too (it wasn't before) to audit gaming after the fact.
     noise_sigma_report = final.get("noise_sigma_report") if isinstance(final, dict) else None
     ref = scenario.reference()
+
+    # HELD-OUT (validation) score of the SCORED model — its likelihood on measurements it was never
+    # fitted to, against the same number for the true model (reference.json's `validation`). The one
+    # thing ΔBIC structurally cannot see: a mechanism that is wrong only under conditions the
+    # training data does not cover scores identically to the right one on the training data (see
+    # petab_mcp.validation_data). REPORT-ONLY — it does not enter `success` below.
+    #
+    # Asked ONLY of an example that actually ships held-out data. The predicate is the file, not the
+    # reference's `validation` block: an example whose data is materialized but whose reference has
+    # not been refit yet then reports a real score with `reference_nll: null`, which is the visible
+    # form of that misconfiguration — gating on the block instead would hide it. The other
+    # seventeen examples have no such file, so they skip the call entirely rather than printing an
+    # "unavailable" line on every run for a check they were never meant to have.
+    #
+    # Guarded and best-effort, like the residual diagnosis above: a failure to read it must never
+    # cost the run its result.json. `_validation_fields` turns "asked but not answered" into an
+    # explicit status rather than a blank, so a sweep can tell it from a clean skip.
+    validation = None
+    if benchmark.validation_measurements_path(scenario.example_dir).is_file():
+        try:
+            validation_payload = await call("evaluate_validation_data")
+        except Exception as exc:  # noqa: BLE001 - report-only; never fail the judge on it
+            validation_payload = None
+            print(f"  (held-out validation score unavailable: {type(exc).__name__}: {exc})")
+        try:
+            validation = _validation_fields(validation_payload, ref, asked=True)
+        except Exception as exc:  # noqa: BLE001 - report-only diagnostic
+            print(f"  (held-out validation projection unavailable: {type(exc).__name__}: {exc})")
+
     # PREFER the reference-sigma comparison (#118): a candidate sigma is judged against the TRUE
     # model's own fitted sigma, not against a fraction of the marginal data std (which conflates
     # explained and unexplained variance, so no fixed band holds the truth). Falls back to the
@@ -459,6 +490,31 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     if p_gof is not None:
         print(f"  chi2 GoF:             p={p_gof:.3g} (dof={dof}) "
               f"— {'consistent with noise' if p_gof >= 0.05 else 'worse than noise'}")
+    if validation:
+        # Printed next to ΔBIC because it is the same shape of comparison against the same true
+        # model — on data neither side was fitted to.
+        # Report-only; it is not part of the verdict.
+        if validation.get("delta_nll") is not None:
+            print(f"  held-out (validation): nll {validation['nll']:.6g} | true-model "
+                  f"{validation['reference_nll']:.6g} | Δnll "
+                  f"{validation['delta_nll']:+.6g}  over {validation['n']} point(s) in "
+                  f"{validation.get('n_conditions')} unseen condition(s)  [report-only]")
+            # Explicitly non-None AND non-zero on the reference side: the ratio below divides by
+            # it, so zero has to be excluded on purpose rather than by the accident of a
+            # truthiness test that reads like a None check.
+            _vchi2, _rchi2 = validation.get("chi2"), validation.get("reference_chi2")
+            if _vchi2 is not None and _rchi2 is not None and _rchi2 != 0:
+                # Ratio, not a p-value: the truth's own held-out reduced chi2 on fujita is 36.5, so
+                # an absolute goodness-of-fit test rejects both sides (see scoring._validation_fields).
+                print(f"  held-out chi2:        {_vchi2:.4g} vs true-model {_rchi2:.4g} "
+                      f"(x{_vchi2 / _rchi2:.2f})")
+        else:
+            print(f"  held-out (validation): {validation['status']}"
+                  + (f" — {validation['reason']}" if validation.get("reason") else "")
+                  + ("  (held-out n differs from the reference's — the difference is withheld)"
+                     if validation.get("n_mismatch") else "")
+                  + ("  (the reference block and the score are of different kinds — the "
+                     "difference is withheld)" if validation.get("mode_mismatch") else ""))
     # Server-side breakdown of the heavy compute: how much of the tool time was the one-time
     # AMICI compile vs the recurring pyPESTO fit (best-effort — a server without the tool, or
     # a failed call, just leaves these None). Fetched BEFORE the clock snapshot below so this
@@ -549,6 +605,10 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         "chi2_dof": dof,
         "chi2_gof_pvalue": p_gof,
         "residual_structure": residual_structure,
+        # HELD-OUT prediction: this model's likelihood on measurements it was never fitted to,
+        # against the true model's. REPORT-ONLY — deliberately not in the `success` gate above.
+        # `None` on an example that ships no held-out data.
+        "validation": validation,
         # Noise-sigma plausibility of the scored model: GATES success (an inflated/collapsed sigma
         # disqualifies an otherwise-passing BIC; see the gate above) but is never shown to the agent.
         "noise_sigma_report": noise_sigma_report,

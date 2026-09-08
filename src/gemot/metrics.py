@@ -80,6 +80,18 @@ _RESULT_FIELDS = (
     "phoenix_project", "phoenix_trace_id",
 )
 
+# The HELD-OUT (validation) score, flattened out of the nested `validation` block. Same reason as
+# every other flattener here: `DictWriter(extrasaction="ignore")` drops a nested dict silently, so a
+# sweep grouped on these columns would read empty cells for a check that ran fine. `val_status` is
+# the one to filter on — an example with no held-out data, a model that would not integrate on the
+# unseen conditions, and a genuine score are three different rows, and only the third has a
+# `val_delta_nll` worth averaging.
+# `val_mode` says which comparison the row is (`fixed`: the fitted point evaluated on unseen
+# conditions), so a later kind of check cannot be mistaken for this one.
+_VALIDATION_FIELDS = ("val_status", "val_mode", "val_reference_status", "val_nll",
+                      "val_reference_nll", "val_delta_nll", "val_n", "val_reference_n", "val_chi2",
+                      "val_reference_chi2")
+
 # The replicate lack-of-fit verdict, flattened out of the nested `residual_structure` block for the
 # same reason the edit rejects are: a sweep groups by flat columns. `lof_weak` is the one this exists
 # for — "the arm passed" and "the arm passed on too few lack-of-fit degrees of freedom to mean it" are
@@ -91,7 +103,7 @@ _LOF_FIELDS = ("lof_status", "lof_weak", "lof_df")
 # saw nothing on the collect() path and every column derived from a nested block stayed empty —
 # silently, which is the failure mode the _RESULT_FIELDS comment above warns about.
 _NESTED_SOURCE_FIELDS = ("edit_rejects", "residual_structure", "git_diff",
-                         "openrouter_endpoints")
+                         "openrouter_endpoints", "validation")
 
 # Columns derived from the Phoenix trace (token usage + span breakdown).
 _PHOENIX_FIELDS = (
@@ -99,7 +111,7 @@ _PHOENIX_FIELDS = (
     "tokens_prompt", "tokens_completion", "tokens_total", "trace_model", "phoenix_note",
 )
 
-HISTORY_FIELDS = _RESULT_FIELDS + _LOF_FIELDS + _PHOENIX_FIELDS
+HISTORY_FIELDS = _RESULT_FIELDS + _LOF_FIELDS + _VALIDATION_FIELDS + _PHOENIX_FIELDS
 DEFAULT_HISTORY = paths.metrics_history()
 
 
@@ -334,6 +346,73 @@ def _flatten_replicate_lof(row: dict) -> dict:
             "lof_weak": None if lof_df is None else bool(lof.get("weak"))}
 
 
+def flatten_validation(row: dict) -> dict:
+    """The flat ``val_*`` pairs for a result's HELD-OUT ``validation`` block — ``{}`` when it has
+    none.
+
+    PUBLIC, and returning only ITS OWN keys rather than the whole row (which is what the sibling
+    flatteners here do). Both shapes matter, and this one is deliberate: the Phoenix run span needs
+    the same pairs (``tracing.record_run_result``), and any other shape would have made that caller
+    restate the nine column names as a second tuple to iterate — the drift these flat columns exist
+    to prevent, one level down. Returning the mapping itself means :data:`_VALIDATION_FIELDS` is the
+    only place the names are written, and the span and the CSV cannot disagree by construction.
+
+    ``{}`` for a row with no block, which is what an example that ships no held-out data should look
+    like: an empty ``val_status`` and a ``val_status`` of ``non_finite`` are opposite findings, so
+    the absent case must not be coerced to a value.
+
+    ``val_delta_nll`` is present only when the projection produced one: a status other than ``ok``,
+    or a held-out ``n`` that disagrees with the reference's, leaves it out on purpose (see
+    ``runner.scoring._validation_fields``), and filling it with a 0.0 would put "predicts exactly as
+    well as the truth" into the column a sweep averages.
+    """
+    block = row.get("validation")
+    if not isinstance(block, dict):
+        return {}
+    return {"val_status": block.get("status"),
+            # The REFERENCE's status, not the candidate's: `error` here means the refit could not
+            # score the held-out set at all, which is a different row from "no bar was ever fit".
+            "val_reference_status": block.get("reference_status"),
+            "val_nll": block.get("nll"),
+            "val_reference_nll": block.get("reference_nll"),
+            "val_delta_nll": block.get("delta_nll"),
+            "val_n": block.get("n"),
+            # The reference's own point count, so a blank `val_delta_nll` is DIAGNOSABLE from the
+            # CSV: the commonest reason to withhold the difference is that the two sides counted
+            # different numbers of held-out points (`n_mismatch`), and without this column that
+            # shows only as an unexplained gap in the one figure a sweep averages.
+            "val_reference_n": block.get("reference_n"),
+            "val_chi2": block.get("chi2"),
+            "val_reference_chi2": block.get("reference_chi2"),
+            "val_mode": block.get("mode")}
+
+
+#: Flatteners that return only THEIR OWN keys, merged into the row rather than replacing it. The
+#: four `_flatten_*` helpers above return the WHOLE row and chain; these do not, and the split is
+#: load-bearing (a keys-only mapping is what lets `tracing` stamp the same names without restating
+#: them). Naming the two conventions separately is what keeps the next flattener from picking the
+#: wrong one — merging a whole-row flattener here is harmless, but chaining a keys-only one
+#: silently drops every other column.
+#: NAMES, not function objects: a tuple of objects binds at import, so a
+#: `monkeypatch.setattr(metrics, "flatten_validation", ...)` — the natural way to test the CSV and
+#: the Phoenix span together — would change what `tracing` stamps (it resolves the name per call)
+#: and NOT what this writes, silently un-syncing the two surfaces the split exists to keep
+#: identical. Resolved per call so both sides see the same function.
+_KEY_FLATTENERS = ("flatten_validation",)
+
+# Resolved ONCE, here, so a typo is a hard failure at IMPORT rather than a KeyError inside
+# `append_history` — which runs at the very end of a run, after the agent loop, the fits and the
+# AMICI compiles have all been paid for. Names (not function objects) are what the tuple holds, so
+# the lookup above stays LATE-bound and a `monkeypatch.setattr(metrics, "flatten_validation", ...)`
+# reaches the CSV as well as the span; this check only asserts that the names exist. Not an
+# `assert` statement: `python -O` would strip it and take the fail-fast with it.
+_unknown_flatteners = [n for n in _KEY_FLATTENERS if n not in globals()]
+if _unknown_flatteners:  # pragma: no cover - import-time wiring check
+    raise NameError(f"metrics._KEY_FLATTENERS names undefined flattener(s): "
+                    f"{_unknown_flatteners}")
+del _unknown_flatteners
+
+
 def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HISTORY) -> Path:
     """Append rows to the append-only history CSV (writing the header if it is new)."""
     history_path = Path(history_path)
@@ -384,6 +463,8 @@ def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HIST
         for row in rows:
             row = _flatten_served_endpoints(
                 _flatten_git_diff(_flatten_replicate_lof(_flatten_edit_rejects(row))))
+            for name in _KEY_FLATTENERS:
+                row = {**row, **globals()[name](row)}
             writer.writerow({k: row.get(k) for k in fields})
     return history_path
 
