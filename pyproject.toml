@@ -41,7 +41,11 @@ dependencies = [
     "fastmcp>=3,<4",
     "petab>=0.5",
     "python-libsbml>=5.19",
-    "antimony>=2.12",
+    # Floored at 3.2 because `validation.frozen_parametric_stoichiometry_issues` is now the ONLY
+    # guard against a symbolic reaction stoichiometry (issue #89). Below 3.2, reusing one symbol
+    # across several stoichiometries (`N A -> N B`) instead fails the Antimony->SBML conversion on
+    # an id-uniqueness clash, raising an opaque libSBML error that nothing here translates.
+    "antimony>=3.2",
     "pandas>=1.5",
     "numpy>=1.23",
     "duckdb>=0.9",

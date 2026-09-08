@@ -1,5 +1,23 @@
 # Rationale Log
 
+#89 `validation.stoichiometry_conflict_issues` and its `set_model` caller are gone; the STATIC
+`frozen_parametric_stoichiometry_issues` stays. antimony 3.2.0 (2026-09-08) lists one
+stoichiometry change — "The same ID can be used for multiple stoichiometries, i.e. 'n A -> n B;
+k1*A^n'" — and that is all it is: the id-uniqueness collision that made `N A -> N B` fail
+conversion outright. The deleted function existed only to rewrite that one opaque libSBML error as
+#89 guidance, so under a 3.2 floor it is unreachable. The underlying footgun is NOT fixed. Measured
+on 3.1.3 vs 3.2.0 with python-libsbml 5.21.1 identical: `X -> N X`, `N A -> B` and `N A -> M B`
+convert byte-identically on both, every one still dropping `N` from `listOfParameters` and freezing
+its nominal into a constant `stoichiometry`. The collision case merely got quieter — 3.2.0 emits
+`<speciesReference id="N" species="A" stoichiometry="2" constant="true"/>` plus a second reference
+`_J0_B_stoich` with NO stoichiometry attribute driven by `assignmentRule _J0_B_stoich = N`, where
+`N` is undeclared; libSBML `checkConsistency` returns 3 warnings and no error on it, so nothing
+downstream would have caught the silently-wrong model the loud conversion failure used to prevent.
+Hence a floor rather than the rejected cap: with the error-path guard deleted, an older antimony
+would restore an exception no one now translates. The static check covers every shape on 3.2.0 —
+each keeps at least one frozen constant reference, the first occurrence, and literals (`2 X`,
+`2.0 B`) still leave the id unset — so the same-symbol test moved onto it rather than being dropped.
+
 #245 `identifiability._compute_fim` inverts the FIM built from the residual rows
 (`_fim_from_rows`), not the objective's `hess`, and `effective_parameter_count` takes its `H` and
 its scores off that same call. A deliberate change to agent-facing statistics, not a refactor: the
