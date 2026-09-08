@@ -11,6 +11,8 @@ shape the judge reads" is not something a mocked importer can establish.
 
 from __future__ import annotations
 
+import math
+import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -185,3 +187,100 @@ def test_a_held_out_condition_table_with_other_columns_is_another_model():
     view, failed = V.transfer_view(_candidate(), held, _SHIPPED)
     assert view is None and failed["status"] == V.STATUS_TABLE_MISMATCH
     assert "dose" in failed["reason"]
+
+
+def test_held_out_conditions_are_checked_against_the_held_out_table_not_the_training_one():
+    """The whole point of the condition swap: `c1` is not a training condition and must still pass,
+    while a measurement row naming a condition in NEITHER table must not."""
+    ok = V.HeldOut(measurement_df=_rows("c1"), condition_df=_conditions(["c1"]),
+                   parameter_df=_HELD_OUT_PARAMS)
+    view, failed = V.transfer_view(_candidate(), ok, _SHIPPED)
+    assert failed is None and view is not None
+
+    bad = V.HeldOut(measurement_df=_rows("c_nowhere"), condition_df=_conditions(["c1"]),
+                    parameter_df=_HELD_OUT_PARAMS)
+    view, failed = V.transfer_view(_candidate(), bad, _SHIPPED)
+    assert failed["status"] == V.STATUS_TABLE_MISMATCH and "c_nowhere" in failed["reason"]
+
+
+def test_refit_declines_a_bad_table_before_any_build(monkeypatch):
+    """Same contract as `score_problem`: the guards run before the importer, so an empty or foreign
+    table costs nothing and names its own problem."""
+    import pypesto.petab
+
+    def _boom(*a, **k):  # pragma: no cover - must not be reached
+        raise AssertionError("the importer must not be reached for a declined table")
+
+    monkeypatch.setattr(pypesto.petab, "PetabImporter", _boom)
+    problem = _candidate()
+    problem.measurement_df = problem.measurement_df.iloc[0:0]
+    out = V.refit_problem(problem, build_dir="/tmp/x", model_name="m", n_starts=1)
+    assert out["status"] == V.STATUS_NO_DATA
+
+    problem = _candidate()
+    problem.measurement_df = _rows("c_elsewhere")
+    out = V.refit_problem(problem, build_dir="/tmp/x", model_name="m", n_starts=1)
+    assert out["status"] == V.STATUS_TABLE_MISMATCH and "c_elsewhere" in out["reason"]
+
+
+# ------------------------------------------------ the whole server-side path, with AMICI
+def test_score_session_refits_the_toy_on_a_transfer_set_and_leaves_the_session_alone(session,
+                                                                                    engine):
+    """The one AMICI-backed test: the toy model, its A_init doubled on a new condition `c1`, is
+    REFIT on measurements it never saw. Pins the payload SHAPE the judge reads (`mode`, `k`, `n`,
+    a finite `nll`), that `k` is the count of estimated rows (k1, k2 — not sigma_B or A_init), that
+    the refit's optimum is no worse than its start point, and that the session's own table and
+    model are exactly as they were: a transfer refit that wrote its optimum back would change what
+    the judge scores on the training data."""
+
+    meas = pd.read_csv(TOY / "measurements.tsv", sep="\t")
+    held_meas = meas.assign(simulationConditionId="c1", measurement=meas["measurement"] * 2.0)
+    held = V.HeldOut(
+        measurement_df=held_meas,
+        condition_df=_conditions(["c1"]),
+        parameter_df=_params([("A_init", "lin", 0.0, 100.0, 2.0, 0),
+                              ("k1", "log10", 1e-4, 100.0, 0.9, 1)]),
+    )
+    before = session.problem.parameter_df.copy(deep=True)
+    sbml_before = session.model_sbml()
+
+    out = V.score_session(session, engine, held, n_starts=2)
+
+    assert out["status"] == V.STATUS_OK, out
+    assert out["mode"] == V.MODE_TRANSFER
+    assert out["k"] == 2 and out["n"] == len(held_meas) and out["n_conditions"] == 1
+    assert out["observables"] == ["obs_B"] and out["n_starts"] == 2
+    assert math.isfinite(out["nll"]) and out["chi2"] is not None
+    # the doubled data at A_init = 2 is the SAME curve shape, so the refit from the training
+    # optimum must land near the training likelihood — a refit at the training A_init (the
+    # input NOT moved) could not
+    view, _ = V.transfer_view(session.problem, held, session.shipped_parameter_df)
+    assert view.parameter_df.loc["A_init", "nominalValue"] == 2.0
+    pd.testing.assert_frame_equal(session.problem.parameter_df, before)
+    assert session.model_sbml() == sbml_before
+    assert list(session.problem.condition_df.index) == ["c0"]
+
+
+def test_the_server_tool_takes_n_starts_and_refits_a_transfer_bundle(tmp_path):
+    """The registered tool is what the judge reaches over MCP: it must accept `n_starts` (or the
+    judge's call fails and the run records `unavailable`) and must read the bundle as a transfer
+    set. Driven in-process through `create_server` like the doc-consistency tests."""
+    import asyncio
+
+    from petab_mcp.server import create_server
+
+    prob = tmp_path / "problem"
+    shutil.copytree(TOY, prob)
+    val = tmp_path / "validation"
+    val.mkdir()
+    pd.read_csv(TOY / "measurements.tsv", sep="\t").assign(simulationConditionId="c1").to_csv(
+        val / "measurements.tsv", sep="\t", index=False)
+    _conditions(["c1"]).reset_index().to_csv(val / V.HELD_OUT_CONDITIONS, sep="\t", index=False)
+    _params([("A_init", "lin", 0.0, 100.0, 2.0, 0)]).reset_index().to_csv(
+        val / V.HELD_OUT_PARAMETERS, sep="\t", index=False)
+
+    mcp = create_server(str(prob / "problem.yaml"), provenance_dir=str(tmp_path / "prov"),
+                        build_root=str(tmp_path / "build"), auto_fit=False,
+                        validation_measurements=str(val / "measurements.tsv"))
+    tools = {t.name: t for t in asyncio.run(mcp.list_tools())}
+    assert "n_starts" in tools["evaluate_validation_data"].parameters["properties"]
