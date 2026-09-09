@@ -8,6 +8,8 @@ reference's own held-out score in BENCHMARK_NOTES.md, re-derived by ``setup.py -
 
 from __future__ import annotations
 
+import copy
+
 import pandas as pd
 import pytest
 
@@ -179,7 +181,6 @@ def test_the_validation_tool_is_not_exposed_to_the_panel():
     assert "evaluate_validation_data" not in ALLOWED_TOOLS
 
 
-
 def test_the_server_only_registers_the_tool_when_given_held_out_data(monkeypatch, yaml_path,
                                                                     tmp_path):
     """No held-out file, no tool — so an example without a validation set cannot accidentally be
@@ -235,7 +236,6 @@ def test_a_held_out_row_that_is_also_a_training_row_is_refused(monkeypatch, tmp_
             published=published, training_measurement_df=train)
 
 
-
 def test_a_held_out_problem_that_changed_the_model_tables_is_refused(monkeypatch, tmp_path):
     """A held-out set is the SAME problem's data under unseen conditions. If its condition or
     observable table differs, the two scores are computed over two different models and their
@@ -256,7 +256,6 @@ def test_a_held_out_problem_that_changed_the_model_tables_is_refused(monkeypatch
             published=published, training_measurement_df=train)
 
 
-
 def test_an_absent_validation_yaml_names_itself(monkeypatch, tmp_path):
     """A typo'd path must say which path, at setup time. Falling through to "no held-out data" would
     leave the example silently unvalidated for as long as nobody read the setup log."""
@@ -265,7 +264,6 @@ def test_an_absent_validation_yaml_names_itself(monkeypatch, tmp_path):
         benchmark._validation_measurement_df(
             name="X", validation_yaml="nope.yaml", collection=None,
             published=_problem(_rows("c_train")), training_measurement_df=_rows("c_train"))
-
 
 
 def test_the_held_out_table_lands_outside_the_problem_directory():
@@ -284,7 +282,6 @@ def test_delta_is_candidate_minus_reference_and_positive_means_worse():
     assert out["reference_nll"] == 500.0 and out["n"] == 276
 
 
-
 def test_a_held_out_n_that_disagrees_with_the_reference_withholds_the_difference():
     """The two sides are computed at different times from different files — the reference at
     ``setup.py --refit``, the candidate at run time. A held-out set that changed in between would
@@ -292,7 +289,6 @@ def test_a_held_out_n_that_disagrees_with_the_reference_withholds_the_difference
     out = _validation_fields({"status": "ok", "nll": 560.0, "n": 200, "chi2": None}, _REF)
     assert out["n_mismatch"] is True
     assert "delta_nll" not in out
-
 
 
 def test_a_model_that_cannot_integrate_the_unseen_conditions_keeps_its_own_status():
@@ -305,13 +301,11 @@ def test_a_model_that_cannot_integrate_the_unseen_conditions_keeps_its_own_statu
     assert "delta_nll" not in out and out["reference_nll"] == 500.0
 
 
-
 def test_no_reference_block_and_no_payload_is_no_check_at_all():
     """An example with no held-out data must produce None, so `val_status` stays EMPTY in the
     history CSV rather than claiming a check ran."""
     assert _validation_fields(None, {"nll": 1.0, "k": 2, "n": 10}) is None
     assert _validation_fields({}, {}) is None
-
 
 
 def test_a_missing_tool_on_an_example_that_HAS_a_bar_is_reported_as_unavailable():
@@ -321,7 +315,6 @@ def test_a_missing_tool_on_an_example_that_HAS_a_bar_is_reported_as_unavailable(
     assert out["status"] == "unavailable" and out["reference_nll"] == 500.0
 
 
-
 def test_the_held_out_chi2_is_carried_for_both_sides_and_no_p_value_is_invented():
     """The truth's own held-out reduced chi2 on fujita is 36.5, so an absolute goodness-of-fit test
     against the training noise model rejects the TRUE model too and every run would record p = 0.
@@ -329,7 +322,6 @@ def test_the_held_out_chi2_is_carried_for_both_sides_and_no_p_value_is_invented(
     out = _validation_fields({"status": "ok", "nll": 500.0, "n": 276, "chi2": 4000.0}, _REF)
     assert out["chi2"] == 4000.0 and out["reference_chi2"] == 1000.0
     assert "chi2_gof_pvalue" not in out and "chi2_dof" not in out
-
 
 
 def test_a_reference_block_that_does_not_claim_success_is_not_reported_as_ok():
@@ -393,7 +385,6 @@ class _Baseline:
     species = {"A", "B"}
 
 
-
 def _run_judge(work, *, has_held_out, payload, reference=None, nll=100.0):
     import asyncio
     import time
@@ -432,7 +423,6 @@ def _run_judge(work, *, has_held_out, payload, reference=None, nll=100.0):
     return code, result, asked
 
 
-
 def test_the_held_out_score_reaches_result_json_without_changing_the_verdict(tmp_path):
     """ΔBIC is 0 here, so the run passes. A held-out score that is far WORSE than the true model's
     must be recorded and must NOT flip that: the check is report-only, and a gate on it would be
@@ -444,7 +434,6 @@ def test_the_held_out_score_reaches_result_json_without_changing_the_verdict(tmp
     assert result["validation"]["delta_nll"] == pytest.approx(500.0)   # 900 - 400, much worse
     assert result["validation"]["reference_chi2"] == 90.0
     assert result["success"] is True and code == 0
-
 
 
 def test_an_example_with_no_held_out_data_is_never_asked_for_a_score(tmp_path):
@@ -459,7 +448,6 @@ def test_an_example_with_no_held_out_data_is_never_asked_for_a_score(tmp_path):
     assert result["success"] is True and code == 0
 
 
-
 def test_a_failing_held_out_call_costs_the_run_nothing(tmp_path):
     """Report-only means report-only: if the tool raises on an example that HAS held-out data, the
     judge still writes result.json and still returns its BIC verdict. Losing result.json to a
@@ -470,7 +458,6 @@ def test_a_failing_held_out_call_costs_the_run_nothing(tmp_path):
     assert result["validation"]["status"] == "unavailable"
     assert result["validation"]["reference_nll"] == 400.0
     assert result["success"] is True and code == 0
-
 
 
 def test_the_span_and_the_csv_cannot_disagree_about_the_held_out_columns(monkeypatch):
@@ -546,7 +533,6 @@ def test_a_short_x_full_is_refused_rather_than_evaluated_misaligned(monkeypatch)
             x_names=["k", "sigma", "scale"])     # ...but the NAMES match, so only length catches it
 
 
-
 def test_the_recorded_reference_vector_must_be_full_dimensional():
     """`_recorded_vector`'s two callers zip it against `pp.x_names` and index it by free position,
     so a reduced or reordered `x` would surface as wrong sigmas and a wrong held-out score rather
@@ -563,7 +549,6 @@ def test_the_recorded_reference_vector_must_be_full_dimensional():
     assert list(_recorded_vector(_Result(), [1.0, 2.0, 3.0], _PP())) == [1.0, 2.0, 3.0]
     with pytest.raises(ValueError, match="must be the FULL vector"):
         _recorded_vector(_Result(), None, _PP())
-
 
 
 def test_a_failed_reference_refit_is_distinguishable_from_no_bar_at_all(tmp_path):
@@ -658,3 +643,178 @@ def test_arity_is_reported_as_arity_not_as_a_name_mismatch():
 
     with pytest.raises(ValueError, match="must be the FULL vector"):
         _reduced_from_named(_PP(), [0.5], ["k", "sigma", "scale"])
+
+
+# ------------------------------------------- a held-out table's own per-blot scale factors
+def _scaled_problem(formula="observableParameter1_obs_A * x"):
+    """A problem whose one observable carries a scaling placeholder, like every blot readout."""
+    import petab.v1 as petab
+
+    return petab.Problem(
+        model=None,
+        measurement_df=_rows("c_train").assign(observableParameters="s_train"),
+        observable_df=pd.DataFrame(
+            {"observableFormula": [formula], "noiseFormula": ["noiseParameter1_obs_A"]},
+            index=pd.Index(["obs_A"], name="observableId")),
+        condition_df=pd.DataFrame({"dose": [0.0, 0.0]},
+                                  index=pd.Index(["c_train", "c_test"], name="conditionId")),
+        parameter_df=pd.DataFrame(
+            {"parameterScale": ["lin", "lin"], "lowerBound": [0.0, 0.0], "upperBound": [1.0, 10.0],
+             "nominalValue": [0.5, 1.0], "estimate": [1, 1]},
+            index=pd.Index(["k", "s_train"], name="parameterId")),
+    )
+
+
+def test_held_out_scalings_are_the_overrides_the_problem_does_not_define():
+    """A held-out blot's scale factor is whatever override the parameter table lacks; a shipped
+    scaling (fujita's rows) or a number is an ordinary PEtab override and not touched."""
+    from petab_mcp import validation_data
+
+    held = pd.concat([_rows("c_test").assign(observableParameters="s_blot"),
+                      _rows("c_test", times=(2.0,)).assign(observableParameters="s_train"),
+                      _rows("c_test", times=(3.0,)).assign(observableParameters="2.5")])
+    assert validation_data.held_out_scalings(_scaled_problem(), held) == {"s_blot"}
+
+
+def test_held_out_scalings_are_solved_hierarchically_then_written_in_as_numbers(monkeypatch):
+    """The two-pass shape, pinned without an AMICI build: pass one hands pyPESTO a HIERARCHICAL
+    problem whose only estimated rows are the held-out scalings tagged `parameterType: scaling`
+    (the model's own parameters keep their values, the training-only overrides are gone); pass two
+    is the ordinary joint objective with the solved values substituted as plain numbers, so the
+    reported nll/chi2 come off the same code path as for an example without held-out scalings."""
+    import pypesto.petab
+
+    from petab_mcp import validation_data
+
+    seen = []
+
+    class _Calc:
+        def get_interpretable_inner_par_ids(self):
+            return ["s_blot"]
+
+    class _Objective:
+        calculator = _Calc()
+
+        def __call__(self, x, **kwargs):
+            return {"fval": 1.0, "inner_parameters": [3.5], "rdatas": []}
+
+    class _PP:
+        x_names = ["k"]
+        x_free_indices = [0]
+        x_scales = ["lin"]
+        objective = _Objective()
+
+    class _Importer:
+        def __init__(self, petab_problem, **kwargs):
+            seen.append((petab_problem, kwargs.get("hierarchical", False)))
+
+        def create_problem(self):
+            return _PP()
+
+    monkeypatch.setattr(pypesto.petab, "PetabImporter", _Importer)
+    monkeypatch.setattr(validation_data, "_apply_amici_solver_defaults", lambda pp: None,
+                        raising=False)
+    import petab_mcp.fitting as fitting
+    monkeypatch.setattr(fitting, "_apply_amici_solver_defaults", lambda pp: None)
+
+    held = _rows("c_test").assign(observableParameters="s_blot")
+    out = validation_data.score_problem(_scaled_problem(), held, build_dir="/tmp/x", model_name="m")
+
+    assert [h for _, h in seen] == [True, False], "hierarchical solve first, joint evaluation second"
+    hier_view, joint_view = seen[0][0], seen[1][0]
+    row = hier_view.parameter_df.loc["s_blot"]
+    assert row["parameterType"] == "scaling" and int(row["estimate"]) == 1
+    assert float(row["lowerBound"]) == 0.0, "a gel's scale factor is non-negative"
+    assert list(joint_view.measurement_df["observableParameters"]) == ["3.5", "3.5"]
+    assert out["status"] == validation_data.STATUS_OK
+    assert out["held_out_scalings"] == {"s_blot": 3.5}
+
+
+def test_a_callers_vector_is_matched_by_name_so_a_smaller_held_out_problem_still_scores(monkeypatch):
+    """The held-out view drops the training-only overrides and its hierarchical twin drops the inner
+    scalings, so the problem pyPESTO builds has FEWER names than the reference fit's vector. Matching
+    by name — not position — is what lets `_reference_validation` hand over its full vector."""
+    import pypesto.petab
+
+    from petab_mcp import validation_data
+
+    class _PP:
+        x_names = ["k"]
+        x_free_indices = [0]
+        x_scales = ["lin"]
+
+        class objective:
+            @staticmethod
+            def __call__(x, **kwargs):
+                raise AssertionError("not reached")
+
+    assert validation_data._reduced_from_named(_PP(), [0.5, 2.0], ["s_train", "k"]) == [2.0]
+    with pytest.raises(ValueError, match="do not match"):
+        validation_data._reduced_from_named(_PP(), [0.5], ["s_train"])
+    # ...and a caller whose vector is shorter than its own names is caught before any build
+    monkeypatch.setattr(pypesto.petab, "PetabImporter", lambda *a, **k: None)
+    with pytest.raises(ValueError, match="must be the FULL vector"):
+        validation_data.score_problem(_scaled_problem(), _rows("c_test"), build_dir="/tmp/x",
+                                      model_name="m", x_full=[0.5], x_names=["k", "s_train"])
+
+
+# ------------------------------------------------ inputs the collection's export baked in
+
+
+def _sbml_scaled_problem():
+    """`_scaled_problem` with a REAL (tiny) SBML model, which the lint below needs: petab derives
+    the set of legitimate parameter ids from the model, so with `model=None` it cannot tell an
+    extraneous row from a kinetic one — and `_without_extraneous` short-circuits for the same
+    reason. Returns `(problem, doc)`; the document is returned to keep libsbml's owner alive."""
+    import libsbml
+    import petab.v1 as petab
+    from petab.v1.models.sbml_model import SbmlModel
+
+    doc = libsbml.SBMLDocument(3, 2)
+    sm = doc.createModel()
+    sm.setId("m")
+    comp = sm.createCompartment()
+    comp.setId("cell"), comp.setConstant(True), comp.setSize(1.0), comp.setSpatialDimensions(3)
+    sp_ = sm.createSpecies()
+    sp_.setId("x"), sp_.setCompartment("cell"), sp_.setInitialConcentration(1.0)
+    sp_.setHasOnlySubstanceUnits(False), sp_.setBoundaryCondition(False), sp_.setConstant(False)
+    par = sm.createParameter()          # the kinetic the parameter table declares
+    par.setId("k"), par.setValue(0.5), par.setConstant(True)
+    base = _scaled_problem()
+    return petab.Problem(
+        model=SbmlModel(sbml_model=sm),
+        observable_df=base.observable_df,
+        condition_df=base.condition_df,
+        measurement_df=base.measurement_df,
+        parameter_df=base.parameter_df,
+    ), doc
+
+
+def test_the_extraneous_prune_is_petabs_lint_not_ours():
+    """Why `_without_extraneous` exists at all. Swapping a held-out table in retires the overrides
+    the TRAINING rows referenced, and petab's own parameter-table lint — which
+    `PetabImporter.create_problem` runs, hierarchical or not — refuses the rows left behind. The
+    hierarchical solver cannot help: the lint fires before there is an objective to solve."""
+    from petab.v1.lint import check_parameter_df
+
+    problem, _doc = _sbml_scaled_problem()
+    held = _rows("c_test").assign(observableParameters="s_blot")
+    view = copy.copy(problem)
+    view.measurement_df = held
+    view.parameter_df = pd.concat([
+        problem.parameter_df,
+        pd.DataFrame({"parameterScale": ["lin"], "lowerBound": [0.0], "upperBound": [1e12],
+                      "nominalValue": [1.0], "estimate": [1]},
+                     index=pd.Index(["s_blot"], name="parameterId"))])
+
+    with pytest.raises((AssertionError, ValueError), match="[Ee]xtraneous"):
+        check_parameter_df(view.parameter_df, view.model, view.observable_df,
+                           view.measurement_df, view.condition_df)
+
+    from petab_mcp import validation_data
+
+    kept = validation_data._without_extraneous(view)
+    assert "s_train" not in kept.index, "the retired training override is dropped"
+    assert {"k", "s_blot"} <= set(kept.index), "the kinetics and the held-out scaling stay"
+    check_parameter_df(kept, view.model, view.observable_df, view.measurement_df,
+                       view.condition_df)
