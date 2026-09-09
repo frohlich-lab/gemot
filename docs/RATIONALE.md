@@ -20,6 +20,13 @@ it. `#167`, `#179` and `#245` predate this budget and still carry two or three e
 were left split because separate code sites cite a different one of them by name, so they are a
 legacy exception and not a precedent.
 
+#256 Manuscript prose cites numbers only through `paper/generated/values.tex` macros: the
+findings come from different sweeps, shas and arms, so `paper/lint_drafted.py` must reject bare
+numerals rather than warn about values that cannot be regenerated from prose. The byte-identity
+test excludes `provenance.tex` because its sha changes on each commit; the paired provenance test
+must retain `repoSha` and `generatedOn`, with the latter derived from HEAD's UTC commit date so
+regeneration does not drift with the wall clock.
+
 #89 `validation.stoichiometry_conflict_issues` and its `set_model` caller are gone: antimony's 3.2
 floor makes the id-uniqueness collision they translated — `N A -> N B` failing conversion outright
 — unreachable. The STATIC `frozen_parametric_stoichiometry_issues` stays, because the footgun is
