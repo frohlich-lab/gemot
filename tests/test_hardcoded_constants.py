@@ -123,6 +123,46 @@ def test_every_math_container_is_scanned_but_species_initials_and_parameter_valu
     assert L.hardcoded_constants(sm) == ["0.0305", "0.0345", "1.234", "1.333", "2.5", "10.5"]
 
 
+#: The literals the shipped true models still pay for, per example. Each needs a per-example
+#: provenance call and neither existing remedy fits: `KNOWN_CONSTANTS` would LEAK for a literal in
+#: a blinded readout (sneyd's note says shipping its open probability hands back the
+#: two-conducting-state structure), and `REFERENCE_HARDCODED_PARAMS` is scoped to literals the
+#: published fit SPENT, not to knowledge. Pinned rather than asserted-empty so the guard still
+#: fires on a NEW one; this dict may shrink, never grow.
+_TRUE_MODELS_STILL_PRICED = {
+    # The paper's own open probability, deliberately NOT shipped: it would hand back the
+    # two-conducting-state structure the blinding removed. Written `0.9*A + (1 - 0.9)*O` so the
+    # partition costs one charge and not two.
+    "sneyd": ["0.9"],
+}
+
+
+def test_the_shipped_true_models_price_only_these_literals():
+    """The published constants the benchmark true models used to write as literals now ship as
+    fixed rows (rahman's eight demographic rates) or are absorbed into the estimated kinetics
+    (raimundez's dose conversions, fujita's synthesis level): a true model that paid for its own
+    literals moves its self-test off the bar by `n_literals*ln(n)` — 25 BIC on rahman.
+
+    Three literals survive that treatment (`_TRUE_MODELS_STILL_PRICED`) and are pinned here, so
+    the guard still catches a NEW example reintroducing the asymmetry while the known residue
+    stays visible. Sneyd is the one to imitate: its two open probabilities are a partition, so the
+    model writes `0.9*A + (1 - 0.9)*O` and pays once — the rule charges distinct VALUES, so
+    writing the dependent one as an expression of the free one is the honest count."""
+    import re
+    from pathlib import Path
+
+    offenders = {}
+    for run in sorted((Path(__file__).parent.parent / "examples").glob("*/run.py")):
+        m = re.search(r'^TRUE_ANT\s*=\s*(?:r?"""|\'\'\')\\?\n?(.*?)(?:"""|\'\'\')', run.read_text(),
+                      re.S | re.M)
+        if m is None:
+            continue
+        found = L.hardcoded_constants(_sbml_model(m.group(1)))
+        if found != _TRUE_MODELS_STILL_PRICED.get(run.parent.name, []):
+            offenders[run.parent.name] = found
+    assert not offenders, offenders
+
+
 # --------------------------------------------------------------------------- the assembly
 def test_complexity_k_adds_the_constants_to_the_estimated_rows():
     assert fitting.complexity_k({"n_estimated": 4, "hardcoded_constants": ["0.000878", "1.333"]}) == 6
@@ -269,3 +309,28 @@ def test_the_reference_pays_for_its_fitted_literals():
     assert ref["k"] == 19                      # pure: the input is not mutated
     assert charge_hardcoded_parameters(ref, None) is ref
     assert charge_hardcoded_parameters(ref, {}) is ref
+
+
+def test_every_declared_reference_charge_is_in_the_committed_reference():
+    """The declaration in run.py and the committed reference.json must agree, or a `--refit` would
+    silently move the bar by ln(n) per literal the next time it runs."""
+    import ast
+    import json
+    from pathlib import Path
+
+    examples = Path(__file__).parent.parent / "examples"
+    checked = 0
+    for run in sorted(examples.glob("*/run.py")):
+        tree = ast.parse(run.read_text())
+        declared = None
+        for node in tree.body:
+            targets = getattr(node, "targets", None) or ([node.target] if hasattr(node, "target") else [])
+            if any(getattr(t, "id", None) == "REFERENCE_HARDCODED_PARAMS" for t in targets):
+                declared = sorted(ast.literal_eval(node.value))
+        ref_path = run.parent / "problem" / "reference.json"
+        recorded = json.loads(ref_path.read_text()).get("hardcoded_constants") if ref_path.is_file() else None
+        if declared is None and recorded is None:
+            continue
+        assert declared == sorted(recorded or []), (run.parent.name, declared, recorded)
+        checked += 1
+    assert checked >= 1, "fujita declares REFERENCE_HARDCODED_PARAMS; the walk found no example"
