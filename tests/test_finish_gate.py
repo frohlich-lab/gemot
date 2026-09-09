@@ -487,10 +487,15 @@ async def test_the_armed_finish_names_every_outstanding_tie_not_just_the_cheapes
     armed = await _finish(_tool_for(mod, _fit(merge_hints=_HINTS)))
     for hint in _HINTS:
         assert " == ".join(hint["parameters"]) in armed
-    assert "ONE make_changes call" in armed and "PRICED" in armed
-    assert "PAIR alone" in armed
-    # the unpriced collapse is named and refused, not merely left unmentioned
-    assert "Do NOT collapse three symbols" in armed
+    # Against the CONSTANT, not a hand-copied phrase: the take-rule is one string composed into
+    # every surface that states it (prompts._MERGE_TAKE_RULE), so quoting a fragment of it here
+    # would be one more copy to keep in step with the text.
+    assert prompts._MERGE_TAKE_RULE in armed
+    # ...and it really is the rule this test is about: independent pairs together, an overlapping
+    # group one pair at a time, and the unpriced collapse named and refused.
+    for claim in ("ONE `make_changes` call", "PRICED", "PAIR alone",
+                  "Do NOT collapse three symbols"):
+        assert claim in prompts._MERGE_TAKE_RULE, claim
     assert "multi-way tie" not in armed
     assert "  " not in armed          # the tie lines carry their own leading space
 

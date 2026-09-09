@@ -78,6 +78,94 @@ DIFF_EDITS_ENABLED = _ablations.enabled("diff_edits")
 # Rationale and the measured numbers live on the registry entry in ablations.py.
 FREE_EXPONENTS_ENABLED = _ablations.enabled("free_exponents")
 
+# ------------------------------------------- rules that are read on more than one surface
+# The lead reads its system prompt, a tool's description and the finish gate's own text within
+# one run, and a handful of rules have to reach it on all three: a rule is only acted on where
+# it is READ. Each of those is ONE constant here, composed into every surface that needs it and
+# never re-worded per surface. There is nothing for the copies to disagree about because there
+# are no copies.
+#
+# Everything here is a FRAGMENT — composed into the registered prompts below rather than sent on
+# its own, and versioned through them (see ``_FRAGMENTS`` in tests/test_prompt_tracking.py). Only
+# a rule that genuinely appears on two or more surfaces belongs here; a rule with one home is
+# written where it lives.
+
+#: ``get_fit_diagnosis`` returns the cheap RESIDUAL half unless asked otherwise, so a pointer to
+#: the parameter half is useless without the argument that fetches it — spelled once, so it
+#: cannot be written without it.
+_PARAMETER_HALF = "get_fit_diagnosis(sections='parameters')"
+
+#: The noise-sigma bound cap WARNS and returns (``operations._warn_sigma_bound_widening``);
+#: nothing rejects on it. The load-bearing half is that nothing stops the agent, which is
+#: precisely why the choice is its own.
+_SIGMA_CAP_ADVISORY = (
+    "NEVER free or widen an estimated noise sigma to lower reduced_chi2. Nothing stops you — "
+    "widening one past its data-driven cap only WARNS — which is exactly why it is on you: it "
+    "hides a missing mechanism behind inflated noise, and the finish gate refuses a run resting "
+    "on one."
+)
+
+#: ``dscore`` is 2·(dnll − price) and so NEGATIVE when the merge is worth taking. Stated as the
+#: sign convention rather than as a direction of change: "lowers the score by dscore" reads, for
+#: a dscore of −5.2, as raising it by 5.2.
+_DSCORE_SIGN = "a NEGATIVE `dscore` is the win: it is how much the merge LOWERS bic"
+
+#: What a priced merge hint does and does not license. Each price is for ONE PAIR, and the edit
+#: that is priced by nothing — collapsing three symbols into a single value — is the expensive one.
+_MERGE_TAKE_RULE = (
+    "Take the ones that were PRICED and let the refit adjudicate. Each price is for that PAIR "
+    "alone, so hints sharing NO parameter are independent edits — put them in ONE `make_changes` "
+    "call rather than one per refit — while hints SHARING a parameter are not: tie the cheapest "
+    "of them, refit, and the next fit prices what is left. Do NOT collapse three symbols into "
+    "one value; nothing priced that, and it can cost hundreds of bic and reintroduce "
+    "lack-of-fit. A merge you already refit that came back WORSE is settled — finish on the "
+    "unmerged model instead of re-arguing it."
+)
+
+#: Clean residual tests are a weak stopping rule, and the actionable consequence in ops rather
+#: than in evidence a run does not have.
+_ADEQUATE_IS_NOT_DONE = (
+    "ADEQUATE IS NOT DONE — the residual tests are a WEAK stopping rule and you must not treat "
+    "them as a strong one. They have real power only while the model is badly wrong; they go "
+    "SILENT well before bic bottoms out, and on a steady-state design (one measured point per "
+    "condition, few or no replicates) they have little power at all. So 'nothing flagged' says "
+    "the form is not visibly wrong — NOT that a lower bic is out of reach, and it is usually "
+    "still reachable by tens of bic. Bic has bottomed out only once SEVERAL consecutive "
+    "`make_changes` calls (three or more) have EACH failed to lower it; until then keep going "
+    "while you have budget — genuinely different structures, re-parameterisations, drops, and "
+    "the priced merges. This costs you nothing to be wrong about — every fitted version is kept "
+    "and you are scored on your BEST bic wherever you end — while finishing on the first "
+    "adequate model forfeits every bic you had budget left to find. An unspent step budget is "
+    "not thrift."
+)
+
+#: The `model_edits` operation vocabulary, with one example each. The lead reads it in its own
+#: prompt and again in the editor's description; an op documented on only one of the two is an op
+#: half the panel never learns about. Empty outside the `diff_edits` arm — like the guidance blocks
+#: below, both of its consumers are arm-gated, and a non-empty constant no surface composes would
+#: be untracked text.
+_MODEL_EDIT_OPS = (
+    "`{op:'add_reaction', antimony:'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'}`, "
+    "`{op:'remove_reaction', id}`, `{op:'set_rate_law', id, antimony:'k*EGF*EGFR'}`, "
+    "`{op:'set_initial', id, antimony:'5'}`, "
+    "`{op:'set_assignment', id, antimony:'pAkt + pAkt_S6'}` (an `id := expr` rule holding at "
+    "ALL times — how a `readout_*` symbol an observable formula references is defined in terms "
+    "of YOUR states), `{op:'remove_assignment', id}`, `{op:'rename', old, new}`"
+) if DIFF_EDITS_ENABLED else ""
+
+#: The read-only tools the lead is told it may use ITSELF (everything else it delegates). Rendered
+#: into the prompt below AND spliced into ``ORCHESTRATOR_TOOLS`` (agent/tools.py), so the prompt
+#: cannot name a read the lead does not hold:
+#:   describe_problem    — model_authored flag, sizes, current version; cheap orientation
+#:   get_model_structure — the current model (empty until built)
+#:   list_observables    — what is measured (observable -> species); needed to name species
+#:   get_fit_diagnosis   — per-observable bias/chi2 + worst-N points, and (sections='parameters')
+#:                         the FIM/multistart geometry saying which params to cut or merge
+#:   list_versions       — scored version history: which structures were tried, and their scores
+LEAD_SELF_READ_TOOLS = ("describe_problem", "get_model_structure", "list_observables",
+                        "get_fit_diagnosis", "list_versions")
+
+
 _FREE_EXPONENTS_GUIDANCE = (
     " EXPONENTS ARE PARAMETERS. EVERY time you write a cooperative or ligand-gated dependence "
     "(any Hill or saturating term) — in the first model, in a later edit, or when you sharpen an "
@@ -92,13 +180,7 @@ _FREE_EXPONENTS_GUIDANCE = (
 _DIFF_EDITS_GUIDANCE = (
     " EDIT BY OPERATION, NOT BY RE-AUTHORING. Your FIRST model is authored wholesale "
     "(`antimony=`). Every LATER change goes through `model_edits`: a BATCH of structured "
-    "operations, each written as ANTIMONY and addressed by ID — "
-    "`{op:'add_reaction', antimony:'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'}`, "
-    "`{op:'remove_reaction', id}`, `{op:'set_rate_law', id, antimony:'k*EGF*EGFR'}`, "
-    "`{op:'set_initial', id, antimony:'5'}`, "
-    "`{op:'set_assignment', id, antimony:'pAkt + pAkt_S6'}` (an `id := expr` rule holding at ALL "
-    "times — how a `readout_*` symbol an observable formula references is defined in terms of "
-    "YOUR states; `{op:'remove_assignment', id}` deletes one), `{op:'rename', old, new}`. "
+    "operations, each written as ANTIMONY and addressed by ID — " + _MODEL_EDIT_OPS + ". "
     "You write the model "
     "language you already know; you just say WHICH reaction, instead of quoting its text. "
     "EVERY reaction needs an id — an unnamed one cannot be changed later without re-authoring "
@@ -162,9 +244,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "its biological entities are provided to it automatically, so you need not name them.) You "
     "directly "
     "read only the model, its SCORES (which `make_changes` itself returns — metrics, bic, the noise-sigma "
-    "verdict and the residual_structure verdict), and a COMPACT fit diagnosis (describe_problem, "
-    "get_model_structure, list_observables, get_fit_diagnosis, list_versions) — "
-    "get_fit_diagnosis covers the residual detail and, with sections='parameters', the parameter "
+    "verdict and the residual_structure verdict), and a COMPACT fit diagnosis ("
+    + ", ".join(LEAD_SELF_READ_TOOLS) + ") — "
+    "get_fit_diagnosis covers the residual detail and, as " + _PARAMETER_HALF + ", the parameter "
     "identifiability; "
     "for the raw DATA and any DEEP diagnosis (a full residual breakdown, the optimizer/fitting "
     "log) you DELEGATE to the analysts — they read the bulky data in "
@@ -233,10 +315,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "with estimate=1; usually the case here) chi2 pins near the number of data points by "
     "construction, so reduced_chi2 ≈ 1 and its p-value are UNINFORMATIVE — often stuck at the "
     "noise floor however wrong the mechanism is. Do NOT "
-    "chase chi2_gof_pvalue ≥ 0.05, do NOT restructure or trade away nll/bic to raise it, and "
-    "NEVER free or widen a noise sigma to lower reduced_chi2 — nothing stops you (the sigma cap "
-    "only warns), which is exactly why it is on you: it hides a missing mechanism behind "
-    "inflated noise, and the finish gate refuses a run resting on one. Judge whether the "
+    "chase chi2_gof_pvalue ≥ 0.05, and do NOT restructure or trade away nll/bic to raise it. "
+    + _SIGMA_CAP_ADVISORY + " Judge whether the "
     "mechanism is RIGHT from the residual STRUCTURE — get_fit_diagnosis's per-observable bias + "
     "worst-fit points, or a signal_engineer time-trend read: SYSTEMATIC (non-random) residuals "
     "mean a mechanism is still missing; clean random scatter means it isn't. INITIAL CONDITIONS "
@@ -315,26 +395,13 @@ DEFAULT_SYSTEM_PROMPT = (
     "Call `finish` — the ONE control call — when the residuals show NO systematic structure "
     "(get_fit_diagnosis bias ≈ 0, no time-trend) AND bic has bottomed out: you cannot lower it "
     "further by adding, dropping, re-forming, or MERGING mechanism. `merge_hints` on your last "
-    "fit name pairs the data cannot tell apart, so bic has not bottomed out: take them first — but "
-    "take only what was PRICED. Hints sharing NO parameter are independent edits, so put them in ONE "
-    "`make_changes` call rather than spending a fit per parameter; hints that SHARE one are not, and "
-    "tying three symbols to a single value is an edit nothing priced — take the cheapest pair of that "
-    "group, refit, and read the hints again. A merge whose refit comes back WORSE is answered: keep "
-    "the unmerged model and finish on it. Merge ONLY parameters that plausibly ARE the same "
+    "fit name pairs the data cannot tell apart, so bic has not bottomed out. "
+    + _MERGE_TAKE_RULE +
+    " Merge ONLY parameters that plausibly ARE the same "
     "physical quantity; the hints price IDENTIFIABILITY, not biology, so you supply the biology "
     "(the `finish` description states the rule and what declining one requires of you). Finish "
     "on the LOWEST-bic such model.\n"
-    "ADEQUATE IS NOT DONE — the residual tests are a weak stopping rule and you must not treat them "
-    "as a strong one. They have real power only while the model is badly wrong; they go SILENT well "
-    "before bic bottoms out, and on a steady-state design (one measured point per condition, few or "
-    "no replicates) they have little power at all. So 'no systematic structure is flagged' says the "
-    "form is not visibly wrong — NOT that a lower bic is out of reach, and it is usually still "
-    "reachable by tens of bic. Once your model looks adequate, KEEP GOING while you have budget: try "
-    "genuinely different structures, re-parameterisations, drops, and the priced merges, and stop only "
-    "after SEVERAL consecutive `make_changes` calls (three or more) have each failed to lower bic. "
-    "This costs you nothing to be wrong about — every fitted version is kept and you are scored on "
-    "your BEST bic wherever you end — while finishing on the first adequate model forfeits every bic "
-    "you had budget left to find. An unspent step budget is not thrift.\n"
+    + _ADEQUATE_IS_NOT_DONE + "\n"
     "Repeat until you call `finish`. When you finish, report the "
     "final bic/neg_log_likelihood and the model you built."
 )
@@ -613,33 +680,31 @@ def _biocurator_entity_block(names: "list[str]") -> str:
 
 
 # -------------------------------------------- panel-facing tool descriptions
-# Concise, panel-facing tool descriptions. The server's own docstrings are deliberately
-# verbose (they double as the human/agent tool reference and drive the skill docs), but that
-# full text is re-sent to the model on EVERY turn — the single largest fixed slice of the
-# input-token cost. We override the description of each loaded MCP tool with a one-liner for
-# the panel only; the server (and any other client) keeps its canonical docs.
+# What the PANEL reads for each tool. The server's own docstring is the tool's CONTRACT — its
+# arguments, its result shape, what it rejects — and doubles as the reference for any other
+# client; this is the same tool described for the job the lead is doing, and it REPLACES that
+# docstring for the panel (agent/tools._trim_descriptions), because the full text is re-sent to
+# the model on every turn and is the single largest fixed slice of the input-token cost.
 #
-# EVERY tool in agent.tools.ALLOWED_TOOLS needs an entry here (a test enforces it): anything
-# unlisted silently falls back to a truncated server docstring, which puts that tool's
-# panel-facing text outside this file and outside the tracked prompt surface.
+# EVERY tool in agent.tools.ALLOWED_TOOLS needs an entry here, and no entry may name a tool that
+# is not in it (tests/test_prompt_tracking.py asserts the two sets are equal): an undescribed tool
+# falls back to a truncated server docstring, putting its panel-facing text outside the tracked
+# prompt surface, and an entry for a tool that no longer exists is simply never applied.
 #
-# Each cross-tool rule is stated in ONE entry and pointed at from the others — a rule repeated
-# across four entries is four places to update and the reason several of them disagreed.
+# THREE RULES, all of them about not writing a fact down twice:
+#   * No ARGUMENT LISTS. The JSON schema is the signature and is sent alongside this text, so an
+#     `Args: a, b, c` clause is a hand-maintained copy of it. Say what an argument MEANS where
+#     that is not obvious from its name; never enumerate them.
+#   * A rule the lead also reads elsewhere — in its system prompt, or from the finish gate — is
+#     one of the constants at the top of this file, interpolated. Not re-worded here.
+#   * A rule that spans tools is stated in ONE entry and pointed at from the others.
 TOOL_DESCRIPTIONS = {
     "make_changes": ("THE editor, and it always FITS. Pass `antimony` to author the WHOLE model "
                      "(builds the first one when model_authored: false" + (
                          "; on a LATER model it is the start-over route, and EVERY reaction "
                          "must be named — an unnamed one cannot be changed afterwards). OR "
                          "`model_edits`: a BATCH of structured operations, each written as "
-                         "Antimony and addressed by ID — "
-                         "{op:'add_reaction', antimony:'act: EGFR => pEGFR; k*EGF*EGFR;'}, "
-                         "{op:'remove_reaction', id}, "
-                         "{op:'set_rate_law', id, antimony:'k*EGF*EGFR'}, "
-                         "{op:'set_initial', id, antimony:'5'}, "
-                         "{op:'set_assignment', id, antimony:'pAkt + pAkt_S6'} (an id := expr "
-                         "rule holding at ALL times — defines a readout_* symbol an observable "
-                         "formula references), {op:'remove_assignment', id}, "
-                         "{op:'rename', old, new}. "
+                         "Antimony and addressed by ID — " + _MODEL_EDIT_OPS + ". "
                          "The DEFAULT route for every change after the first: nothing to quote, "
                          "in order, all-or-nothing, a bad id rejected with the valid ids listed. "
                          "Put the WHOLE change in ONE call — one call is one fit and one "
@@ -671,14 +736,11 @@ TOOL_DESCRIPTIONS = {
                      "REJECTS dropping (or re-estimating) a shipped-fixed "
                      "constant, an unused condition target, and an observation-model symbol used "
                      "in a rate law; rejects a 3rd widening of a still-pinned parameter (that is "
-                     "unidentifiability — see get_fit_diagnosis(sections='parameters'), not a "
-                     "bounds problem); WARNS "
-                     "on widening an estimated noise sigma past its data-driven cap. "
-                     "Args: justification, antimony?, "
-                     + ("model_edits?, base_version?, " if DIFF_EDITS_ENABLED else "") +
-                     "parameters?, references?, n_starts? (REPLACES the server default — "
-                     "describe_problem's fit_n_starts_default — so omit it unless you want MORE; "
-                     "below it fits LESS hard; the minimum is 1)."),
+                     "unidentifiability — see " + _PARAMETER_HALF + ", not a bounds problem). "
+                     + _SIGMA_CAP_ADVISORY +
+                     " `n_starts` REPLACES the server default (describe_problem's "
+                     "fit_n_starts_default) rather than adding to it, so omit it unless you want "
+                     "MORE; below it fits LESS hard, and the minimum is 1."),
     "list_conditions": ("The fixed conditions and what each one perturbs. A condition column sets "
                         "a model quantity PER CONDITION (a dose, an input level, a switch), so "
                         "your model must reference it BY NAME — a target the model never uses is "
@@ -773,22 +835,14 @@ TOOL_DESCRIPTIONS = {
                           "member list, which names members, not which tie is cheap; the fit "
                           "result's `merge_hints` are the cheapest few of these rows worth taking — "
                           "each with its "
-                          "parameters, dnll, move_scaled, and dscore (a NEGATIVE dscore is the win: it "
-                          "is how much the merge LOWERS bic) — so a hint on your last fit means a "
-                          "free parameter is sitting there. "
+                          "parameters, dnll, move_scaled, and dscore (" + _DSCORE_SIGN + ") — so a "
+                          "hint on your last fit means a free parameter is sitting there. "
                           "Merges are the ENDGAME, not the fix for an underfit: while the residuals "
                           "are still systematically structured, spend the call on the mechanism and "
                           "leave these — a tie is a parameter the data cannot separate, never a "
-                          "missing rate law. Once the residuals are clean, take only what was "
-                          "PRICED. Each dscore is the cost of tying THAT PAIR and nothing else, so: "
-                          "hints that share NO parameter are independent edits — take them together "
-                          "in one make_changes call; hints that SHARE one are not, and collapsing "
-                          "three symbols into a single value is an edit the FIM never priced. Its "
-                          "cost is not the sum of the pairs and can be enormous — a collapse of "
-                          "three individually near-free pairs can cost hundreds of bic and "
-                          "reintroduce lack-of-fit. Take the CHEAPEST pair of an "
-                          "overlapping group, refit, and read the hints again — the next fit prices "
-                          "what is actually left. It lists "
+                          "missing rate law. Once the residuals are clean they are how you "
+                          "finish. " + _MERGE_TAKE_RULE +
+                          " It lists "
                           "top_n, and prices only same-role, same-scale pairs with neither member "
                           "at a bound (n_ties_skipped counts the rest), so an absent pair — or an "
                           "absent hint — may be one it refused rather than a dear one. "
@@ -801,14 +855,13 @@ TOOL_DESCRIPTIONS = {
                           "PARAMETER MACHINERY) — then REFIT: unchanged nll with bic better by one "
                           "parameter confirms it, a WORSE fit means revert. If none applies, "
                           "leave it. Use BEFORE adding parameters. For a full custom breakdown or "
-                          "the optimizer log, delegate to an analyst. "
-                          "Args: sections, worst_n, top_n."),
+                          "the optimizer log, delegate to an analyst."),
     "list_versions": ("Every model version (each a fit snapshot) with its kind, label, and fit "
                       "metrics (neg_log_likelihood, bic, is_new_best) — how you track which "
                       "structures you have tried and their scores. Your best-bic version is kept "
                       "and is what the run is scored on, so you never need to return to it."),
-    "get_version": "Read a prior version's Antimony model + parameter table, to INSPECT it. Arg: version.",
-    "get_fitting_log": "Tail of the pyPESTO/Fides multistart optimizer log (convergence, bound-pinning, ill-conditioning). Arg: tail_lines.",
+    "get_version": "Read a prior version's Antimony model + parameter table, to INSPECT it.",
+    "get_fitting_log": "Tail of the pyPESTO/Fides multistart optimizer log (convergence, bound-pinning, ill-conditioning).",
     "list_observables": ("The observables being fitted: id, formula, noise model, and "
                          "`observableName` — WHAT each one measures. A formula naming a "
                          "`readout_*` symbol is a measurement mapping YOUR model must define "
@@ -822,8 +875,7 @@ TOOL_DESCRIPTIONS = {
                          "{rows, row_count, total_rows, offset, truncated, next_offset?}, "
                          "max_rows=200 per page: an unpaged dump is 70-80k tokens on the large "
                          "problems and re-enters your context every later turn, which has ended "
-                         "runs on 'prompt exceeds max length'. Optional: condition_id, "
-                         "observable_id, max_rows, offset."),
+                         "runs on 'prompt exceeds max length'."),
     "list_data_tables": "List the SQL tables query_data exposes and their columns.",
     # The column names are spelled out because guessing them was the single largest non-editing
     # error class measured (15 of 22 query_data failures in the 2026-08-17 sweep): PEtab is
@@ -859,9 +911,8 @@ TOOL_DESCRIPTIONS = {
                    "Prefer aggregations; rows capped at max_rows (default 50). When `truncated` "
                    "is true the result carries `next_offset` — page with it rather than raising "
                    "max_rows, since a big page re-enters your context every later turn. Add an "
-                   "explicit ORDER BY when paging or pages can overlap/skip. "
-                   "Args: sql, max_rows, offset."),
-    "get_skill": "Read a skill in full. Args: name, file?.",
+                   "explicit ORDER BY when paging or pages can overlap/skip."),
+    "get_skill": "Read a skill in full, by name.",
 }
 
 
@@ -934,13 +985,9 @@ FINISH_DESCRIPTION = (
     "call this to keep iterating — to iterate, just make the next make_changes call — and a change "
     "that did not help needs no call either: the harness keeps your best-bic version regardless of "
     "where you end, so just try a genuinely different structure. Call this ONLY when the residuals "
-    "show no systematic structure AND bic has bottomed out — and note which half does the work: "
-    "clean residuals are a WEAK signal (the tests go silent long before bic stops falling), so "
-    "'nothing flagged' is not a finish condition on its own. Bic has bottomed out only once your "
-    "last few make_changes calls have each failed to lower it; finishing on the first model that "
-    "merely looks adequate leaves bic on the table, and a version that does not help is kept and "
-    "costs you nothing to try. "
-    "Judge that structure with the residual_structure verdict "
+    "show no systematic structure AND bic has bottomed out — and note which half does the work. "
+    + _ADEQUATE_IS_NOT_DONE +
+    " Judge that structure with the residual_structure verdict "
     "the fit already returned, not with chi2: its sign_test / runs_test read residual SIGNS, and "
     "where design points REPEAT its replicate_lack_of_fit measures each prediction against that "
     "point's own replicate scatter — a flagged point there means no parameter value in your current "
@@ -949,14 +996,11 @@ FINISH_DESCRIPTION = (
     "carrying no lof_df at all, does not show the form is right. And bic bottoming out does NOT "
     "mean finished while `merge_hints` stand on your last fit (or the ARM message names "
     "OUTSTANDING MERGES): each is a pair of parameters the data cannot tell apart, and tying them "
-    "into one symbol LOWERS the score — its `dscore` is the change, so a NEGATIVE dscore is the win — at a "
-    "cost of `dnll` in fit. Take the ones that were PRICED and let the refit adjudicate before you "
-    "finish: pairs sharing no parameter go in ONE make_changes call, an overlapping group one "
-    "cheapest pair at a time (collapsing three symbols into one is priced by nothing). Two things "
-    "answer a standing hint besides taking it: a `move_scaled` of many decades, which is a flat "
-    "direction rather than an edit that survives a refit, and a merge you ALREADY refit that came "
-    "back worse — that experiment is done, so finish on the unmerged model rather than re-arguing it. "
-    "And a third, which is a real answer and not an excuse: the pair is not biologically the "
+    "into one symbol costs `dnll` in fit and changes the score by its `dscore` — "
+    + _DSCORE_SIGN + ". " + _MERGE_TAKE_RULE +
+    " One more thing answers a standing hint besides taking it: a `move_scaled` of many decades, "
+    "which is a flat direction rather than an edit that survives a refit. "
+    "And a last one, which is a real answer and not an excuse: the pair is not biologically the "
     "same quantity. The "
     "hints price IDENTIFIABILITY, not biology — tying a synthesis rate to a deactivation rate, or "
     "a medium factor to an off-rate, buys the bic penalty while making the model assert something "
@@ -1034,7 +1078,7 @@ FINISH_REFUSED_PARSIMONY_TMPL = (
     "non-identifiable parameters is not accepted. Simplify the model FORM and "
     "refit — remove the term, take its limiting (irreversible/instantaneous) form, "
     "merge a collinear pair into one parameter, or fix a value the experiment sets "
-    "— do not just re-fit the same structure. (get_fit_diagnosis(sections='parameters') has "
+    "— do not just re-fit the same structure. (" + _PARAMETER_HALF + " has "
     "the full flat_directions and ranked candidates; the tool's default section does NOT.)"
 )
 
@@ -1044,12 +1088,9 @@ FINISH_ARMED_TMPL = (
     "{merge_line}{invalid_line} "
     "If systematic structure is flagged, the model's FORM is still missing "
     "something — keep improving BIC instead of finishing. A CLEAN verdict is not the "
-    "other half of that argument: these tests go silent well before bic bottoms out, so "
-    "'nothing flagged' means the form is not visibly wrong, NOT that bic cannot fall "
-    "further. Confirm only if your LAST FEW `make_changes` calls each failed to lower "
-    "bic; if you have not tried that many since your best fit, you are finishing on an "
-    "untested model — go make them instead, since a version that does not help is kept "
-    "and costs you nothing. If you have genuinely "
+    "other half of that argument. "
+    + _ADEQUATE_IS_NOT_DONE +
+    " If you have genuinely "
     "bottomed out BIC and are satisfied with the residuals, call finish AGAIN to "
     "confirm and end the run."
 )
@@ -1073,13 +1114,8 @@ FINISH_ARMED_WORST_TMPL = (
 # and ended 13 bic short of the two runs that never tried it. Only the PAIR is priced.
 FINISH_ARMED_MERGE_TMPL = (
     " OUTSTANDING MERGES — the data cannot tell these pairs apart:{ties} A bic that has bottomed out "
-    "with merges like these outstanding is NOT a finished model: take the ones that were PRICED and "
-    "let the refit adjudicate before you finish. Each price is for that PAIR alone, so pairs sharing "
-    "no parameter are independent edits — put them in ONE make_changes call rather than one per refit "
-    "— while pairs SHARING a parameter are not: tie the cheapest of them and refit, and the next fit "
-    "prices what is left. Do NOT collapse three symbols into one value; nothing here priced that, and "
-    "it can cost hundreds of bic. If you already refit a merge and it came back WORSE, that "
-    "experiment is settled — finish on the unmerged model instead of re-arguing it."
+    "with merges like these outstanding is NOT a finished model. "
+    + _MERGE_TAKE_RULE
 )
 
 #: One tie inside :data:`FINISH_ARMED_MERGE_TMPL`.

@@ -38,6 +38,35 @@ This log explains _why_. It does not restate what the source code does.
 - **Tool docstrings are a contract with a model, not with a human.** They are what the agent
   reads, they are the canonical statement of their own arguments. Edit them with the care of
   changing an API signature.
+- **One tool, one description.** A tool registered under two schemas (an ablation arm) gets ONE
+  composed description, not a docstring per registration — see `_make_changes_doc` in
+  [server.py](../src/petab_mcp/server.py).
+
+## Agent-facing prose
+
+Every string the harness sends to a model lives in
+[prompts.py](../src/petab_harness/prompts.py), and the panel reads several of those surfaces in
+one turn — its system prompt, each tool's description, whatever the finish gate returns. Three
+rules keep one fact from being written down twice:
+
+- **A rule read on more than one surface is ONE constant**, at the top of `prompts.py`, composed
+  into every prompt that states it (`_SIGMA_CAP_ADVISORY`, `_MERGE_TAKE_RULE`,
+  `_ADEQUATE_IS_NOT_DONE`, `_DSCORE_SIGN`, `_PARAMETER_HALF`, `_MODEL_EDIT_OPS`). Never re-worded
+  per surface: two paraphrases of one rule are two things to keep in sync, and the one the reader
+  acts on is whichever they happened to read. A rule with one home is written where it lives.
+- **No argument lists.** The JSON schema is the signature and is sent alongside the description,
+  so `Args: a, b, c` is a hand-maintained copy of it. Say what an argument MEANS when the name
+  does not; never enumerate them.
+- **Derive a list of names, don't retype it.** `LEAD_SELF_READ_TOOLS` is rendered into the lead
+  prompt AND spliced into `ORCHESTRATOR_TOOLS`, so the prompt cannot name a tool the lead does
+  not hold.
+
+The server's tool docstrings are the other half of this: they state the tool's CONTRACT
+(arguments, result shape, what it rejects) for any client, and the `TOOL_DESCRIPTIONS` entry
+that replaces them for the panel states the same tool for the job the lead is doing. Neither
+restates the other. The two packages ship separately — `petab_harness` must import without
+`petab_mcp` ([test_import_lightness.py](../tests/test_import_lightness.py)) — so they cannot
+share a constant; keep them from describing the same thing instead.
 
 ## Types
 
@@ -97,7 +126,10 @@ actionable message.
   ([test_operations.py](../tests/test_operations.py)).
 - **A test comment names the regression it locks in.** A test whose failure does not tell
   you what broke is half a test — see the docstrings in
-  [test_doc_consistency.py](../tests/test_doc_consistency.py).
+  [test_prompt_tracking.py](../tests/test_prompt_tracking.py).
+- **Do not guard prose against prose.** A regex asserting that N paraphrases of one rule still
+  agree is a maintenance cost standing in for a structural fix: make it one string and interpolate
+  it (see "Agent-facing prose" above).
 - A test that exercises an arm resolved at import time needs a subprocess, not
   monkeypatching ([test_subagent_registry.py](../tests/test_subagent_registry.py)).
 - **`pytest` takes no `-n` from config.** The caller passes it; CI passes `-n 2`.

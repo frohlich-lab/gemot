@@ -14,7 +14,8 @@ the text the panel actually reads, and the reason every tool here needs an entry
 
 from __future__ import annotations
 
-from ..prompts import DATA_REGIMES_ENABLED, DIFF_EDITS_ENABLED, TOOL_DESCRIPTIONS
+from ..prompts import (DATA_REGIMES_ENABLED, DIFF_EDITS_ENABLED, LEAD_SELF_READ_TOOLS,
+                       TOOL_DESCRIPTIONS)
 
 # ---------------------------------------------------------------- tool exposure
 # Per the module docstring: each persona's set is as SMALL as its lens allows, and a tool it
@@ -67,12 +68,15 @@ SIGNAL_ENGINEER_TOOLS = [
 # is the ONLY agent that authors the model. It keeps a MINIMAL surface: read the model + score,
 # list/inspect versions, author the whole model.
 ORCHESTRATOR_TOOLS = [
-    # orient — SMALL reads only. The measured DATA itself is never read into the lead's
-    # context; the analysts characterize it and hand back summaries (see run_deepagents:
-    # the lead's tool list is restricted to exactly this set).
-    "describe_problem",     # model_authored flag, sizes, current version — cheap orientation
-    "get_model_structure",  # the current model (empty until built)
-    "list_observables",     # what is measured (observable -> species) — needed to name species
+    # orient / score / diagnose / history — SMALL reads only. The measured DATA itself is never
+    # read into the lead's context; the analysts characterize it and hand back summaries (see
+    # run_deepagents: the lead's tool list is restricted to exactly this set).
+    #
+    # These five come from `prompts.LEAD_SELF_READ_TOOLS`, which the lead prompt renders its own
+    # "you directly read only …" list from — one list, so the prompt cannot name a read the lead
+    # does not hold, and a tool dropped from here disappears from the prompt with it. What each is
+    # FOR is documented at that tuple.
+    *LEAD_SELF_READ_TOOLS,
     "list_conditions",      # per-condition inputs/doses set in the condition table (match by name)
     # What the DATA requires of any model — excursion vs monotone, how many timescales,
     # dose-response steepness, a conserved total — computed from the measurement table alone. It is
@@ -91,10 +95,6 @@ ORCHESTRATOR_TOOLS = [
     # such calls against 451 fits: near-zero benefit for a tool schema re-sent every turn. The tool
     # stays on the server: the analysts (who never fit) and the harness's own finish gate and
     # final scoring all read the score through it. `describe_problem` covers has_unfit_edits.
-    # per-observable bias/chi2 + worst-N points, AND the FIM/multistart geometry saying WHICH
-    # params to cut or merge — two sections of one bounded read (`sections`)
-    "get_fit_diagnosis",
-    "list_versions",        # scored version history — track which structures were tried + scores
     "get_version",          # read a prior version's Antimony + params (to inspect / re-author from)
     # NOTE: restore_version is deliberately NOT a lead tool. It sets HEAD to a prior version, but
     # make_changes with `antimony=` re-authors the whole model and IGNORES HEAD — so a restore

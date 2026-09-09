@@ -18,9 +18,11 @@ import pytest
 
 from petab_harness import prompts as P
 
-# Module-level names that are NOT model-facing text: the registry machinery itself and the
-# separator it serializes with. Everything else in `prompts` is prose sent to a model.
-_NOT_PROMPTS = {"PROMPT_GROUPS", "_HASH_SEP"}
+# Module-level names that are NOT model-facing text: the registry machinery itself, the separator
+# it serializes with, and the one list of TOOL NAMES the lead prompt renders itself from (the
+# rendered text is tracked through DEFAULT_SYSTEM_PROMPT, so editing the tuple still moves the
+# version). Everything else in `prompts` is prose sent to a model.
+_NOT_PROMPTS = {"PROMPT_GROUPS", "_HASH_SEP", "LEAD_SELF_READ_TOOLS"}
 
 # FRAGMENTS: constants that are concatenated INTO another prompt rather than sent on their own
 # (both report contracts are appended to the personas). They have no registry entry of their
@@ -43,7 +45,13 @@ _FRAGMENTS = {"_REPORT_CONTRACT", "_BIOCURATOR_REPORT_CONTRACT",
               # a bare test env this is NON-empty and really is exercised here. While the arm was
               # default-OFF the constant was "" and this check passed vacuously, which is why the
               # gap only surfaced when the default moved.
-              "_DIFF_EDITS_GUIDANCE"}
+              "_DIFF_EDITS_GUIDANCE",
+              # The rules read on MORE THAN ONE surface, each composed into every prompt that
+              # states it (see the block at the top of prompts.py). They are fragments for the
+              # same reason as the guidance above; the difference is that these land in several
+              # registered prompts rather than one, which is the whole point of their existing.
+              "_PARAMETER_HALF", "_SIGMA_CAP_ADVISORY", "_DSCORE_SIGN", "_MERGE_TAKE_RULE",
+              "_ADEQUATE_IS_NOT_DONE", "_MODEL_EDIT_OPS"}
 
 
 def _texts_of(value) -> list[str]:
