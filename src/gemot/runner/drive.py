@@ -49,6 +49,18 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
     raw_call_tool = session.call_tool
     clock = _wrap_tool_clock(session)  # split server/compute time from LLM time
     call = _make_call(session)
+    from ..biology_blinding import AnonymousSession, read_names
+
+    blind_names = read_names(work)
+    agent_session = session
+    if blind_names is not None:
+        # Only harness preflight, the scripted self-test and judging use this caller.
+        # run_deepagents keeps the actual session, which serves anonymous identifiers.
+        call = blind_names.judge_call(call)
+        agent_session = AnonymousSession(session, scenario.example_dir)
+        # The finish gate also exposes diagnostics through its unmeasured reader.
+        raw_call_tool = AnonymousSession(session, scenario.example_dir,
+                                         call_tool=raw_call_tool).call_tool
 
     # Stamp the run's start + provenance up front (before the slow baseline compile) so a
     # degraded result.json is still well-formed if preflight/baseline itself blows up.
@@ -161,7 +173,7 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                 # curated agent.DEFAULT_BIO_TOOLS allowlist (+ literature under the
                 # `bio_literature` ablation, PETAB_BIO_LITERATURE=1).
                 agent_out = await run_deepagents(
-                    session,
+                    agent_session,
                     model=args.model,
                     base_url=args.base_url,
                     api_key=api_key,
@@ -181,6 +193,7 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                     # empty for scenarios with no lookupable biology (the abstract toys).
                     curated_entities=getattr(scenario, "biocurator_entities", None),
                     biocurator_model=getattr(args, "biocurator_model", None),
+                    biology_blinded=blind_names is not None,
                 )
                 stop_reason = agent_out.get("stop_reason", "completed")
                 if stop_reason != "completed":

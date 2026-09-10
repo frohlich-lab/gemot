@@ -58,7 +58,7 @@ from .subagents import (
 from .token_usage import _token_accountant
 from .tools import ORCHESTRATOR_TOOLS, _select_tools, _trim_descriptions
 from ..prompts import _NO_MODEL_NUDGE, _SILENT_FINISH_NUDGE
-from .. import models
+from .. import models, prompts
 
 # --- guards on the (input-dominated, occasionally-hanging) LLM loop -----------------------
 # Transient provider failures (connection drops, malformed/non-JSON bodies, 5xx/429, hung
@@ -549,6 +549,7 @@ async def run_deepagents(
     bio_literature: bool = False,
     curated_entities: "list[str] | None" = None,
     biocurator_model: "str | None" = None,
+    biology_blinded: bool = False,
 ) -> dict[str, Any]:
     """Drive the orchestrator (+ analyst subagents) against ``session``'s tools.
 
@@ -599,12 +600,21 @@ async def run_deepagents(
     from deepagents import create_deep_agent
     from langchain_mcp_adapters.tools import load_mcp_tools
 
+    biology_blind = prompts.BIOLOGY_BLIND_ENABLED
+    if biology_blind:
+        if not biology_blinded:
+            raise ValueError("The biology-blind arm requires an anonymized server problem; "
+                             "launch it through the scenario runner")
+        system_prompt = prompts.BIOLOGY_BLIND_SYSTEM_PROMPT
+        task = prompts.BIOLOGY_BLIND_TASK
+        curated_entities = []
+
     # Adapt the MCP tools bound to this already-initialized session, then curate to the
     # union of the lead's + analysts' tools. This pool is only used to resolve each analyst's
     # tool objects; it is NOT what the lead gets (see lead_tools below).
     petab_tools = _trim_descriptions(_select_tools(await load_mcp_tools(session)))
     # Blinded bio-knowledge tools from one or more SECONDARY MCP servers (biocurator joins the
-    # panel on every deepagents run; endpoints hardcoded in runner.BIO_MCP_URLS = BioContextAI + OmniPath;
+    # panel outside biology_blind; endpoints hardcoded in runner.BIO_MCP_URLS = BioContextAI + OmniPath;
     # the `bio_literature` ablation adds EuropePMC/bioRxiv). They are
     # RUNTIME-DISCOVERED (their names are unknown ahead of time), so they deliberately BYPASS
     # _select_tools/ALLOWED_TOOLS (which would warn+drop them as "unexpected") and are handed
@@ -613,7 +623,7 @@ async def run_deepagents(
     # counted as "LLM+overhead" in the metrics split rather than tool time (a known caveat now
     # that the biocurator runs by default; wrap each bio session's call_tool into the clock too
     # if that split matters).
-    bio_tools: list = await discover_bio_tools(
+    bio_tools: list = [] if biology_blind else await discover_bio_tools(
         bio_sessions, literature=bio_literature,
         exclude_names={n for t in petab_tools if (n := getattr(t, "name", None))})
     all_tools = petab_tools + bio_tools
@@ -640,12 +650,11 @@ async def run_deepagents(
     guard_stats: dict[str, Any] = new_guard_stats()
     # each analyst carries its own tool OBJECTS, and its own runaway guard (see below)
     subagents = _build_subagents(tools_by_name, guard_stats)
-    # The biocurator joins the panel on every deepagents run (its lack of any petab tool is the
+    # The biocurator joins the panel outside biology_blind (its lack of model/fit tools is the
     # structural half of the task-blinding — see _build_biocurator_subagent). It is never dropped:
     # if bio tools resolved it uses them, otherwise it runs "dumb", answering from the model's own
     # biology knowledge (see BIOCURATOR_PROMPT). The lead's roster + biocurator guidance are static
-    # in scenario.DEFAULT_SYSTEM_PROMPT — no runtime prompt splice, since the biocurator is
-    # unconditional. biocurator_tools records what it actually got (empty = a dumb run) for analysis.
+    # in scenario.DEFAULT_SYSTEM_PROMPT. Biology-blind runs omit this seat entirely.
     # Hand the biocurator the scenario's HAND-CURATED biological entity NAMES DIRECTLY (see
     # Scenario.biocurator_entities) — beyond list_observables it holds no petab tool and cannot self-serve like the
     # analysts, so this is its reliable input channel rather than a lead `description` /
@@ -657,16 +666,21 @@ async def run_deepagents(
     # biology-only terms — exactly the vocabulary a curator searches literature with (phosphosites,
     # proteoforms, assay type) — and it is a read the blinding already curates. The blinding
     # boundary that matters is unchanged: no model access, no fit access, no measurements.
-    biocurator_spec = _build_biocurator_subagent(
-        bio_tools + [t for t in petab_tools if getattr(t, "name", None) == "list_observables"],
-        biocurator_entities, guard_stats)
-    subagents.append(biocurator_spec)
+    biocurator_spec = None
+    if not biology_blind:
+        biocurator_spec = _build_biocurator_subagent(
+            bio_tools + [t for t in petab_tools if getattr(t, "name", None) == "list_observables"],
+            biocurator_entities, guard_stats)
+        subagents.append(biocurator_spec)
     biocurator_tools = sorted(n for t in bio_tools if (n := getattr(t, "name", None)))
-    print(f"[agent] biocurator on the panel with {len(biocurator_tools)} bio tool(s)"
-          + (f": {biocurator_tools}" if biocurator_tools
-             else " (none resolved — running on the model's own knowledge)"))
-    print(f"[agent] biocurator handed {len(biocurator_entities)} entity name(s)"
-          + (f": {biocurator_entities}" if biocurator_entities else " (none curated)"))
+    if biology_blind:
+        print("[agent] biology-blind panel: no biocurator or external knowledge tools")
+    else:
+        print(f"[agent] biocurator on the panel with {len(biocurator_tools)} bio tool(s)"
+              + (f": {biocurator_tools}" if biocurator_tools
+                 else " (none resolved — running on the model's own knowledge)"))
+        print(f"[agent] biocurator handed {len(biocurator_entities)} entity name(s)"
+              + (f": {biocurator_entities}" if biocurator_entities else " (none curated)"))
     # The LEAD gets ONLY the orchestrator tools (+ the finish gate) — NOT the analysts'
     # data/diagnostic tools (query_data, get_fitting_log, get_measurements, ...). Those heavy
     # reads run INSIDE analyst subagents, whose verbose results live in their own transient
@@ -763,8 +777,8 @@ async def run_deepagents(
     # retrieval and summary rather than modelling, so it is the one seat where a cheaper model is
     # worth measuring. ``None`` (the default) leaves it on the lead's model, so nothing changes
     # unless asked. Recorded in result.json either way.
-    bio_model_id = models.resolve(biocurator_model) if biocurator_model else model
-    if bio_model_id != model:
+    bio_model_id = None if biology_blind else models.resolve(biocurator_model) if biocurator_model else model
+    if biocurator_spec is not None and bio_model_id != model:
         # Set on the spec built above rather than passed to it: the spec is assembled before any
         # model exists, and deepagents reads `model` off it when it builds the subagent graph.
         biocurator_spec["model"] = _build_llm(bio_model_id)

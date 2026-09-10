@@ -133,6 +133,8 @@ def _build_subagents(tools_by_name: dict[str, Any],
     prompt_key = _subagent_prompt_key()
     subagents: list[dict[str, Any]] = []
     for spec in ACTIVE_SPECS:
+        if prompts.BIOLOGY_BLIND_ENABLED:
+            spec = {**spec, **prompts.BIOLOGY_BLIND_ANALYSTS[spec["name"]]}
         tools = [tools_by_name[n] for n in spec["tools"] if n in tools_by_name]
         dropped = [n for n in spec["tools"] if n not in tools_by_name]
         if dropped:

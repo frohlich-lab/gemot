@@ -51,6 +51,12 @@ def collect_prompts() -> dict[str, str]:
 # what the model receives mid-conversation. Role is a registration detail — it is NOT part of
 # ``prompt_version`` (which hashes prompt text only), so fixing a role does not churn it.
 _PROMPT_ROLES = {
+    "petab-anonymous-semantics": "system",
+    "petab-anonymous-lead": "system",
+    "petab-anonymous-task": "user",
+    "petab-anonymous-analysts": "system",
+    "petab-anonymous-tools": "system",
+    "petab-active-biology-context": "system",
     "petab-lead-system": "system",
     "petab-lead-task": "user",
     "petab-lead-readout-note": "user",

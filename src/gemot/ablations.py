@@ -248,7 +248,17 @@ ABLATIONS: tuple[Ablation, ...] = (
         effect="ON additionally gives the biocurator EuropePMC + bioRxiv literature search. Off by "
                "default because literature search over a benchmark problem's distinctive entity "
                "panel could surface its withheld source paper; the structured knowledge "
-               "(interactions/pathways/ontologies/OmniPath) is general biology and is always on",
+               "(interactions/pathways/ontologies/OmniPath) is general biology. The biology_blind "
+               "arm disables both kinds of knowledge access",
+    ),
+    Ablation(
+        name="biology_blind",
+        env="PETAB_BIOLOGY_BLIND",
+        default_on=False,
+        changes_prompt=True,
+        effect="ON anonymizes the agent's PEtab identifiers and removes descriptive metadata, "
+               "scenario biology, the biocurator and external knowledge tools. The panel receives "
+               "numerical modeling instructions; a private mapping preserves reference scoring",
     ),
 )
 

@@ -97,7 +97,8 @@ class _TimeoutAgent:
         return _gen()
 
 
-def _run(mod, monkeypatch, probe, confirm_after=None, agent=None, server_poll=None):
+def _run(mod, monkeypatch, probe, confirm_after=None, agent=None, server_poll=None,
+         driver_options=None):
     from langchain_core.tools import StructuredTool
     fake_agent = agent if agent is not None else _FakeAgent()
     fake_agent.confirm_after = confirm_after
@@ -122,6 +123,7 @@ def _run(mod, monkeypatch, probe, confirm_after=None, agent=None, server_poll=No
 
     def _fake_create_deep_agent(*, model=None, tools=None, system_prompt=None,
                                 subagents=None, middleware=None, checkpointer=None, **kw):
+        fake_agent.captured.update(system_prompt=system_prompt, subagents=subagents, tools=tools)
         return fake_agent
 
     import deepagents
@@ -143,6 +145,7 @@ def _run(mod, monkeypatch, probe, confirm_after=None, agent=None, server_poll=No
         model="fake/model", base_url="http://x", api_key="sk-test",
         system_prompt="sp", task="build a model", recursion_limit=50,
         progress_probe=probe, server_poll=server_poll,
+        **(driver_options or {}),
     ))
     return result, fake_agent
 

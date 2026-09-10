@@ -160,3 +160,4 @@ sweep_*.png
 # problem/ — same provenance, same reason to stay untracked. Deliberately OUTSIDE problem/ so the
 # tree the MCP server is pointed at never contains the data the model is scored against.
 examples/*/validation/
+examples/*/.work_biology_blinding/

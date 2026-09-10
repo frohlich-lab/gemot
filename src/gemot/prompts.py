@@ -50,6 +50,7 @@ from . import ablations as _ablations
 # receiving different prompts — which is precisely the provenance failure this branch spent a
 # commit closing for the subagent turn notices.
 DATA_REGIMES_ENABLED = _ablations.enabled("data_regimes")
+BIOLOGY_BLIND_ENABLED = _ablations.enabled("biology_blind")
 
 # The petab-model-building skill, INLINED into the analyst persona prompts. Measured: every
 # analyst spawn fetched this same document via get_skill exactly once (mathematician 203/203,
@@ -1000,6 +1001,8 @@ FINISH_DESCRIPTION = (
     + _DSCORE_SIGN + ". " + _MERGE_TAKE_RULE +
     " One more thing answers a standing hint besides taking it: a `move_scaled` of many decades, "
     "which is a flat direction rather than an edit that survives a refit. "
+    + ("Declining a merge needs a mathematical reason: name the parameters and the distinct "
+       "roles the measured design can distinguish. " if BIOLOGY_BLIND_ENABLED else
     "And a last one, which is a real answer and not an excuse: the pair is not biologically the "
     "same quantity. The "
     "hints price IDENTIFIABILITY, not biology — tying a synthesis rate to a deactivation rate, or "
@@ -1009,7 +1012,7 @@ FINISH_DESCRIPTION = (
     "hint on it is not credible: for EACH hint you decline, name the two parameters and the "
     "distinct physical processes they measure, in the rationale. Where a hint's priced `dscore` is "
     "large, take it and let the refit adjudicate rather than arguing it away — a large priced "
-    "gain means the distinction you are defending is not in the data. "
+    "gain means the distinction you are defending is not in the data. ") +
     "Finishing takes TWO calls: the "
     "first ARMS it and shows you the "
     "current bic and residual-structure diagnosis; review it, then call `finish` AGAIN to "
@@ -1233,11 +1236,116 @@ def _bundle(entry: "str | dict") -> str:
 _HASH_SEP = "\x00"
 
 
+BIOLOGY_BLIND_SEMANTICS = (
+    "The problem is supplied through structured MCP tools. There are no problem files in your "
+    "filesystem. All identifiers are anonymous: they encode no domain meaning. Use only the "
+    "numerical measurements, input design, parameter constraints and mathematical consistency. "
+    "An input column sets the identically named model quantity for each condition. Declare it "
+    "and use it in the equations; do not estimate it. Condition-set initial values are inputs. "
+    "A readout_* symbol is an output mapping: define it by an assignment rule, "
+    "`readout_001 := <expression of states>`, which holds at all times. It is neither a fitted "
+    "parameter nor a state in a reaction. Preserve every supplied observable and noise formula. "
+    "Observation scales and noise parameters belong to those formulas, not to rate laws. "
+    "The parameter table determines what is estimated: keep estimate=0 quantities fixed and "
+    "reference them by name. A number in model text cannot override estimate=1. Bounds and "
+    "nominal values are linear values even when parameterScale is log10 or log. New independent "
+    "coefficients require their own estimated symbols; numeric literals do not avoid the "
+    "complexity penalty. Explain structural proposals using the measured dynamics and identifiable "
+    "combinations, without assigning a domain identity to an anonymous symbol."
+)
+BIOLOGY_BLIND_SYSTEM_PROMPT = (
+    "You are the MODELING LEAD building an ODE model for an anonymous PEtab v1 problem. "
+    "You have three independent analysts through task(subagent_type=..., description=...): "
+    "mathematician for equations and estimation, systems_scientist for dynamical structure, "
+    "and signal_engineer for measured signals and residuals. Put the complete question in "
+    "description. The analysts inspect and advise; only you author and fit. Delegate bulky "
+    "measurement, SQL and fitting-log reads, and use your own compact tools to orient and decide. "
+    "Begin with describe_problem, list_observables, list_conditions and get_parameters. Ask the "
+    "analysts to inspect the data independently, then build an initial model promptly. "
+    "Use make_changes(antimony=..., justification=...) to author all states, initial values, "
+    "parameters and named reactions in one coherent model. Every make_changes call fits and "
+    "records a version. Later changes may use model_edits when available; batch related changes "
+    "into one call. The server's n_starts is the fitting budget: passing n_starts replaces it. "
+    "Inspect the returned score, residuals, bounds and noise report, and consult "
+    + _PARAMETER_HALF + " to distinguish structural misfit from parameter uncertainty. "
+    "Propose and fit alternative state dimensions, couplings, nonlinearities and output mappings "
+    "where the data warrant them. Use numerical evidence to decide which coefficients can be "
+    "removed or shared. The lowest complexity-penalized likelihood is the objective. "
+    + _FREE_EXPONENTS_GUIDANCE.replace("cooperative or ligand-gated", "nonlinear or input-dependent")
+    + (" Use get_data_regimes to inspect statistical evidence about the measured signal shapes "
+       "and input dependence. A null or untestable result does not rule out richer structure. "
+       if DATA_REGIMES_ENABLED else "")
+    + _SIGMA_CAP_ADVISORY + " " + _ADEQUATE_IS_NOT_DONE + " "
+    "Call finish when the search is complete; the judge selects your best fitted version "
+    "automatically. " + BIOLOGY_BLIND_SEMANTICS
+)
+BIOLOGY_BLIND_TASK = (
+    "Build and refine an ODE model for the anonymous numerical data exposed by the MCP tools. "
+    "Report the best fitted model, its score and remaining uncertainty. " + BIOLOGY_BLIND_SEMANTICS
+)
+BIOLOGY_BLIND_ANALYSTS = {
+    "mathematician": {
+        "description": "Equation structure, dynamical systems, identifiability and optimization.",
+        "prompt": "You analyze ODE structure and parameter estimation. Inspect the actual equations, "
+                  "data and fitting evidence. Separate limitations of the functional form from "
+                  "optimization failures or unidentifiable coefficients. Return a short report "
+                  "with evidence and one concrete change the lead can test. You cannot edit. "
+                  + BIOLOGY_BLIND_SEMANTICS,
+    },
+    "systems_scientist": {
+        "description": "State-space structure and input/output dynamics inferred from data.",
+        "prompt": "You analyze anonymous input/output systems. Inspect the measurements and model "
+                  "before recommending a state dimension, coupling, feedback or output mapping. "
+                  "Distinguish constraints established by the data from assumptions and identify "
+                  "alternative structures when the evidence is ambiguous. Return a short report "
+                  "and one concrete change the lead can test. You cannot edit. "
+                  + BIOLOGY_BLIND_SEMANTICS,
+    },
+    "signal_engineer": {
+        "description": "Measured signal shapes, time scales, replicates and residual structure.",
+        "prompt": "You analyze measurements and residuals as numerical signals. Use your tools to "
+                  "locate systematic timing, shape, amplitude or input-response errors relative "
+                  "to the supplied noise model. Report what is established, what is uncertain, "
+                  "and one concrete diagnostic or change for the lead. You cannot edit. "
+                  + BIOLOGY_BLIND_SEMANTICS,
+    },
+}
+BIOLOGY_BLIND_TOOL_DESCRIPTIONS = {
+    "describe_problem": "Inspect problem dimensions, anonymous identifiers, model state and fit budget.",
+    "get_model_structure": "Read model entities, equations and initial-value rules.",
+    "list_observables": "Read anonymous observable formulas, transformations and noise models.",
+    "list_conditions": "Read numerical input rows; column names must match model quantities.",
+    "get_parameters": "Read parameter values, bounds, estimation scales, fixed flags and roles.",
+    "get_measurements": "Read a page of numerical measurements by observable and condition.",
+    "list_data_tables": "List queryable numerical tables and their columns.",
+    "query_data": "Run read-only SQL over numerical data, simulations and fit diagnostics.",
+    "get_data_regimes": "Inspect statistical evidence for signal shape and input dependence.",
+    "get_fit_summary": "Read the committed fit's objective, complexity, residual and noise diagnostics.",
+    "get_fit_diagnosis": "Read compact residual diagnostics; sections='parameters' requests parameter geometry.",
+    "get_fitting_log": "Read multistart convergence and numerical optimization diagnostics.",
+    "list_versions": "List fitted versions and scores. The judge automatically selects the best fit.",
+    "get_version": "Inspect one recorded model version, its parameters and score.",
+    "get_model": "Read the current or a recorded model in Antimony or SBML.",
+    "make_changes": "Author or edit the ODE model and parameter search space with a justification. "
+                    "Every call fits and records one coherent change. Start with antimony; use "
+                    "model_edits for subsequent batches when supported. n_starts replaces the "
+                    "default fit budget. " + BIOLOGY_BLIND_SEMANTICS,
+}
+
+
 def _hash_input(entries: "dict[str, str]") -> str:
     return "".join(f"{n}{_HASH_SEP}{entries[n]}{_HASH_SEP}" for n in sorted(entries))
 
 
 PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
+    "biology_blind": {
+        "petab-anonymous-semantics": BIOLOGY_BLIND_SEMANTICS,
+        "petab-anonymous-lead": BIOLOGY_BLIND_SYSTEM_PROMPT,
+        "petab-anonymous-task": BIOLOGY_BLIND_TASK,
+        "petab-anonymous-analysts": BIOLOGY_BLIND_ANALYSTS,
+        "petab-anonymous-tools": BIOLOGY_BLIND_TOOL_DESCRIPTIONS,
+        "petab-active-biology-context": "anonymous" if BIOLOGY_BLIND_ENABLED else "identified",
+    },
     # What the modeling lead is told.
     "lead": {
         "petab-lead-system": DEFAULT_SYSTEM_PROMPT,

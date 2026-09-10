@@ -226,6 +226,10 @@ class Scenario:
         ``known_constants`` note (so the agent is told about shipped fixed constants) and, with
         it, the readout-mapping note (a benchmark problem ships blinded ``readout_*``
         observables; the synthetic demos carry no note)."""
+        from . import ablations, prompts
+
+        if ablations.enabled("biology_blind"):
+            return prompts.BIOLOGY_BLIND_TASK
         if not self.known_constants:
             return self.task
         return f"{self.task}\n\n{self.known_constants}{KNOWN_CONSTANTS_READOUT_NOTE}"

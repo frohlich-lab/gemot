@@ -14,7 +14,8 @@ the text the panel actually reads, and the reason every tool here needs an entry
 
 from __future__ import annotations
 
-from ..prompts import (DATA_REGIMES_ENABLED, DIFF_EDITS_ENABLED, LEAD_SELF_READ_TOOLS,
+from ..prompts import (BIOLOGY_BLIND_ENABLED, BIOLOGY_BLIND_TOOL_DESCRIPTIONS,
+                       DATA_REGIMES_ENABLED, DIFF_EDITS_ENABLED, LEAD_SELF_READ_TOOLS,
                        TOOL_DESCRIPTIONS)
 
 # ---------------------------------------------------------------- tool exposure
@@ -158,6 +159,7 @@ _TOOLSETS = (ORCHESTRATOR_TOOLS, MATHEMATICIAN_TOOLS, SYSTEMS_SCIENTIST_TOOLS,
 _ARM_TOOLS = (
     (DATA_REGIMES_ENABLED, ("get_data_regimes",)),
     (DIFF_EDITS_ENABLED, ("get_model",)),
+    (not BIOLOGY_BLIND_ENABLED, ("get_skill",)),
 )
 for _on, _names in _ARM_TOOLS:
     if _on:
@@ -181,12 +183,15 @@ def _trim_descriptions(tools: list) -> list:
     """Shorten each panel tool's description (in place) to cut per-turn input tokens.
 
     Uses the curated one-liner from TOOL_DESCRIPTIONS; for anything unlisted, truncates the
-    server description to its first line. Best-effort — a tool whose description can't be set
-    (e.g. a frozen model) is left as-is.
+    server description to its first line. The anonymous arm requires an explicit description
+    for every tool and refuses a tool whose description cannot be replaced.
     """
     for t in tools:
         name = getattr(t, "name", None)
-        short = TOOL_DESCRIPTIONS.get(name)
+        descriptions = BIOLOGY_BLIND_TOOL_DESCRIPTIONS if BIOLOGY_BLIND_ENABLED else TOOL_DESCRIPTIONS
+        short = descriptions.get(name)
+        if BIOLOGY_BLIND_ENABLED and short is None:
+            raise ValueError(f"No anonymous description registered for tool {name!r}")
         if short is None:
             desc = getattr(t, "description", None)
             if isinstance(desc, str):
@@ -195,6 +200,8 @@ def _trim_descriptions(tools: list) -> list:
             try:
                 t.description = short
             except Exception:  # pragma: no cover - frozen/rejected attribute
+                if BIOLOGY_BLIND_ENABLED:
+                    raise
                 pass
     return tools
 

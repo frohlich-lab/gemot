@@ -15,7 +15,7 @@ from typing import AsyncIterator
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
-from .. import benchmark
+from .. import ablations, benchmark
 from ..bio_sessions import open_bio_sessions
 from ..explorer.archive import archive_run
 from ..fit_budget import (FIT_BUDGET_CEILING_S, FIT_N_WORKERS, FIT_PER_START_TIMEOUT_S,
@@ -33,7 +33,17 @@ def cleanup(scenario: Scenario) -> Path:
     work = scenario.example_dir / "work"
     if work.exists():
         shutil.rmtree(work)
-    shutil.copytree(scenario.problem_dir, work)
+    from ..biology_blinding import private_dir
+
+    if private_dir(work).exists():
+        shutil.rmtree(private_dir(work))
+    if ablations.enabled("biology_blind"):
+        from ..biology_blinding import prepare
+
+        prepare(scenario.problem_dir / "problem.yaml", work,
+                benchmark.validation_measurements_path(scenario.example_dir).parent)
+    else:
+        shutil.copytree(scenario.problem_dir, work)
     print(f"[cleanup] fresh working copy at {work.relative_to(scenario.example_dir.parent)}")
     return work
 
@@ -75,9 +85,14 @@ async def _petab_server(work: Path, build_root: Path, args: argparse.Namespace, 
     # `evaluate_validation_data` tool at all — and the judge, gated on the same file, does not ask
     # for one, so the seventeen examples without held-out data are untouched by any of this.
     validation_tsv = benchmark.validation_measurements_path(scenario.example_dir)
+    if ablations.enabled("biology_blind"):
+        from ..biology_blinding import private_dir
+
+        validation_tsv = private_dir(work) / "validation/measurements.tsv"
     server_cmd = [
         sys.executable, "-c", _SERVER_BOOTSTRAP,
-        str(work_yaml), str(build_root), args.reference_validation, host, str(port),
+        str(work_yaml), str(build_root),
+        "off" if ablations.enabled("biology_blind") else args.reference_validation, host, str(port),
         str(args.n_starts), str(validation_tsv) if validation_tsv.is_file() else "",
         # <score_shipped>: "1" only for a problem that arrives finished (the barebones judge
         # path). Passed either way, never omitted -- the bootstrap unpacks a fixed arity so a
@@ -226,7 +241,8 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
             # is contained and degrades the biocurator to "dumb", NEVER aborting the run (issue
             # #86). LLM-driver only (empty for scripted). The biocurator is added REGARDLESS — if
             # no bio tools resolve it runs "dumb" on the model's own knowledge (biocurator_tools).
-            bio_urls = BIO_MCP_URLS if args.driver != "scripted" else ()
+            bio_urls = (BIO_MCP_URLS if args.driver != "scripted"
+                        and not ablations.enabled("biology_blind") else ())
             async with open_bio_sessions(bio_urls) as bio_sessions:
                 exit_code, result = await _drive(scenario, session, work, args,
                                                  run_started_at=started_at, server_proc=proc,

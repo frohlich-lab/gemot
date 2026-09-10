@@ -209,6 +209,9 @@ def _base_meta(scenario: Scenario, args: argparse.Namespace,
     from ..prompts import prompt_group_versions, prompt_version
 
     scripted = args.driver == "scripted"
+    from ..biology_blinding import read_names
+
+    blind_names = read_names(scenario.example_dir / "work") if ablations.enabled("biology_blind") else None
     return {
         "driver": args.driver,
         "model": None if scripted else args.model,
@@ -219,7 +222,7 @@ def _base_meta(scenario: Scenario, args: argparse.Namespace,
         "prompt_group_versions": prompt_group_versions(),
         # the skills are instructions the panel reads (prompts step 0), so they are
         # part of "what produced this run" just as much as the prompts are.
-        "skills_version": skills_version(),
+        "skills_version": None if blind_names is not None else skills_version(),
         # WHICH ARM. An ablation changes what a run does while leaving `git_sha` and (for the
         # switches that touch no prompt text) `prompt_version` identical, so without these two
         # fields the halves of an A/B are indistinguishable in the record and pool into one cell
@@ -236,7 +239,11 @@ def _base_meta(scenario: Scenario, args: argparse.Namespace,
         "ablations": ablations.state(),
         # Which OmniPath answered, and from when. A pinned snapshot that nothing records is the
         # `git_sha +dirty` problem in a new costume; None when the run used the hosted service.
-        "omnipath_snapshot": _omnipath_provenance(),
+        "omnipath_snapshot": None if blind_names is not None else _omnipath_provenance(),
+        # Operator-only metadata: persisted with the archive so its anonymous model can
+        # still be interpreted after work/ is replaced by the next run.
+        "biology_blinding": ({"version": 1, "identifiers": blind_names.forward}
+                             if blind_names is not None else None),
         "recursion_limit": None if scripted else args.recursion_limit,
         "n_starts": args.n_starts,
         "temperature": None if scripted else args.temperature,
