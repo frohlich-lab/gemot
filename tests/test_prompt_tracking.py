@@ -159,8 +159,10 @@ def test_the_hash_framing_is_still_unambiguous():
 
 
 def test_the_surface_covers_every_kind_of_prompt():
-    """Sanity on the groups themselves, including the anonymous modeling arm."""
-    assert set(P.PROMPT_GROUPS) == {"lead", "analysts", "biocurator", "tools", "control", "biology_blind"}
+    """Sanity on the groups themselves, including the barebones and anonymous modeling arms."""
+    assert set(P.PROMPT_GROUPS) == {
+        "lead", "analysts", "biocurator", "tools", "control", "barebones", "biology_blind",
+    }
     # the previously-untracked ones, named explicitly so a regression is legible
     tracked = P.all_prompts()
     assert P.TOOL_DESCRIPTIONS["make_changes"] in tracked["petab-tool-descriptions"]

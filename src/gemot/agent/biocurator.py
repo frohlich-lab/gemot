@@ -120,6 +120,8 @@ async def discover_bio_tools(bio_sessions, *, literature: bool,
                              holder: str = "the biocurator") -> list:
     """The curated bio tools that resolved on the connected server(s), as tool objects.
 
+    Shared by the panel (its biocurator) and the barebones null arm.
+
     ``DEFAULT_BIO_TOOLS`` plus ``LITERATURE_BIO_TOOLS`` when ``literature`` — an allowlist of
     NAMES, not a numeric cap, so it can never drop the one tool the holder needs. Per-server
     discovery is bounded and guarded (issue #86): a slow or already-dead server costs only its

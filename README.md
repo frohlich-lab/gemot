@@ -101,6 +101,13 @@ scientist, signal engineer) and then hands off to the **judge**, which selects t
 best-scoring version and scores it against a true or published reference. Phoenix tracing
 and the run explorer read the trace and version history this pipeline leaves behind.
 
+`--driver barebones` is the **null arm** for that design: the same model, problem, libraries
+and compute, but a stock deepagent with file tools and a sandboxed shell over the PEtab files
+on disk — no server, no panel, no scored editing loop — asked to deliver a finished PEtab
+problem in place, which the same judge then scores at its delivered parameter values. What
+the harness adds is the difference between the two arms on the same sweep (see
+[`src/petab_harness/agent/barebones.py`](src/petab_harness/agent/barebones.py)).
+
 ## Design notes
 
 Principles to hold onto when extending this package.

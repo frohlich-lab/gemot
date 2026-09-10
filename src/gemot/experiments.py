@@ -60,6 +60,11 @@ _PROMPT_ROLES = {
     "petab-lead-system": "system",
     "petab-lead-task": "user",
     "petab-lead-readout-note": "user",
+    # the null arm's single agent (see agent/barebones.py): same two roles as the lead's pair
+    "petab-barebones-system": "system",
+    "petab-barebones-task": "user",
+    "petab-barebones-entities": "user",
+    "petab-barebones-bio-tools": "system",
     "petab-analyst-mathematician": "system",
     "petab-analyst-systems-scientist": "system",
     "petab-analyst-signal-engineer": "system",

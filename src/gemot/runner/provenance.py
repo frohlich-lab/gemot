@@ -142,7 +142,8 @@ def _reference_score(ref, criterion) -> float | None:
         return None
 
 
-def _write_live_marker(work: Path, meta: dict, scenario: Scenario) -> None:
+def _write_live_marker(work: Path, meta: dict, scenario: Scenario, *,
+                       include_reference: bool = True) -> None:
     """Write ``work/run_live.json`` so the run explorer can watch this run WHILE it is still
     in flight — before ``result.json`` (written only at run end) exists.
 
@@ -153,11 +154,14 @@ def _write_live_marker(work: Path, meta: dict, scenario: Scenario) -> None:
     archived one. Its presence-without-a-sibling-``result.json`` is also how the explorer tells
     "in progress" from "finished". Best-effort — telemetry must never break a run; the next
     run's ``cleanup()`` wipes ``work/`` and with it any stale marker.
+
+    ``include_reference=False`` omits the reference score: the barebones arm has no versions to
+    score live, and its agent works beside this file.
     """
     try:
         from petab_mcp.criteria import CANONICAL
 
-        ref = scenario.reference()
+        ref = scenario.reference() if include_reference else None
         bic_ref = _bic_reference(ref)
         marker = {
             **meta,

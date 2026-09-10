@@ -57,7 +57,11 @@ dependencies = [
     # Imported directly for the chi2 goodness-of-fit p-value (residual_tests, fitting) and by
     # the harness's judge. Only transitively present via pyPESTO otherwise.
     "scipy>=1.10",
-    "amici>=0.30",
+    # 1.x, not 0.30: the package was reorganised at 1.0 and every import here uses the new layout
+    # (`amici.importers.petab.v1`, `amici.importers.sbml`, `amici.sim.sundials.petab.v1`), none
+    # of which exists in 0.x -- the old floor admitted versions that fail at import. 1.1.0 is what
+    # the cluster env runs and the suite is measured against.
+    "amici>=1.1",
     "pypesto[petab]>=0.5",
     "fides>=0.7",
 ]

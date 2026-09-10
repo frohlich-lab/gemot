@@ -1,0 +1,398 @@
+"""The NULL arm: the barebones pipeline's staging, delivery checks and wiring.
+
+The barebones run has no server watching the agent work, so the rules the server ENFORCES on the
+lead (the design is fixed, a shipped constant stays fixed, the model is what the YAML names) are
+checked here after the fact — and a null that could quietly rewrite `observables.tsv` or read the
+reference model out of `run.py` would not be a null. These tests pin those checks, the workspace
+staging that withholds the answer, and the sweep/CLI plumbing that lets `--driver barebones` run
+in the same array as a `deepagents` sweep.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("mcp", reason="harness-only dependency")
+
+from petab_harness.runner import barebones as R  # noqa: E402
+
+TOY = Path(__file__).parent / "data" / "toy_v1"
+
+
+def _workspace(tmp_path: Path) -> Path:
+    """A `work/` as `cleanup()` leaves it: the problem plus the two files the agent must not see."""
+    work = tmp_path / "ex" / "work"
+    shutil.copytree(TOY, work)
+    (work / "reference.json").write_text('{"nll": 1.0, "k": 2, "n": 10}')
+    # TOY ships a model.ant; the staging must remove it whatever it holds.
+    assert (work / "model.ant").is_file()
+    return work
+
+
+# --------------------------------------------------------------------------- staging
+def test_staging_withholds_the_answer_and_the_seed(tmp_path):
+    """`reference.json` is the true model's score and `model.ant` would be loaded INSTEAD of the
+    agent's SBML by the judge's server — neither may be in the workspace."""
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    agent = staged["agent_dir"]
+    assert agent == work / R.AGENT_SUBDIR
+    assert sorted(staged["withheld"]) == ["model.ant", "reference.json"]
+    assert not (agent / "reference.json").exists() and not (agent / "model.ant").exists()
+    assert not (work / "reference.json").exists()
+    # the design tables the YAML lists are fingerprinted, the parameter table is not a design table
+    assert set(staged["design_hashes"]) == {"measurements.tsv", "conditions.tsv", "observables.tsv"}
+    assert staged["shipped_rows"]["sigma_B"] == (0, 0.1)
+    assert staged["shipped_rows"]["k1"][0] == 1
+
+
+def test_staging_tolerates_an_already_clean_workspace(tmp_path):
+    work = tmp_path / "work"
+    shutil.copytree(TOY, work)
+    (work / "model.ant").unlink()
+    assert R.stage_workspace(work)["withheld"] == []
+
+
+def test_the_agent_dir_holds_only_the_problem_even_after_the_live_marker(tmp_path):
+    """The live-run marker carries the reference score (`reference`, `bic_reference`), and the
+    server logs and result.json land beside it; all of that is written to `work/`, which is NOT
+    the mount — the agent sees `work/agent/` and nothing above it."""
+    from petab_harness.runner.provenance import _write_live_marker
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    agent = staged["agent_dir"]
+
+    class _S:
+        name = "toy"
+        version = 1
+        bic_threshold = 10.0
+        def reference(self):
+            return {"nll": 1.0, "k": 2, "n": 10}
+    _write_live_marker(work, {"phoenix_trace_id": "abc"}, _S(), include_reference=False)
+    marker = json.loads((work / "run_live.json").read_text())
+    assert marker["reference"] is None and marker["bic_reference"] is None
+    visible = {f.name for f in agent.iterdir()}
+    listed = {n for names in staged["files"].values() for n in names}
+    assert visible == listed | {"problem.yaml", "conversion_reaction.xml",
+                                R.SANDBOX_HOME_DIR, R.SANDBOX_TMP_DIR}
+    assert "run_live.json" not in visible
+
+
+# --------------------------------------------------------------------------- delivery checks
+def test_an_untouched_delivery_is_clean(tmp_path):
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+    out = R.check_delivery(work, staged)
+    assert out["design_modified"] == [] and out["shipped_rows_violated"] == []
+    assert out["petab_lint"]["ok"], out["petab_lint"]
+    assert out["model_authored"] is True          # the toy ships a real model
+    assert out["model_ant_set_aside"] is False
+
+
+def test_a_rewritten_design_table_is_reported(tmp_path):
+    """Byte-level: the agent was told not to touch these files at all, and a re-saved table with
+    different float formatting is still a table the agent rewrote."""
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+    meas = work / "measurements.tsv"
+    meas.write_text(meas.read_text() + "\n")
+    out = R.check_delivery(work, staged)
+    assert out["design_modified"] == ["measurements.tsv"]
+
+
+def test_a_design_table_dropped_from_the_yaml_is_reported(tmp_path):
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+    yaml_text = (work / "problem.yaml").read_text().replace("- observables.tsv", "- obs2.tsv")
+    shutil.copy(work / "observables.tsv", work / "obs2.tsv")
+    (work / "problem.yaml").write_text(yaml_text)
+    out = R.check_delivery(work, staged)
+    assert "observables.tsv" in out["design_modified"]
+
+
+def test_shipped_rows_are_protected(tmp_path):
+    """A fixed shipped constant re-valued or freed, or a shipped row removed, is a violation; the
+    agent's OWN new rows are not checked (it may add whatever it estimates)."""
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+    lines = (work / "parameters.tsv").read_text().splitlines()
+    header, rows = lines[0], lines[1:]
+    edited = []
+    for row in rows:
+        cells = row.split("\t")
+        if cells[0] == "sigma_B":
+            cells[4] = "0.5"                    # fixed row re-valued
+        elif cells[0] == "A_init":
+            cells[5] = "1"                      # fixed row freed
+        elif cells[0] == "B_init":
+            continue                            # shipped row removed
+        edited.append("\t".join(cells))
+    edited.append("kcat_new\tlog10\t1e-3\t1e3\t2.5\t1")   # the agent's own row: fine
+    (work / "parameters.tsv").write_text("\n".join([header, *edited]) + "\n")
+    out = R.check_delivery(work, staged)
+    assert sorted(out["shipped_rows_violated"]) == sorted([
+        "sigma_B: fixed value 0.1 -> 0.5", "A_init: estimate 0 -> 1", "B_init: removed"])
+
+
+def test_an_agent_model_ant_is_set_aside_before_scoring(tmp_path):
+    """The server prefers a model.ant beside the YAML over the SBML; the deliverable is the PEtab
+    problem the YAML names, so a model.ant the agent wrote is moved out of the way, not scored."""
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+    (work / "model.ant").write_text("model m\nend\n")
+    out = R.check_delivery(work, staged)
+    assert out["model_ant_set_aside"] is True
+    assert not (work / "model.ant").exists() and (work / "model.ant.agent").is_file()
+
+
+def test_an_unloadable_problem_fails_lint_not_the_runner(tmp_path):
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+    (work / "conversion_reaction.xml").write_text("<sbml>not a model")
+    out = R.check_delivery(work, staged)
+    assert out["petab_lint"]["ok"] is False and out["petab_lint"]["messages"]
+    assert out["model_authored"] is None
+
+
+def test_lint_names_the_libsbml_errors(tmp_path):
+    """petab's linter says only "Not OK" for an SBML libsbml rejects; the delivery record must carry
+    the errors themselves — a hand-written L3V2 model missing the required `constant` /
+    `hasOnlySubstanceUnits` / `boundaryCondition` / `reversible` attributes is the observed case."""
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+    (work / "conversion_reaction.xml").write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+  <model id="conversion_reaction">
+    <listOfCompartments><compartment id="compartment_" size="1"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="compartment_" initialConcentration="1"/>
+      <species id="B" compartment="compartment_" initialConcentration="0"/>
+    </listOfSpecies>
+    <listOfParameters><parameter id="k1" value="0.5"/><parameter id="k2" value="0.1"/></listOfParameters>
+    <listOfReactions>
+      <reaction id="r1"><listOfReactants><speciesReference species="A" stoichiometry="1" constant="true"/></listOfReactants>
+        <listOfProducts><speciesReference species="B" stoichiometry="1" constant="true"/></listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>k1</ci><ci>A</ci></apply></math></kineticLaw></reaction>
+    </listOfReactions>
+  </model>
+</sbml>
+""")
+    out = R.check_delivery(work, staged)
+    assert out["petab_lint"]["ok"] is False
+    assert any(m.startswith("SBML error 20623") for m in out["petab_lint"]["messages"]), out["petab_lint"]
+    assert out["model_authored"] is True
+
+
+def test_an_untouched_model_less_problem_reads_as_no_model(tmp_path):
+    """An agent that authors nothing leaves a problem whose own lint fails (the observables
+    reference readout_* symbols nothing defines) — the record must say the model is missing, not
+    that the delivery is malformed."""
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+    (work / "conversion_reaction.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">'
+        '<model id="conversion_reaction"/></sbml>\n')
+    out = R.check_delivery(work, staged)
+    assert out["model_authored"] is False
+
+
+def test_unscoreable_result_is_a_loss_not_an_abort(tmp_path):
+    """`aborted:` is what the sweep aggregation drops as infrastructure noise; a delivery that
+    cannot be judged is the agent's failure and must stay in the table as one."""
+    class _S:
+        name = "toy"
+    meta = {"stop_reason": "completed", "driver": "barebones"}
+    res = R._write_unscoreable_result(tmp_path, meta, _S(), "petab_invalid: bad sbml")
+    assert res["success"] is False and res["delta_bic"] is None
+    assert res["stop_reason"] == "completed"
+    assert res["unscoreable_reason"].startswith("petab_invalid")
+    assert (tmp_path / "result.json").is_file()
+
+
+# --------------------------------------------------------------------------- wiring
+def test_prompt_template_formats_and_is_tracked():
+    from petab_harness import prompts as P
+    text = P.BAREBONES_SYSTEM_PROMPT_TMPL.format(execute_timeout=1234.0, n_cpus=8, n_starts=100)
+    assert "1234s" in text and "8 CPU" in text and "100 starts" in text
+    assert "{" not in text and "}" not in text
+    assert "barebones" in P.PROMPT_GROUPS
+    assert P.BAREBONES_TASK in P.tracked_leaves()
+    bio = P.BAREBONES_BIO_TOOLS_TMPL.format(n=2, names="get_interactions, omnipath_query")
+    assert "2 tools" in bio and "omnipath_query" in bio and "{" not in bio
+    # the null gets the contract, not the treatment: none of the lead's modelling rules
+    for treatment in ("EXPONENTS ARE PARAMETERS", "ADEQUACY BEFORE PARSIMONY", "make_changes",
+                      "subagent_type"):
+        assert treatment not in text
+
+
+def _known_constants_of_every_example() -> dict[str, str]:
+    """Each example's KNOWN_CONSTANTS literal, read by AST (importing a run.py pulls in AMICI)."""
+    import ast
+    out = {}
+    for f in sorted((Path(__file__).parents[1] / "examples").glob("*/run.py")):
+        for node in ast.parse(f.read_text()).body:
+            if isinstance(node, ast.Assign) and any(
+                    getattr(t, "id", None) == "KNOWN_CONSTANTS" for t in node.targets):
+                assert isinstance(node.value, ast.Constant), f"{f}: KNOWN_CONSTANTS is not a literal"
+                out[f.parent.name] = node.value.value
+    assert out, "no example defines KNOWN_CONSTANTS"
+    return out
+
+
+def test_every_example_note_is_problem_specific_and_tool_free():
+    """A scenario's KNOWN_CONSTANTS carries facts about THAT problem: no harness tool name (the
+    null has files, not tools) and no copy of the readout-mapping instruction, which each driver
+    owns for itself (`KNOWN_CONSTANTS_READOUT_NOTE` for the lead, `BAREBONES_TASK` for the null)."""
+    for name, note in _known_constants_of_every_example().items():
+        assert R.check_note_is_tool_free(note) == note, name
+        assert "MEASUREMENT MAPPINGS" not in note, name
+
+
+def test_the_lead_still_gets_the_readout_note_with_its_constants():
+    from petab_harness import prompts as P
+    from petab_harness.scenario import Scenario
+    kw = dict(problem_dir=Path("/x/problem"), scripted_fix=None)
+    with_note = Scenario(name="a", known_constants="KNOWN CONSTANTS: k.", **kw).agent_task
+    assert with_note.endswith("KNOWN CONSTANTS: k." + P.KNOWN_CONSTANTS_READOUT_NOTE)
+    assert "set_assignment" in with_note                  # the lead's own tool vocabulary
+    assert Scenario(name="b", **kw).agent_task == P.DEFAULT_TASK
+    # the null's task never carries the lead's note
+    class _S:
+        known_constants = "KNOWN CONSTANTS: k."
+        biocurator_entities = []
+    assert P.KNOWN_CONSTANTS_READOUT_NOTE not in R.barebones_task(_S())
+
+
+def test_note_check_refuses_a_tool_name_but_not_the_verb_rename():
+    with pytest.raises(ValueError, match="describe_problem"):
+        R.check_note_is_tool_free("Start with describe_problem, then build.")
+    assert R.check_note_is_tool_free("do NOT re-estimate or rename them")
+
+
+def test_task_carries_the_known_constants_and_the_curated_entities():
+    """The null gets what the panel gets: the lead's known-constants note AND the entity names the
+    biocurator is handed — information parity, so only the design differs."""
+    class _S:
+        known_constants = "KNOWN CONSTANTS: sigma ships estimated."
+        biocurator_entities = ["IP3 receptor (ITPR)", "calcium ion"]
+    task = R.barebones_task(_S())
+    assert task.startswith(R.BAREBONES_TASK)
+    assert "KNOWN CONSTANTS: sigma ships estimated." in task
+    assert "IP3 receptor (ITPR), calcium ion" in task
+
+    class _Bare:
+        known_constants = ""
+        biocurator_entities = []
+    assert R.barebones_task(_Bare()) == R.BAREBONES_TASK
+
+
+def test_bio_tool_discovery_is_the_panels_allowlist(monkeypatch):
+    """Both arms hold the same lookups because both call `discover_bio_tools`: the curated
+    allowlist resolves, a literature tool only under the ablation, a petab-name collision and a
+    duplicate are dropped, and a server whose discovery raises costs only its own tools."""
+    pytest.importorskip("langchain_mcp_adapters")
+    import asyncio
+    from langchain_core.tools import StructuredTool
+    import langchain_mcp_adapters.tools as lmt
+    from petab_harness.agent import biocurator as B
+
+    def _tool(name):
+        return StructuredTool.from_function(func=(lambda: ""), name=name, description=name)
+
+    curated = B.DEFAULT_BIO_TOOLS[0]
+    literature = B.LITERATURE_BIO_TOOLS[0]
+    servers = {
+        "a": [_tool(curated), _tool(literature), _tool("describe_problem"), _tool("unrelated")],
+        "b": [_tool(curated)],            # duplicate of a's
+        "dead": RuntimeError("tools/list failed"),
+    }
+
+    async def _fake_load(session):
+        out = servers[session]
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+    monkeypatch.setattr(lmt, "load_mcp_tools", _fake_load)
+    got = asyncio.run(B.discover_bio_tools(["a", "b", "dead"], literature=False,
+                                           exclude_names={"describe_problem"}))
+    assert [t.name for t in got] == [curated]
+    got = asyncio.run(B.discover_bio_tools(["a"], literature=True))
+    assert sorted(t.name for t in got) == sorted([curated, literature])
+    assert asyncio.run(B.discover_bio_tools([], literature=True)) == []
+    assert asyncio.run(B.discover_bio_tools(["dead"], literature=True)) == []
+
+
+def test_cli_accepts_the_barebones_driver_and_dispatches_to_its_pipeline(monkeypatch, tmp_path):
+    from petab_harness.runner import cli
+    from petab_harness.runner import barebones as rb
+
+    class _S:
+        name = "toy"
+        problem_dir = tmp_path / "problem"
+        version = 1
+    args = cli.build_parser(_S()).parse_args(["--driver", "barebones"])
+    assert args.driver == "barebones"
+
+    seen = {}
+
+    async def _fake_main(scenario, args):
+        seen["driver"] = args.driver
+        return 0, {"success": True}
+
+    monkeypatch.setattr(rb, "_main_async_barebones", _fake_main)
+    assert cli.run_scenario(_S(), ["--driver", "barebones", "--model", "luna"]) == 0
+    assert seen["driver"] == "barebones"
+
+
+def test_biology_blind_is_rejected_before_workspace_cleanup(monkeypatch):
+    """Reject the unsupported arm before cleanup erases an existing run or anonymizes its files."""
+    import asyncio
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("PETAB_BIOLOGY_BLIND", "1")
+
+    def _unexpected_cleanup(scenario):
+        pytest.fail("unsupported ablation must be rejected before workspace cleanup")
+
+    monkeypatch.setattr(R, "cleanup", _unexpected_cleanup)
+    with pytest.raises(SystemExit, match=r"PETAB_BIOLOGY_BLIND=1.*--driver barebones"):
+        asyncio.run(R._main_async_barebones(SimpleNamespace(), SimpleNamespace()))
+
+
+def test_sweep_keeps_the_model_grid_for_the_null_arm():
+    """`build_combos` collapses models/temperatures for `scripted` only: the null arm is an LLM
+    driver and must sweep the same example x model grid as `deepagents`, or it cannot be paired."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "make_sweep", Path(__file__).parents[1] / "slurm" / "make_sweep.py")
+    ms = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ms)
+    combos = ms.build_combos(["enzyme_kinetics"], ["a/m1", "b/m2"], [0.0], 2, "barebones",
+                             100, 250, 3600.0, match_refit_starts=False)
+    assert len(combos) == 4 and {c["model"] for c in combos} == {"a/m1", "b/m2"}
+    assert all(c["driver"] == "barebones" for c in combos)
+    scripted = ms.build_combos(["enzyme_kinetics"], ["a/m1", "b/m2"], [0.0], 1, "scripted",
+                               100, 250, 3600.0, match_refit_starts=False)
+    assert len(scripted) == 1
+
+
+def test_array_task_passes_the_model_to_every_llm_driver():
+    """array_task.sh used to add --model/--temperature for `deepagents` only; a barebones combo
+    would have run on the default model whatever the sweep asked for."""
+    text = (Path(__file__).parents[1] / "slurm" / "array_task.sh").read_text()
+    assert '"$DRIVER" != "scripted"' in text
+    assert '"$DRIVER" == "deepagents"' not in text

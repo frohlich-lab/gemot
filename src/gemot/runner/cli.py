@@ -40,8 +40,11 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
         description=f"{scenario.name} repair demo",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--driver", choices=["deepagents", "scripted"], default="deepagents",
-                   help="deepagents: drive an OpenRouter model; scripted: deterministic repair, no LLM.")
+    p.add_argument("--driver", choices=["deepagents", "scripted", "barebones"], default="deepagents",
+                   help="deepagents: drive an OpenRouter model through the panel + MCP server; "
+                        "scripted: deterministic repair, no LLM; barebones: the NULL arm — one "
+                        "stock deepagent with a shell and the PEtab files on disk, no server, no "
+                        "panel, judged on the problem it delivers (see runner/barebones.py).")
     p.add_argument("--model", default=models.DEFAULT,
                    help="OpenRouter model id, or a go-to alias (deepagents driver). Aliases: "
                         f"{', '.join(models.MODELS)} (see petab_harness/models.py). Default "
@@ -110,8 +113,15 @@ def run_scenario(scenario: Scenario, argv: list[str] | None = None) -> int:
     args = build_parser(scenario).parse_args(argv)
     args.model = models.resolve(args.model)  # go-to alias (e.g. "luna") -> OpenRouter id
     result: dict = {}
+    # The null arm inverts the pipeline (agent first, server after, on what it delivered), so it
+    # is a separate main rather than a branch inside the shared one. Resolved lazily: the module
+    # imports the agent driver, which a scripted run never needs.
+    if args.driver == "barebones":
+        from .barebones import _main_async_barebones as _main
+    else:
+        _main = _main_async
     try:
-        exit_code, result = asyncio.run(_main_async(scenario, args))
+        exit_code, result = asyncio.run(_main(scenario, args))
     except KeyboardInterrupt:
         return 130
     except BaseException as exc:
