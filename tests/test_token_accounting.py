@@ -4,6 +4,8 @@ harness-only dependency, so skip where absent."""
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 pytest.importorskip("langchain_core", reason="harness-only dependency")
@@ -196,3 +198,123 @@ async def test_partial_cost_coverage_is_visible():
     t = acc.totals()
     assert t["cost_usd"] == pytest.approx(0.004)
     assert t["n_llm_calls"] == 3 and t["n_uncosted_calls"] == 2
+
+
+async def _start(acc, agent="lead", node="model"):
+    run_id = uuid4()
+    await acc.on_chat_model_start({}, [], run_id=run_id,
+                                  metadata={"lc_agent_name": agent, "langgraph_node": node})
+    return run_id
+
+
+@pytest.mark.asyncio
+async def test_lead_final_is_by_request_order_and_peak_survives_smaller_prompts():
+    """A late completion must not overwrite the newest lead input; subagents and helper
+    calls can exceed both lead sizes without changing them."""
+    acc = _token_usage._token_accountant()
+    older, newer = await _start(acc), await _start(acc)
+    await acc.on_llm_end(_resp([_um(300, 10, cache=200)]), run_id=newer)
+    await acc.on_llm_end(_resp([_um(1000, 10, cache=800)]), run_id=older)
+    for name, node in [("biocurator", "model"), ("lead", "SummarizationMiddleware.before_model")]:
+        run_id = await _start(acc, name, node)
+        await acc.on_llm_end(_resp([_um(5000, 10)]), run_id=run_id)
+    t = acc.totals()
+    assert t["final_lead_prompt_tokens"] == 300
+    assert t["max_lead_prompt_tokens"] == 1000
+    assert t["max_prompt_tokens"] == 5000
+    assert t["total_tokens"] == 11340 and t["cache_read_tokens"] == 1000
+
+
+@pytest.mark.parametrize("size", [None, "oops", -1, True, 1.5, float("inf"), 0, 700])
+@pytest.mark.parametrize("raw_usage", [False, True])
+@pytest.mark.asyncio
+async def test_lead_final_does_not_reuse_an_earlier_count_when_usage_is_missing(size, raw_usage):
+    """Both provider usage shapes preserve unknown vs zero, even after a measured lead call."""
+    acc = _token_usage._token_accountant()
+    await acc.on_llm_end(_resp([_um(1000, 10)]), run_id=await _start(acc))
+    result = (_resp(llm_output={"token_usage": {"prompt_tokens": size, "completion_tokens": 10}})
+              if raw_usage else _resp([_um(size, 10)]))
+    await acc.on_llm_end(result, run_id=await _start(acc))
+    expected = size if type(size) is int and size >= 0 else None
+    assert acc.totals()["final_lead_prompt_tokens"] == expected
+    assert acc.totals()["max_lead_prompt_tokens"] == 1000
+
+
+@pytest.mark.asyncio
+async def test_failed_or_usage_less_final_lead_request_is_unknown_until_retry_reports_usage():
+    acc = _token_usage._token_accountant()
+    await acc.on_llm_end(_resp([_um(1000, 10)]), run_id=await _start(acc))
+    # An unrelated failure must not erase the lead's last measured input.
+    await acc.on_llm_error(RuntimeError("subagent failed"), run_id=await _start(acc, "biocurator"))
+    assert acc.totals()["final_lead_prompt_tokens"] == 1000
+    await acc.on_llm_error(RuntimeError("lead failed"), run_id=await _start(acc))
+    assert acc.totals()["final_lead_prompt_tokens"] is None
+    await acc.on_llm_end(_resp([_um(200, 10)]), run_id=await _start(acc))
+    assert acc.totals()["final_lead_prompt_tokens"] == 200
+    await acc.on_llm_end(_resp(), run_id=await _start(acc))
+    assert acc.totals()["final_lead_prompt_tokens"] is None
+    assert acc.totals()["max_lead_prompt_tokens"] == 1000
+
+
+@pytest.mark.asyncio
+async def test_unattributed_usage_does_not_invent_lead_measurements():
+    acc = _token_usage._token_accountant()
+    run_id = uuid4()
+    await acc.on_chat_model_start({}, [], run_id=run_id)
+    await acc.on_llm_end(_resp([_um(1000, 10)]), run_id=run_id)
+    assert acc.totals()["max_prompt_tokens"] == 1000
+    assert acc.totals()["final_lead_prompt_tokens"] is None
+    assert acc.totals()["max_lead_prompt_tokens"] is None
+
+
+@pytest.mark.asyncio
+async def test_real_deepagents_callbacks_separate_shared_model_and_summary_calls():
+    """Real graph metadata must override the parent's name in concurrent subagents. A
+    before_model helper uses the lead's name but must not become its final/peak prompt."""
+    from deepagents import create_deep_agent
+    from langchain.agents.middleware import AgentMiddleware
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+    from langchain_core.messages import AIMessage, HumanMessage
+    from langgraph.checkpoint.memory import MemorySaver
+
+    def message(size, content="done", **kwargs):
+        return AIMessage(content=content, usage_metadata={
+            "input_tokens": size, "output_tokens": 10, "total_tokens": size + 10,
+            "input_token_details": {"cache_read": size // 2}}, **kwargs)
+
+    class ToolModel(FakeMessagesListChatModel):
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+    helper = ToolModel(responses=[message(20000)])
+
+    class SummaryProbe(AgentMiddleware):
+        async def abefore_model(self, state, runtime):
+            await helper.ainvoke([HumanMessage(content="summarize")])
+
+    llm = ToolModel(responses=[
+        message(1000, content="", tool_calls=[
+            {"name": "task", "args": {"subagent_type": name, "description": "inspect"},
+             "id": name, "type": "tool_call"} for name in ["analyst_a", "analyst_b"]]),
+        message(5000), message(9000), message(300), message(400),
+    ])
+    graph = create_deep_agent(
+        model=llm, name=_token_usage._LEAD_AGENT_NAME, system_prompt="lead", tools=[],
+        subagents=[{"name": name, "description": "analyst", "system_prompt": "analyst",
+                    "tools": []} for name in ["analyst_a", "analyst_b"]],
+        middleware=[SummaryProbe()], checkpointer=MemorySaver(),
+    )
+    acc = _token_usage._token_accountant()
+    config = {"callbacks": [acc], "configurable": {"thread_id": "lead-prompt-test"}}
+    async for _ in graph.astream({"messages": [HumanMessage(content="inspect")]}, config):
+        pass
+    t = acc.totals()
+    assert t["n_llm_calls"] == 6  # two lead, two subagent, two summary helpers
+    assert t["total_tokens"] == 55360
+    assert t["max_prompt_tokens"] == 20000
+    assert t["final_lead_prompt_tokens"] == 300
+    assert t["max_lead_prompt_tokens"] == 1000
+    # The same callback instance spans a resumed graph and retains its earlier peak.
+    await graph.ainvoke({"messages": [HumanMessage(content="continue")]}, config)
+    assert acc.totals()["final_lead_prompt_tokens"] == 400
+    assert acc.totals()["max_lead_prompt_tokens"] == 1000

@@ -55,7 +55,7 @@ from .subagents import (
     _disable_general_purpose_subagent,
     _general_purpose_enabled,
 )
-from .token_usage import _token_accountant
+from .token_usage import _LEAD_AGENT_NAME, _token_accountant
 from .tools import ORCHESTRATOR_TOOLS, _select_tools, _trim_descriptions
 from ..prompts import _NO_MODEL_NUDGE, _SILENT_FINISH_NUDGE
 from .. import models, prompts
@@ -814,6 +814,9 @@ async def run_deepagents(
     params = inspect.signature(create_deep_agent).parameters
     prompt_kw = "system_prompt" if "system_prompt" in params else "instructions"
     kwargs: dict[str, Any] = {"model": llm, "tools": lead_tools, prompt_kw: system_prompt}
+    if "name" in params:
+        # Callback metadata identifies lead calls independently of the shared panel model.
+        kwargs["name"] = _LEAD_AGENT_NAME
     if "subagents" in params:
         kwargs["subagents"] = subagents
     else:  # pragma: no cover - guards against a deepagents API drift

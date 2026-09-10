@@ -122,8 +122,9 @@ def _run(mod, monkeypatch, probe, confirm_after=None, agent=None, server_poll=No
         return fake_tools
 
     def _fake_create_deep_agent(*, model=None, tools=None, system_prompt=None,
-                                subagents=None, middleware=None, checkpointer=None, **kw):
-        fake_agent.captured.update(system_prompt=system_prompt, subagents=subagents, tools=tools)
+                                subagents=None, middleware=None, checkpointer=None, name=None, **kw):
+        fake_agent.captured.update(system_prompt=system_prompt, subagents=subagents, tools=tools,
+                                   name=name)
         return fake_agent
 
     import deepagents
@@ -255,7 +256,8 @@ def test_result_json_carries_every_key_the_driver_returns(monkeypatch, tmp_path)
     from petab_harness.runner.provenance import _agent_meta
 
     mod = _load_agent_module()
-    agent_out, _ = _run(mod, monkeypatch, _Probe(model_authored=True))
+    agent_out, graph = _run(mod, monkeypatch, _Probe(model_authored=True))
+    assert graph.captured["name"] == "lead"
 
     meta = _agent_meta({"driver": "deepagents"}, agent_out, agent_out["stop_reason"])
     _write_degraded_result(tmp_path, meta, SimpleNamespace(name="toy"), "test")
@@ -263,3 +265,5 @@ def test_result_json_carries_every_key_the_driver_returns(monkeypatch, tmp_path)
 
     missing = sorted(k for k in agent_out if k not in written)
     assert not missing, f"the driver reported these and result.json dropped them: {missing}"
+    assert written["token_usage"]["final_lead_prompt_tokens"] is None
+    assert written["token_usage"]["max_lead_prompt_tokens"] is None

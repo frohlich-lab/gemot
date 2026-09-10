@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import math
+from uuid import UUID
+
+#: Explicit graph name used by the driver and reported in LangChain callback metadata.
+_LEAD_AGENT_NAME = "lead"
 
 def _token_accountant():
     """A LangChain callback that sums token usage across EVERY LLM call in a run.
@@ -16,6 +20,12 @@ def _token_accountant():
     into ``cost_usd``). The cache columns explain the bill; ``cost_usd`` is the bill. One instance
     is reused across resume iterations so the totals cover the whole run. Never raises — token
     accounting must not break a run.
+
+    Lead prompt sizes use the named lead graph's ``model`` calls, excluding subagents and
+    helper calls such as summarization. ``final_lead_prompt_tokens`` describes the last
+    lead request started, including retries: it is None if that request never reports usage.
+    ``max_lead_prompt_tokens`` keeps the largest reported lead input across resumes and
+    compaction. Both include cached input tokens and exclude the response's output tokens.
     """
     from langchain_core.callbacks import AsyncCallbackHandler
 
@@ -42,14 +52,42 @@ def _token_accountant():
             return None
         return value if math.isfinite(value) else None
 
+    def _reported_prompt(x) -> int | None:
+        """Missing or malformed lead usage is unknown, not a zero-sized prompt."""
+        if x is None or isinstance(x, bool):
+            return None
+        try:
+            value = int(x)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return value if value >= 0 and (not isinstance(x, float) or x == value) else None
+
     class _Accountant(AsyncCallbackHandler):
         def __init__(self):
             self.prompt = self.completion = self.cache_read = self.n_calls = 0
             self.cost, self.n_costed = 0.0, 0     # billed USD, and the calls that reported one
             self.cache_write = 0         # prompt tokens WRITTEN to the cache (billed at a premium)
             self.max_prompt = 0          # largest single-call prompt — the context-stop signal
+            self.final_lead_prompt: int | None = None
+            self.max_lead_prompt: int | None = None
+            self._lead_runs: set[UUID] = set()
+            self._last_lead_run: UUID | None = None
             # (upstream provider, service tier) -> calls served by it. See `endpoints()`.
             self.served: dict[tuple, int] = {}
+
+        async def on_chat_model_start(self, serialized, messages, *, run_id, metadata=None,
+                                      **kwargs):
+            # Subagent graphs replace lc_agent_name with their own name even when they share
+            # the lead's model. before_model helpers inherit the name but have another node.
+            if (isinstance(metadata, dict)
+                    and metadata.get("lc_agent_name") == _LEAD_AGENT_NAME
+                    and metadata.get("langgraph_node") == "model"):
+                self._lead_runs.add(run_id)
+                self._last_lead_run = run_id
+                self.final_lead_prompt = None
+
+        async def on_llm_error(self, error, *, run_id, **kwargs):
+            self._lead_runs.discard(run_id)
 
         def _record_endpoint(self, response):
             """Tally which upstream endpoint served this call, from whichever place carries it.
@@ -94,7 +132,10 @@ def _token_accountant():
                     return cost
             return None
 
-        async def on_llm_end(self, response, **kwargs):  # noqa: D401 - LangChain hook
+        async def on_llm_end(self, response, *, run_id=None, **kwargs):  # noqa: D401 - LangChain hook
+            is_lead = run_id in self._lead_runs
+            self._lead_runs.discard(run_id)
+            lead_prompt = None
             try:
                 self._record_endpoint(response)
             except Exception:  # pragma: no cover - accounting must never break a run
@@ -129,6 +170,8 @@ def _token_accountant():
                         # other generations, or the llm_output fallback below.
                         self.prompt += _as_int(um.get("input_tokens"))
                         self.max_prompt = max(self.max_prompt, _as_int(um.get("input_tokens")))
+                        if is_lead and (size := _reported_prompt(um.get("input_tokens"))) is not None:
+                            lead_prompt = max(lead_prompt or 0, size)
                         self.completion += _as_int(um.get("output_tokens"))
                         self.cache_read += _as_int(
                             (um.get("input_token_details") or {}).get("cache_read"))
@@ -142,6 +185,8 @@ def _token_accountant():
                     if tu:
                         self.prompt += _as_int(tu.get("prompt_tokens"))
                         self.max_prompt = max(self.max_prompt, _as_int(tu.get("prompt_tokens")))
+                        if is_lead:
+                            lead_prompt = _reported_prompt(tu.get("prompt_tokens"))
                         self.completion += _as_int(tu.get("completion_tokens"))
                         self.cache_read += _as_int(
                             (tu.get("prompt_tokens_details") or {}).get("cached_tokens"))
@@ -150,6 +195,12 @@ def _token_accountant():
                         self.n_calls += 1
             except Exception:  # pragma: no cover - accounting must never break a run
                 pass
+
+            if is_lead:
+                if run_id == self._last_lead_run:
+                    self.final_lead_prompt = lead_prompt
+                if lead_prompt is not None:
+                    self.max_lead_prompt = max(self.max_lead_prompt or 0, lead_prompt)
 
         def totals(self):
             return {
@@ -164,6 +215,8 @@ def _token_accountant():
                 # reads; this column is what rankings should use.
                 "novel_tokens": max(self.prompt - self.cache_read, 0),
                 "max_prompt_tokens": self.max_prompt,
+                "final_lead_prompt_tokens": self.final_lead_prompt,
+                "max_lead_prompt_tokens": self.max_lead_prompt,
                 "n_llm_calls": self.n_calls,
                 "cost_usd": self.cost if self.n_costed else None,   # billed USD; None if none reported
                 "n_uncosted_calls": max(self.n_calls - self.n_costed, 0),
