@@ -606,7 +606,7 @@ def _check_held_out_rows(name: str, vprob, published, training_measurement_df) -
                 f"flattening, which mints one observable per distinct override — so the training "
                 f"and held-out tables would flatten to different observable sets and their "
                 f"likelihoods could not be compared. Held-out scoring is not supported for this "
-                f"problem; drop VALIDATION_YAML.")
+                f"problem; drop the example's held-out declaration.")
 
     # HELD OUT means held out: a row the model was fitted to cannot also test it. Checked at row
     # level rather than by condition, because a held-out set may legitimately withhold later
@@ -626,12 +626,79 @@ def _check_held_out_rows(name: str, vprob, published, training_measurement_df) -
             f"(e.g. {sorted(shared)[:3]}); the score would be partly in-sample")
 
 
+def _held_out_source(*, name: str, validation_yaml: str | None, validation_table: str | None,
+                     example_dir: Path, collection: Path | None, published):
+    """The held-out measurement table from whichever source the example declares, or ``None``.
+
+    Both call sites go through here so the two sources cannot disagree: there is one held-out file
+    per example, so declaring both a published yaml and a curated table is a contradiction, not a
+    merge.
+    """
+    if validation_yaml and validation_table:
+        raise ValueError(
+            f"{name}: declares BOTH validation_yaml ({validation_yaml!r}) and validation_table "
+            f"({validation_table!r}); an example has one held-out set, so pick the source it "
+            f"comes from")
+    if validation_yaml:
+        return _validation_measurement_df(
+            name=name, validation_yaml=validation_yaml, collection=collection,
+            published=published, training_measurement_df=published.measurement_df)
+    if validation_table:
+        return _curated_measurement_df(
+            name=name, validation_table=validation_table, example_dir=example_dir,
+            published=published)
+    return None
+
+def _curated_measurement_df(*, name: str, validation_table: str, example_dir: Path, published):
+    """The held-out measurement table an example SHIPS, in the published vocabulary, fully checked.
+
+    ``validation_table`` is a PEtab measurement TSV committed under the example directory, for
+    held-out data the collection does not export (raimundez's Fig 5D long-term kinetics, curated
+    from the paper's own archive). There is no second problem to compare against as there is for
+    ``validation_yaml``: the table is written against the PUBLISHED problem, so ``published``'s
+    observable and condition tables are the ones it has to satisfy, and every check
+    :func:`_check_held_out_rows` makes applies unchanged.
+
+    FIXED-θ by construction: every condition the table names must already be in the published
+    condition table. A table naming a condition the training problem does not define is a TRANSFER
+    set — the model would be asked to predict an experiment nobody described to it — and is
+    refused here rather than scored.
+    """
+    import copy
+
+    import petab.v1 as petab
+    from petab.v1.C import SIMULATION_CONDITION_ID
+
+    path = Path(example_dir) / validation_table
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{name}: validation_table {validation_table!r} does not exist under {example_dir}")
+    vmeas = petab.get_measurement_df(str(path))
+
+    # Lint before indexing condition ids, so a malformed curated table gets the same
+    # actionable setup error as a table loaded through the yaml path.
+    vprob = copy.copy(published)
+    vprob.measurement_df = vmeas
+    _check_held_out_rows(name, vprob, published, published.measurement_df)
+
+    unknown = sorted(set(vmeas[SIMULATION_CONDITION_ID].astype(str))
+                     - set(published.condition_df.index.astype(str)))
+    if unknown:
+        raise ValueError(
+            f"{name}: the curated held-out table names condition(s) the published problem does "
+            f"not define: {unknown}. Scoring at the fitted point requires the model to have been "
+            f"told what the condition is, so a new condition makes this a TRANSFER set, not a "
+            f"fixed-θ one")
+
+    return vmeas
+
 def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
                 shipped_param_overrides: dict[str, dict] | None = None,
                 rename_ids: dict[str, str] | None = None,
                 preequilibration: dict[str, str] | None = None,
                 observable_blinding: dict[str, dict] | None = None,
                 validation_yaml: str | None = None,
+                validation_table: str | None = None,
                 collection: Path | None = None) -> dict[str, Any]:
     """Write ``example_dir/problem/`` from the pinned collection — the fast, no-fit path run by
     ``setup.py``. Copies the published measurements/observables/conditions VERBATIM (flattening
@@ -666,6 +733,11 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     unchanged: the agent is handed exactly the same problem, so runs with and without this are
     directly comparable and an example's ``Scenario.version`` does not move for it.
 
+    ``validation_table`` is the same thing for a set the collection does not export: a measurement
+    TSV the EXAMPLE ships (raimundez's ``validation_source/measurements.tsv``), read and checked
+    here and written to the same place. Mutually exclusive with ``validation_yaml`` — one held-out
+    file, one source of it -- and fixed-theta only (see :func:`_curated_measurement_df`).
+
     """
     from petab.v1.C import CONDITION_NAME
 
@@ -679,11 +751,9 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     # table, and nothing is re-parsed. (Handing `_validation_measurement_df` a second
     # freshly-loaded copy cost another full SBML + four-TSV parse for tables identical to these.)
     # `prob` is mutated in place from here on.
-    validation_meas = None
-    if validation_yaml:
-        validation_meas = _validation_measurement_df(
-            name=name, validation_yaml=validation_yaml, collection=collection,
-            published=prob, training_measurement_df=prob.measurement_df)
+    validation_meas = _held_out_source(
+        name=name, validation_yaml=validation_yaml, validation_table=validation_table,
+        example_dir=example_dir, collection=collection, published=prob)
 
     def _relabel(v):
         if not isinstance(v, str):
@@ -802,7 +872,7 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
         print(f"[setup] {name}: held-out validation set -> {vpath.name}: "
               f"{len(validation_meas)} measurement(s) over "
               f"{validation_meas[SIMULATION_CONDITION_ID].nunique()} condition(s), none of them a "
-              f"training row (from {validation_yaml})")
+              f"training row (from {validation_yaml or validation_table})")
     return out
 
 
@@ -852,6 +922,7 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
                         param_overrides: dict[str, dict] | None = None,
                         hardcoded_parameters: dict[str, str] | None = None,
                         validation_yaml: str | None = None,
+                        validation_table: str | None = None,
                         ) -> dict[str, Any]:
     """Regenerate the committed ``reference.json`` (the reference bar): fit the PRISTINE published
     PEtab problem EXACTLY as it ships. Run only via ``setup.py --refit`` — slow, and its output is
@@ -918,6 +989,10 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     collection rather than read off the materialized copy, so the reference is never scored against
     a stale ``validation/measurements.tsv`` left behind by an earlier definition of the example.
 
+    ``validation_table`` does the same for a curated held-out set, and for the same reason: the
+    reference is scored against the table the example SHIPS, re-read here rather than off the
+    materialized copy.
+
     """
     from .simulate import write_reference_from_problem
 
@@ -939,11 +1014,11 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     # the same reason `materialize` compares unflattened tables: flattening is an AMICI detail
     # applied downstream, and the yaml's own tables are what the identity check is about.
     validation_meas = None
-    if validation_yaml:
+    if validation_yaml or validation_table:
         pristine = _load_problem(name, collection, flatten=False)
-        validation_meas = _validation_measurement_df(
-            name=name, validation_yaml=validation_yaml, collection=collection,
-            published=pristine, training_measurement_df=pristine.measurement_df)
+        validation_meas = _held_out_source(
+            name=name, validation_yaml=validation_yaml, validation_table=validation_table,
+            example_dir=example_dir, collection=collection, published=pristine)
 
     if not free_parameters:
         ref = write_reference_from_problem(

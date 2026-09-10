@@ -645,6 +645,84 @@ def test_arity_is_reported_as_arity_not_as_a_name_mismatch():
         _reduced_from_named(_PP(), [0.5], ["k", "sigma", "scale"])
 
 
+
+# ------------------------------------------------------- a held-out table the EXAMPLE ships
+def test_a_curated_table_is_read_against_the_published_problems_own_tables(tmp_path):
+    """The curated path has no second problem to compare against, so the published problem IS the
+    reference for the table: read it, check it, hand it back unchanged. Pinned on the value, not on
+    the reader, because a table silently returned empty would score a model against nothing."""
+    (tmp_path / "curated").mkdir()
+    _rows("c_test").to_csv(tmp_path / "curated" / "measurements.tsv", sep="\t", index=False)
+
+    vmeas = benchmark._curated_measurement_df(
+        name="X", validation_table="curated/measurements.tsv", example_dir=tmp_path,
+        published=_problem(_rows("c_train")))
+
+    assert list(vmeas["simulationConditionId"]) == ["c_test", "c_test"]
+
+
+def test_a_curated_table_naming_an_unpublished_condition_is_refused(tmp_path):
+    """Fixed-θ scores at the training point, so every held-out condition has to be one the model was
+    told about. A row on a condition the problem does not define asks for a prediction nobody could
+    have made — that data is a TRANSFER set, which refits, and is not scored here."""
+    (tmp_path / "curated").mkdir()
+    _rows("c_knockdown").to_csv(tmp_path / "curated" / "measurements.tsv", sep="\t", index=False)
+
+    with pytest.raises(ValueError, match="c_knockdown"):
+        benchmark._curated_measurement_df(
+            name="X", validation_table="curated/measurements.tsv", example_dir=tmp_path,
+            published=_problem(_rows("c_train")))
+
+
+def test_a_curated_row_that_is_also_a_training_row_is_refused(tmp_path):
+    """Same claim as for the yaml path, same check: the curated table goes through
+    ``_check_held_out_rows``, so shipping a training row by hand is caught at setup."""
+    (tmp_path / "curated").mkdir()
+    _rows("c_train").to_csv(tmp_path / "curated" / "measurements.tsv", sep="\t", index=False)
+
+    with pytest.raises(ValueError, match="also in the TRAINING table"):
+        benchmark._curated_measurement_df(
+            name="X", validation_table="curated/measurements.tsv", example_dir=tmp_path,
+            published=_problem(_rows("c_train")))
+
+
+def test_an_absent_curated_table_names_itself(tmp_path):
+    """As for a typo'd yaml: say which path, at setup, rather than leaving the example silently
+    unvalidated."""
+    with pytest.raises(FileNotFoundError, match="nope.tsv"):
+        benchmark._curated_measurement_df(
+            name="X", validation_table="nope.tsv", example_dir=tmp_path,
+            published=_problem(_rows("c_train")))
+
+
+def test_a_malformed_curated_table_reports_lint_before_reading_condition_ids(tmp_path):
+    """A missing required column must name the malformed table, not leak a raw KeyError."""
+    _rows("c_test").drop(columns="simulationConditionId").to_csv(
+        tmp_path / "measurements.tsv", sep="\t", index=False)
+
+    with pytest.raises(ValueError, match="validation measurement table fails petab's lint"):
+        benchmark._curated_measurement_df(
+            name="X", validation_table="measurements.tsv", example_dir=tmp_path,
+            published=_problem(_rows("c_train")))
+
+
+def test_declaring_both_held_out_sources_is_refused(tmp_path):
+    """One example, one held-out file. Two declarations write to the same path, so whichever ran
+    last would silently win and the example would be scored against a set nobody chose."""
+    with pytest.raises(ValueError, match="BOTH"):
+        benchmark._held_out_source(
+            name="X", validation_yaml="test_data/held.yaml",
+            validation_table="curated/measurements.tsv", example_dir=tmp_path,
+            collection=None, published=_problem(_rows("c_train")))
+
+
+def test_no_declaration_means_no_held_out_table(tmp_path):
+    """The default: an example without held-out data returns None here, which is what leaves the
+    server's scoring tool unregistered."""
+    assert benchmark._held_out_source(
+        name="X", validation_yaml=None, validation_table=None, example_dir=tmp_path,
+        collection=None, published=_problem(_rows("c_train"))) is None
+
 # ------------------------------------------- a held-out table's own per-blot scale factors
 def _scaled_problem(formula="observableParameter1_obs_A * x"):
     """A problem whose one observable carries a scaling placeholder, like every blot readout."""
