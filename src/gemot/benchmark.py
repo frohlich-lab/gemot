@@ -699,30 +699,41 @@ def _transfer_problem(*, name: str, transfer_yaml: str, collection: Path | None,
     return vprob
 
 def _held_out_source(*, name: str, validation_yaml: str | None, validation_table: str | None,
-                     example_dir: Path, collection: Path | None, published):
+                     example_dir: Path, collection: Path | None, published,
+                     transfer_yaml: str | None = None):
     """The held-out set (:class:`petab_mcp.validation_data.HeldOut`) from whichever source the
     example declares, in the PUBLISHED vocabulary, or ``None``.
 
-    Both call sites go through here so the two sources cannot disagree: there is one held-out set
-    per example, so declaring both a published yaml and a curated table is a contradiction, not a
-    merge.
+    Every call site goes through here so the sources cannot disagree: there is one held-out set
+    per example, so declaring two sources is a contradiction, not a merge. A set with a parameter
+    table — a ``transfer_yaml``, or a curated table with a ``parameters.tsv`` beside it — is a
+    TRANSFER set; the others are fixed-θ.
     """
     from petab_mcp.validation_data import HeldOut
 
-    if validation_yaml and validation_table:
+    declared = {"VALIDATION_YAML": validation_yaml, "VALIDATION_TABLE": validation_table,
+                "TRANSFER_VALIDATION_YAML": transfer_yaml}
+    if sum(1 for v in declared.values() if v) > 1:
         raise ValueError(
-            f"{name}: declares BOTH validation_yaml ({validation_yaml!r}) and validation_table "
-            f"({validation_table!r}); an example has one held-out set, so pick the source it "
-            f"comes from")
+            f"{name}: declares BOTH of {sorted(k for k, v in declared.items() if v)}; the held-out "
+            f"sources are mutually exclusive — an example has one held-out set, so pick the source "
+            f"it comes from")
     if validation_yaml:
         return HeldOut(measurement_df=_validation_measurement_df(
             name=name, validation_yaml=validation_yaml, collection=collection,
             published=published, training_measurement_df=published.measurement_df))
+    if transfer_yaml:
+        vprob = _transfer_problem(
+            name=name, transfer_yaml=transfer_yaml, collection=collection, published=published,
+            training_measurement_df=published.measurement_df)
+        return HeldOut(measurement_df=vprob.measurement_df, condition_df=vprob.condition_df,
+                       parameter_df=vprob.parameter_df)
     if validation_table:
         return _curated_held_out(
             name=name, validation_table=validation_table, example_dir=example_dir,
             published=published)
     return None
+
 
 def _curated_held_out(*, name: str, validation_table: str, example_dir: Path, published):
     """The held-out set an example SHIPS, in the published vocabulary, fully checked.
@@ -731,41 +742,93 @@ def _curated_held_out(*, name: str, validation_table: str, example_dir: Path, pu
     held-out data the collection does not export (raimundez's Fig 5D long-term kinetics, curated
     from the paper's own archive). There is no second problem to compare against as there is for
     ``validation_yaml``: the table is written against the PUBLISHED problem, so ``published``'s
-    observable and condition tables are the ones it has to satisfy, and every check
-    :func:`_check_held_out_rows` makes applies unchanged.
+    observable table is the one it has to satisfy, and every check :func:`_check_held_out_rows`
+    makes applies unchanged. Two optional files beside it say what kind of set it is
+    (:class:`petab_mcp.validation_data.HeldOut`):
 
-    FIXED-θ by construction: every condition the table names must be one the model was told
-    about — a published condition, or a row of a ``conditions.tsv`` beside the table
-    (:data:`petab_mcp.validation_data.HELD_OUT_CONDITIONS`) giving NEW VALUES of the published
-    inputs (lucarelli's other cell types' Smad abundances, raimundez's knockdown level), under the
-    rules the scorer applies at score time
-    (:func:`petab_mcp.validation_data._with_held_out_conditions`). Anything else is a TRANSFER
-    set — the model would be asked to predict an experiment nobody described to it — and is
-    refused here rather than scored.
+    * no ``parameters.tsv`` — FIXED-θ: every condition the table names must be one the model was
+      told about — a published condition, or a row of a ``conditions.tsv`` giving NEW VALUES of
+      the published inputs (raimundez's knockdown level), under the rules the scorer applies at
+      score time (:func:`petab_mcp.validation_data._with_held_out_conditions`);
+    * a ``parameters.tsv`` — TRANSFER: the same mechanism on a different system (lucarelli's other
+      cell types), on which both structures are REFIT. The file holds only what differs from the
+      published parameter table — new rows, or published rows with another value, bound or
+      ``estimate`` — and may be header-only; the published table is the rest, pruned to what the
+      held-out tables reference, and checked as a collection transfer problem is
+      (:func:`petab_mcp.validation_data._reject_untransferable_table`). A ``conditions.tsv`` then
+      REPLACES the training condition table, on the same columns.
     """
     import copy
 
     import petab.v1 as petab
-    from petab.v1.C import PREEQUILIBRATION_CONDITION_ID, SIMULATION_CONDITION_ID
+    from petab.v1.C import (CONDITION_NAME, OBSERVABLE_ID, PREEQUILIBRATION_CONDITION_ID,
+                            SIMULATION_CONDITION_ID)
+    from petab.v1.parameters import get_valid_parameters_for_parameter_table
 
-    from petab_mcp.validation_data import (HELD_OUT_CONDITIONS, HeldOut,
-                                           _with_held_out_conditions)
+    from petab_mcp.validation_data import (HELD_OUT_CONDITIONS, HELD_OUT_PARAMETERS, HeldOut,
+                                           _reject_untransferable_table, _with_held_out_conditions)
 
     path = Path(example_dir) / validation_table
     if not path.is_file():
         raise FileNotFoundError(
             f"{name}: validation_table {validation_table!r} does not exist under {example_dir}")
     vmeas = petab.get_measurement_df(str(path))
+    if vmeas.empty:
+        raise ValueError(f"{name}: validation_table {validation_table!r} lists no measurements")
     cpath = path.with_name(HELD_OUT_CONDITIONS)
     vcond = petab.get_condition_df(str(cpath)) if cpath.is_file() else None
+    ppath = path.with_name(HELD_OUT_PARAMETERS)
+    vpars = petab.get_parameter_df(str(ppath)) if ppath.is_file() else None
 
-    # Lint before indexing condition ids, so a malformed curated table gets the same
-    # actionable setup error as a table loaded through the yaml path.
     vprob = copy.copy(published)
     vprob.measurement_df = vmeas
-    rejected = _with_held_out_conditions(vprob, vcond)
-    if rejected:
-        raise ValueError(f"{name}: {cpath.relative_to(example_dir)}: {rejected}")
+    vprob.visualization_df = None
+    if vpars is None:
+        rejected = _with_held_out_conditions(vprob, vcond)
+        if rejected:
+            raise ValueError(f"{name}: {cpath.relative_to(example_dir)}: {rejected}")
+    else:
+        system_differs = False
+        if vcond is not None:
+            mine = sorted(set(map(str, published.condition_df.columns)) - {CONDITION_NAME})
+            theirs = sorted(set(map(str, vcond.columns)) - {CONDITION_NAME})
+            if mine != theirs:
+                raise ValueError(
+                    f"{name}: {cpath.relative_to(example_dir)} has columns {theirs} against the "
+                    f"published {mine}; a condition column is a model input, so the two tables "
+                    f"describe different models")
+            vprob.condition_df = vcond
+            # A row with input values no published row has is another system; published rows
+            # under new ids are not one by themselves.
+            known = {tuple(map(str, r)) for r in published.condition_df[mine].itertuples(index=False)}
+            system_differs = any(tuple(map(str, r)) not in known
+                                 for r in vcond[mine].itertuples(index=False))
+        # Only the observables the set measures: a sigma no held-out row informs is not a
+        # parameter of the refit, and a delta row for it names nothing the set uses.
+        measured = set(vmeas[OBSERVABLE_ID].astype(str))
+        vprob.observable_df = published.observable_df.loc[
+            [o for o in published.observable_df.index if str(o) in measured]]
+        full = _overlay_parameters(published.parameter_df, vpars)
+        try:
+            # On the unpruned overlay: a published row the held-out tables retire must not read as
+            # a difference, and the identity check sees every column (`system_differs` is the
+            # other legitimate source of difference).
+            _reject_untransferable_table(full, published.parameter_df, vprob,
+                                         system_differs=system_differs)
+        except ValueError as exc:
+            raise ValueError(f"{name}: {ppath.relative_to(example_dir)}: {exc}") from exc
+        allowed = get_valid_parameters_for_parameter_table(
+            model=vprob.model, condition_df=vprob.condition_df, observable_df=vprob.observable_df,
+            measurement_df=vmeas)
+        unused = sorted(str(pid) for pid in vpars.index if pid not in allowed)
+        if unused:
+            raise ValueError(
+                f"{name}: {ppath.relative_to(example_dir)}: row(s) {unused} name nothing the "
+                f"held-out problem uses — not a parameter of the published model, not a "
+                f"placeholder of the observables it measures or of its measurement table")
+        vprob.parameter_df = full.loc[[pid for pid in full.index if pid in allowed]]
+    # Lint before indexing condition ids, so a malformed curated table gets the same
+    # actionable setup error as a table loaded through the yaml path.
     _check_held_out_rows(name, vprob, published, published.measurement_df)
 
     named = set(vmeas[SIMULATION_CONDITION_ID].astype(str))
@@ -780,7 +843,48 @@ def _curated_held_out(*, name: str, validation_table: str, example_dir: Path, pu
             f"the published inputs goes in that file; a new input makes this a TRANSFER set, not "
             f"a fixed-θ one")
 
-    return HeldOut(measurement_df=vmeas, condition_df=vcond)
+    return HeldOut(measurement_df=vmeas, condition_df=vcond,
+                   parameter_df=None if vpars is None else vprob.parameter_df)
+
+
+def _overlay_parameters(published_df, delta_df):
+    """The published parameter table with a curated set's own rows laid over it: a row the
+    published table has takes the delta's filled cells, a new row is appended as given."""
+    import pandas as pd
+    from petab.v1.C import ESTIMATE
+
+    full = published_df.copy()
+    for pid, row in delta_df.iterrows():
+        cells = row.dropna()
+        if pid in full.index:
+            for col, val in cells.items():
+                full.loc[pid, col] = val
+        else:
+            full = pd.concat([full, pd.DataFrame([cells], index=pd.Index([pid],
+                                                                          name=full.index.name))])
+    if ESTIMATE in full.columns and not full[ESTIMATE].isna().any():
+        full[ESTIMATE] = full[ESTIMATE].astype(float).astype(int)
+    return full
+
+
+def _held_out_problem(published, held_out):
+    """The held-out PROBLEM a curated transfer set describes — the published model under the
+    set's tables — for the reference refit (:func:`_transfer_reference`)."""
+    import copy
+
+    from petab.v1.C import OBSERVABLE_ID
+
+    vprob = copy.copy(published)
+    vprob.measurement_df = held_out.measurement_df
+    if held_out.condition_df is not None:
+        vprob.condition_df = held_out.condition_df
+    measured = set(held_out.measurement_df[OBSERVABLE_ID].astype(str))
+    vprob.observable_df = published.observable_df.loc[
+        [o for o in published.observable_df.index if str(o) in measured]]
+    vprob.parameter_df = held_out.parameter_df
+    vprob.visualization_df = None
+    return vprob
+
 
 def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
                 shipped_param_overrides: dict[str, dict] | None = None,
@@ -827,7 +931,8 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     ``validation_table`` is the same thing for a set the collection does not export: a measurement
     TSV the EXAMPLE ships (raimundez's ``validation_source/measurements.tsv``), read and checked
     here and written to the same place. Mutually exclusive with ``validation_yaml`` — one held-out
-    file, one source of it -- and fixed-theta only (see :func:`_curated_held_out`).
+    file, one source of it. Fixed-θ, or a transfer set when a ``parameters.tsv`` sits beside the
+    table (see :func:`_curated_held_out`).
 
     ``transfer_yaml`` is the other kind of held-out set (:func:`_transfer_problem`): the same
     mechanism on a different system, with its own condition and parameter tables, on which both
@@ -837,16 +942,6 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     (:class:`petab_mcp.validation_data.HeldOut`). One held-out set per example: the two are
     mutually exclusive."""
     from petab.v1.C import CONDITION_NAME
-
-    from petab_mcp import validation_data
-
-    if transfer_yaml and (validation_yaml or validation_table):
-        raise ValueError(f"{name}: TRANSFER_VALIDATION_YAML is mutually exclusive with "
-                         f"VALIDATION_YAML / VALIDATION_TABLE; an example has one held-out set")
-    if transfer_yaml and preequilibration:
-        raise ValueError(f"{name}: a transfer set is not supported together with PREEQUILIBRATION "
-                         f"(the synthesized gate column would have to be added to the held-out "
-                         f"condition table too)")
 
     problem_dir = Path(example_dir) / "problem"
     problem_dir.mkdir(parents=True, exist_ok=True)
@@ -859,16 +954,13 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     # `prob` is mutated in place from here on.
     held_out = _held_out_source(
         name=name, validation_yaml=validation_yaml, validation_table=validation_table,
-        example_dir=example_dir, collection=collection, published=prob)
+        transfer_yaml=transfer_yaml, example_dir=example_dir, collection=collection,
+        published=prob)
     validation_meas = held_out.measurement_df if held_out is not None else None
-    transfer_prob = None
-    if transfer_yaml:
-        transfer_prob = _transfer_problem(
-            name=name, transfer_yaml=transfer_yaml, collection=collection, published=prob,
-            training_measurement_df=prob.measurement_df)
-        # The same table object: every relabel/merge below that touches `validation_meas` reaches
-        # the transfer set too, and what is written is what was checked.
-        validation_meas = transfer_prob.measurement_df
+    if preequilibration and held_out is not None and held_out.parameter_df is not None:
+        raise ValueError(f"{name}: a transfer set is not supported together with PREEQUILIBRATION "
+                         f"(the synthesized gate column would have to be added to the held-out "
+                         f"condition table too)")
 
     def _relabel(v):
         if not isinstance(v, str):
@@ -879,8 +971,6 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
 
     if rename_ids:
         condition_tables = [prob.condition_df]
-        if transfer_prob is not None:
-            condition_tables.append(transfer_prob.condition_df)
         if held_out is not None and held_out.condition_df is not None:
             condition_tables.append(held_out.condition_df)
         for frame in condition_tables:
@@ -1000,9 +1090,10 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
         vpath.parent.mkdir(parents=True, exist_ok=True)
         validation_meas.to_csv(vpath, sep="\t", index=False)
         out["validation_measurements"] = len(validation_meas)
-        # The set's own condition rows, in the shape of the conditions.tsv written above (no
-        # conditionName, the preequilibration gate ON), so the server can append them to it.
-        if held_out is not None and held_out.condition_df is not None:
+        # The set's own condition table, in the shape of the conditions.tsv written above (no
+        # conditionName, the preequilibration gate ON): rows the server appends for a fixed-θ set,
+        # the table it swaps in for a transfer set.
+        if held_out.condition_df is not None:
             hcond = held_out.condition_df.reset_index()
             hcond = hcond.drop(columns=[c for c in (CONDITION_NAME,) if c in hcond.columns])
             if preequilibration:
@@ -1018,19 +1109,15 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
               f"{len(validation_meas)} measurement(s) over "
               f"{validation_meas[SIMULATION_CONDITION_ID].nunique()} condition(s), none of them a "
               f"training row (from {validation_yaml or validation_table or transfer_yaml})")
-    if transfer_prob is not None:
-        # The set's own condition and parameter tables, written the way the shipped ones are (no
-        # free-text conditionName; parameter ids relabelled with the shipped ones). The parameter
-        # table is the held-out problem's VERBATIM: which of its rows the candidate's refit takes is
-        # the scorer's rule (validation_data.transfer_view), not a setup-time filter.
-        tcond = transfer_prob.condition_df.reset_index()
-        tcond = tcond.drop(columns=[c for c in (CONDITION_NAME,) if c in tcond.columns])
-        tcond.to_csv(vpath.with_name(validation_data.HELD_OUT_CONDITIONS), sep="\t", index=False)
-        tpars = transfer_prob.parameter_df.reset_index()
-        tpars["parameterId"] = tpars["parameterId"].map(_relabel)
-        tpars.to_csv(vpath.with_name(validation_data.HELD_OUT_PARAMETERS), sep="\t", index=False)
-        print(f"[setup] {name}: transfer set brings its own {len(tcond)} condition(s) and "
-              f"{len(tpars)}-row parameter table -> both sides are REFIT on it")
+        if held_out.parameter_df is not None:
+            # The set's own parameter table, ids relabelled with the shipped ones; its presence is
+            # what tells the server to refit (validation_data.HeldOut). Which of its rows the
+            # candidate's refit takes is the scorer's rule (transfer_view), not a setup filter.
+            hpars = held_out.parameter_df.reset_index()
+            hpars["parameterId"] = hpars["parameterId"].map(_relabel)
+            hpars.to_csv(vpath.with_name(HELD_OUT_PARAMETERS), sep="\t", index=False)
+            print(f"[setup] {name}: transfer set: {len(hpars)}-row parameter table -> both sides "
+                  f"are REFIT on it")
     return out
 
 
@@ -1160,9 +1247,6 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
 
     from .simulate import write_reference_from_problem
 
-    if validation_yaml and transfer_yaml:
-        raise ValueError(f"{name}: VALIDATION_YAML and TRANSFER_VALIDATION_YAML are mutually "
-                         f"exclusive; an example has one held-out set")
     problem_dir = Path(example_dir) / "problem"
     build_dir = Path(example_dir) / ".gen_build"
     # The pristine published problem (shipped SBML + full published parameter table + data),
@@ -1181,39 +1265,46 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     # the same reason `materialize` compares unflattened tables: flattening is an AMICI detail
     # applied downstream, and the yaml's own tables are what the identity check is about.
     held_out = None
-    if validation_yaml or validation_table:
+    if validation_yaml or validation_table or transfer_yaml:
         pristine = _load_problem(name, collection, flatten=False)
         held_out = _held_out_source(
             name=name, validation_yaml=validation_yaml, validation_table=validation_table,
-            example_dir=example_dir, collection=collection, published=pristine)
+            transfer_yaml=transfer_yaml, example_dir=example_dir, collection=collection,
+            published=pristine)
+    transfer = held_out is not None and held_out.parameter_df is not None
+    # A fixed-θ set is scored at the vector the training refit lands on, inside it; a transfer set
+    # is REFIT from the published point after it (`_transfer_reference`), so the refit gets none.
+    fixed = None if transfer else held_out
 
     if not free_parameters:
         ref = write_reference_from_problem(
             problem, build_dir=build_dir / "pristine",
             model_name=f"{name}_pristine", path=problem_dir / "reference.json",
             n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout,
-            held_out=held_out,
+            held_out=fixed,
         )
     else:
         ref = _write_freed_reference(
             name=name, problem=problem, problem_dir=problem_dir, build_dir=build_dir,
             collection=collection, free_parameters=free_parameters,
-            param_overrides=param_overrides, held_out=held_out,
+            param_overrides=param_overrides, held_out=fixed,
             n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout)
     # After both arms, so a freed reference pays for the published literals too, and rewritten
     # because charging changes the `k` the arm above already wrote to reference.json — as does the
     # transfer block below.
     if hardcoded_parameters:
         ref = charge_hardcoded_parameters(ref, hardcoded_parameters)
-    if transfer_yaml:
-        pristine = _load_problem(name, collection, flatten=False)
-        vprob = _transfer_problem(
-            name=name, transfer_yaml=transfer_yaml, collection=collection, published=pristine,
-            training_measurement_df=pristine.measurement_df)
+    if transfer:
+        # The collection's second problem is re-read as a problem (its observable set is its own);
+        # a curated set is the published problem under the set's tables.
+        vprob = (_transfer_problem(
+                     name=name, transfer_yaml=transfer_yaml, collection=collection,
+                     published=pristine, training_measurement_df=pristine.measurement_df)
+                 if transfer_yaml else _held_out_problem(pristine, held_out))
         ref["validation"] = _transfer_reference(
             name=name, vprob=vprob, param_overrides=param_overrides, build_dir=build_dir,
             n_starts=n_starts)
-    if hardcoded_parameters or transfer_yaml:
+    if hardcoded_parameters or transfer:
         (problem_dir / "reference.json").write_text(json.dumps(ref, indent=2) + "\n")
     return ref
 

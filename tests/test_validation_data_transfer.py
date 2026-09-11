@@ -506,3 +506,222 @@ def test_the_server_tool_takes_n_starts_and_refits_a_transfer_bundle(tmp_path):
                         validation_measurements=str(val / "measurements.tsv"))
     tools = {t.name: t for t in asyncio.run(mcp.list_tools())}
     assert "n_starts" in tools["evaluate_validation_data"].parameters["properties"]
+
+
+# ------------------------------------------ a curated set that ships its own parameter table
+def _toy_published():
+    import petab.v1 as petab
+
+    return petab.Problem.from_yaml(str(TOY / "problem.yaml"))
+
+
+def _curated_transfer(tmp_path, *, delta=None, conditions=("c1",)):
+    """A curated set beside the toy: measurements on `conditions`, a conditions.tsv naming them and
+    a parameters.tsv holding the `delta` rows — header-only when there are none."""
+    d = tmp_path / "curated"
+    d.mkdir(exist_ok=True)
+    pd.concat([_rows(c) for c in conditions]).to_csv(d / "measurements.tsv", sep="\t", index=False)
+    _conditions(conditions).reset_index().to_csv(d / V.HELD_OUT_CONDITIONS, sep="\t", index=False)
+    _params(delta or []).reset_index().to_csv(d / V.HELD_OUT_PARAMETERS, sep="\t", index=False)
+    return "curated/measurements.tsv"
+
+
+def test_a_curated_table_with_a_parameter_table_beside_it_is_a_transfer_set(tmp_path):
+    """The file holds only what differs; the published table is the rest. Here `A_init` moves to 2
+    and every other row, kinetics included, is the published one — the start of the reference
+    refit — and the parameter table's presence is what tells the server to refit, not evaluate.
+    The set's condition table REPLACES the training one rather than being appended to it."""
+    from petab_harness import benchmark
+
+    table = _curated_transfer(tmp_path, delta=[("A_init", "lin", 0.0, 100.0, 2.0, 0)])
+
+    held = benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                       published=_toy_published())
+
+    published = _toy_published().parameter_df
+    assert held.mode == V.MODE_TRANSFER
+    assert list(held.condition_df.index) == ["c1"]
+    assert held.parameter_df.loc["A_init", "nominalValue"] == 2.0
+    assert set(held.parameter_df.index) == set(published.index)
+    assert held.parameter_df.loc["k1", "nominalValue"] == published.loc["k1", "nominalValue"]
+    assert list(held.parameter_df["estimate"]) == list(published["estimate"])
+
+
+@pytest.mark.parametrize("delta, needle", [
+    ([], "identical"),
+    ([("k_new", "log10", 1e-3, 1e3, 1.0, 1)], "k_new"),
+])
+def test_a_curated_parameter_table_is_checked_like_a_collection_transfer_problem(tmp_path, delta,
+                                                                                 needle):
+    """A header-only file over unchanged inputs changes nothing, so nothing transfers; a new
+    estimated mechanism parameter is a rate the published model cannot carry. The same rule as for
+    a collection's second problem, at setup, naming the file."""
+    from petab_harness import benchmark
+
+    table = _curated_transfer(tmp_path, delta=delta)
+
+    with pytest.raises(ValueError, match=needle) as exc:
+        benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                    published=_toy_published())
+    assert V.HELD_OUT_PARAMETERS in str(exc.value)
+
+
+def test_a_curated_transfer_condition_table_must_keep_the_published_columns(tmp_path):
+    from petab_harness import benchmark
+
+    table = _curated_transfer(tmp_path, delta=[("A_init", "lin", 0.0, 100.0, 2.0, 0)])
+    pd.DataFrame({"conditionId": ["c1"], "dose": [1.0]}).to_csv(
+        tmp_path / "curated" / V.HELD_OUT_CONDITIONS, sep="\t", index=False)
+
+    with pytest.raises(ValueError, match="different models"):
+        benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                    published=_toy_published())
+
+
+def test_a_bound_only_delta_is_a_change(tmp_path):
+    """Identity is judged on every column: a delta that only moves `A_init`'s upper bound is a
+    different problem, not "identical"."""
+    from petab_harness import benchmark
+
+    table = _curated_transfer(tmp_path)
+    pd.DataFrame({"parameterId": ["A_init"], "upperBound": [50.0]}).to_csv(
+        tmp_path / "curated" / V.HELD_OUT_PARAMETERS, sep="\t", index=False)
+
+    held = benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                       published=_toy_published())
+
+    assert held.mode == V.MODE_TRANSFER
+    assert held.parameter_df.loc["A_init", "upperBound"] == 50.0
+    assert held.parameter_df.loc["A_init", "nominalValue"] == \
+        _toy_published().parameter_df.loc["A_init", "nominalValue"]
+
+
+def test_new_input_values_make_a_system_and_a_pruned_row_does_not(tmp_path):
+    """lucarelli's shape, on the toy: `k1` as a per-condition input the published table sets to
+    itself, the curated table to a number. Header-only delta. The number is what makes it another
+    system, and the retired `k1` row leaves the table. The same files with the published value
+    instead are the published problem again — refused as identical even though pruning `k1` would
+    have made the two parameter tables differ."""
+    from petab_harness import benchmark
+
+    published = _toy_published()
+    published.condition_df["k1"] = ["k1"]
+    table = _curated_transfer(tmp_path)
+    cpath = tmp_path / "curated" / V.HELD_OUT_CONDITIONS
+    pd.DataFrame({"conditionId": ["c1"], "k1": [0.5]}).to_csv(cpath, sep="\t", index=False)
+
+    held = benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                       published=published)
+    assert held.mode == V.MODE_TRANSFER and "k1" not in held.parameter_df.index
+
+    pd.DataFrame({"conditionId": ["c1"], "k1": ["k1"]}).to_csv(cpath, sep="\t", index=False)
+    with pytest.raises(ValueError, match="identical"):
+        benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                    published=published)
+
+
+def test_a_sigma_no_held_out_row_informs_is_not_a_parameter_of_the_refit(tmp_path):
+    """The set measures `obs_B` only: `sigma_A` leaves the transfer table (it would price `k` for
+    a parameter nothing informs), and a delta row for it names nothing the set uses."""
+    from petab_harness import benchmark
+
+    published = _toy_published()
+    published.observable_df = pd.concat([published.observable_df, pd.DataFrame(
+        {"observableFormula": ["A"], "noiseFormula": ["sigma_A"]},
+        index=pd.Index(["obs_A"], name="observableId")).reindex(
+            columns=published.observable_df.columns)])
+    published.parameter_df = pd.concat([published.parameter_df, _params(
+        [("sigma_A", "lin", 1e-4, 100.0, 0.1, 1)]).reindex(columns=published.parameter_df.columns)])
+    table = _curated_transfer(tmp_path, delta=[("A_init", "lin", 0.0, 100.0, 2.0, 0)])
+
+    held = benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                       published=published)
+    assert "sigma_A" not in held.parameter_df.index and "sigma_B" in held.parameter_df.index
+
+    pd.DataFrame({"parameterId": ["sigma_A"], "upperBound": [5.0]}).to_csv(
+        tmp_path / "curated" / V.HELD_OUT_PARAMETERS, sep="\t", index=False)
+    with pytest.raises(ValueError, match="sigma_A"):
+        benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                    published=published)
+
+
+def test_an_empty_curated_table_is_refused_at_setup(tmp_path):
+    from petab_harness import benchmark
+
+    table = _curated_transfer(tmp_path)
+    mpath = tmp_path / "curated" / "measurements.tsv"
+    pd.read_csv(mpath, sep="\t").iloc[0:0].to_csv(mpath, sep="\t", index=False)
+
+    with pytest.raises(ValueError, match="no measurements"):
+        benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                    published=_toy_published())
+
+
+def test_materialize_writes_a_curated_transfer_bundle_the_server_reads_as_transfer(tmp_path,
+                                                                                   monkeypatch):
+    """On disk the curated set is indistinguishable from a collection transfer bundle: the FULL
+    parameter table beside the measurements, which `read_held_out` turns into `mode: transfer`."""
+    from petab_harness import benchmark
+
+    monkeypatch.setattr(benchmark, "_load_problem", lambda *a, **k: _toy_published())
+    table = _curated_transfer(tmp_path, delta=[("A_init", "lin", 0.0, 100.0, 2.0, 0)])
+
+    out = benchmark.materialize(name="X", shipped_param_ids=["sigma_B", "A_init", "B_init"],
+                                example_dir=tmp_path, validation_table=table)
+    held = V.read_held_out(benchmark.validation_measurements_path(tmp_path))
+
+    assert out["validation_measurements"] == 2 and out["validation_conditions"] == 1
+    assert held.mode == V.MODE_TRANSFER
+    assert list(held.condition_df.index) == ["c1"]
+    assert held.parameter_df.loc["A_init", "nominalValue"] == 2.0
+    assert "k1" in held.parameter_df.index
+
+
+def test_the_reference_refits_a_curated_transfer_set_from_the_published_point(tmp_path,
+                                                                              monkeypatch):
+    """`write_reference_for` routes a curated transfer set to `_transfer_reference`: the training
+    refit is handed NO held-out table (a transfer set is not scored at the fitted point), and the
+    refit starts from the published table with the set's own rows laid over it, on the set's own
+    conditions."""
+    from petab_harness import benchmark, simulate
+
+    monkeypatch.setattr(benchmark, "_load_problem", lambda *a, **k: _toy_published())
+    (tmp_path / "problem").mkdir()
+    table = _curated_transfer(tmp_path, delta=[("A_init", "lin", 0.0, 100.0, 2.0, 0)])
+    seen = {}
+
+    def _fake_training(problem, *, path, held_out=None, **_):
+        seen["training_held_out"] = held_out
+        ref = {"nll": 1.0, "k": 2, "n": 6}
+        Path(path).write_text(json.dumps(ref))
+        return ref
+
+    def _fake_refit(problem, *, build_dir, model_name, n_starts):
+        seen["A_init"] = float(problem.parameter_df.loc["A_init", "nominalValue"])
+        seen["conditions"] = list(problem.condition_df.index)
+        seen["n_starts"] = n_starts
+        return {"status": "ok", "mode": "transfer", "nll": 3.0, "k": 2, "n": 2}
+
+    monkeypatch.setattr(simulate, "write_reference_from_problem", _fake_training)
+    monkeypatch.setattr(V, "refit_problem", _fake_refit)
+
+    ref = benchmark.write_reference_for(name="X", example_dir=tmp_path, validation_table=table,
+                                        n_starts=3)
+
+    assert seen["training_held_out"] is None
+    assert seen["A_init"] == 2.0 and seen["conditions"] == ["c1"] and seen["n_starts"] == 3
+    assert ref["validation"]["mode"] == V.MODE_TRANSFER and ref["nll"] == 1.0
+    assert json.loads((tmp_path / "problem" / "reference.json").read_text()) == ref
+
+
+def test_the_fixed_point_reference_scorer_refuses_a_transfer_set(tmp_path):
+    """The guard behind the routing above: handing the training refit a transfer set would score
+    it at the reference's fitted point and record an `ok` fixed-mode bar for data that is refit."""
+    from petab_harness import simulate
+
+    held = V.HeldOut(_rows("c1"), parameter_df=_params([("A_init", "lin", 0.0, 100.0, 2.0, 0)]))
+
+    with pytest.raises(ValueError, match="REFIT"):
+        simulate.write_reference_from_problem(_toy_published(), build_dir=tmp_path,
+                                              model_name="m", path=tmp_path / "r.json",
+                                              held_out=held)

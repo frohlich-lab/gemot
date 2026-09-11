@@ -398,8 +398,12 @@ def write_reference_from_problem(
     recorded ``nll``, whichever of the two it was, so the training and held-out numbers describe ONE
     fitted model. Only the SCORE is recorded, not the vector — re-deriving the held-out bar means
     re-running this refit, exactly as re-deriving the training bar does (see
-    :func:`_reference_validation`).
+    :func:`_reference_validation`). A TRANSFER set is not scored here: it is refit on its own,
+    after this fit (``petab_harness.benchmark._transfer_reference``).
     """
+    if held_out is not None and held_out.parameter_df is not None:
+        raise ValueError("write_reference_from_problem: a transfer set is REFIT, not scored at the "
+                         "reference's fitted point (petab_harness.benchmark._transfer_reference)")
     import json
     import logging as _logging
 
