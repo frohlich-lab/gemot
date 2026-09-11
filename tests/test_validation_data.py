@@ -654,22 +654,24 @@ def test_a_curated_table_is_read_against_the_published_problems_own_tables(tmp_p
     (tmp_path / "curated").mkdir()
     _rows("c_test").to_csv(tmp_path / "curated" / "measurements.tsv", sep="\t", index=False)
 
-    vmeas = benchmark._curated_measurement_df(
+    held = benchmark._curated_held_out(
         name="X", validation_table="curated/measurements.tsv", example_dir=tmp_path,
         published=_problem(_rows("c_train")))
 
-    assert list(vmeas["simulationConditionId"]) == ["c_test", "c_test"]
+    assert list(held.measurement_df["simulationConditionId"]) == ["c_test", "c_test"]
+    assert held.condition_df is None and held.mode == "fixed"
 
 
 def test_a_curated_table_naming_an_unpublished_condition_is_refused(tmp_path):
     """Fixed-θ scores at the training point, so every held-out condition has to be one the model was
-    told about. A row on a condition the problem does not define asks for a prediction nobody could
-    have made — that data is a TRANSFER set, which refits, and is not scored here."""
+    told about. A row on a condition neither the problem nor a conditions.tsv beside the table
+    defines asks for a prediction nobody could have made — that data is a TRANSFER set, which
+    refits, and is not scored here."""
     (tmp_path / "curated").mkdir()
     _rows("c_knockdown").to_csv(tmp_path / "curated" / "measurements.tsv", sep="\t", index=False)
 
     with pytest.raises(ValueError, match="c_knockdown"):
-        benchmark._curated_measurement_df(
+        benchmark._curated_held_out(
             name="X", validation_table="curated/measurements.tsv", example_dir=tmp_path,
             published=_problem(_rows("c_train")))
 
@@ -681,7 +683,7 @@ def test_a_curated_row_that_is_also_a_training_row_is_refused(tmp_path):
     _rows("c_train").to_csv(tmp_path / "curated" / "measurements.tsv", sep="\t", index=False)
 
     with pytest.raises(ValueError, match="also in the TRAINING table"):
-        benchmark._curated_measurement_df(
+        benchmark._curated_held_out(
             name="X", validation_table="curated/measurements.tsv", example_dir=tmp_path,
             published=_problem(_rows("c_train")))
 
@@ -690,7 +692,7 @@ def test_an_absent_curated_table_names_itself(tmp_path):
     """As for a typo'd yaml: say which path, at setup, rather than leaving the example silently
     unvalidated."""
     with pytest.raises(FileNotFoundError, match="nope.tsv"):
-        benchmark._curated_measurement_df(
+        benchmark._curated_held_out(
             name="X", validation_table="nope.tsv", example_dir=tmp_path,
             published=_problem(_rows("c_train")))
 
@@ -701,7 +703,7 @@ def test_a_malformed_curated_table_reports_lint_before_reading_condition_ids(tmp
         tmp_path / "measurements.tsv", sep="\t", index=False)
 
     with pytest.raises(ValueError, match="validation measurement table fails petab's lint"):
-        benchmark._curated_measurement_df(
+        benchmark._curated_held_out(
             name="X", validation_table="measurements.tsv", example_dir=tmp_path,
             published=_problem(_rows("c_train")))
 
@@ -722,6 +724,230 @@ def test_no_declaration_means_no_held_out_table(tmp_path):
     assert benchmark._held_out_source(
         name="X", validation_yaml=None, validation_table=None, example_dir=tmp_path,
         collection=None, published=_problem(_rows("c_train"))) is None
+
+
+# ----------------------------------- a fixed-θ set that brings new rows of the training inputs
+def _curated(tmp_path, measurements, conditions=None):
+    (tmp_path / "curated").mkdir(exist_ok=True)
+    measurements.to_csv(tmp_path / "curated" / "measurements.tsv", sep="\t", index=False)
+    if conditions is not None:
+        conditions.to_csv(tmp_path / "curated" / "conditions.tsv", sep="\t", index=False)
+    return "curated/measurements.tsv"
+
+
+def test_a_curated_set_may_bring_new_values_of_the_training_inputs(tmp_path):
+    """A conditions.tsv beside the table adds rows on the training table's own columns — another
+    cell type's Smad abundances, a knockdown level — and the conditions it names are then known.
+    Still fixed-θ: no parameter table, so the fitted point is what gets scored."""
+    table = _curated(tmp_path, _rows("c_knockdown"),
+                     pd.DataFrame({"conditionId": ["c_knockdown"], "dose": [0.5]}))
+
+    held = benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                       published=_problem(_rows("c_train")))
+
+    assert held.mode == "fixed"
+    assert list(held.condition_df.index) == ["c_knockdown"]
+    assert float(held.condition_df.loc["c_knockdown", "dose"]) == 0.5
+
+
+@pytest.mark.parametrize("conditions, needle", [
+    (pd.DataFrame({"conditionId": ["c_new"], "dose": [0.5], "temperature": [37.0]}),
+     "different models"),
+    (pd.DataFrame({"conditionId": ["c_train"], "dose": [0.5]}), "does not redefine"),
+])
+def test_a_curated_condition_table_may_only_add_rows(tmp_path, conditions, needle):
+    """A new column is a new input, i.e. a different model; a training id redefines a condition
+    the model was fitted under. Both are refused at setup, in the score-time rule's own words."""
+    table = _curated(tmp_path, _rows("c_test"), conditions)
+
+    with pytest.raises(ValueError, match=needle):
+        benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                    published=_problem(_rows("c_train")))
+
+
+def test_a_curated_preequilibration_condition_must_be_known_too(tmp_path):
+    """The knockdown rows pre-equilibrate at the knockdown, so the preeq id is a condition the
+    table names and is checked like the simulation one."""
+    table = _curated(tmp_path, _rows("c_test").assign(preequilibrationConditionId="c_basal"))
+
+    with pytest.raises(ValueError, match="c_basal"):
+        benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                    published=_problem(_rows("c_train")))
+
+
+def test_materialize_writes_a_fixed_sets_condition_rows_beside_its_measurements(tmp_path,
+                                                                                monkeypatch):
+    """What lands on disk is the contract with the server: conditions.tsv beside measurements.tsv,
+    in the shape of the problem's own (no conditionName), and gone again when the set stops
+    bringing any. The directory is gitignored and outlives a branch switch, so every file an
+    earlier definition of the example wrote is removed first: a leftover parameters.tsv would flip
+    the set to TRANSFER and refit, a leftover set would score an example that declares none."""
+    from petab_mcp import validation_data
+
+    published = _problem(_rows("c_train"))
+    published.condition_df["conditionName"] = ["train", "test"]
+    monkeypatch.setattr(benchmark, "_load_problem", lambda *a, **k: copy.deepcopy(published))
+    monkeypatch.setattr(benchmark, "_write_empty_sbml", lambda d: None)
+    monkeypatch.setattr(benchmark, "_write_problem_yaml", lambda d: None)
+    table = _curated(tmp_path, _rows("c_knockdown"),
+                     pd.DataFrame({"conditionId": ["c_knockdown"], "conditionName": ["kd"],
+                                   "dose": [0.5]}))
+    vpath = benchmark.validation_measurements_path(tmp_path)
+    vpath.parent.mkdir()
+    stale = vpath.with_name(validation_data.HELD_OUT_PARAMETERS)
+    stale.write_text("parameterId\tnominalValue\testimate\nk\t0.5\t1\n")
+
+    out = benchmark.materialize(name="X", shipped_param_ids=["k"], example_dir=tmp_path,
+                                validation_table=table)
+    held = validation_data.read_held_out(vpath)
+
+    assert out["validation_conditions"] == 1
+    assert held.mode == validation_data.MODE_FIXED and not stale.exists()
+    assert list(held.condition_df.index) == ["c_knockdown"]
+    assert list(held.condition_df.columns) == ["dose"]
+
+    _curated(tmp_path, _rows("c_test"))
+    (tmp_path / "curated" / "conditions.tsv").unlink()
+    benchmark.materialize(name="X", shipped_param_ids=["k"], example_dir=tmp_path,
+                          validation_table=table)
+    assert validation_data.read_held_out(vpath).condition_df is None
+
+    benchmark.materialize(name="X", shipped_param_ids=["k"], example_dir=tmp_path)
+    assert not vpath.exists()
+
+
+def test_score_problem_appends_a_fixed_sets_condition_rows_before_building(monkeypatch):
+    """The scorer's view carries the training conditions AND the set's own, so a row on a new
+    condition is a table the importer can build, not a mismatch; the caller's problem keeps its
+    table."""
+    import pypesto.petab
+
+    from petab_mcp import validation_data
+
+    seen = []
+
+    class _Objective:
+        def __call__(self, x, **kwargs):
+            return {"fval": 1.0, "rdatas": []}
+
+    class _PP:
+        x_names = ["k"]
+        x_free_indices = [0]
+        x_scales = ["lin"]
+        objective = _Objective()
+
+    class _Importer:
+        def __init__(self, petab_problem, **kwargs):
+            seen.append(petab_problem)
+
+        def create_problem(self):
+            return _PP()
+
+    monkeypatch.setattr(pypesto.petab, "PetabImporter", _Importer)
+    import petab_mcp.fitting as fitting
+    monkeypatch.setattr(fitting, "_apply_amici_solver_defaults", lambda pp: None)
+    problem = _problem(_rows("c_train"))
+    new = pd.DataFrame({"dose": [0.5]}, index=pd.Index(["c_knockdown"], name="conditionId"))
+
+    out = validation_data.score_problem(problem, _rows("c_knockdown"), build_dir="/tmp/x",
+                                        model_name="m", condition_df=new)
+
+    assert out["status"] == validation_data.STATUS_OK and out["n_conditions"] == 1
+    assert list(seen[0].condition_df.index) == ["c_train", "c_test", "c_knockdown"]
+    assert list(problem.condition_df.index) == ["c_train", "c_test"]
+
+
+def test_a_fixed_sets_condition_table_is_checked_before_any_build(monkeypatch):
+    """Same contract as for a foreign measurement table: the guards run before the importer."""
+    import pypesto.petab
+
+    from petab_mcp import validation_data
+
+    def _boom(*a, **k):  # pragma: no cover - must not be reached
+        raise AssertionError("the importer must not be reached for a declined table")
+
+    monkeypatch.setattr(pypesto.petab, "PetabImporter", _boom)
+    problem = _problem(_rows("c_train"))
+
+    other_column = pd.DataFrame({"temperature": [37.0]},
+                                index=pd.Index(["c_new"], name="conditionId"))
+    out = validation_data.score_problem(problem, _rows("c_new"), build_dir="/tmp/x",
+                                        model_name="m", condition_df=other_column)
+    assert out["status"] == validation_data.STATUS_TABLE_MISMATCH
+    assert "different models" in out["reason"]
+
+    redefined = pd.DataFrame({"dose": [0.5]}, index=pd.Index(["c_train"], name="conditionId"))
+    out = validation_data.score_problem(problem, _rows("c_test"), build_dir="/tmp/x",
+                                        model_name="m", condition_df=redefined)
+    assert out["status"] == validation_data.STATUS_TABLE_MISMATCH
+    assert "does not redefine" in out["reason"]
+
+
+def test_score_session_hands_a_fixed_sets_condition_rows_to_the_scorer(monkeypatch):
+    """`score_session` is the server's one entry point; a fixed set's own rows reach the scorer
+    through it, or the tool reports `table_mismatch` for every curated set that brings any."""
+    import contextlib
+    import types
+
+    from petab_mcp import validation_data
+
+    seen = {}
+
+    def _score(problem, measurement_df, **kwargs):
+        seen.update(kwargs)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(validation_data, "score_problem", _score)
+    session = types.SimpleNamespace(lock=contextlib.nullcontext(), problem=object(),
+                                    sbml_hash=lambda: "h")
+    engine = types.SimpleNamespace(
+        pypesto_importer_kwargs=lambda h: {"output_folder": "/tmp/x", "model_name": "m"})
+    rows = pd.DataFrame({"dose": [0.5]}, index=pd.Index(["c_knockdown"], name="conditionId"))
+
+    validation_data.score_session(
+        session, engine, validation_data.HeldOut(_rows("c_knockdown"), condition_df=rows))
+
+    assert seen["condition_df"] is rows
+
+
+def test_read_held_out_gives_a_fixed_set_its_condition_rows(tmp_path):
+    """On disk: measurements.tsv + conditions.tsv and NO parameters.tsv is a fixed-θ set with rows
+    of its own — what `materialize` writes for such a set and what the server reads back."""
+    from petab_mcp import validation_data
+
+    _rows("c_knockdown").to_csv(tmp_path / "measurements.tsv", sep="\t", index=False)
+    pd.DataFrame({"conditionId": ["c_knockdown"], "dose": [0.5]}).to_csv(
+        tmp_path / validation_data.HELD_OUT_CONDITIONS, sep="\t", index=False)
+
+    held = validation_data.read_held_out(tmp_path / "measurements.tsv")
+
+    assert held.mode == validation_data.MODE_FIXED
+    assert list(held.condition_df.index) == ["c_knockdown"]
+
+
+def test_score_session_scores_the_toy_at_its_fitted_point_on_a_condition_of_the_sets_own(
+        session, engine):
+    """The one AMICI-backed check of the fixed-θ side: the toy's measurements moved onto a condition
+    `c1` the training table does not have, brought by the set. Scored at the training point, not
+    refit — `mode: fixed`, no `k` — and the session's own table is left as it was."""
+    import math
+    from pathlib import Path
+
+    from petab_mcp import validation_data
+
+    toy = Path(__file__).parent / "data" / "toy_v1"
+    held_meas = pd.read_csv(toy / "measurements.tsv", sep="\t").assign(simulationConditionId="c1")
+    held = validation_data.HeldOut(
+        measurement_df=held_meas,
+        condition_df=pd.DataFrame(index=pd.Index(["c1"], name="conditionId")))
+
+    out = validation_data.score_session(session, engine, held)
+
+    assert out["status"] == validation_data.STATUS_OK, out
+    assert out["mode"] == validation_data.MODE_FIXED and "k" not in out
+    assert out["n"] == len(held_meas) and out["n_conditions"] == 1
+    assert math.isfinite(out["nll"])
+    assert list(session.problem.condition_df.index) == ["c0"]
 
 # ------------------------------------------- a held-out table's own per-blot scale factors
 def _scaled_problem(formula="observableParameter1_obs_A * x"):

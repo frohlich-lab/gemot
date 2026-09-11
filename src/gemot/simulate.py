@@ -369,7 +369,7 @@ def write_reference_from_problem(
     per_start_timeout: float | None = None,
     seed: int = 0,
     seed_at_nominal: bool = True,
-    validation_measurement_df=None,
+    held_out=None,
 ) -> dict:
     """Fit a PRISTINE collection PEtab problem EXACTLY as it ships and write ``{nll, k, n}``.
 
@@ -391,8 +391,9 @@ def write_reference_from_problem(
     enough" means is a property of the individual model (see
     :func:`~petab_harness.fit_budget.fides_maxtime_options`).
 
-    ``validation_measurement_df`` additionally scores this reference against HELD-OUT measurements
-    and records the result under ``validation`` — the predictive bar the judge compares a candidate
+    ``held_out`` (a :class:`petab_mcp.validation_data.HeldOut`) additionally scores this reference
+    against HELD-OUT measurements, on the condition rows the set brings if any, and records the
+    result under ``validation`` — the predictive bar the judge compares a candidate
     against (see :mod:`petab_mcp.validation_data`). It is evaluated at the vector that produced the
     recorded ``nll``, whichever of the two it was, so the training and held-out numbers describe ONE
     fitted model. Only the SCORE is recorded, not the vector — re-deriving the held-out bar means
@@ -472,7 +473,7 @@ def write_reference_from_problem(
         ref["noise_sigma_effective"] = _effective_reference_sigmas(problem, ref["noise_sigma"])
     except Exception as exc:  # noqa: BLE001 - advisory extra; the reference bar must be written
         print(f"[reference] could not record reference noise sigmas ({type(exc).__name__}: {exc})")
-    if validation_measurement_df is not None:
+    if held_out is not None:
         # Guarded, for the same reason the sigmas above are: the reference bar is what this function
         # exists to produce, and it must not be lost to an advisory extra. Letting a raise through
         # here would discard a multistart that had already CONVERGED — hours of it on the large
@@ -485,7 +486,7 @@ def write_reference_from_problem(
         # withholds the difference instead of computing one against a number that isn't there.
         try:
             ref["validation"] = _reference_validation(
-                problem, pp, result, x_full_used, validation_measurement_df,
+                problem, pp, result, x_full_used, held_out,
                 build_dir=build_dir, model_name=model_name)
         except Exception as exc:  # noqa: BLE001 - advisory extra; the reference bar must be written
             # `runner.scoring._validation_fields` carries this status into result.json as
@@ -535,7 +536,7 @@ def _recorded_vector(result, x_full_used, pp):
     return x
 
 
-def _reference_validation(problem, pp, result, x_full_used, validation_measurement_df, *,
+def _reference_validation(problem, pp, result, x_full_used, held_out, *,
                           build_dir, model_name) -> dict:
     """Score the reference fit against HELD-OUT measurements, at the vector its ``nll`` came from.
 
@@ -552,8 +553,9 @@ def _reference_validation(problem, pp, result, x_full_used, validation_measureme
 
     x = _recorded_vector(result, x_full_used, pp)
     return validation_data.score_problem(
-        problem, validation_measurement_df, build_dir=build_dir, model_name=model_name,
-        x_full=[float(v) for v in x], x_names=[str(n) for n in pp.x_names])
+        problem, held_out.measurement_df, build_dir=build_dir, model_name=model_name,
+        x_full=[float(v) for v in x], x_names=[str(n) for n in pp.x_names],
+        condition_df=held_out.condition_df)
 
 
 def _reference_noise_sigmas(problem, pp, result, pdf, x_full_used=None) -> dict:

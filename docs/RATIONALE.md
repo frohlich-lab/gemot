@@ -20,6 +20,8 @@ it. `#167`, `#179` and `#245` predate this budget and still carry two or three e
 were left split because separate code sites cite a different one of them by name, so they are a
 legacy exception and not a precedent.
 
+#300 A fixed-θ held-out set may bring ROWS of the training condition table but never a column, and the rows are appended at score time (`validation_data._with_held_out_conditions`) rather than shipped in the agent's `problem/conditions.tsv`. The shipped-table route is the obvious simplification and worked on main before #300; it tells the agent which experiments are held out and moves `Scenario.version`, which is what kept raimundez's EGFR knockdown (Fig 6E) filed as a transfer set in #290's first draft although the paper predicted it at the fitted point.
+
 #256 Manuscript prose cites numbers only through `paper/generated/values.tex` macros: the
 findings come from different sweeps, shas and arms, so `paper/lint_drafted.py` must reject bare
 numerals rather than warn about values that cannot be regenerated from prose. The byte-identity

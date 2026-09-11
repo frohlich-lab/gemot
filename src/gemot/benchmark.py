@@ -628,29 +628,32 @@ def _check_held_out_rows(name: str, vprob, published, training_measurement_df) -
 
 def _held_out_source(*, name: str, validation_yaml: str | None, validation_table: str | None,
                      example_dir: Path, collection: Path | None, published):
-    """The held-out measurement table from whichever source the example declares, or ``None``.
+    """The held-out set (:class:`petab_mcp.validation_data.HeldOut`) from whichever source the
+    example declares, in the PUBLISHED vocabulary, or ``None``.
 
-    Both call sites go through here so the two sources cannot disagree: there is one held-out file
+    Both call sites go through here so the two sources cannot disagree: there is one held-out set
     per example, so declaring both a published yaml and a curated table is a contradiction, not a
     merge.
     """
+    from petab_mcp.validation_data import HeldOut
+
     if validation_yaml and validation_table:
         raise ValueError(
             f"{name}: declares BOTH validation_yaml ({validation_yaml!r}) and validation_table "
             f"({validation_table!r}); an example has one held-out set, so pick the source it "
             f"comes from")
     if validation_yaml:
-        return _validation_measurement_df(
+        return HeldOut(measurement_df=_validation_measurement_df(
             name=name, validation_yaml=validation_yaml, collection=collection,
-            published=published, training_measurement_df=published.measurement_df)
+            published=published, training_measurement_df=published.measurement_df))
     if validation_table:
-        return _curated_measurement_df(
+        return _curated_held_out(
             name=name, validation_table=validation_table, example_dir=example_dir,
             published=published)
     return None
 
-def _curated_measurement_df(*, name: str, validation_table: str, example_dir: Path, published):
-    """The held-out measurement table an example SHIPS, in the published vocabulary, fully checked.
+def _curated_held_out(*, name: str, validation_table: str, example_dir: Path, published):
+    """The held-out set an example SHIPS, in the published vocabulary, fully checked.
 
     ``validation_table`` is a PEtab measurement TSV committed under the example directory, for
     held-out data the collection does not export (raimundez's Fig 5D long-term kinetics, curated
@@ -659,38 +662,53 @@ def _curated_measurement_df(*, name: str, validation_table: str, example_dir: Pa
     observable and condition tables are the ones it has to satisfy, and every check
     :func:`_check_held_out_rows` makes applies unchanged.
 
-    FIXED-θ by construction: every condition the table names must already be in the published
-    condition table. A table naming a condition the training problem does not define is a TRANSFER
+    FIXED-θ by construction: every condition the table names must be one the model was told
+    about — a published condition, or a row of a ``conditions.tsv`` beside the table
+    (:data:`petab_mcp.validation_data.HELD_OUT_CONDITIONS`) giving NEW VALUES of the published
+    inputs (lucarelli's other cell types' Smad abundances, raimundez's knockdown level), under the
+    rules the scorer applies at score time
+    (:func:`petab_mcp.validation_data._with_held_out_conditions`). Anything else is a TRANSFER
     set — the model would be asked to predict an experiment nobody described to it — and is
     refused here rather than scored.
     """
     import copy
 
     import petab.v1 as petab
-    from petab.v1.C import SIMULATION_CONDITION_ID
+    from petab.v1.C import PREEQUILIBRATION_CONDITION_ID, SIMULATION_CONDITION_ID
+
+    from petab_mcp.validation_data import (HELD_OUT_CONDITIONS, HeldOut,
+                                           _with_held_out_conditions)
 
     path = Path(example_dir) / validation_table
     if not path.is_file():
         raise FileNotFoundError(
             f"{name}: validation_table {validation_table!r} does not exist under {example_dir}")
     vmeas = petab.get_measurement_df(str(path))
+    cpath = path.with_name(HELD_OUT_CONDITIONS)
+    vcond = petab.get_condition_df(str(cpath)) if cpath.is_file() else None
 
     # Lint before indexing condition ids, so a malformed curated table gets the same
     # actionable setup error as a table loaded through the yaml path.
     vprob = copy.copy(published)
     vprob.measurement_df = vmeas
+    rejected = _with_held_out_conditions(vprob, vcond)
+    if rejected:
+        raise ValueError(f"{name}: {cpath.relative_to(example_dir)}: {rejected}")
     _check_held_out_rows(name, vprob, published, published.measurement_df)
 
-    unknown = sorted(set(vmeas[SIMULATION_CONDITION_ID].astype(str))
-                     - set(published.condition_df.index.astype(str)))
+    named = set(vmeas[SIMULATION_CONDITION_ID].astype(str))
+    if PREEQUILIBRATION_CONDITION_ID in vmeas.columns:
+        named |= set(vmeas[PREEQUILIBRATION_CONDITION_ID].dropna().astype(str))
+    unknown = sorted(named - set(vprob.condition_df.index.astype(str)))
     if unknown:
         raise ValueError(
-            f"{name}: the curated held-out table names condition(s) the published problem does "
-            f"not define: {unknown}. Scoring at the fitted point requires the model to have been "
-            f"told what the condition is, so a new condition makes this a TRANSFER set, not a "
-            f"fixed-θ one")
+            f"{name}: the curated held-out table names condition(s) neither the published problem "
+            f"nor a {HELD_OUT_CONDITIONS} beside it defines: {unknown}. Scoring at the fitted "
+            f"point requires the model to have been told what the condition is: a new value of "
+            f"the published inputs goes in that file; a new input makes this a TRANSFER set, not "
+            f"a fixed-θ one")
 
-    return vmeas
+    return HeldOut(measurement_df=vmeas, condition_df=vcond)
 
 def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
                 shipped_param_overrides: dict[str, dict] | None = None,
@@ -736,7 +754,7 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     ``validation_table`` is the same thing for a set the collection does not export: a measurement
     TSV the EXAMPLE ships (raimundez's ``validation_source/measurements.tsv``), read and checked
     here and written to the same place. Mutually exclusive with ``validation_yaml`` — one held-out
-    file, one source of it -- and fixed-theta only (see :func:`_curated_measurement_df`).
+    file, one source of it -- and fixed-theta only (see :func:`_curated_held_out`).
 
     """
     from petab.v1.C import CONDITION_NAME
@@ -751,9 +769,10 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     # table, and nothing is re-parsed. (Handing `_validation_measurement_df` a second
     # freshly-loaded copy cost another full SBML + four-TSV parse for tables identical to these.)
     # `prob` is mutated in place from here on.
-    validation_meas = _held_out_source(
+    held_out = _held_out_source(
         name=name, validation_yaml=validation_yaml, validation_table=validation_table,
         example_dir=example_dir, collection=collection, published=prob)
+    validation_meas = held_out.measurement_df if held_out is not None else None
 
     def _relabel(v):
         if not isinstance(v, str):
@@ -860,12 +879,32 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     print(f"[setup] {name}: materialized {len(prob.measurement_df)} measurements, "
           f"{len(prob.observable_df)} observables, {len(prob.condition_df)} condition(s); "
           f"shipped params {shipped_param_ids}")
+    from petab_mcp.validation_data import HELD_OUT_CONDITIONS, HELD_OUT_PARAMETERS
+
     vpath = validation_measurements_path(example_dir)
+    cpath = vpath.with_name(HELD_OUT_CONDITIONS)
+    # Files an earlier definition of the example left behind: the directory is gitignored, a
+    # leftover parameters.tsv would flip the set's mode (validation_data.read_held_out) and a
+    # leftover set would score an example that declares none.
+    for stale in (vpath, cpath, vpath.with_name(HELD_OUT_PARAMETERS)):
+        stale.unlink(missing_ok=True)
     if validation_meas is not None:
         from petab.v1.C import SIMULATION_CONDITION_ID
+
         vpath.parent.mkdir(parents=True, exist_ok=True)
         validation_meas.to_csv(vpath, sep="\t", index=False)
         out["validation_measurements"] = len(validation_meas)
+        # The set's own condition rows, in the shape of the conditions.tsv written above (no
+        # conditionName, the preequilibration gate ON), so the server can append them to it.
+        if held_out.condition_df is not None:
+            hcond = held_out.condition_df.reset_index()
+            hcond = hcond.drop(columns=[c for c in (CONDITION_NAME,) if c in hcond.columns])
+            if preequilibration:
+                hcond[preequilibration["gate_column"]] = 1
+            hcond.to_csv(cpath, sep="\t", index=False)
+            out["validation_conditions"] = len(hcond)
+            print(f"[setup] {name}: held-out set brings {len(hcond)} condition row(s) of its "
+                  f"own -> {cpath.name}")
         # Disjointness is enforced at ROW level (`_check_held_out_rows`), so a held-out condition
         # may legitimately also appear in training with other timepoints — hence "condition(s)",
         # with no claim that they are absent from the training data.
@@ -1013,10 +1052,10 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     # `materialize` applies for the AGENT's copy must NOT be applied here. Loaded unflattened for
     # the same reason `materialize` compares unflattened tables: flattening is an AMICI detail
     # applied downstream, and the yaml's own tables are what the identity check is about.
-    validation_meas = None
+    held_out = None
     if validation_yaml or validation_table:
         pristine = _load_problem(name, collection, flatten=False)
-        validation_meas = _held_out_source(
+        held_out = _held_out_source(
             name=name, validation_yaml=validation_yaml, validation_table=validation_table,
             example_dir=example_dir, collection=collection, published=pristine)
 
@@ -1025,13 +1064,13 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
             problem, build_dir=build_dir / "pristine",
             model_name=f"{name}_pristine", path=problem_dir / "reference.json",
             n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout,
-            validation_measurement_df=validation_meas,
+            held_out=held_out,
         )
     else:
         ref = _write_freed_reference(
             name=name, problem=problem, problem_dir=problem_dir, build_dir=build_dir,
             collection=collection, free_parameters=free_parameters,
-            param_overrides=param_overrides, validation_meas=validation_meas,
+            param_overrides=param_overrides, held_out=held_out,
             n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout)
     # After both arms, so a freed reference pays for the published literals too, and rewritten
     # because charging changes the `k` the arm above already wrote to reference.json.
@@ -1045,7 +1084,7 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
 
 def _write_freed_reference(*, name: str, problem, problem_dir: Path, build_dir: Path,
                            collection: Path | None, free_parameters: list[str],
-                           param_overrides: dict[str, dict] | None, validation_meas,
+                           param_overrides: dict[str, dict] | None, held_out,
                            n_starts: int, n_workers: int | None,
                            per_start_timeout: float | None) -> dict[str, Any]:
     """The ``REFERENCE_FREE_PARAMS`` arm of :func:`write_reference_for` (alkan, bachmann,
@@ -1119,7 +1158,7 @@ def _write_freed_reference(*, name: str, problem, problem_dir: Path, build_dir: 
         problem, build_dir=build_dir / "pristine",
         model_name=f"{name}_pristine", path=scratch / "published.json",
         n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout,
-        validation_measurement_df=validation_meas,
+        held_out=held_out,
     )
     freed = _load_problem(name, collection)
     _apply_param_overrides(freed, name, param_overrides)  # same table on both stages
@@ -1139,7 +1178,7 @@ def _write_freed_reference(*, name: str, problem, problem_dir: Path, build_dir: 
         freed, build_dir=build_dir / f"pristine_freed_{split}",
         model_name=f"{name}_pristine_freed", path=scratch / "freed.json",
         n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout,
-        validation_measurement_df=validation_meas,
+        held_out=held_out,
     )
 
     # k is the FREED count either way — that is the parameter space the candidate is scored in —
