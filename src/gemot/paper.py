@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from petab_harness import paper_fujita, paper_fujita_models
 from petab_harness.paths import BENCHMARK_EXAMPLES, examples_root, repo_root
 
 #: Header stamped on every emitted file. The manuscript's coauthors edit in Overleaf, where a
@@ -284,7 +285,7 @@ def render_roster(rows: list[ExampleRow]) -> str:
 
 
 def render_values(rows: list[ExampleRow], findings: dict[str, dict[str, object]],
-                  sweep: dict | None = None) -> str:
+                  sweep: dict | None = None, fujita: tuple | None = None) -> str:
     """Every number the prose may cite, as a macro.
 
     Three sources share one file: counts derived from the checkout, sweep-figure medians and
@@ -306,6 +307,16 @@ def render_values(rows: list[ExampleRow], findings: dict[str, dict[str, object]]
                 "% WallHours is full-task elapsed hours; CPUHours sums measured CPU over workers.",
                 "% Numeric macros use up to six decimal places; sweep_medians.csv is unrounded."]
         for macro, value in derived.items():
+            out.append(rf"\newcommand{{\{macro}}}{{{value}}}")
+        out.append("")
+    if fujita:
+        metadata, observations = fujita
+        figure_macros = paper_fujita.macros(metadata, observations)
+        derived.update(figure_macros)
+        out += ["% -- Figure 3: paper/fujita_generalisation.csv --",
+                "% Jobs: " + ", ".join(metadata["source"]["jobs"]),
+                "% Data SHA256: " + metadata["source"]["data_sha256"]]
+        for macro, value in figure_macros.items():
             out.append(rf"\newcommand{{\{macro}}}{{{value}}}")
         out.append("")
     out.append("% -- transcribed from sweep logs, see paper/findings.toml --")
@@ -354,9 +365,10 @@ def build(out_dir: Path | None = None) -> dict[Path, str]:
     if findings_path().is_file():
         findings = tomllib.loads(findings_path().read_text())
     sweep = read_sweep_data()
+    fujita = paper_fujita.read_input(repo_root())
     files = {
         target / "roster.tex": render_roster(rows),
-        target / "values.tex": render_values(rows, findings, sweep),
+        target / "values.tex": render_values(rows, findings, sweep, fujita),
         target / "provenance.tex": render_provenance(rows),
     }
     if sweep:
@@ -370,27 +382,41 @@ def build(out_dir: Path | None = None) -> dict[Path, str]:
                 r"\includegraphics[width=\linewidth]{paper/generated/sweep_panels.pdf}", "",
             ]),
         })
+    if fujita:
+        files.update({target / name: content for name, content in
+                      paper_fujita.export_data(repo_root(), *fujita, DO_NOT_EDIT).items()})
+        files.update({target / name: content for name, content in
+                      paper_fujita_models.export_data(repo_root(), *fujita, DO_NOT_EDIT).items()})
     for path, content in files.items():
         path.write_text(content, encoding="utf-8")
     return files
 
 
 def build_figures(out_dir: Path | None = None) -> list[Path]:
-    """Render the sweep's vector PDF from the same portable input as the median macros.
+    """Render manuscript figures from the same portable inputs as their numeric exports.
 
     Kept separate from the text build so numeric inputs remain usable without Matplotlib.
     The repo's existing sweep renderer owns the layout; no plotting logic is duplicated here.
     """
-    data = read_sweep_data()
-    if data is None:
-        return []
-    script = repo_root() / "slurm" / "sweep_panels.py"
-    spec = importlib.util.spec_from_file_location("_paper_sweep_panels", script)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
     target = out_dir or generated_dir()
     target.mkdir(parents=True, exist_ok=True)
-    path = target / "sweep_panels.pdf"
-    module.render(data["runs"], str(path), data["title"], data["per_example"],
-                  data["counts"], data["labels"])
-    return [path]
+    paths = []
+    data = read_sweep_data()
+    if data is not None:
+        script = repo_root() / "slurm" / "sweep_panels.py"
+        spec = importlib.util.spec_from_file_location("_paper_sweep_panels", script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        path = target / "sweep_panels.pdf"
+        module.render(data["runs"], str(path), data["title"], data["per_example"],
+                      data["counts"], data["labels"])
+        paths.append(path)
+    fujita = paper_fujita.read_input(repo_root())
+    if fujita:
+        metadata, rows = fujita
+        coefficients, _ = paper_fujita.correlations(rows, metadata['symlog'])
+        for suffix in ('pdf', 'png'):
+            path = target / f'figure3.{suffix}'
+            paper_fujita.render(rows, coefficients, metadata, path)
+            paths.append(path)
+    return paths
