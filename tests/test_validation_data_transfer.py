@@ -448,7 +448,7 @@ def test_the_reference_refit_lands_in_reference_json_with_its_mode_and_a_failure
 
     # No budget parameters: the training knob passed below must NOT reach the transfer refit, and
     # this signature is what makes that a failure rather than a silently-accepted keyword.
-    def _fake_refit(problem, *, build_dir, model_name, n_starts):
+    def _fake_refit(problem, *, build_dir, model_name, n_starts, units=None):
         seen["n_starts"] = n_starts
         seen["k"] = int((problem.parameter_df["estimate"].astype(float) == 1).sum())
         seen["A_init"] = float(problem.parameter_df.loc["A_init", "nominalValue"])
@@ -696,7 +696,7 @@ def test_the_reference_refits_a_curated_transfer_set_from_the_published_point(tm
         Path(path).write_text(json.dumps(ref))
         return ref
 
-    def _fake_refit(problem, *, build_dir, model_name, n_starts):
+    def _fake_refit(problem, *, build_dir, model_name, n_starts, units=None):
         seen["A_init"] = float(problem.parameter_df.loc["A_init", "nominalValue"])
         seen["conditions"] = list(problem.condition_df.index)
         seen["n_starts"] = n_starts
@@ -725,3 +725,186 @@ def test_the_fixed_point_reference_scorer_refuses_a_transfer_set(tmp_path):
         simulate.write_reference_from_problem(_toy_published(), build_dir=tmp_path,
                                               model_name="m", path=tmp_path / "r.json",
                                               held_out=held)
+
+
+# ------------------------------------------------------ the systems a transfer set is refit on
+def test_read_held_out_reads_the_sets_units(tmp_path):
+    """`units.tsv` beside the bundle: {conditionId: unitId}, the file the harness writes and the
+    server reads, so the two agree on the split through the file and nowhere else."""
+    _rows("c1").to_csv(tmp_path / "measurements.tsv", sep="\t", index=False)
+    _params([("A_init", "lin", 0.0, 100.0, 2.0, 0)]).reset_index().to_csv(
+        tmp_path / V.HELD_OUT_PARAMETERS, sep="\t", index=False)
+    pd.DataFrame({"conditionId": ["c1", "c2"], "unitId": ["u1", "u2"]}).to_csv(
+        tmp_path / V.HELD_OUT_UNITS, sep="\t", index=False)
+
+    held = V.read_held_out(tmp_path / "measurements.tsv")
+
+    assert held.mode == V.MODE_TRANSFER and held.units == {"c1": "u1", "c2": "u2"}
+
+
+def test_a_row_whose_condition_is_in_no_unit_is_declined_before_any_build(monkeypatch):
+    import pypesto.petab
+
+    def _boom(*a, **k):  # pragma: no cover - must not be reached
+        raise AssertionError("the importer must not be reached for a declined table")
+
+    monkeypatch.setattr(pypesto.petab, "PetabImporter", _boom)
+    problem = _candidate()
+    problem.measurement_df = pd.concat([_rows("c0"), _rows("c1")])
+    problem.condition_df = _conditions(["c0", "c1"])
+
+    out = V.refit_problem(problem, build_dir="/tmp/x", model_name="m", n_starts=1,
+                          units={"c0": "u0"})
+
+    assert out["status"] == V.STATUS_TABLE_MISMATCH and "c1" in out["reason"]
+
+
+def test_a_curated_transfer_set_names_the_systems_it_is_refit_on(tmp_path):
+    """`units.tsv` beside a curated table reaches the HeldOut; a measured condition it leaves out,
+    or a units file beside a fixed-θ set (nothing is refit there), is a setup error naming it."""
+    from petab_harness import benchmark
+
+    table = _curated_transfer(tmp_path, delta=[("A_init", "lin", 0.0, 100.0, 2.0, 0)],
+                              conditions=("c1", "c2"))
+    upath = tmp_path / "curated" / V.HELD_OUT_UNITS
+    pd.DataFrame({"conditionId": ["c1", "c2"], "unitId": ["u1", "u2"]}).to_csv(
+        upath, sep="\t", index=False)
+
+    held = benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                       published=_toy_published())
+    assert held.units == {"c1": "u1", "c2": "u2"}
+
+    pd.DataFrame({"conditionId": ["c1"], "unitId": ["u1"]}).to_csv(upath, sep="\t", index=False)
+    with pytest.raises(ValueError, match="c2"):
+        benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                    published=_toy_published())
+
+    (tmp_path / "curated" / V.HELD_OUT_PARAMETERS).unlink()
+    with pytest.raises(ValueError, match="fitted point"):
+        benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                    published=_toy_published())
+
+
+def test_materialize_writes_the_units_beside_the_bundle_and_the_reference_refits_by_them(
+        tmp_path, monkeypatch):
+    from petab_harness import benchmark, simulate
+
+    monkeypatch.setattr(benchmark, "_load_problem", lambda *a, **k: _toy_published())
+    (tmp_path / "problem").mkdir()
+    table = _curated_transfer(tmp_path, delta=[("A_init", "lin", 0.0, 100.0, 2.0, 0)],
+                              conditions=("c1", "c2"))
+    pd.DataFrame({"conditionId": ["c1", "c2"], "unitId": ["u1", "u2"]}).to_csv(
+        tmp_path / "curated" / V.HELD_OUT_UNITS, sep="\t", index=False)
+
+    benchmark.materialize(name="X", shipped_param_ids=["sigma_B", "A_init", "B_init"],
+                          example_dir=tmp_path, validation_table=table)
+    held = V.read_held_out(benchmark.validation_measurements_path(tmp_path))
+    assert held.units == {"c1": "u1", "c2": "u2"}
+
+    seen = {}
+
+    def _fake_refit(problem, *, build_dir, model_name, n_starts, units=None):
+        seen["units"] = units
+        return {"status": "ok", "mode": "transfer", "nll": 3.0, "k": 2, "n": 4}
+
+    monkeypatch.setattr(simulate, "write_reference_from_problem",
+                        lambda problem, *, path, **_: (Path(path).write_text("{}"), {"nll": 1.0,
+                                                                                    "k": 2,
+                                                                                    "n": 6})[1])
+    monkeypatch.setattr(V, "refit_problem", _fake_refit)
+    benchmark.write_reference_for(name="X", example_dir=tmp_path, validation_table=table)
+    assert seen["units"] == {"c1": "u1", "c2": "u2"}
+
+
+def test_score_session_refits_each_unit_on_its_own_and_sums_the_units(session, engine):
+    """AMICI-backed: the toy's measurements on two conditions, two units. Each unit is refit alone
+    from the same start, the payload sums nll and n over them and carries each unit's block, and
+    `k` is one refit's count — not the sum, which would price the same rows twice."""
+    meas = pd.read_csv(TOY / "measurements.tsv", sep="\t")
+    held_meas = pd.concat([meas.assign(simulationConditionId="c1", measurement=meas.measurement * 2),
+                           meas.assign(simulationConditionId="c2", measurement=meas.measurement * 3)],
+                          ignore_index=True)
+    held = V.HeldOut(
+        measurement_df=held_meas,
+        condition_df=_conditions(["c1", "c2"]),
+        parameter_df=_params([("A_init", "lin", 0.0, 100.0, 2.0, 0)]),
+        units={"c1": "u1", "c2": "u2"},
+    )
+
+    out = V.score_session(session, engine, held, n_starts=2)
+
+    assert out["status"] == V.STATUS_OK, out
+    assert out["mode"] == V.MODE_TRANSFER and set(out["units"]) == {"u1", "u2"}
+    assert out["n"] == len(held_meas) == sum(u["n"] for u in out["units"].values())
+    assert math.isclose(out["nll"], sum(u["nll"] for u in out["units"].values()))
+    assert out["units"]["u1"]["k"] == 2 and out["k"] == 4, "k sums the units' own counts"
+    assert all(u["n_conditions"] == 1 and "fitted" in u for u in out["units"].values())
+    assert list(session.problem.condition_df.index) == ["c0"]
+
+
+def test_a_single_named_unit_is_still_carried_under_units(monkeypatch):
+    """`units` names the systems; naming one is a declaration, not the absence of one, so its
+    block is carried the same way — a consumer reading `units` must not find it missing."""
+    seen = []
+
+    def _fake_one(view, *, build_dir, model_name, n_starts):
+        seen.append(view)
+        return {"status": "ok", "mode": "transfer", "nll": 1.0, "k": 1, "n": 2, "chi2": 2.0,
+                "n_conditions": 1, "observables": ["obs_B"], "n_starts": n_starts,
+                "n_converged": 1, "fitted": {}}
+
+    monkeypatch.setattr(V, "_refit_one", _fake_one)
+    problem = _candidate()
+    problem.measurement_df = _rows("c0")
+
+    out = V.refit_problem(problem, build_dir="/tmp/x", model_name="m", n_starts=1,
+                          units={"c0": "only"})
+
+    assert list(out["units"]) == ["only"] and out["nll"] == 1.0 and out["k"] == 1
+    assert len(seen) == 1
+
+
+def test_an_empty_units_declaration_is_incomplete_not_absent(tmp_path, monkeypatch):
+    """A header-only units.tsv is `{}`, and `{}` maps no condition: refused at score time and at
+    setup, rather than read as "one system"."""
+    import pypesto.petab
+
+    from petab_harness import benchmark
+
+    monkeypatch.setattr(pypesto.petab, "PetabImporter", lambda *a, **k: None)
+    (tmp_path / "u.tsv").write_text("conditionId\tunitId\n")
+    assert V.read_units(tmp_path / "u.tsv") == {}
+    problem = _candidate()
+    out = V.refit_problem(problem, build_dir="/tmp/x", model_name="m", n_starts=1, units={})
+    assert out["status"] == V.STATUS_TABLE_MISMATCH and "c0" in out["reason"]
+
+    table = _curated_transfer(tmp_path, delta=[("A_init", "lin", 0.0, 100.0, 2.0, 0)])
+    (tmp_path / "curated" / V.HELD_OUT_UNITS).write_text("conditionId\tunitId\n")
+    with pytest.raises(ValueError, match="c1"):
+        benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                    published=_toy_published())
+
+
+def test_read_units_refuses_a_condition_in_two_units_or_a_blank(tmp_path):
+    (tmp_path / "u.tsv").write_text("conditionId\tunitId\nc1\tu1\nc1\tu2\n")
+    with pytest.raises(ValueError, match="c1"):
+        V.read_units(tmp_path / "u.tsv")
+    (tmp_path / "u.tsv").write_text("conditionId\tunitId\nc1\t\n")
+    with pytest.raises(ValueError, match="unitId"):
+        V.read_units(tmp_path / "u.tsv")
+
+
+def test_a_refit_sees_only_the_observables_its_rows_measure():
+    """The per-refit view keeps the observables the rows measure and nothing else — the sigma of
+    an unmeasured observable is not a parameter of that refit (pruned by petab's lint where a model
+    is present)."""
+    problem = _candidate()
+    problem.observable_df = pd.concat([problem.observable_df, pd.DataFrame(
+        {"observableFormula": ["A"], "noiseFormula": ["1"]},
+        index=pd.Index(["obs_A"], name="observableId")).reindex(
+            columns=problem.observable_df.columns)])
+
+    uview = V._unit_view(problem, _rows("c0"))
+
+    assert list(uview.observable_df.index) == ["obs_B"]
+    assert list(problem.observable_df.index) == ["obs_B", "obs_A"], "the caller's view is untouched"

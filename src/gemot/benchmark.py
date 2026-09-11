@@ -756,7 +756,9 @@ def _curated_held_out(*, name: str, validation_table: str, example_dir: Path, pu
       ``estimate`` — and may be header-only; the published table is the rest, pruned to what the
       held-out tables reference, and checked as a collection transfer problem is
       (:func:`petab_mcp.validation_data._reject_untransferable_table`). A ``conditions.tsv`` then
-      REPLACES the training condition table, on the same columns.
+      REPLACES the training condition table, on the same columns, and a ``units.tsv``
+      (``conditionId``, ``unitId``) names the systems the set is refit on, one at a time
+      (:attr:`petab_mcp.validation_data.HeldOut.units`); without it the set is one system.
     """
     import copy
 
@@ -765,8 +767,10 @@ def _curated_held_out(*, name: str, validation_table: str, example_dir: Path, pu
                             SIMULATION_CONDITION_ID)
     from petab.v1.parameters import get_valid_parameters_for_parameter_table
 
-    from petab_mcp.validation_data import (HELD_OUT_CONDITIONS, HELD_OUT_PARAMETERS, HeldOut,
-                                           _reject_untransferable_table, _with_held_out_conditions)
+    from petab_mcp.validation_data import (HELD_OUT_CONDITIONS, HELD_OUT_PARAMETERS,
+                                           HELD_OUT_UNITS, HeldOut, _refit_units,
+                                           _reject_untransferable_table, _with_held_out_conditions,
+                                           read_units)
 
     path = Path(example_dir) / validation_table
     if not path.is_file():
@@ -779,6 +783,14 @@ def _curated_held_out(*, name: str, validation_table: str, example_dir: Path, pu
     vcond = petab.get_condition_df(str(cpath)) if cpath.is_file() else None
     ppath = path.with_name(HELD_OUT_PARAMETERS)
     vpars = petab.get_parameter_df(str(ppath)) if ppath.is_file() else None
+    upath = path.with_name(HELD_OUT_UNITS)
+    units = read_units(upath) if upath.is_file() else None
+    if units is not None and vpars is None:
+        raise ValueError(f"{name}: {upath.relative_to(example_dir)} names refit units, but without "
+                         f"a {HELD_OUT_PARAMETERS} beside it the set is scored at the fitted "
+                         f"point, where nothing is refit")
+    if units is not None and isinstance(_refit_units(vmeas, units), str):
+        raise ValueError(f"{name}: {upath.relative_to(example_dir)}: {_refit_units(vmeas, units)}")
 
     vprob = copy.copy(published)
     vprob.measurement_df = vmeas
@@ -844,7 +856,7 @@ def _curated_held_out(*, name: str, validation_table: str, example_dir: Path, pu
             f"a fixed-θ one")
 
     return HeldOut(measurement_df=vmeas, condition_df=vcond,
-                   parameter_df=None if vpars is None else vprob.parameter_df)
+                   parameter_df=None if vpars is None else vprob.parameter_df, units=units)
 
 
 def _overlay_parameters(published_df, delta_df):
@@ -1075,14 +1087,15 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     print(f"[setup] {name}: materialized {len(prob.measurement_df)} measurements, "
           f"{len(prob.observable_df)} observables, {len(prob.condition_df)} condition(s); "
           f"shipped params {shipped_param_ids}")
-    from petab_mcp.validation_data import HELD_OUT_CONDITIONS, HELD_OUT_PARAMETERS
+    from petab_mcp.validation_data import HELD_OUT_CONDITIONS, HELD_OUT_PARAMETERS, HELD_OUT_UNITS
 
     vpath = validation_measurements_path(example_dir)
     cpath = vpath.with_name(HELD_OUT_CONDITIONS)
     # Files an earlier definition of the example left behind: the directory is gitignored, a
     # leftover parameters.tsv would flip the set's mode (validation_data.read_held_out) and a
     # leftover set would score an example that declares none.
-    for stale in (vpath, cpath, vpath.with_name(HELD_OUT_PARAMETERS)):
+    for stale in (vpath, cpath, vpath.with_name(HELD_OUT_PARAMETERS),
+                  vpath.with_name(HELD_OUT_UNITS)):
         stale.unlink(missing_ok=True)
     if validation_meas is not None:
         from petab.v1.C import SIMULATION_CONDITION_ID
@@ -1118,6 +1131,13 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
             hpars.to_csv(vpath.with_name(HELD_OUT_PARAMETERS), sep="\t", index=False)
             print(f"[setup] {name}: transfer set: {len(hpars)}-row parameter table -> both sides "
                   f"are REFIT on it")
+        if held_out.units:
+            import pandas as pd
+            pd.DataFrame({"conditionId": [_relabel(c) for c in held_out.units],
+                          "unitId": list(held_out.units.values())}).to_csv(
+                vpath.with_name(HELD_OUT_UNITS), sep="\t", index=False)
+            print(f"[setup] {name}: refit in {len(set(held_out.units.values()))} unit(s) "
+                  f"({HELD_OUT_UNITS})")
     return out
 
 
@@ -1303,14 +1323,14 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
                  if transfer_yaml else _held_out_problem(pristine, held_out))
         ref["validation"] = _transfer_reference(
             name=name, vprob=vprob, param_overrides=param_overrides, build_dir=build_dir,
-            n_starts=n_starts)
+            n_starts=n_starts, units=held_out.units)
     if hardcoded_parameters or transfer:
         (problem_dir / "reference.json").write_text(json.dumps(ref, indent=2) + "\n")
     return ref
 
 
 def _transfer_reference(*, name: str, vprob, param_overrides: dict[str, dict] | None,
-                        build_dir: Path, n_starts: int) -> dict[str, Any]:
+                        build_dir: Path, n_starts: int, units=None) -> dict[str, Any]:
     """Refit the reference through the candidate's solver and budget, from the published point.
 
     Apply the training reference's parameter overrides so both sides use the same noise model.
@@ -1335,7 +1355,7 @@ def _transfer_reference(*, name: str, vprob, param_overrides: dict[str, dict] | 
     try:
         out = validation_data.refit_problem(
             vprob, build_dir=build_dir / f"pristine_transfer_{split}",
-            model_name=f"{name}_pristine_transfer", n_starts=n_starts)
+            model_name=f"{name}_pristine_transfer", n_starts=n_starts, units=units)
     except Exception as exc:  # noqa: BLE001 - report-only; preserve the training result
         out = {"status": "error", "mode": validation_data.MODE_TRANSFER,
                "reason": f"{type(exc).__name__}: {exc}"}

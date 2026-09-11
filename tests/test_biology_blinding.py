@@ -82,6 +82,8 @@ def test_held_out_data_stays_private_and_uses_training_aliases(tmp_path):
     measurements.to_csv(validation / "measurements.tsv", sep="\t", index=False)
     conditions = pd.DataFrame({"conditionId": ["unseen_EGFR_treatment"], "k1": [0.2]})
     conditions.to_csv(validation / "conditions.tsv", sep="\t", index=False)
+    pd.DataFrame({"conditionId": ["unseen_EGFR_treatment"], "unitId": ["patient_EGFR"]}).to_csv(
+        validation / "units.tsv", sep="\t", index=False)
     baseline = tmp_path / "baseline"
     work = tmp_path / "anonymous"
     training_names = prepare(TOY / "problem.yaml", baseline)
@@ -95,6 +97,11 @@ def test_held_out_data_stays_private_and_uses_training_aliases(tmp_path):
     assert heldout.simulationConditionId[0] == names.forward["unseen_EGFR_treatment"]
     heldconditions = pd.read_csv(private_dir(work) / "validation/conditions.tsv", sep="\t")
     assert heldconditions[names.forward["k1"]][0] == 0.2
+    # The refit units ride along under the same aliases, or a blinded run would refit the whole
+    # table as one system against a reference refit per unit.
+    units = pd.read_csv(private_dir(work) / "validation/units.tsv", sep="\t")
+    assert units.conditionId[0] == names.forward["unseen_EGFR_treatment"]
+    assert units.unitId[0] == "patient_EGFR"
 
 
 def test_judge_translates_model_arguments_and_noise_keys():

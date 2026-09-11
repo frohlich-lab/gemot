@@ -208,6 +208,13 @@ def prepare(source_yaml: Path, work: Path, validation_dir: Path | None = None) -
             if path.is_file():
                 table = pd.read_csv(path, sep="\t")
                 names.table(kind, table).to_csv(destination / path.name, sep="\t", index=False)
+        units = validation_dir / "units.tsv"
+        if units.is_file():
+            # The refit units of a transfer set: condition ids under their training aliases,
+            # unit ids as they are (harness-private, never shown to the agent).
+            table = pd.read_csv(units, sep="\t", dtype=str)
+            table["conditionId"] = table["conditionId"].map(lambda v: _translate(v, names.forward))
+            table.to_csv(destination / units.name, sep="\t", index=False)
     (private / "identifiers.json").write_text(json.dumps({
         "version": 1, "identifiers": names.forward,
     }, indent=2) + "\n")
