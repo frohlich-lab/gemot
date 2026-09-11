@@ -30,6 +30,7 @@ MODELS: dict[str, str] = {
     # The tier above the panel: ~10x luna per run, added to test whether capability buys
     # anything on the examples the panel cannot solve. Not defaults -- opt in with --models.
     "terra":        "openai/gpt-5.6-terra",
+    "astra":        "openai/gpt-6-astra",
     "grok":         "x-ai/grok-4.20",
     "gemini-flash": "google/gemini-3.6-flash",
     "gemini-pro":   "google/gemini-3.1-pro-preview",
@@ -124,6 +125,11 @@ _ROUTING: dict[str, dict] = {
     # 5.5x spread), so the bare `openai` tag is mandatory -- it also excludes `openai/flex` and
     # `openai/priority`, the undocumented cheap and dear tiers we refuse everywhere else.
     "openai/gpt-5.6-terra": {"only": ["openai"]},
+    # astra: the family's standing `openai` tag, which also excludes `openai/flex` (half price,
+    # undocumented tier), `openai/fast` (2x) and the Azure mirrors. Verified live: `openai` and
+    # `azure` both answer for this account at the same price, so the pin fixes the endpoint
+    # rather than the bill.
+    "openai/gpt-6-astra": {"only": ["openai"]},
     # grok: `xai/zdr` and `xai` are the SAME price ($1.25/$0.20/$2.50); pin the zdr tag because it
     # names the data guarantee in the request rather than leaning on the account policy, and it
     # excludes the `/priority` tiers which cost exactly double for no benefit here.
