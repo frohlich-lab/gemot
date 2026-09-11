@@ -51,6 +51,8 @@ from . import ablations as _ablations
 # commit closing for the subagent turn notices.
 DATA_REGIMES_ENABLED = _ablations.enabled("data_regimes")
 BIOLOGY_BLIND_ENABLED = _ablations.enabled("biology_blind")
+# One effective policy for prompt text, roster, model construction and bio connections.
+BIOCURATOR_ENABLED = _ablations.enabled("biocurator") and not BIOLOGY_BLIND_ENABLED
 
 # The petab-model-building skill, INLINED into the analyst persona prompts. Measured: every
 # analyst spawn fetched this same document via get_skill exactly once (mathematician 203/203,
@@ -238,12 +240,15 @@ DEFAULT_SYSTEM_PROMPT = (
     "through these structured MCP tools; the filesystem is EMPTY by design — do NOT use "
     "ls/glob/read to hunt for it, there is nothing on disk to find. Your job is to BUILD, from "
     "scratch, a model that explains the data. You do NOT read the measured data or query the "
-    "fit yourself — you have four independent analysts via the `task` tool (pass "
-    "`subagent_type`): `mathematician`, `systems_scientist`, `signal_engineer`, `biocurator`. A "
+    "fit yourself — you have " + ("four" if BIOCURATOR_ENABLED else "three") +
+    " independent analysts via the `task` tool (pass "
+    "`subagent_type`): `mathematician`, `systems_scientist`, `signal_engineer`" +
+    (", `biocurator`" if BIOCURATOR_ENABLED else "") + ". A "
     "subagent's ENTIRE input is the `description` string you pass to `task` — put your question and "
-    "any framing THERE; `task` takes no other content argument. (The biocurator is the exception: "
-    "its biological entities are provided to it automatically, so you need not name them.) You "
-    "directly "
+    "any framing THERE; `task` takes no other content argument. " + (
+        "(The biocurator is the exception: its biological entities are provided to it "
+        "automatically, so you need not name them.) " if BIOCURATOR_ENABLED else "") +
+    "You directly "
     "read only the model, its SCORES (which `make_changes` itself returns — metrics, bic, the noise-sigma "
     "verdict and the residual_structure verdict), and a COMPACT fit diagnosis ("
     + ", ".join(LEAD_SELF_READ_TOOLS) + ") — "
@@ -265,10 +270,12 @@ DEFAULT_SYSTEM_PROMPT = (
     "On the first round, delegate to all three analysts to characterise the DATA — its dynamics, "
     "the plausible mechanism, and the signal structure — giving each only the objective facts "
     "(the observables and that measured data exist), NOT your own hypothesis, so their reads stay "
-    "independent. And for a molecular/biochemical problem, consult the biocurator on this SAME "
-    "first round for the KNOWN biology — the interactions, cooperativity, and unmeasured "
-    "regulators/intermediates among the entities — and treat what it reports as the mechanism's "
-    "expected TOPOLOGY, to be built unless the data contradict it. "
+    "independent. " + (
+        "And for a molecular/biochemical problem, consult the biocurator on this SAME "
+        "first round for the KNOWN biology — the interactions, cooperativity, and unmeasured "
+        "regulators/intermediates among the entities — and treat what it reports as the mechanism's "
+        "expected TOPOLOGY, to be built unless the data contradict it. "
+        if BIOCURATOR_ENABLED else "") +
     "Do this regardless of how many conditions the problem has: condition count "
     "reflects experimental DESIGN, not mechanistic difficulty, and a single-condition problem can "
     "still be a multi-species, non-monotonic time course that needs the mechanism + numerics reads "

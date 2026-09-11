@@ -15,7 +15,7 @@ from typing import AsyncIterator
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
-from .. import ablations, benchmark
+from .. import ablations, benchmark, prompts
 from ..bio_sessions import open_bio_sessions
 from ..explorer.archive import archive_run
 from ..fit_budget import (FIT_BUDGET_CEILING_S, FIT_N_WORKERS, FIT_PER_START_TIMEOUT_S,
@@ -233,16 +233,16 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
             if session is None:
                 raise RuntimeError("petab-mcp session was not initialized")
             # SECONDARY MCP sessions: the blinded bio-knowledge server(s) for the biocurator, on
-            # the deepagents panel every run. The endpoints are HARDCODED (BIO_MCP_URLS:
+            # the deepagents panel when enabled. The endpoints are HARDCODED (BIO_MCP_URLS:
             # BioContextAI + OmniPath) — no custom-endpoint config. Each is opened in its OWN
             # SUPERVISED, ISOLATED task by open_bio_sessions, kept separate from the petab session
             # (which the _ToolClock shadows) and from the run's fatal scope: a transport failure on
             # a bio session — unreachable, a slow/hung connect, or a mid-run ClosedResourceError —
             # is contained and degrades the biocurator to "dumb", NEVER aborting the run (issue
-            # #86). LLM-driver only (empty for scripted). The biocurator is added REGARDLESS — if
-            # no bio tools resolve it runs "dumb" on the model's own knowledge (biocurator_tools).
+            # #86). Empty for scripted or a disabled curator. An enabled curator stays on the
+            # panel even if no bio tools resolve, using the model's own knowledge.
             bio_urls = (BIO_MCP_URLS if args.driver != "scripted"
-                        and not ablations.enabled("biology_blind") else ())
+                        and prompts.BIOCURATOR_ENABLED else ())
             async with open_bio_sessions(bio_urls) as bio_sessions:
                 exit_code, result = await _drive(scenario, session, work, args,
                                                  run_started_at=started_at, server_proc=proc,

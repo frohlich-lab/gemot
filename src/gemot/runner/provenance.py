@@ -210,12 +210,14 @@ def _base_meta(scenario: Scenario, args: argparse.Namespace,
 
     from .. import ablations
 
-    from ..prompts import prompt_group_versions, prompt_version
+    from ..prompts import BIOCURATOR_ENABLED, prompt_group_versions, prompt_version
 
     scripted = args.driver == "scripted"
     from ..biology_blinding import read_names
 
     blind_names = read_names(scenario.example_dir / "work") if ablations.enabled("biology_blind") else None
+    uses_bio_tools = (args.driver == "barebones"
+                      or (args.driver == "deepagents" and BIOCURATOR_ENABLED))
     return {
         "driver": args.driver,
         "model": None if scripted else args.model,
@@ -242,8 +244,9 @@ def _base_meta(scenario: Scenario, args: argparse.Namespace,
         "ablation_state": ablations.state_key(),
         "ablations": ablations.state(),
         # Which OmniPath answered, and from when. A pinned snapshot that nothing records is the
-        # `git_sha +dirty` problem in a new costume; None when the run used the hosted service.
-        "omnipath_snapshot": None if blind_names is not None else _omnipath_provenance(),
+        # `git_sha +dirty` problem in a new costume; None for hosted service or no bio access.
+        "omnipath_snapshot": (_omnipath_provenance()
+                              if uses_bio_tools and blind_names is None else None),
         # Operator-only metadata: persisted with the archive so its anonymous model can
         # still be interpreted after work/ is replaced by the next run.
         "biology_blinding": ({"version": 1, "identifiers": blind_names.forward}

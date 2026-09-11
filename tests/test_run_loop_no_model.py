@@ -141,12 +141,15 @@ def _run(mod, monkeypatch, probe, confirm_after=None, agent=None, server_poll=No
     monkeypatch.setattr(mod.driver.asyncio, "sleep", _no_backoff)
 
     import asyncio
-    result = asyncio.run(mod.run_deepagents(
-        object(),  # session — only passed to the (mocked) load_mcp_tools and decision tool
+    options = dict(
         model="fake/model", base_url="http://x", api_key="sk-test",
         system_prompt="sp", task="build a model", recursion_limit=50,
         progress_probe=probe, server_poll=server_poll,
-        **(driver_options or {}),
+    )
+    options.update(driver_options or {})
+    result = asyncio.run(mod.run_deepagents(
+        object(),  # session — only passed to the (mocked) load_mcp_tools and decision tool
+        **options,
     ))
     return result, fake_agent
 

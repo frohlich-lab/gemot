@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..prompts import (BIOLOGY_BLIND_ENABLED, BIOCURATOR_DESCRIPTION, BIOCURATOR_PROMPT,
+from ..prompts import (BIOCURATOR_ENABLED, BIOCURATOR_DESCRIPTION, BIOCURATOR_PROMPT,
                        _biocurator_entity_block)
 from .guards import _reasoning_runaway_guard, _subagent_turn_limit
 from .subagents import ACTIVE_SPECS, _subagent_prompt_key
@@ -25,7 +25,7 @@ from .subagents import ACTIVE_SPECS, _subagent_prompt_key
 BIOCURATOR_MAX_TURNS = 20
 
 # ---------------------------------------------------------------- biocurator (optional)
-# A FOURTH analyst, added for the deepagents driver whenever a bio-knowledge server is
+# A FOURTH analyst, added for the deepagents driver when enabled, even if no bio server is
 # reachable. Unlike the three above -- which reason over THIS problem's model/data through
 # the petab-mcp tools -- the biocurator reaches OUTSIDE the problem, into curated biomedical
 # knowledge bases served by a SEPARATE bio-knowledge MCP server (e.g. BioContextAI:
@@ -50,7 +50,7 @@ BIOCURATOR_NAME = "biocurator"
 # subagent's calls into unused filesystem builtins (issue #112). run_deepagents turns that
 # auto-add off (see _disable_general_purpose_subagent), so this tuple is the whole registry.
 SUBAGENT_NAMES = (*(spec["name"] for spec in ACTIVE_SPECS),
-                 *((BIOCURATOR_NAME,) if not BIOLOGY_BLIND_ENABLED else ()))
+                 *((BIOCURATOR_NAME,) if BIOCURATOR_ENABLED else ()))
 
 # Curated default tool allowlist for the biocurator. The default bio server (BioContextAI
 # Knowledgebase) exposes ~50 tools across ~20 databases — literature search, clinical trials,

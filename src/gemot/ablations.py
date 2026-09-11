@@ -248,8 +248,8 @@ ABLATIONS: tuple[Ablation, ...] = (
         effect="ON additionally gives the biocurator EuropePMC + bioRxiv literature search. Off by "
                "default because literature search over a benchmark problem's distinctive entity "
                "panel could surface its withheld source paper; the structured knowledge "
-               "(interactions/pathways/ontologies/OmniPath) is general biology. The biology_blind "
-               "arm disables both kinds of knowledge access",
+               "(interactions/pathways/ontologies/OmniPath) is general biology. On the panel, "
+               "biocurator=off or biology_blind=on disables both kinds of knowledge access",
     ),
     Ablation(
         name="biology_blind",
@@ -259,6 +259,16 @@ ABLATIONS: tuple[Ablation, ...] = (
         effect="ON anonymizes the agent's PEtab identifiers and removes descriptive metadata, "
                "scenario biology, the biocurator and external knowledge tools. The panel receives "
                "numerical modeling instructions; a private mapping preserves reference scoring",
+    ),
+    Ablation(
+        name="biocurator",
+        env="PETAB_BIOCURATOR",
+        default_on=True,
+        changes_prompt=True,
+        effect="OFF removes the biocurator from the deepagents panel, its external knowledge "
+               "tools and the lead's curator guidance. Biological identifiers, descriptions, "
+               "scenario context and the three modeling analysts are preserved. The "
+               "biology_blind arm also removes the curator, regardless of this setting",
     ),
 )
 

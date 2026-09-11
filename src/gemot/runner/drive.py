@@ -167,9 +167,8 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
             # watch this run's turns + model variants stream in before it finishes.
             _write_live_marker(work, base_meta, scenario)
             try:
-                # The biocurator roster/guidance is spliced into the lead prompt INSIDE
-                # run_deepagents, under the SAME guard that actually wires the subagent, so the
-                # prompt can't promise a biocurator that wasn't added. Its tools are the
+                # The default lead prompt and run_deepagents share prompts.BIOCURATOR_ENABLED,
+                # so the prompt cannot promise a curator that the selected arm omits. Its tools are the
                 # curated agent.DEFAULT_BIO_TOOLS allowlist (+ literature under the
                 # `bio_literature` ablation, PETAB_BIO_LITERATURE=1).
                 agent_out = await run_deepagents(
