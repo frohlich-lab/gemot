@@ -11,6 +11,7 @@ shape the judge reads" is not something a mocked importer can establish.
 
 from __future__ import annotations
 
+import json
 import math
 import shutil
 from pathlib import Path
@@ -133,42 +134,25 @@ def test_a_candidate_that_cannot_receive_a_changed_input_is_a_finding_not_a_cras
     assert view is None and failed["status"] == V.STATUS_INPUT_MISSING
 
 
-def test_a_held_out_table_equal_to_the_training_one_is_refused_as_misannotation():
-    """Shipping a parameter table is what DECLARES a set a transfer set, so a table that is the
-    training table says the set was mis-annotated — most likely a copied file. Left alone it would
-    refit a structure against itself and report the result as a second system, which is a plausible
-    number and a wrong one; the honest fixed-θ reading is available by dropping the table."""
+@pytest.mark.parametrize("rate", ["k1", "candidate_rate"])
+def test_zero_shot_transfer_keeps_the_candidates_own_kinetic_parameters(rate):
+    """The shipped subset omits kinetics; a candidate may also rename them. Neither permits
+    copying the reference's fitted rates into the candidate or rejecting its transfer refit."""
+    problem = _candidate()
+    problem.parameter_df = problem.parameter_df.rename(index={"k1": rate})
     held = V.HeldOut(measurement_df=_rows("c1"), condition_df=_conditions(["c1"]),
-                     parameter_df=_SHIPPED.copy())
-    assert held.mode == V.MODE_TRANSFER, "the table is what makes it a transfer set"
-    with pytest.raises(ValueError, match="identical to the training one"):
-        V.transfer_view(_candidate(), held, _SHIPPED)
-
-
-def test_a_held_out_table_that_estimates_an_unknown_parameter_is_refused():
-    """A parameter the training problem never named cannot be estimated on the candidate's behalf —
-    its model has no counterpart. A FIXED extra row stays tolerated (`sigma_extra` above): it binds
-    to nothing, and a published table keeps such rows for observables the materialiser dropped."""
-    rows = [("k1", "log10", 1e-4, 100.0, 7.0, 1), ("sigma_B", "lin", 1e-4, 100.0, 0.1, 0),
-            ("A_init", "lin", 0.0, 100.0, 2.0, 0)]
-    estimated_unknown = _params([*rows, ("k_new", "log10", 1e-4, 100.0, 1.0, 1)])
-    held = V.HeldOut(measurement_df=_rows("c1"), condition_df=_conditions(["c1"]),
-                     parameter_df=estimated_unknown)
-    with pytest.raises(ValueError, match="k_new"):
-        V.transfer_view(_candidate(), held, _SHIPPED)
-
-    fixed_unknown = _params([*rows, ("k_new", "log10", 1e-4, 100.0, 1.0, 0)])
-    held = V.HeldOut(measurement_df=_rows("c1"), condition_df=_conditions(["c1"]),
-                     parameter_df=fixed_unknown)
-    view, failed = V.transfer_view(_candidate(), held, _SHIPPED)
-    assert failed is None and "k_new" not in view.parameter_df.index
+                     parameter_df=_HELD_OUT_PARAMS)
+    view, failed = V.transfer_view(problem, held, _SHIPPED.drop(index=["k1", "k2"]))
+    assert failed is None
+    pd.testing.assert_frame_equal(view.parameter_df.drop(index="A_init"),
+                                  problem.parameter_df.drop(index="A_init"))
+    assert view.parameter_df.loc[rate, "nominalValue"] == 0.5
+    assert view.parameter_df.loc["A_init", "nominalValue"] == 2.0
 
 
 def test_a_held_out_system_may_bring_its_own_estimated_noise_parameters():
     """A new noise sigma or observable scaling IS manageable: it enters through the observation
-    model — the held-out measurement table's `noiseParameters` override — not the ODE, so the refit
-    can estimate it however many the held-out system brings. Only a new MECHANISM parameter has
-    nowhere to go."""
+    model — the held-out measurement table's `noiseParameters` override — not the ODE."""
     meas = _rows("c1").assign(noiseParameters="sigma_new")
     rows = [("k1", "log10", 1e-4, 100.0, 7.0, 1), ("sigma_B", "lin", 1e-4, 100.0, 0.1, 0),
             ("A_init", "lin", 0.0, 100.0, 2.0, 0),
@@ -243,6 +227,7 @@ def test_score_session_refits_the_toy_on_a_transfer_set_and_leaves_the_session_a
     )
     before = session.problem.parameter_df.copy(deep=True)
     sbml_before = session.model_sbml()
+    session.shipped_parameter_df = session.shipped_parameter_df.drop(index=["k1", "k2"])
 
     out = V.score_session(session, engine, held, n_starts=2)
 
@@ -259,6 +244,243 @@ def test_score_session_refits_the_toy_on_a_transfer_set_and_leaves_the_session_a
     pd.testing.assert_frame_equal(session.problem.parameter_df, before)
     assert session.model_sbml() == sbml_before
     assert list(session.problem.condition_df.index) == ["c0"]
+
+
+# ----------------------------------------------------------------- what the materialiser writes
+def _mini_collection(tmp_path, *, held_sbml_same=True, extra_condition_column=False,
+                     redefine_observable=False, extra_observable=False, condition_name=False):
+    """A two-problem collection built from the toy: the TRAINING problem verbatim, and a HELD-OUT
+    problem on the same SBML with condition `c1`, its own parameter values (A_init = 2) and
+    measurements on it; optionally with an extra observable `obs_A` (and its sigma) the training
+    problem lacks, or a free-text `conditionName` column."""
+    name = "Toy_Model"
+    bdir = tmp_path / name
+    bdir.mkdir()
+    for f in ("conversion_reaction.xml", "conditions.tsv", "measurements.tsv", "observables.tsv",
+              "parameters.tsv"):
+        shutil.copy(TOY / f, bdir / f)
+    (bdir / f"{name}.yaml").write_text(
+        "format_version: 1\nparameter_file: parameters.tsv\nproblems:\n"
+        "- sbml_files: [conversion_reaction.xml]\n  condition_files: [conditions.tsv]\n"
+        "  measurement_files: [measurements.tsv]\n  observable_files: [observables.tsv]\n")
+
+    held = bdir / "held"
+    held.mkdir()
+    sbml = "../conversion_reaction.xml"
+    if not held_sbml_same:
+        text = (TOY / "conversion_reaction.xml").read_text().replace(
+            'id="conversion_reaction"', 'id="conversion_reaction_v2"')
+        (held / "other.xml").write_text(text)
+        sbml = "other.xml"
+    cond = pd.DataFrame({"conditionId": ["c1"]})
+    if extra_condition_column:
+        cond["dose"] = [1.0]
+    if condition_name:
+        cond["conditionName"] = ["the held-out system"]
+    cond.to_csv(held / "conditions.tsv", sep="\t", index=False)
+    obs = pd.read_csv(TOY / "observables.tsv", sep="\t")
+    if redefine_observable:
+        obs.loc[obs["observableId"] == "obs_B", "observableFormula"] = "2 * B"
+    pars = pd.read_csv(TOY / "parameters.tsv", sep="\t")
+    pars.loc[pars["parameterId"] == "A_init", "nominalValue"] = 2.0
+    meas = pd.read_csv(TOY / "measurements.tsv", sep="\t").assign(simulationConditionId="c1")
+    if extra_observable:
+        obs = pd.concat([obs, pd.DataFrame({"observableId": ["obs_A"], "observableFormula": ["A"],
+                                            "noiseFormula": ["sigma_A"]})], ignore_index=True)
+        pars = pd.concat([pars, pd.DataFrame([{"parameterId": "sigma_A", "parameterScale": "lin",
+                                               "lowerBound": 1e-4, "upperBound": 100.0,
+                                               "nominalValue": 0.1, "estimate": 0}])],
+                         ignore_index=True)
+        meas = pd.concat([meas, meas.assign(observableId="obs_A")], ignore_index=True)
+    obs.to_csv(held / "observables.tsv", sep="\t", index=False)
+    pars.to_csv(held / "parameters.tsv", sep="\t", index=False)
+    meas.to_csv(held / "measurements.tsv", sep="\t", index=False)
+    (held / "held.yaml").write_text(
+        f"format_version: 1\nparameter_file: parameters.tsv\nproblems:\n"
+        f"- sbml_files: [{sbml}]\n  condition_files: [conditions.tsv]\n"
+        f"  measurement_files: [measurements.tsv]\n  observable_files: [observables.tsv]\n")
+    return name, tmp_path
+
+
+@pytest.mark.parametrize("kind, needle", [("identical", "identical"), ("unknown", "k_new")])
+def test_transfer_setup_rejects_invalid_source_parameters_before_pruning(tmp_path, kind, needle):
+    """Compare against the full published table at setup, where reference kinetics are known.
+    An unknown estimated source row must not disappear through the unused-parameter pruning."""
+    from petab_harness import benchmark
+
+    name, coll = _mini_collection(tmp_path)
+    bdir = coll / name
+    path = bdir / "held/parameters.tsv"
+    if kind == "identical":
+        shutil.copy(bdir / "parameters.tsv", path)
+    else:
+        pars = pd.read_csv(path, sep="\t")
+        extra = pars.loc[pars.parameterId == "k1"].assign(parameterId="k_new")
+        pd.concat([pars, extra]).to_csv(path, sep="\t", index=False)
+    published = benchmark._load_problem(name, coll, flatten=False)
+    with pytest.raises(ValueError, match=needle):
+        benchmark._transfer_problem(name=name, transfer_yaml="held/held.yaml", collection=coll,
+                                    published=published,
+                                    training_measurement_df=published.measurement_df)
+
+
+def test_the_transfer_problem_is_the_held_out_problem_verbatim(tmp_path):
+    """Nothing is cropped: what the paper measured on the second system is what both sides are
+    refit on, and the held-out problem's own tables (its `A_init`) are the start point. A
+    `conditionName` column is free text, not an input, and does not make it a different model."""
+    from petab_harness import benchmark
+
+    name, coll = _mini_collection(tmp_path, condition_name=True)
+    published = benchmark._load_problem(name, coll, flatten=False)
+    vprob = benchmark._transfer_problem(name=name, transfer_yaml="held/held.yaml", collection=coll,
+                                        published=published,
+                                        training_measurement_df=published.measurement_df)
+    assert list(vprob.observable_df.index) == ["obs_B"]
+    assert set(vprob.measurement_df["simulationConditionId"]) == {"c1"}
+    assert len(vprob.measurement_df) == 6
+    assert vprob.parameter_df.loc["A_init", "nominalValue"] == 2.0
+
+
+@pytest.mark.parametrize("knob, needle", [
+    ({"held_sbml_same": False}, "SBML differs"),
+    ({"extra_condition_column": True}, "condition table has columns"),
+    ({"redefine_observable": True}, "defined differently"),
+    ({"extra_observable": True}, "obs_A"),
+])
+def test_a_held_out_problem_that_is_not_the_same_mechanism_is_refused(tmp_path, knob, needle):
+    """'Same mechanism, different system' is the premise of the comparison. A variant that edited
+    the model, added an input, or redefined an observable would refit a DIFFERENT structure as the
+    bar; one that measures a readout the training problem never defined (Bahia's hospital and ICU
+    beds) cannot be scored on it, and dropping the readout would score a subset of the experiment
+    without saying so. All refused at setup, where the message can say what changed."""
+    from petab_harness import benchmark
+
+    name, coll = _mini_collection(tmp_path, **knob)
+    published = benchmark._load_problem(name, coll, flatten=False)
+    with pytest.raises(ValueError, match=needle):
+        benchmark._transfer_problem(name=name, transfer_yaml="held/held.yaml", collection=coll,
+                                    published=published,
+                                    training_measurement_df=published.measurement_df)
+
+
+@pytest.mark.parametrize("rename", [False, True])
+def test_materialize_writes_the_three_tables_beside_problem_and_the_server_reads_a_transfer(
+        tmp_path, rename):
+    """Read back the transfer bundle outside problem/, with matching IDs after relabelling.
+    Its parameter table must select transfer mode and retain the reference's parameter rows."""
+    from petab_harness import benchmark
+
+    name, coll = _mini_collection(tmp_path)
+    example_dir = tmp_path / "example"
+    out = benchmark.materialize(name=name, shipped_param_ids=["sigma_B", "A_init", "B_init"],
+                                example_dir=example_dir, transfer_yaml="held/held.yaml",
+                                rename_ids={"c1": "held_out", "A_init": "seed"} if rename else None,
+                                collection=coll)
+    assert out["validation_measurements"] == 6
+    vpath = benchmark.validation_measurements_path(example_dir)
+    assert vpath.parent.name == benchmark.VALIDATION_DIR
+    assert not (example_dir / "problem" / "measurements.tsv").read_text().count("c1")
+    held = V.read_held_out(vpath)
+    assert held.mode == V.MODE_TRANSFER
+    condition = "held_out" if rename else "c1"
+    assert list(held.condition_df.index) == [condition] and "conditionName" not in held.condition_df
+    assert set(held.measurement_df["simulationConditionId"]) == {condition}
+    assert held.parameter_df.loc["seed" if rename else "A_init", "nominalValue"] == 2.0
+    assert "k1" in held.parameter_df.index, "verbatim: which rows apply is the scorer's rule"
+
+
+def test_the_two_kinds_of_held_out_set_are_mutually_exclusive(tmp_path):
+    from petab_harness import benchmark
+
+    name, coll = _mini_collection(tmp_path)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        benchmark.materialize(name=name, shipped_param_ids=["sigma_B"], example_dir=tmp_path / "e",
+                              validation_yaml="held/held.yaml", transfer_yaml="held/held.yaml",
+                              collection=coll)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        benchmark.write_reference_for(name=name, example_dir=tmp_path / "e", collection=coll,
+                                      validation_yaml="held/held.yaml",
+                                      transfer_yaml="held/held.yaml")
+
+
+@pytest.mark.parametrize("fixed", [False, True])
+def test_materialize_retires_a_transfer_bundle_when_its_declaration_changes(tmp_path, fixed):
+    """An old parameters.tsv must not select transfer mode for new fixed-θ data; removing the
+    declaration must also remove the measurements that trigger the judge's held-out call."""
+    from petab_harness import benchmark
+
+    name, coll = _mini_collection(tmp_path)
+    bdir = coll / name
+    pd.read_csv(bdir / "measurements.tsv", sep="\t").assign(time=lambda df: df.time + 100).to_csv(
+        bdir / "fixed_measurements.tsv", sep="\t", index=False)
+    (bdir / "fixed.yaml").write_text((bdir / f"{name}.yaml").read_text().replace(
+        "measurements.tsv", "fixed_measurements.tsv"))
+    kwargs = dict(name=name, shipped_param_ids=["sigma_B", "A_init", "B_init"],
+                  example_dir=tmp_path / "example", collection=coll)
+    benchmark.materialize(**kwargs, transfer_yaml="held/held.yaml")
+    benchmark.materialize(**kwargs, validation_yaml="fixed.yaml" if fixed else None)
+    path = benchmark.validation_measurements_path(kwargs["example_dir"])
+    assert not path.with_name(V.HELD_OUT_CONDITIONS).exists()
+    assert not path.with_name(V.HELD_OUT_PARAMETERS).exists()
+    assert path.exists() == fixed
+    if fixed:
+        assert V.read_held_out(path).mode == V.MODE_FIXED
+
+
+def test_the_reference_refit_lands_in_reference_json_with_its_mode_and_a_failure_is_recorded(
+        tmp_path, monkeypatch):
+    """`write_reference_for` has two arms (published split / freed split) and one tail; the transfer
+    block has to reach the file from the tail, tagged `mode: transfer`, or the judge would subtract a
+    fixed-θ bar from a transfer payload. And a refit that raises must be RECORDED as an error, not
+    allowed to discard the training bar that was just fit."""
+    from petab_harness import benchmark, simulate
+
+    name, coll = _mini_collection(tmp_path)
+    example_dir = tmp_path / "example"
+    (example_dir / "problem").mkdir(parents=True)
+
+    def _fake_training(problem, *, path, **_):
+        ref = {"nll": 1.0, "k": 2, "n": 6}
+        Path(path).write_text(json.dumps(ref))
+        return ref
+
+    seen = {}
+
+    # No budget parameters: the training knob passed below must NOT reach the transfer refit, and
+    # this signature is what makes that a failure rather than a silently-accepted keyword.
+    def _fake_refit(problem, *, build_dir, model_name, n_starts):
+        seen["n_starts"] = n_starts
+        seen["k"] = int((problem.parameter_df["estimate"].astype(float) == 1).sum())
+        seen["A_init"] = float(problem.parameter_df.loc["A_init", "nominalValue"])
+        seen["build_dir"] = str(build_dir)
+        return {"status": "ok", "mode": "transfer", "nll": 3.0, "k": seen["k"], "n": 6}
+
+    monkeypatch.setattr(simulate, "write_reference_from_problem", _fake_training)
+    monkeypatch.setattr(V, "refit_problem", _fake_refit)
+    ref = benchmark.write_reference_for(name=name, example_dir=example_dir, collection=coll,
+                                        n_starts=7, per_start_timeout=11.0,
+                                        transfer_yaml="held/held.yaml")
+    on_disk = json.loads((example_dir / "problem" / "reference.json").read_text())
+    assert on_disk == ref
+    assert ref["validation"] == {"status": "ok", "mode": "transfer", "nll": 3.0, "k": 2, "n": 6}
+    assert seen["n_starts"] == 7
+    assert seen["A_init"] == 2.0, "the reference refits the HELD-OUT problem, at its own values"
+    assert "pristine_transfer_" in seen["build_dir"]
+
+    monkeypatch.setattr(V, "refit_problem", lambda *a, **k: {"status": "non_finite"})
+    ref = benchmark.write_reference_for(name=name, example_dir=example_dir, collection=coll,
+                                        transfer_yaml="held/held.yaml")
+    assert ref["validation"] == {"status": "non_finite", "mode": "transfer"}
+
+    def _raising(*a, **k):
+        raise RuntimeError("no module")
+
+    monkeypatch.setattr(V, "refit_problem", _raising)
+    ref = benchmark.write_reference_for(name=name, example_dir=example_dir, collection=coll,
+                                        transfer_yaml="held/held.yaml")
+    assert ref["nll"] == 1.0, "the training bar survives"
+    assert ref["validation"]["status"] == "error" and ref["validation"]["mode"] == "transfer"
+    assert "no module" in ref["validation"]["reason"]
 
 
 def test_the_server_tool_takes_n_starts_and_refits_a_transfer_bundle(tmp_path):
