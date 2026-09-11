@@ -78,6 +78,14 @@ def read_sweep_data() -> dict | None:
         raise ValueError(f"{path}: example order must cover every observed example once")
     if not data.get("jobs") or not data.get("source") or data.get("per_example", 0) < 1:
         raise ValueError(f"{path}: missing sweep provenance or selection size")
+    for example, counts in data["counts"].items():
+        if "modalities" in counts:
+            modalities = counts["modalities"]
+            if (not isinstance(modalities, list)
+                    or any(not isinstance(m, str) or not m for m in modalities)
+                    or counts.get("n_modalities") != len(modalities)
+                    or len(set(modalities)) != len(modalities)):
+                raise ValueError(f"{path}: inconsistent modality count for {example}")
     return data
 
 
@@ -122,7 +130,7 @@ def sweep_macros(data: dict) -> dict[str, str]:
             raise ValueError(f"duplicate sweep macro prefix: {prefix}")
         macros[prefix + "RunCount"] = str(row["run_count"])
         for key, suffix in (("n_observables", "Observables"), ("n_datapoints", "Datapoints"),
-                            ("n_conditions", "Conditions")):
+                            ("n_conditions", "Conditions"), ("n_modalities", "Modalities")):
             macros[prefix + suffix] = _sweep_number(row["counts"].get(key))
         for suffix, metric in row["metrics"].items():
             macros[prefix + "Median" + suffix] = _sweep_number(metric["median"])
@@ -136,7 +144,7 @@ def render_sweep_csv(data: dict) -> str:
     for ex, summary in sweep_statistics(data).items():
         row = {"example": ex, "n_runs": summary["run_count"],
                **{key: summary["counts"].get(key)
-                  for key in ("n_observables", "n_datapoints", "n_conditions")}}
+                  for key in ("n_observables", "n_datapoints", "n_conditions", "n_modalities")}}
         for suffix, metric in summary["metrics"].items():
             row["median_" + suffix] = metric["median"]
             row["n_" + suffix] = metric["n"]
