@@ -698,6 +698,7 @@ def _transfer_problem(*, name: str, transfer_yaml: str, collection: Path | None,
     _check_held_out_rows(name, vprob, published, training_measurement_df)
     return vprob
 
+
 def _held_out_source(*, name: str, validation_yaml: str | None, validation_table: str | None,
                      example_dir: Path, collection: Path | None, published,
                      transfer_yaml: str | None = None):
@@ -755,9 +756,11 @@ def _curated_held_out(*, name: str, validation_table: str, example_dir: Path, pu
       published parameter table — new rows, or published rows with another value, bound or
       ``estimate`` — and may be header-only; the published table is the rest, pruned to what the
       held-out tables reference, and checked as a collection transfer problem is
-      (:func:`petab_mcp.validation_data._reject_untransferable_table`). A ``conditions.tsv`` then
-      REPLACES the training condition table, on the same columns, and a ``units.tsv``
-      (``conditionId``, ``unitId``) names the systems the set is refit on, one at a time
+      (:func:`petab_mcp.validation_data._reject_untransferable_table`); a ``conditions.tsv``
+      naming conditions the published table lacks, or giving the inputs new values, is what makes
+      the set another system when the delta is empty. That table REPLACES the training condition
+      table, on the same columns, and a ``units.tsv`` (``conditionId``, ``unitId``) names the
+      systems the set is refit on, one at a time
       (:attr:`petab_mcp.validation_data.HeldOut.units`); without it the set is one system.
     """
     import copy
@@ -810,11 +813,16 @@ def _curated_held_out(*, name: str, validation_table: str, example_dir: Path, pu
                     f"published {mine}; a condition column is a model input, so the two tables "
                     f"describe different models")
             vprob.condition_df = vcond
-            # A row with input values no published row has is another system; published rows
-            # under new ids are not one by themselves.
+            # A condition the published table does not have is another experiment (crauste's F5
+            # responses: same inputs, other cells and antigen, every rate refit as the paper did),
+            # and a row with input values no published row has is another system (lucarelli).
+            # Either makes the set a transfer set without a delta row; re-using published
+            # conditions with published values does not.
             known = {tuple(map(str, r)) for r in published.condition_df[mine].itertuples(index=False)}
-            system_differs = any(tuple(map(str, r)) not in known
-                                 for r in vcond[mine].itertuples(index=False))
+            system_differs = (any(str(c) not in set(map(str, published.condition_df.index))
+                                  for c in vcond.index)
+                              or any(tuple(map(str, r)) not in known
+                                     for r in vcond[mine].itertuples(index=False)))
         # Only the observables the set measures: a sigma no held-out row informs is not a
         # parameter of the refit, and a delta row for it names nothing the set uses.
         measured = set(vmeas[OBSERVABLE_ID].astype(str))
@@ -952,7 +960,8 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     and parameter tables are written beside them (``conditions.tsv``, ``parameters.tsv``), and the
     parameter table's presence is what tells the server to refit rather than evaluate
     (:class:`petab_mcp.validation_data.HeldOut`). One held-out set per example: the two are
-    mutually exclusive."""
+    mutually exclusive.
+"""
     from petab.v1.C import CONDITION_NAME
 
     problem_dir = Path(example_dir) / "problem"
@@ -1285,6 +1294,7 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     # the same reason `materialize` compares unflattened tables: flattening is an AMICI detail
     # applied downstream, and the yaml's own tables are what the identity check is about.
     held_out = None
+    pristine = None
     if validation_yaml or validation_table or transfer_yaml:
         pristine = _load_problem(name, collection, flatten=False)
         held_out = _held_out_source(

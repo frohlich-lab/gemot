@@ -547,18 +547,18 @@ def test_a_curated_table_with_a_parameter_table_beside_it_is_a_transfer_set(tmp_
     assert list(held.parameter_df["estimate"]) == list(published["estimate"])
 
 
-@pytest.mark.parametrize("delta, needle", [
-    ([], "identical"),
-    ([("k_new", "log10", 1e-3, 1e3, 1.0, 1)], "k_new"),
+@pytest.mark.parametrize("delta, conditions, needle", [
+    ([], ("c0",), "identical"),
+    ([("k_new", "log10", 1e-3, 1e3, 1.0, 1)], ("c1",), "k_new"),
 ])
-def test_a_curated_parameter_table_is_checked_like_a_collection_transfer_problem(tmp_path, delta,
-                                                                                 needle):
-    """A header-only file over unchanged inputs changes nothing, so nothing transfers; a new
+def test_a_curated_parameter_table_is_checked_like_a_collection_transfer_problem(
+        tmp_path, delta, conditions, needle):
+    """A header-only file on the published conditions changes nothing, so nothing transfers; a new
     estimated mechanism parameter is a rate the published model cannot carry. The same rule as for
     a collection's second problem, at setup, naming the file."""
     from petab_harness import benchmark
 
-    table = _curated_transfer(tmp_path, delta=delta)
+    table = _curated_transfer(tmp_path, delta=delta, conditions=conditions)
 
     with pytest.raises(ValueError, match=needle) as exc:
         benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
@@ -599,14 +599,14 @@ def test_a_bound_only_delta_is_a_change(tmp_path):
 def test_new_input_values_make_a_system_and_a_pruned_row_does_not(tmp_path):
     """lucarelli's shape, on the toy: `k1` as a per-condition input the published table sets to
     itself, the curated table to a number. Header-only delta. The number is what makes it another
-    system, and the retired `k1` row leaves the table. The same files with the published value
-    instead are the published problem again — refused as identical even though pruning `k1` would
-    have made the two parameter tables differ."""
+    system, and the retired `k1` row leaves the table. The same files with the published value on
+    the published condition are the published problem again — refused as identical even though
+    pruning `k1` would have made the two parameter tables differ."""
     from petab_harness import benchmark
 
     published = _toy_published()
     published.condition_df["k1"] = ["k1"]
-    table = _curated_transfer(tmp_path)
+    table = _curated_transfer(tmp_path, conditions=("c1",))
     cpath = tmp_path / "curated" / V.HELD_OUT_CONDITIONS
     pd.DataFrame({"conditionId": ["c1"], "k1": [0.5]}).to_csv(cpath, sep="\t", index=False)
 
@@ -614,10 +614,27 @@ def test_new_input_values_make_a_system_and_a_pruned_row_does_not(tmp_path):
                                        published=published)
     assert held.mode == V.MODE_TRANSFER and "k1" not in held.parameter_df.index
 
-    pd.DataFrame({"conditionId": ["c1"], "k1": ["k1"]}).to_csv(cpath, sep="\t", index=False)
+    _curated_transfer(tmp_path, conditions=("c0",))
+    pd.DataFrame({"conditionId": ["c0"], "k1": ["k1"]}).to_csv(cpath, sep="\t", index=False)
     with pytest.raises(ValueError, match="identical"):
         benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
                                     published=published)
+
+
+def test_a_new_experiment_is_a_system_without_new_inputs_or_a_delta(tmp_path):
+    """crauste's shape: no input columns, no parameter change, two conditions the published table
+    never had — another experiment on the same mechanism, every rate refit. Two deliberate files,
+    so it is not a mis-annotation, and the identity check stands aside."""
+    from petab_harness import benchmark
+
+    table = _curated_transfer(tmp_path, conditions=("F5_tumour", "F5_virus"))
+
+    held = benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
+                                       published=_toy_published())
+
+    assert held.mode == V.MODE_TRANSFER
+    assert list(held.condition_df.index) == ["F5_tumour", "F5_virus"]
+    assert held.parameter_df.equals(_toy_published().parameter_df)
 
 
 def test_a_sigma_no_held_out_row_informs_is_not_a_parameter_of_the_refit(tmp_path):
