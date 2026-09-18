@@ -116,3 +116,33 @@ Do not add a table back: the hand-kept one drifted from the pinned endpoints wit
 priced runs wrong silently, and fetching live prices at analysis time was rejected too, since it
 reprices old runs at today's rates and this path is offline by design. A run with no recorded
 figure is `None`, never 0.0, which would read as free in a mean.
+
+#192 perelson does not tell the agent its pre-treatment state; it makes it preequilibrate to one.
+The export's `T0`, `Tstar(0)` and `V(0)` = `Vin(0)` are to the digit one endemic steady state, and
+`K0` is the paper's `c = N*k*T0` identity (footnote 10) solved for `k` — four numbers that are one
+object, and right only at `c = 2.06`. Writing that state down for the agent is the modelling this
+example exists to test, so `rit` gates the drug's effect on new virions and the target pool's
+turnover and the solver finds it: preeq reaches `T` = 11000.0 from any start (`c - N*k*T` = -7.4e-12,
+the identity DERIVED) and the treated phase reproduces Eq. 6 to 6.8e-12 with `T` held, which is the
+paper's own assumption for the treated week. Eqs 1/2 with `T` pinned are linear and homogeneous, so
+no gate alone can do this — the pool has to turn over untreated for the endemic state to be an
+attractor rather than a ray through the origin. `NN`/`T0`/`K0` are gauge (`S = NN*Tstar` removes all
+three), so none is shipped and `TRUE_ANT` carries none.
+
+#192 The bar stays the PRISTINE published problem, which has no parameter for the pre-treatment
+scale while a preequilibrated model has one, so a correct build is `k` = 4 and pays `ln(16)` = +1.5
+BIC. `REFERENCE_FREE_PARAMS` cannot close this — it frees rows of the PUBLISHED table and `V0` exists
+only in the patched model — and patching the training reference would redefine what a reference is
+for every example. Revisit if live runs show +1.5 biting.
+
+#192 `TRAINING_MEASUREMENTS` restates the published measurement table from one the example commits.
+The collection's perelson series is a digitisation of Fig. 1B where the study's own release has the
+measured values, and they disagree materially at one point. Restating happens in `_load_problem`, so
+the agent's copy and every reference stage read one source; a table naming an observable or condition
+the published problem lacks is refused rather than silently extending it.
+
+#192 A transfer set may free a parameter the (patched) reference model defines even when the
+published parameter table lacks it: what makes one unmanageable is having no counterpart at all, not
+being absent from a table the patch is entitled to extend. `PREEQUILIBRATION` may also accompany a
+transfer set — the synthesized preequilibration condition goes into the held-out condition table,
+which REPLACES the training one at refit time.

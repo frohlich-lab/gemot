@@ -85,7 +85,8 @@ def benchmark_dir(name: str, collection: Path | None = None) -> Path:
     return d
 
 
-def _load_problem(name: str, collection: Path | None, flatten: bool = True):
+def _load_problem(name: str, collection: Path | None, flatten: bool = True,
+                  restated_measurements: Path | None = None):
     """The published petab problem — flattened only when AMICI genuinely requires it AND the
     caller asks (the reference fit, which hands the problem to pypesto directly).
 
@@ -101,10 +102,38 @@ def _load_problem(name: str, collection: Path | None, flatten: bool = True):
     from petab_mcp.fitting import needs_flattening
 
     prob = petab.Problem.from_yaml(str(benchmark_dir(name, collection) / f"{name}.yaml"))
+    if restated_measurements is not None:
+        prob.measurement_df = _restate_measurements(name, prob, restated_measurements)
     if flatten and needs_flattening(prob):
         print(f"[setup] {name}: flattening timepoint-specific output overrides (petab)")
         petab.flatten_timepoint_specific_output_overrides(prob)
     return prob
+
+
+def _restate_measurements(name: str, published, path: Path):
+    """The published measurement table replaced by one the example commits, in the PUBLISHED
+    vocabulary — so it may name only the published observables and conditions.
+
+    Same shape as a curated held-out table (:func:`_curated_held_out`), one directory over: the
+    collection's copy of a series can be a digitisation of the paper's figure where the study's own
+    release has the measured values (perelson).
+    """
+    import petab.v1 as petab
+    from petab.v1.C import OBSERVABLE_ID, SIMULATION_CONDITION_ID
+
+    if not path.is_file():
+        raise ValueError(f"{name}: TRAINING_MEASUREMENTS {path} does not exist")
+    df = petab.get_measurement_df(str(path))
+    for column, known, what in (
+            (OBSERVABLE_ID, set(published.observable_df.index.astype(str)), "observable"),
+            (SIMULATION_CONDITION_ID, set(published.condition_df.index.astype(str)), "condition")):
+        unknown = sorted(set(df[column].astype(str)) - known)
+        if unknown:
+            raise ValueError(f"{name}: {path.name} names {what}(s) the published problem does not "
+                             f"define: {unknown}")
+    print(f"[setup] {name}: training measurements RESTATED from {path.name}: {len(df)} row(s) "
+          f"replace the published {len(published.measurement_df)}")
+    return df
 
 
 def _write_problem_yaml(problem_dir: Path) -> None:
@@ -699,6 +728,107 @@ def _transfer_problem(*, name: str, transfer_yaml: str, collection: Path | None,
     return vprob
 
 
+def _ast_names(node) -> set[str]:
+    names = {node.getName()} if node.isName() else set()
+    for i in range(node.getNumChildren()):
+        names |= _ast_names(node.getChild(i))
+    return names
+
+
+def patch_reference_model(model, patch: dict[str, Any]) -> "tuple[Any, list[str]]":
+    """The reference STRUCTURE with the documented change that re-derives, as an expression, an
+    initial value the PEtab export froze to a number. Returns ``(patched_model, touched)``;
+    ``model`` is left as it is.
+
+    ``patch`` is declarative, so what was done to the published model is readable in the example's
+    ``run.py`` rather than in code: ``{"parameters": {id: value}}`` adds constant SBML parameters
+    and ``{"initial_assignments": {id: expression}}`` sets a species' or parameter's initial value
+    from an expression — perelson's initial viral load ``V0``, and the infected-cell pool and
+    infectivity the paper derives from it, all three frozen numbers in the export.
+
+    The patched model agrees with the pristine one AT THE PUBLISHED VECTOR. A transfer set REFITS
+    it, and there the two structures part company, which is the point; the training bar stays the
+    pristine model's.
+
+    Refuses a parameter the model already has, an expression naming an unknown symbol, and an
+    initial assignment on an id that is not in the model, has one already or is driven by an
+    assignment rule — each a patch that would do something other than what it says.
+    """
+    import libsbml
+    from petab.v1.models.sbml_model import SbmlModel
+
+    doc = model.sbml_document.clone()
+    sbml = doc.getModel()
+    for pid, value in (patch.get("parameters") or {}).items():
+        if sbml.getElementBySId(pid) is not None:
+            raise ValueError(f"patch_reference_model: {pid!r} is already in the reference model")
+        p = sbml.createParameter()
+        p.setId(pid)
+        p.setValue(float(value))
+        p.setConstant(True)
+    known = {sbml.getParameter(i).getId() for i in range(sbml.getNumParameters())}
+    known |= {sbml.getSpecies(i).getId() for i in range(sbml.getNumSpecies())}
+    known |= {sbml.getCompartment(i).getId() for i in range(sbml.getNumCompartments())}
+
+    def _math(expression, what):
+        ast = libsbml.parseL3Formula(str(expression))
+        if ast is None:
+            raise ValueError(f"patch_reference_model: cannot parse {expression!r} for {what}")
+        unknown = sorted(_ast_names(ast) - known)
+        if unknown:
+            raise ValueError(f"patch_reference_model: {expression!r} names {unknown}, which the "
+                             f"reference model does not define")
+        return ast
+
+    touched: list[str] = []
+    for target, expression in (patch.get("initial_assignments") or {}).items():
+        if sbml.getElementBySId(target) is None:
+            raise ValueError(f"patch_reference_model: {target!r} is not in the reference model")
+        if sbml.getInitialAssignmentBySymbol(target) is not None:
+            raise ValueError(f"patch_reference_model: {target!r} already has an initial assignment")
+        if sbml.getAssignmentRuleByVariable(target) is not None:
+            raise ValueError(f"patch_reference_model: {target!r} is set by an assignment rule, which "
+                             f"an initial assignment cannot override")
+        ia = sbml.createInitialAssignment()
+        ia.setSymbol(target)
+        ia.setMath(_math(expression, f"initial assignment of {target!r}"))
+        touched.append(f"{target}(0)")
+    return SbmlModel(sbml_model=sbml, sbml_document=doc, model_id=model.model_id), touched
+
+
+def _stated_problem(name: str, published, reference_patch):
+    """The published problem as the example STATES it for held-out scoring: the reference model
+    patched to re-derive the initial values the export froze (:func:`patch_reference_model`), and
+    a FIXED parameter row for each constant the patch added. ``published`` itself when the example
+    declares no patch.
+
+    The row matters as much as the model change: a held-out parameter table that ESTIMATES one of
+    these is a legitimate transfer (perelson fits each patient's own ``V0``), and
+    :func:`petab_mcp.validation_data._reject_untransferable_table` asks the published parameter
+    TABLE, not the model, whether the training problem has a counterpart for it.
+    """
+    import copy
+
+    from petab.v1.C import ESTIMATE, LOWER_BOUND, NOMINAL_VALUE, PARAMETER_SCALE, UPPER_BOUND
+
+    if not reference_patch:
+        return published
+    view = copy.copy(published)
+    view.model, touched = patch_reference_model(published.model, reference_patch)
+    added = {str(pid): float(v) for pid, v in (reference_patch.get("parameters") or {}).items()}
+    if added:
+        import pandas as pd
+
+        rows = pd.DataFrame(
+            [{PARAMETER_SCALE: "lin", LOWER_BOUND: value, UPPER_BOUND: value,
+              NOMINAL_VALUE: value, ESTIMATE: 0} for value in added.values()],
+            index=pd.Index(list(added), name=published.parameter_df.index.name))
+        view.parameter_df = pd.concat(
+            [published.parameter_df, rows.reindex(columns=published.parameter_df.columns)])
+    print(f"[setup] {name}: reference model patched for {sorted(added)}: {touched}")
+    return view
+
+
 def _held_out_source(*, name: str, validation_yaml: str | None, validation_table: str | None,
                      example_dir: Path, collection: Path | None, published,
                      transfer_yaml: str | None = None):
@@ -914,6 +1044,8 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
                 validation_yaml: str | None = None,
                 transfer_yaml: str | None = None,
                 validation_table: str | None = None,
+                reference_patch: dict[str, Any] | None = None,
+                training_measurements: str | None = None,
                 collection: Path | None = None) -> dict[str, Any]:
     """Write ``example_dir/problem/`` from the pinned collection — the fast, no-fit path run by
     ``setup.py``. Copies the published measurements/observables/conditions VERBATIM (flattening
@@ -961,12 +1093,17 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     parameter table's presence is what tells the server to refit rather than evaluate
     (:class:`petab_mcp.validation_data.HeldOut`). One held-out set per example: the two are
     mutually exclusive.
+
+    ``reference_patch`` re-derives, in the REFERENCE model only, initial values the published
+    export froze to numbers (:func:`patch_reference_model`), so a transfer set that refits can move
+    them; the training bar is the pristine model's.
 """
     from petab.v1.C import CONDITION_NAME
 
     problem_dir = Path(example_dir) / "problem"
     problem_dir.mkdir(parents=True, exist_ok=True)
-    prob = _load_problem(name, collection, flatten=False)
+    prob = _load_problem(name, collection, flatten=False, restated_measurements=(
+        None if training_measurements is None else Path(example_dir) / training_measurements))
 
     # BEFORE any rewriting: `prob` is still exactly as the collection ships it, which is what the
     # held-out yaml has to be checked against — so it serves as BOTH `published` and the training
@@ -976,12 +1113,8 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     held_out = _held_out_source(
         name=name, validation_yaml=validation_yaml, validation_table=validation_table,
         transfer_yaml=transfer_yaml, example_dir=example_dir, collection=collection,
-        published=prob)
+        published=_stated_problem(name, prob, reference_patch))
     validation_meas = held_out.measurement_df if held_out is not None else None
-    if preequilibration and held_out is not None and held_out.parameter_df is not None:
-        raise ValueError(f"{name}: a transfer set is not supported together with PREEQUILIBRATION "
-                         f"(the synthesized gate column would have to be added to the held-out "
-                         f"condition table too)")
 
     def _relabel(v):
         if not isinstance(v, str):
@@ -1120,6 +1253,14 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
             hcond = hcond.drop(columns=[c for c in (CONDITION_NAME,) if c in hcond.columns])
             if preequilibration:
                 hcond[preequilibration["gate_column"]] = 1
+                if held_out.parameter_df is not None:
+                    # A TRANSFER set replaces the condition table at refit time, so the synthesized
+                    # preequilibration condition has to be in it too — every held-out row names it.
+                    import pandas as pd
+                    from petab.v1.C import CONDITION_ID
+                    hcond = pd.concat([hcond, pd.DataFrame([{
+                        c: (preequilibration["preeq_condition_id"] if c == CONDITION_ID else 0)
+                        for c in hcond.columns}])], ignore_index=True)
             hcond.to_csv(cpath, sep="\t", index=False)
             out["validation_conditions"] = len(hcond)
             print(f"[setup] {name}: held-out set brings {len(hcond)} condition row(s) of its "
@@ -1198,6 +1339,8 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
                         validation_yaml: str | None = None,
                         transfer_yaml: str | None = None,
                         validation_table: str | None = None,
+                        reference_patch: dict[str, Any] | None = None,
+                        training_measurements: str | None = None,
                         ) -> dict[str, Any]:
     """Regenerate the committed ``reference.json`` (the reference bar): fit the PRISTINE published
     PEtab problem EXACTLY as it ships. Run only via ``setup.py --refit`` — slow, and its output is
@@ -1280,7 +1423,9 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     build_dir = Path(example_dir) / ".gen_build"
     # The pristine published problem (shipped SBML + full published parameter table + data),
     # flattened if it uses per-measurement output overrides — the same load materialize uses.
-    problem = _load_problem(name, collection)
+    restated = (None if training_measurements is None
+                else Path(example_dir) / training_measurements)
+    problem = _load_problem(name, collection, restated_measurements=restated)
     # param_overrides first: it repairs the published table (a broken noise model), and every
     # subsequent decision -- which rows count as already-estimated, which bounds a freed row gets
     # -- must see the repaired table. It is applied to BOTH reference stages below via the same
@@ -1294,17 +1439,24 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     # the same reason `materialize` compares unflattened tables: flattening is an AMICI detail
     # applied downstream, and the yaml's own tables are what the identity check is about.
     held_out = None
-    pristine = None
+    stated = None
     if validation_yaml or validation_table or transfer_yaml:
-        pristine = _load_problem(name, collection, flatten=False)
+        pristine = _load_problem(name, collection, flatten=False, restated_measurements=restated)
+        # The problem as the example states it — the reference model patched to re-derive the
+        # initial values the export froze — is what every held-out check and refit runs against.
+        stated = _stated_problem(name, pristine, reference_patch)
         held_out = _held_out_source(
             name=name, validation_yaml=validation_yaml, validation_table=validation_table,
             transfer_yaml=transfer_yaml, example_dir=example_dir, collection=collection,
-            published=pristine)
+            published=stated)
     transfer = held_out is not None and held_out.parameter_df is not None
     # A fixed-θ set is scored at the vector the training refit lands on, inside it; a transfer set
     # is REFIT from the published point after it (`_transfer_reference`), so the refit gets none.
     fixed = None if transfer else held_out
+    if fixed is not None and stated is not pristine:
+        raise ValueError(f"{name}: a reference patch is only applied where the reference is REFIT "
+                         f"(a transfer set). A fixed-θ set is scored on the pristine structure, "
+                         f"which would ignore the patch without saying so.")
 
     if not free_parameters:
         ref = write_reference_from_problem(
@@ -1318,6 +1470,7 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
             name=name, problem=problem, problem_dir=problem_dir, build_dir=build_dir,
             collection=collection, free_parameters=free_parameters,
             param_overrides=param_overrides, held_out=fixed,
+            restated_measurements=restated,
             n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout)
     # After both arms, so a freed reference pays for the published literals too, and rewritten
     # because charging changes the `k` the arm above already wrote to reference.json — as does the
@@ -1329,8 +1482,8 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
         # a curated set is the published problem under the set's tables.
         vprob = (_transfer_problem(
                      name=name, transfer_yaml=transfer_yaml, collection=collection,
-                     published=pristine, training_measurement_df=pristine.measurement_df)
-                 if transfer_yaml else _held_out_problem(pristine, held_out))
+                     published=stated, training_measurement_df=stated.measurement_df)
+                 if transfer_yaml else _held_out_problem(stated, held_out))
         ref["validation"] = _transfer_reference(
             name=name, vprob=vprob, param_overrides=param_overrides, build_dir=build_dir,
             n_starts=n_starts, units=held_out.units)
@@ -1382,6 +1535,7 @@ def _write_freed_reference(*, name: str, problem, problem_dir: Path, build_dir: 
                            collection: Path | None, free_parameters: list[str],
                            param_overrides: dict[str, dict] | None, held_out,
                            n_starts: int, n_workers: int | None,
+                           restated_measurements: Path | None = None,
                            per_start_timeout: float | None) -> dict[str, Any]:
     """The ``REFERENCE_FREE_PARAMS`` arm of :func:`write_reference_for` (alkan, bachmann,
     raimundez): fit the published split and the freed one, keep the better, write the result."""
@@ -1456,7 +1610,7 @@ def _write_freed_reference(*, name: str, problem, problem_dir: Path, build_dir: 
         n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout,
         held_out=held_out,
     )
-    freed = _load_problem(name, collection)
+    freed = _load_problem(name, collection, restated_measurements=restated_measurements)
     _apply_param_overrides(freed, name, param_overrides)  # same table on both stages
     freed.parameter_df.loc[free_parameters, ESTIMATE] = 1
     print(f"[setup] {name}: freeing {len(free_parameters)} published-fixed parameter(s) for the "
