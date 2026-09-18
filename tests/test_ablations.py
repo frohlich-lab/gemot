@@ -112,6 +112,7 @@ def test_module_runs_as_a_script():
 # unnoticed. Paths, credentials and telemetry endpoints change WHERE things go, not what the agent
 # does; the bio cache and OmniPath snapshot are plumbing (see the ablations module docstring).
 _NOT_ABLATIONS = {
+    "AMICI_LOG": "AMICI log level, not a behavioural switch",
     "BENCHMARK_MODELS_PETAB": "path to the benchmark collection",
     "BENCHMARK_MODELS_PETAB_CACHE": "path to the benchmark download cache",
     "OPENROUTER_API_KEY": "credential",
