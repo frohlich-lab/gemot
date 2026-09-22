@@ -43,6 +43,9 @@ from .problem import Problem
 #: benchmarks it enlarged the search without buying accuracy.
 HILL_OPERATOR = "hill(x, k) = x / (k * k + abs(x) + eps(x))"
 DEFAULT_BINARY_OPERATORS = ("+", "-", "*", "/")
+#: Rows the basal (preequilibration) state contributes to the sample, per experiment. Enough that
+#: the regression sees the gated input at both values, few enough not to outweigh the trajectory.
+_BASAL_SAMPLE_ROWS = 25
 #: What the server reserves for a measurement mapping (``petab_mcp.validation``,
 #: ``petab_mcp.reconcile``): a symbol so named must be an assignment rule, never a species.
 READOUT_PREFIX = "readout_"
@@ -159,6 +162,19 @@ def sample(problem: Problem, result: T.TrainResult, config: DistilConfig,
         rows.append(arrays["states"][finite])
         times.append(arrays["times"][finite])
         experiments += [experiment] * int(finite.sum())
+        # The BASAL regime as well, where there is one. A gated input takes its other value only
+        # in the preequilibration condition -- perelson's `rit` is 1 in its one experiment and 0
+        # in `preeq_untreated` -- so sampling the experiments alone leaves that column constant,
+        # the regression cannot see the input at all, and the server then rejects every proposal
+        # for "the condition table sets 'rit' ... but the model never uses 'rit'". The state there
+        # is the trajectory's own t=0, which IS what preequilibration relaxed to, and the field is
+        # at rest in it: the rows say dx/dt = 0 at the untreated steady state, which is true.
+        basal = problem.preequilibration.get(experiment)
+        if basal is not None and finite.any():
+            settled = arrays["states"][finite][:1]
+            rows.append(np.repeat(settled, _BASAL_SAMPLE_ROWS, axis=0))
+            times.append(np.zeros(_BASAL_SAMPLE_ROWS))
+            experiments += [basal] * _BASAL_SAMPLE_ROWS
     states = np.concatenate(rows)
     if not states.size:
         raise ValueError("the fitted field produced no finite trajectory to sample")

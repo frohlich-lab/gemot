@@ -212,12 +212,17 @@ def load(problem: Path | str, *, name: str | None = None, dosed: tuple[str, ...]
             if stem != key and stem in lower and lower[stem] not in pinned_starts:
                 pinned_starts[lower[stem]] = float(value)
 
-    values, given = _condition_values(conditions, targets, experiment_ids, nominal, warnings)
+    preequilibration = _preequilibration(meas, experiment_ids, name)
+    # The preequilibration conditions are read too, not just the experiments'. Their input values
+    # are the ONLY place a gated input takes its other value -- perelson's `rit` is 1 in its single
+    # experiment and 0 only in `preeq_untreated` -- and the distiller needs both to recover any
+    # dependence on it at all (`distil.sample`).
+    basal = tuple(dict.fromkeys(preequilibration.values()))
+    values, given = _condition_values(conditions, targets, (*experiment_ids, *basal), nominal, warnings)
     column_starts = frozenset(
         (experiment, state)
         for target, state in start_columns.items()
         for e, experiment in enumerate(experiment_ids) if given[target][e])
-    preequilibration = _preequilibration(meas, experiment_ids, name)
     identity = {oid: f for oid, f in formulas.items() if f.strip() in observed}
     measured_starts: dict[tuple[str, str], float] = {}
     at_start = meas[(meas[C.TIME] == 0.0) & meas[C.OBSERVABLE_ID].isin(identity)]
@@ -228,11 +233,12 @@ def load(problem: Path | str, *, name: str | None = None, dosed: tuple[str, ...]
     scales: dict[str, float] = {}
     for state in observed:
         scales[state] = _observed_scale(state, meas, formulas, nominal)
+    n_experiments = len(experiment_ids)
     for target, state in start_columns.items():
         if state in dosed_states:
-            scales[state] = _rms(values[target])
+            scales[state] = _rms(values[target][:n_experiments])
     for target in inputs:
-        scales[target] = _rms(values[target])
+        scales[target] = _rms(values[target][:n_experiments])
     finite = meas[C.TIME].astype(float)
     finite = finite[np.isfinite(finite)]
     horizon = float(finite.max()) if len(finite) and finite.max() > 0 else 1.0
@@ -243,7 +249,8 @@ def load(problem: Path | str, *, name: str | None = None, dosed: tuple[str, ...]
     return Problem(
         name=name, source=yaml_path, observable_ids=observable_ids, observed=tuple(observed),
         dosed=tuple(dosed_states), inputs=tuple(inputs), timed_inputs=timed,
-        condition_values={e: {t: float(values[t][i]) for t in targets} for i, e in enumerate(experiment_ids)},
+        condition_values={e: {t: float(values[t][i]) for t in targets}
+                          for i, e in enumerate((*experiment_ids, *basal))},
         start_columns=start_columns, column_starts=column_starts, pinned_starts=pinned_starts,
         measured_starts=measured_starts,
         experiment_ids=experiment_ids, preequilibration=preequilibration,
