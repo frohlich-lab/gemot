@@ -71,6 +71,8 @@ class Problem:
     #: Condition columns the field reads as clamped constants.
     inputs: tuple[str, ...]
     timed_inputs: tuple[TimedInput, ...]
+    #: Experiment -> every condition column's value there, a parameter read as its nominal.
+    condition_values: dict[str, dict[str, float]]
     #: Condition column -> the state whose start it sets.
     start_columns: dict[str, str]
     #: ``(experiment, state)`` a start column actually pins. A column sets a start only where its
@@ -238,6 +240,7 @@ def load(problem: Path | str, *, name: str | None = None, dosed: tuple[str, ...]
     return Problem(
         name=name, source=yaml_path, observable_ids=observable_ids, observed=tuple(observed),
         dosed=tuple(dosed_states), inputs=tuple(inputs), timed_inputs=timed,
+        condition_values={e: {t: float(values[t][i]) for t in targets} for i, e in enumerate(experiment_ids)},
         start_columns=start_columns, column_starts=column_starts, pinned_starts=pinned_starts,
         measured_starts=measured_starts,
         experiment_ids=experiment_ids, preequilibration=preequilibration,
