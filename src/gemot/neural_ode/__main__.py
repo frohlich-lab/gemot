@@ -47,6 +47,10 @@ def main(argv: list[str] | None = None) -> int:
     fit.add_argument("--out", type=Path, required=True)
     fit.add_argument("--dosed", default="", help="condition columns that dose a state, comma-separated")
     fit.add_argument("--windows", type=int, default=1)
+    fit.add_argument("--optimiser", choices=["adam", "fides", "adam+fides"], default="adam")
+    fit.add_argument("--learning-rate", dest="learning_rate", type=float, default=3e-3)
+    fit.add_argument("--rtol", type=float, default=1e-6)
+    fit.add_argument("--atol", type=float, default=1e-8)
     fit.add_argument("--continuity", type=float, default=1.0)
     fit.add_argument("--steps", type=int, default=1500)
     fit.add_argument("--restarts", type=int, default=4)
@@ -121,6 +125,8 @@ def _fit(args) -> int:
                            multiplicative=args.multiplicative,
                            shared_initial_conditions=args.shared_ics,
                            n_windows=args.windows,
+                           optimiser=args.optimiser, rtol=args.rtol, atol=args.atol,
+                           learning_rate=args.learning_rate,
                            continuity_weight=args.continuity, steps=args.steps, n_restarts=args.restarts,
                            seed=args.seed)
     args.out.mkdir(parents=True, exist_ok=True)

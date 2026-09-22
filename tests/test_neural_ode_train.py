@@ -67,3 +67,35 @@ def test_windows_are_ignored_under_preequilibration_and_reduced_on_sparse_data(t
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
     stages, notes = T._curriculum(problem, T.stage_only(problem, tmp_path / "sparse", config), replace(config, n_windows=6))
     assert 2 <= len(stages) <= 4 and notes and "n_windows=6 reduced to" in notes[0]
+
+
+def test_fides_restarts_are_not_failures_and_share_one_compiled_gradient(tmp_path, monkeypatch):
+    """Two defects this pins, both invisible to a single-restart fit and so to every other test.
+
+    A fides EXIT FLAG IS NOT A FAILURE. ``FTOL``/``GTOL``/``XTOL`` are it converging and
+    ``MAXITER`` is it spending its budget; reporting any of them down the fourth return value made
+    the caller discard the fit as an aborted restart.
+
+    And the jitted value-and-gradient BELONGS TO THE STEPPER, built once for the run. Closing a
+    fresh one over each restart's ``unravel`` compiles an XLA executable per restart, and enough of
+    them exhaust ``vm.max_map_count`` -- the ``LLVM compilation error: Cannot allocate memory``
+    abort ``pysr_worker`` documents, which killed a fifty-restart fit outright.
+    """
+    import equinox as eqx
+
+    problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
+    jits = []
+    real_filter_jit = eqx.filter_jit
+    monkeypatch.setattr(T.eqx, "filter_jit",
+                        lambda *a, **k: (jits.append(1), real_filter_jit(*a, **k))[1])
+    restarts = 4
+    config = T.TrainConfig(width=4, depth=1, steps=20, n_restarts=restarts, patience=1000,
+                           optimiser="fides")
+    result = T.train(problem, tmp_path / "run", config)
+
+    assert not result.solver_failed and math.isfinite(result.nll)
+    assert result.restart_failures == ()          # a converged restart is not a failed one
+    assert result.config.key().endswith("_fides_s0")
+    # The compilations belong to the stepper, one per curriculum stage -- NOT one per restart, so
+    # the count must not grow with `restarts`.
+    assert len(jits) < restarts, f"{len(jits)} jit compilations for {restarts} restarts"

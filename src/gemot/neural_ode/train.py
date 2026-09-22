@@ -76,6 +76,13 @@ class TrainConfig:
     #: Weight of the continuity penalty between adjacent windows.
     continuity_weight: float = 1.0
     steps: int = 1500
+    #: ``"adam"``, ``"fides"``, or ``"adam+fides"``. Adam takes a fixed step per iteration however curved the
+    #: objective is, which is why crauste needed 80,000 of them; fides is a trust-region method
+    #: that builds curvature from the gradients JAX already returns, so an iteration costs about
+    #: the same and buys far more. ``steps`` is its iteration cap too.
+    optimiser: str = "adam"
+    #: Share of the step budget Adam gets under ``"adam+fides"``; fides polishes with the rest.
+    adam_share: float = 0.5
     learning_rate: float = 3e-3
     n_restarts: int = 4
     seed: int = 0
@@ -90,7 +97,9 @@ class TrainConfig:
         clock = "_clock" if self.clock else ""
         shared = "_shared" if self.shared_initial_conditions else ""
         mult = "_mult" if self.multiplicative else ""
-        return f"aug{self.n_augmented}_w{self.width}d{self.depth}{windows}{clock}{shared}{mult}_s{self.seed}"
+        solver = "" if self.optimiser == "adam" else f"_{self.optimiser}"
+        return (f"aug{self.n_augmented}_w{self.width}d{self.depth}{windows}{clock}{shared}{mult}"
+                f"{solver}_s{self.seed}")
 
 
 @dataclass
@@ -139,7 +148,11 @@ def train(problem: Problem, directory: Path | str, config: TrainConfig) -> Train
         scalars: dict[str, float] = {}
         objectives: list[float] = []
         for jp, stepper, budget in zip(imported, steppers, budgets):
-            value, (networks, scalars), taken, failure = _fit(jp, stepper, networks, scalars, budget, config)
+            try:
+                fit = {"adam": _fit, "fides": _fit_fides, "adam+fides": _fit_hybrid}[config.optimiser]
+            except KeyError as failure:
+                raise ValueError(f"unsupported optimiser {config.optimiser!r}") from failure
+            value, (networks, scalars), taken, failure = fit(jp, stepper, networks, scalars, budget, config)
             steps_run += taken
             if failure is not None:
                 failures.append(f"restart {restart}: {failure}")
@@ -340,14 +353,101 @@ def _stepper(imported, config: TrainConfig, *, freeze_network: bool = False):
         updates, state = optimiser.update(gradient, state, eqx.filter(trained, eqx.is_inexact_array))
         return value, eqx.apply_updates(trained, updates), state
 
-    return objective, step, optimiser
+    # Built here, once, so a fides restart reuses the executable instead of compiling its own.
+    return objective, step, optimiser, eqx.filter_jit(eqx.filter_value_and_grad(objective))
+
+
+#: Bound on every coordinate fides searches -- network weights and the LOGS of the scalars alike.
+#: The method needs a finite box; exp(20) covers any sigma or start these problems carry, and a
+#: weight of 20 is far outside anything a trained tanh field uses.
+FIDES_BOUND = 20.0
+
+
+def _fit_fides(imported, stepper, networks: dict, scalars: dict[str, float], steps: int,
+               config: TrainConfig):
+    """One stage under fides, with the same signature and return as :func:`_fit`.
+
+    The trained state is a pytree of network weights and the scalars' logs; fides wants one flat
+    vector, so it is ravelled once and the unravel closed over. Curvature comes from a BFGS update
+    over the gradients JAX returns -- no second derivatives are computed -- so an iteration costs
+    one value-and-gradient, as an Adam step does.
+    """
+    import fides  # noqa: PLC0415
+    import numpy as _np  # noqa: PLC0415
+    from jax.flatten_util import ravel_pytree  # noqa: PLC0415
+
+    _objective, _step, _optimiser, value_and_grad = stepper
+    ids = list(imported.parameter_ids)
+    nominal = np.asarray(imported.parameters, dtype=float)
+    start = jnp.log(jnp.maximum(jnp.asarray([scalars.get(pid, nominal[i]) for i, pid in enumerate(ids)]),
+                                LOG_FLOOR))
+    params, static = eqx.partition((networks, start), eqx.is_inexact_array)
+    flat, unravel = ravel_pytree(params)
+
+    calls = {"n": 0}
+
+    def fun(vector):
+        calls["n"] += 1
+        # The ravel happens OUTSIDE the jit deliberately. Closing a jitted function over `unravel`
+        # would compile one XLA executable per restart, and fifty of them exhaust vm.max_map_count
+        # -- the `LLVM compilation error: Cannot allocate memory` that `pysr_worker` documents.
+        # `value_and_grad` comes from the stepper, built once for the whole run.
+        trained = eqx.combine(unravel(jnp.asarray(vector)), static)
+        value, grads = value_and_grad(trained, imported)
+        gradient = ravel_pytree(eqx.filter(grads, eqx.is_inexact_array))[0]
+        value, gradient = float(value), _np.asarray(gradient, dtype=float)
+        if not _np.isfinite(value) or not _np.all(_np.isfinite(gradient)):
+            # fides reads a non-finite objective as a step to reject, not a run to end -- the
+            # trust region shrinks and it tries again, which is what a failed solve deserves.
+            return _np.inf, _np.zeros_like(gradient)
+        return value, gradient
+
+    bound = _np.full(flat.size, FIDES_BOUND)
+    optimiser = fides.Optimizer(fun, ub=bound, lb=-bound, verbose=0,
+                                hessian_update=fides.BFGS(),
+                                options={fides.Options.MAXITER: int(steps)})
+    try:
+        value, vector, _grad, _hess = optimiser.minimize(_np.asarray(flat, dtype=float))
+    except Exception as failure:  # noqa: BLE001 -- reported like a failed restart
+        return np.inf, _unpack(eqx.combine(unravel(flat), static), ids), calls["n"], f"fides raised {failure}"
+    if not np.isfinite(value):
+        return np.inf, _unpack(eqx.combine(unravel(flat), static), ids), calls["n"], "fides found no finite optimum"
+    # None, whatever fides exited on: FTOL/GTOL/XTOL are it CONVERGING and MAXITER is it spending
+    # its budget, and NONE of those is a failed restart. The caller reads a non-None fourth value
+    # as an aborted restart and throws the fit away -- reporting the exit flag there cost 106 array
+    # tasks, each discarding a converged fit after forty minutes. The flag is not surfaced.
+    return float(value), _unpack(eqx.combine(unravel(jnp.asarray(vector)), static), ids), calls["n"], None
+
+
+def _fit_hybrid(imported, stepper, networks: dict, scalars: dict[str, float], steps: int,
+                config: TrainConfig):
+    """Adam, then fides from where it stopped.
+
+    They fail in opposite directions on this objective. Adam takes a fixed step however curved the
+    landscape is, so it wanders -- slowly, but into good basins; crauste needed 80,000 steps and
+    still improved. fides descends its basin decisively and stops, which from a random field means
+    a nearby poor optimum: on perelson it converged to 304.25 from every one of four starts, where
+    Adam reached 222.12. So Adam spends `adam_share` of the budget finding the basin and fides
+    spends the rest reaching its floor.
+    """
+    share = min(max(float(config.adam_share), 0.0), 1.0)
+    adam_steps = max(1, int(round(steps * share)))
+    value, (networks, scalars), taken, failure = _fit(imported, stepper, networks, scalars, adam_steps, config)
+    if failure is not None and not np.isfinite(value):
+        return value, (networks, scalars), taken, failure
+    polished, state, more, why = _fit_fides(imported, stepper, networks, scalars,
+                                            max(1, steps - adam_steps), config)
+    if not np.isfinite(polished) or polished > value:
+        # fides could not better Adam's point; keep the one that fits and say so.
+        return value, (networks, scalars), taken + more, None
+    return polished, state, taken + more, why
 
 
 def _fit(imported, stepper, networks: dict, scalars: dict[str, float], steps: int, config: TrainConfig):
     """Fit one stage from ``networks`` and the scalars it recognises by id (the rest start at
     their nominal values). Returns the best objective, ``(networks, scalars)`` at it, the steps
     taken and the failure, if any."""
-    objective, step, optimiser = stepper
+    objective, step, optimiser, _value_and_grad = stepper
     ids = list(imported.parameter_ids)
     nominal = np.asarray(imported.parameters, dtype=float)
     start = jnp.log(jnp.maximum(jnp.asarray([scalars.get(pid, nominal[i]) for i, pid in enumerate(ids)]), LOG_FLOOR))
