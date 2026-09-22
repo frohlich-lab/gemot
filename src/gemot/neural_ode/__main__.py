@@ -1,15 +1,23 @@
-"""Fit the neural ODE to one PEtab problem and score it, from the command line.
+"""The neural route from the command line: fit and score one field, or propose models.
 
     python -m petab_harness.neural_ode fit examples/fujita/problem --out runs/fujita \\
         [--windows 5 --steps 1600 --restarts 2 --aug 0 --width 32 --depth 2 --seed 0] \\
         [--dosed S] [--shared-ics] [--clock] \\
         [--heldout PATH | --no-heldout] [--reference PATH]
+    python -m petab_harness.neural_ode propose examples/fujita/problem --out runs/fujita \\
+        [--config neural.json] [--interpreter PY] [--pysr-interpreter PY] [--seconds 8400] \\
+        [--threads 16] [--dosed S]
 
-Writes ``<out>/result.json`` -- the field's training nll, its ``k`` (the scalars PEtab estimates,
-never the weights) and BIC, the held-out block in the shape every run's ``result.json`` carries,
-and the training record -- and ``<out>/model/``, the trained field as a complete PEtab SciML
-problem. For an ``examples/<name>/problem`` the held-out set and the reference are found where
-the harness writes them. Exit 0 when a field trained, 1 when every restart failed.
+``fit`` writes ``<out>/result.json`` -- the field's training nll, its ``k`` (the scalars PEtab
+estimates, never the weights) and its score, the held-out block in the shape every run's
+``result.json`` carries, and the training record -- and ``<out>/model/``, the trained field as a
+complete PEtab SciML problem. For an ``examples/<name>/problem`` the held-out set and the
+reference are found where the harness writes them. Exit 0 when a field trained, 1 when every
+restart failed.
+
+``propose`` runs the route (:mod:`.route`): one training and one distillation at the settings
+given, and writes ``<out>/proposals.json``; flags override the config file. Exit 0 for proposals,
+1 for a refusal.
 """
 
 from __future__ import annotations
@@ -45,8 +53,40 @@ def main(argv: list[str] | None = None) -> int:
     fit.add_argument("--heldout", type=Path, default=None, help="held-out measurement table")
     fit.add_argument("--no-heldout", dest="no_heldout", action="store_true")
     fit.add_argument("--reference", type=Path, default=None, help="reference.json to compare against")
+    propose = commands.add_parser("propose", help="train, distil and write proposals")
+    propose.add_argument("problem", type=Path, help="a PEtab v1 problem yaml or its directory")
+    propose.add_argument("--out", type=Path, required=True)
+    propose.add_argument("--config", type=Path, default=None)
+    propose.add_argument("--interpreter", default=None)
+    propose.add_argument("--pysr-interpreter", dest="pysr_interpreter", default=None)
+    propose.add_argument("--seconds", type=float, default=None)
+    propose.add_argument("--threads", type=int, default=None)
+    propose.add_argument("--dosed", default=None, help="condition columns that dose a state, comma-separated")
     args = parser.parse_args(argv)
-    return _fit(args)
+    return _fit(args) if args.command == "fit" else _propose(args)
+
+
+def _propose(args) -> int:
+    from . import route  # noqa: PLC0415
+    from .config import Config  # noqa: PLC0415
+
+    config = Config.load(args.config) if args.config else Config()
+    overrides = {k: getattr(args, k) for k in ("interpreter", "pysr_interpreter", "seconds", "threads")
+                 if getattr(args, k) is not None}
+    if args.dosed is not None:
+        overrides["dosed"] = [x for x in args.dosed.split(",") if x]
+    config = Config.from_dict({**config.as_dict(), **overrides})
+    args.out.mkdir(parents=True, exist_ok=True)
+    problem_dir = args.problem.parent if args.problem.is_file() else args.problem
+    outcome = route.propose(problem_dir, config, work_dir=args.out / "work")
+    path = args.out / "proposals.json"
+    path.write_text(json.dumps({**outcome.as_dict(), "problem_dir": str(problem_dir),
+                                "config": config.as_dict()}, indent=1, default=str) + "\n")
+    if outcome.refusal is not None:
+        print(f"refused: {outcome.refusal.reason}", file=sys.stderr)
+        return 1
+    print(f"wrote {path}: {len(outcome.proposals)} proposal(s)")
+    return 0
 
 
 def _fit(args) -> int:
@@ -92,6 +132,7 @@ def _fit(args) -> int:
     from ..runner.scoring import _validation_fields  # noqa: PLC0415
 
     record["validation"] = _validation_fields(payload, reference, asked=held_out_path is not None)
+    record["held_out"] = payload  # the scorer's own payload, k and bic of a transfer included
     record["held_out_path"] = None if held_out_path is None else str(held_out_path)
     record["reference"] = None if reference is None else {k: reference.get(k) for k in ("nll", "k", "n")}
     (args.out / "result.json").write_text(json.dumps(record, indent=1, default=str) + "\n")

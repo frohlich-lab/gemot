@@ -250,6 +250,11 @@ def _curriculum(problem: Problem, staged: S.Staged, config: TrainConfig) -> tupl
     # that many, and fewer windows beat a degenerate one.
     measurements = pd.read_csv(staged.directory / "measurements.tsv", sep="\t")
     t_min = float(measurements["time"].min())
+    if t_min > 0.0:
+        # The rewrite partitions the MEASURED span, so its first window would begin at the first
+        # datum and the start states applied at t=0 would fall outside every window.
+        return [staged], (f"n_windows={config.n_windows} ignored: the data start at t={t_min:g}, after the "
+                          "experiments do, and the multiple-shooting rewrite would drop the starts",)
     n_windows, notes = int(config.n_windows), ()
     while n_windows > 1:
         ends = (UniformPartition(n_windows).get_time_points(measurements)

@@ -17,9 +17,10 @@ def test_training_fits_counts_and_simulates(tmp_path):
     config = T.TrainConfig(width=4, depth=1, n_augmented=1, steps=30, n_restarts=2, patience=1000)
     result = T.train(problem, tmp_path / "run", config)
     assert not result.solver_failed and math.isfinite(result.nll) and result.restart_failures == ()
-    # k is what PEtab estimates besides the weights: the scale factor and the latent's two starts.
-    assert result.n_ode_parameters == 3
-    assert set(result.parameters) == {"scale_Q", "z1_0_c_lo", "z1_0_c_hi"}
+    # k is what PEtab estimates besides the weights: the latent's two starts (the readout scale
+    # factor is fixed by the staging).
+    assert result.n_ode_parameters == 2
+    assert set(result.parameters) == {"z1_0_c_lo", "z1_0_c_hi"}
     assert all(v > 0 for v in result.parameters.values())
     assert result.n_network_weights == result.staged.n_weights and result.steps_run == 60
     assert result.config.key() == "aug1_w4d1_s0"
@@ -44,7 +45,7 @@ def test_curriculum_multiple_shooting_runs_its_stages_and_ends_single_shooting(t
     assert len(result.stage_objectives) == 2 and result.steps_run == 21
     assert result.stage_objectives[-1] == result.nll and math.isfinite(result.nll)
     # The final problem is the staged one: its k has no window starts, the stage before does.
-    assert result.n_ode_parameters == 1 and set(result.parameters) == {"scale_Q"}
+    assert result.n_ode_parameters == 0 and result.parameters == {}
     stage1 = tmp_path / "run" / "curriculum" / "stage1"
     parameters = pd.read_csv(stage1 / "parameters.tsv", sep="\t").set_index("parameterId")
     windows = [p for p in parameters.index if p.startswith("WINDOW1_")]

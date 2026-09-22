@@ -21,6 +21,12 @@ The network AMICI loads is the equinox module, because petab 0.9 reads a YAML-fo
 through PyTorch and PyTorch is not a dependency here; the YAML is written beside it as the
 portable record of the architecture. Time is normalised in the rate rules rather than in the
 network, so the field is O(1) in its own clock and derivatives come out in the problem's units.
+
+The readout scale factors are FIXED at their nominal values, though the shipped table estimates
+them. A neural state's magnitude is free, so a scale factor times that state is all the data
+constrain, and estimating both let fujita's drift to 1e-8 and 1e5 while the states went the
+other way -- a fit no better on the training data and worse off it. Fixed, the state carries the
+magnitude, which is what the trainer this replaces did by making the states the readouts.
 """
 
 from __future__ import annotations
@@ -197,8 +203,8 @@ def _antimony(problem: Problem, states, integrated, scales, horizon: float) -> s
 
 def _stage_v1_tables(problem: Problem, source, v1: Path) -> None:
     """The shipped tables beside the generated model: dosing columns renamed to the states they
-    set and the parameter table cut to what the observables, measurements and conditions
-    reference. The noise model stays the shipped one, estimate flags included."""
+    set, the parameter table cut to what the observables, measurements and conditions reference,
+    and the readout scale factors fixed. The noise model stays the shipped one, flags included."""
     conditions = source.condition_df
     if conditions is not None:
         conditions.rename(columns={c: s for c, s in problem.start_columns.items() if c != s}).to_csv(
@@ -220,8 +226,9 @@ def _stage_v1_tables(problem: Problem, source, v1: Path) -> None:
     if conditions is not None:
         for column in conditions.columns:
             referenced.update(parameters.index.intersection(conditions[column].astype(str)))
-    parameters.loc[[p for p in parameters.index if p in referenced]].to_csv(
-        v1 / "parameters.tsv", sep="\t")
+    kept = parameters.loc[[p for p in parameters.index if p in referenced]].copy()
+    kept.loc[[p for p in kept.index if p in problem.observable_parameters], "estimate"] = 0
+    kept.to_csv(v1 / "parameters.tsv", sep="\t")
     (v1 / "problem.yaml").write_text(yaml.safe_dump({
         "format_version": 1, "parameter_file": "parameters.tsv",
         "problems": [{"sbml_files": ["model.xml"], "condition_files": ["conditions.tsv"],

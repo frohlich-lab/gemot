@@ -79,8 +79,10 @@ def test_states_knobs_starts_and_scales_are_read_off_the_tables(tmp_path):
     assert problem.pinned_starts == {"Q": 0.5}
     assert problem.measured_starts == {("c_lo", "P"): 0.0, ("c_hi", "P"): 0.1}
     assert problem.experiment_ids == ("c_lo", "c_hi") and not problem.uses_preequilibration
-    # sigma_P is fixed and obs_Q's noise is numeric, so the problem estimates no sigma.
-    assert problem.noise_parameters == () and problem.n_measurements == 12
+    # sigma_P is fixed and obs_Q's noise is numeric, so the problem estimates no sigma; scale_Q
+    # is the one readout scale factor the table estimates.
+    assert problem.noise_parameters == () and problem.observable_parameters == ("scale_Q",)
+    assert problem.n_measurements == 12
     # Q is scaled by scale_Q (nominal 2), so its magnitude is that of the data divided by it.
     assert problem.scales["Q"] == pytest.approx(((1.5**2 + 3.0**2) / 2) ** 0.5)
     assert problem.scales["S"] == pytest.approx((34.0) ** 0.5) and problem.scales["E"] == 1.0

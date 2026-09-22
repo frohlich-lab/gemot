@@ -52,6 +52,8 @@ def test_the_staged_problem_is_lint_clean_and_wired_end_to_end(tmp_path):
     assert set(parameters.index) == {"sigma_P", "scale_Q", "net1_ps", "z1_0_c_lo", "z1_0_c_hi"}
     assert parameters.loc["net1_ps", "nominalValue"] == "array"
     assert parameters.loc["z1_0_c_lo", "upperBound"] == 10.0 and str(parameters.loc["sigma_P", "estimate"]).lower() == "false"
+    # The readout scale factor is fixed at its nominal: the state carries the magnitude.
+    assert str(parameters.loc["scale_Q", "estimate"]).lower() == "false" and float(parameters.loc["scale_Q", "nominalValue"]) == 2.0
     document = yaml.safe_load(staged.yaml.read_text())
     assert document["extensions"]["sciml"]["neural_networks"]["net1"]["format"] == "equinox"
     # Experiments and measurements are named after the simulation conditions the route knows.

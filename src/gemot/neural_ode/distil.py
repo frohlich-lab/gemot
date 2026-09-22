@@ -39,7 +39,7 @@ from . import train as T
 from .problem import Problem
 
 #: Saturation as one primitive, priced like the mechanism it is; ``abs`` keeps it finite where the
-#: sampled states go negative. Offered through ``binary_operators``, off by default: on four
+#: sampled states go negative. Named ``hill`` in ``binary_operators`` and off by default: on four
 #: benchmarks it enlarged the search without buying accuracy.
 HILL_OPERATOR = "hill(x, k) = x / (k * k + abs(x) + eps(x))"
 DEFAULT_BINARY_OPERATORS = ("+", "-", "*", "/")
@@ -198,13 +198,14 @@ def _regress(features, derivatives, placeholders, config: DistilConfig) -> list[
     """The worker, by file path, in ``config.interpreter``; its stderr tail is the failure's reason."""
     settings = {"niterations": config.niterations, "population_size": config.population_size,
                 "maxsize": config.maxsize, "parsimony": config.parsimony,
-                "binary_operators": list(config.binary_operators), "unary_operators": list(config.unary_operators),
+                "binary_operators": [HILL_OPERATOR if op == "hill" else op for op in config.binary_operators],
+                "unary_operators": list(config.unary_operators),
                 "seed": config.seed, "selection": config.selection, "placeholders": list(placeholders),
                 "workers": config.workers, "parallelism": config.parallelism, "procs": config.procs}
     with tempfile.TemporaryDirectory(prefix="neural_ode_pysr_") as directory:
         root = Path(directory)
         np.savez(root / "in.npz", features=features, derivatives=derivatives)
-        (root / "settings.json").write_text(json.dumps(settings))
+        (root / "settings.json").write_text(json.dumps({**settings, "output_directory": str(root / "pysr")}))
         command = [config.interpreter or sys.executable, str(Path(__file__).with_name("pysr_worker.py")),
                    str(root / "in.npz"), str(root / "settings.json"), str(root / "out.json")]
         try:

@@ -50,7 +50,9 @@ def regress(features: np.ndarray, derivatives: np.ndarray, placeholders: list[st
             # Not deterministic: PySR's deterministic mode forces a serial search, and reproducibility
             # comes from replication over seeds instead.
             deterministic=False, parallelism=settings.get("parallelism", "multithreading"),
-            procs=int(settings.get("procs") or 0), progress=False, verbosity=0)
+            procs=int(settings.get("procs") or 0), progress=False, verbosity=0,
+            # PySR's hall-of-fame files go next to the inputs, not into the working directory.
+            output_directory=settings.get("output_directory"))
         target = derivatives[:, column]
         model.fit(features, target, variable_names=list(placeholders))
         out.append({"selected": str(selected_expression(model, settings.get("selection", "best"))),

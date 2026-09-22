@@ -89,6 +89,9 @@ class Problem:
     n_measurements: int
     #: Noise parameters the problem estimates, one entry per distinct symbol.
     noise_parameters: tuple[str, ...]
+    #: Estimated parameters the observable formulas read, directly or through an override: the
+    #: readout scale factors. The staged problem fixes them at their nominal values.
+    observable_parameters: tuple[str, ...]
     #: Root-mean-square magnitude of every state and input: the field's units.
     scales: dict[str, float]
     #: The last finite measurement time: the field's unit of time.
@@ -246,6 +249,7 @@ def load(problem: Path | str, *, name: str | None = None, dosed: tuple[str, ...]
         experiment_ids=experiment_ids, preequilibration=preequilibration,
         n_measurements=int(len(meas)),
         noise_parameters=_noise_parameters(meas, observables, nominal, estimated),
+        observable_parameters=_observable_parameters(pp, estimated),
         scales=scales, horizon=horizon, warnings=tuple(dict.fromkeys(warnings)))
 
 
@@ -293,6 +297,22 @@ def _noise_parameters(meas, observables, nominal, estimated) -> tuple[str, ...]:
             if not _PLACEHOLDER.match(symbol) and estimated.get(symbol, symbol not in nominal):
                 found.setdefault(symbol)
     return tuple(found)
+
+
+def _observable_parameters(source, estimated) -> tuple[str, ...]:
+    """The estimated readout scale factors, from the server's own resolver.
+
+    :func:`petab_mcp.reconcile.observable_scaling_ids` already resolves these through
+    ``observableFormula`` and the measurement-level ``observableParameters`` overrides, and its
+    ``formula_symbols`` handles what a local regex would not: an empty cell, which
+    ``str(nan)`` turns into a bogus ``"nan"`` symbol, and numeric literals in scientific notation.
+    It is the reviewed definition of this set -- the same one the server classifies inner
+    parameters and enforces observation-model roles with -- so the route reads it rather than
+    keeping a second opinion that could drift from it.
+    """
+    from petab_mcp.reconcile import observable_scaling_ids  # noqa: PLC0415
+
+    return tuple(sorted(s for s in observable_scaling_ids(source) if estimated.get(s)))
 
 
 def _observed_scale(state, meas, formulas, nominal) -> float:

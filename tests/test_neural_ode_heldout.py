@@ -95,13 +95,21 @@ def test_the_command_line_writes_the_record_and_the_trained_bundle(tmp_path):
                  "--width", "4", "--depth", "1", "--steps", "6", "--restarts", "1"])
     assert code == 0
     record = json.loads((tmp_path / "out" / "result.json").read_text())
-    assert record["method"] == "neural_ode" and record["k"] == 1 and record["n"] == 12
-    assert record["bic"] == pytest.approx(2 * record["nll"] + math.log(12))
+    # k is 0: the toy pins every start (S and E by condition columns, Q by a fixed Q_init, P by
+    # its t=0 datum) and `scale_Q` is a readout scale factor, which staging now FIXES at its
+    # nominal -- a neural state's magnitude is free, so a scale factor times that state is all the
+    # data constrain. Nothing but the weights is left to estimate, and the weights are never k.
+    assert record["method"] == "neural_ode" and record["k"] == 0 and record["n"] == 12
+    assert record["bic"] == pytest.approx(2 * record["nll"])
     assert record["validation"]["status"] == "ok" and record["validation"]["mode"] == "fixed"
     assert record["validation"]["delta_nll"] == pytest.approx(record["validation"]["nll"] - 3.0)
     assert record["reference"] == {"nll": -1.0, "k": 2, "n": 12}
-    # The bundle is the staged problem with the fitted scalars and weights written back.
+    # The bundle is the staged problem with the fitted scalars and weights written back. Nothing
+    # was estimated here, so the check that bites is that the fixed scale factor came through at
+    # its nominal rather than drifting: the readout is pinned, the state carries the magnitude.
+    assert "scale_Q" not in record["parameters"]
     parameters = pd.read_csv(tmp_path / "out" / "model" / "parameters.tsv", sep="\t").set_index("parameterId")
-    assert float(parameters.loc["scale_Q", "nominalValue"]) == pytest.approx(record["parameters"]["scale_Q"])
+    assert float(parameters.loc["scale_Q", "nominalValue"]) == pytest.approx(2.0)
+    assert not bool(parameters.loc["scale_Q", "estimate"])
     with h5py.File(tmp_path / "out" / "model" / "net1_ps.hdf5") as weights:
         assert weights["parameters/net1/layer1/weight"].shape == (4, 5)

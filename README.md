@@ -111,9 +111,9 @@ the harness adds is the difference between the two arms on the same sweep (see
 [`petab_harness.neural_ode`](src/petab_harness/neural_ode) is the harness's non-LLM model
 producer. It reads a PEtab problem's tables without opening the shipped model, restates the
 problem as a PEtab SciML neural ODE — the observed and dosed species as states, a tanh network as
-the right-hand side, the shipped observation model kept — and fits it through AMICI's JAX
-backend. Distilling the fitted field into Antimony rate laws for the judge is not in this
-package yet.
+the right-hand side, the shipped observation model kept — fits it through AMICI's JAX backend,
+scores it against the example's held-out set, and distils the field into Antimony rate laws with
+PySR for the same judge. `python -m petab_harness.neural_ode fit|propose` runs either half.
 
 ## Design notes
 
