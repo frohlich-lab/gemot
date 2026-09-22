@@ -2,7 +2,7 @@
 
     python -m petab_harness.neural_ode fit examples/fujita/problem --out runs/fujita \\
         [--windows 5 --steps 1600 --restarts 2 --aug 0 --width 32 --depth 2 --seed 0] \\
-        [--dosed S] [--shared-ics] [--clock] \\
+        [--dosed S] [--shared-ics] [--clock] [--multiplicative] \\
         [--heldout PATH | --no-heldout] [--reference PATH]
     python -m petab_harness.neural_ode propose examples/fujita/problem --out runs/fujita \\
         [--config neural.json] [--interpreter PY] [--pysr-interpreter PY] [--seconds 8400] \\
@@ -56,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
     fit.add_argument("--seed", type=int, default=0)
     fit.add_argument("--shared-ics", dest="shared_ics", action="store_true")
     fit.add_argument("--clock", action="store_true")
+    fit.add_argument("--multiplicative", action="store_true",
+                     help="feed the network the pairwise products of its inputs as well")
     fit.add_argument("--heldout", type=Path, default=None, help="held-out measurement table")
     fit.add_argument("--no-heldout", dest="no_heldout", action="store_true")
     fit.add_argument("--reference", type=Path, default=None, help="reference.json to compare against")
@@ -116,6 +118,7 @@ def _fit(args) -> int:
     problem_dir = yaml_path.parent
     problem = P.load(yaml_path, dosed=tuple(x for x in args.dosed.split(",") if x))
     config = T.TrainConfig(n_augmented=args.aug, width=args.width, depth=args.depth, clock=args.clock,
+                           multiplicative=args.multiplicative,
                            shared_initial_conditions=args.shared_ics,
                            n_windows=args.windows,
                            continuity_weight=args.continuity, steps=args.steps, n_restarts=args.restarts,
@@ -131,6 +134,13 @@ def _fit(args) -> int:
         "nll": None if not math.isfinite(result.nll) else result.nll,
         "k": result.n_ode_parameters, "n": n,
         "bic": H.score_of(result.nll, result.n_ode_parameters, n),
+        # The PURE NEURAL model's score. `bic` above charges only the scalars PEtab estimates
+        # and is a selection statistic between fields, never a model score; this one charges
+        # the network too, so it is the score a neural ODE can be reported at beside a
+        # distilled model's.
+        "k_with_weights": result.n_ode_parameters + result.n_network_weights,
+        "bic_with_weights": H.score_of(result.nll,
+                                       result.n_ode_parameters + result.n_network_weights, n),
         "n_network_weights": result.n_network_weights, "solver_failed": result.solver_failed,
         "steps_run": result.steps_run, "restart_failures": list(result.restart_failures),
         "stage_objectives": list(result.stage_objectives), "notes": list(result.notes),
@@ -156,7 +166,8 @@ def _fit(args) -> int:
     (args.out / "result.json").write_text(json.dumps(record, indent=1, default=str) + "\n")
 
     validation = record["validation"] or {}
-    print(f"{problem.name}: nll {record['nll']} k {record['k']} n {n} bic {record['bic']}; "
+    print(f"{problem.name}: nll {record['nll']} k {record['k']} n {n} bic {record['bic']} "
+          f"(with weights: k {record['k_with_weights']} bic {record['bic_with_weights']}); "
           f"held-out {validation.get('status', 'none')} {validation.get('mode', '')} "
           f"nll {validation.get('nll')} delta {validation.get('delta_nll')}; "
           f"{result.wall_seconds:.0f}s -> {args.out / 'result.json'}")

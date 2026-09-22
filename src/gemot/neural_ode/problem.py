@@ -127,7 +127,7 @@ class Problem:
 
         The column clause is per experiment, not per column: an incomplete start column leaves the
         experiments whose cell is blank unpinned, and counting those as fixed would understate
-        ``k`` and let :func:`~.tune.augmented_ceiling` grant latents the data cannot pay for.
+        ``k``, and an over-generous parameter budget is how a field gets latents the data cannot pay for.
         """
         return (state in self.pinned_starts or (experiment, state) in self.column_starts
                 or (experiment, state) in self.measured_starts)

@@ -73,12 +73,16 @@ class Staged:
     n_weights: int
     scales: dict[str, float]
     horizon: float
+    #: Pairwise products fed to the network as extra inputs; empty unless ``multiplicative``. NOT
+    #: part of ``field_inputs``: the distiller regresses on the base variables and finds products
+    #: itself, so these exist only to make the FIELD's job easier.
+    products: tuple[tuple[str, str], ...] = ()
 
 
 def stage(problem: Problem, directory: Path | str, *, n_augmented: int = 0, width: int = 32,
           depth: int = 2, clock: bool = False, shared_initial_conditions: bool = False,
           seed: int = 0, design: Staged | None = None,
-          estimate_readout_scales: bool = False) -> Staged:
+          estimate_readout_scales: bool = False, multiplicative: bool = False) -> Staged:
     """Write ``problem`` as a neural ODE into ``directory`` and return what was written.
 
     ``n_augmented`` latent states are appended after the observed and dosed ones; ``clock`` adds
@@ -108,6 +112,7 @@ def stage(problem: Problem, directory: Path | str, *, n_augmented: int = 0, widt
     if design is not None:
         n_augmented = len(design.states) - len(problem.state_names)
         clock = "clock" in design.field_inputs
+        multiplicative = bool(design.products)
     latents = tuple(f"z{i + 1}" for i in range(int(n_augmented)))
     states = (*problem.state_names, *latents)
     integrated = (*states, "clock") if clock else states
@@ -121,7 +126,9 @@ def stage(problem: Problem, directory: Path | str, *, n_augmented: int = 0, widt
         scales, horizon = dict(design.scales), design.horizon
 
     # The model, then the shipped tables around it, upgraded by petab.
-    text = _antimony(problem, states, integrated, scales, horizon)
+    products = product_features(field_inputs) if multiplicative else []
+    network_inputs = (*field_inputs, *(product_symbol(a, b) for a, b in products))
+    text = _antimony(problem, states, integrated, scales, horizon, products)
     antimony.clearPreviousLoads()
     if antimony.loadAntimonyString(text) < 0:
         raise ValueError(f"the generated model is not valid Antimony: {antimony.getLastError()}")
@@ -135,21 +142,21 @@ def stage(problem: Problem, directory: Path | str, *, n_augmented: int = 0, widt
 
     # The network: its architecture, the module AMICI loads, and its initial weights.
     if design is None:
-        n_weights = _write_network(directory, len(field_inputs), len(states), width, depth, seed)
+        n_weights = _write_network(directory, len(network_inputs), len(states), width, depth, seed)
     else:
         for name in (f"{NETWORK_ID}.py", f"{NETWORK_ID}.yaml", f"{NETWORK_ID}_ps.hdf5"):
             shutil.copy(design.directory / name, directory / name)
         n_weights = design.n_weights
     pd.DataFrame({
-        "targetId": [f"{NETWORK_ID}_input{i}" for i in range(len(field_inputs))]
+        "targetId": [f"{NETWORK_ID}_input{i}" for i in range(len(network_inputs))]
         + [f"f_{s}" for s in states],
-        "targetValue": [f"{s}_norm" for s in field_inputs]
+        "targetValue": [f"{s}_norm" for s in field_inputs] + [product_symbol(a, b) for a, b in products]
         + [f"{NETWORK_ID}_output{i}" for i in range(len(states))],
     }).to_csv(directory / "hybridization.tsv", sep="\t", index=False)
     pd.DataFrame({
-        "petabEntityId": [f"{NETWORK_ID}_input{i}" for i in range(len(field_inputs))]
+        "petabEntityId": [f"{NETWORK_ID}_input{i}" for i in range(len(network_inputs))]
         + [f"{NETWORK_ID}_output{i}" for i in range(len(states))] + [f"{NETWORK_ID}_ps"],
-        "modelEntityId": [f"{NETWORK_ID}.inputs[0][{i}]" for i in range(len(field_inputs))]
+        "modelEntityId": [f"{NETWORK_ID}.inputs[0][{i}]" for i in range(len(network_inputs))]
         + [f"{NETWORK_ID}.outputs[0][{i}]" for i in range(len(states))] + [f"{NETWORK_ID}.parameters"],
     }).to_csv(directory / "mapping.tsv", sep="\t", index=False)
 
@@ -191,16 +198,35 @@ def stage(problem: Problem, directory: Path | str, *, n_augmented: int = 0, widt
     (directory / "problem.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
     return Staged(directory=directory, yaml=directory / "problem.yaml", states=states,
                   field_inputs=field_inputs, estimated_starts=tuple(estimated), n_weights=n_weights,
-                  scales=scales, horizon=horizon)
+                  products=tuple(products), scales=scales, horizon=horizon)
 
 
-def _antimony(problem: Problem, states, integrated, scales, horizon: float) -> str:
+def product_features(field_inputs) -> list[tuple[str, str]]:
+    """The pairwise products of the field's inputs, squares included, as ``(a, b)`` pairs.
+
+    Feature augmentation, NOT a structural constraint: a product is made easy to represent without
+    stopping the network representing anything it could before, so the MLP stays universal. Mass
+    action IS a product and saturating kinetics needs an x**2 in a denominator, and a tanh MLP has
+    to build those out of sums -- approximately, and in a form symbolic regression then struggles
+    to recover. They are computed as assignment rules in the model and fed in as extra network
+    INPUTS, so the network stays a plain MLP the standard can express.
+    """
+    return [(a, b) for i, a in enumerate(field_inputs) for b in field_inputs[i:]]
+
+
+def product_symbol(a: str, b: str) -> str:
+    return f"{a}_x_{b}"
+
+
+def _antimony(problem: Problem, states, integrated, scales, horizon: float,
+              products=()) -> str:
     lines = ["model neural_ode", "  compartment cell = 1;",
              "  species " + ", ".join(f"{s} in cell" for s in integrated) + ";"]
     lines += [f"  {s} = 0;" for s in integrated]
     lines += [f"  {u} = 0;" for u in problem.inputs]
     lines += [f"  {item.target} := {item.formula};" for item in problem.timed_inputs]
     lines += [f"  {s}_norm := {s} / {scales[s]!r};" for s in (*integrated, *problem.field_input_names)]
+    lines += [f"  {product_symbol(a, b)} := {a}_norm * {b}_norm;" for a, b in products]
     lines += [f"  f_{s} = 0;" for s in states]
     lines += [f"  {s}' = ({scales[s]!r} / {horizon!r}) * f_{s};" for s in states]
     if "clock" in integrated:

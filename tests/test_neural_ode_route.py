@@ -23,6 +23,7 @@ class _TrainConfig:
     depth: int = 2
     steps: int = 10
     shared_initial_conditions: bool = False
+    multiplicative: bool = False
 
     def key(self) -> str:
         return f"w{self.width}_a{self.n_augmented}"
@@ -155,7 +156,7 @@ def test_the_route_assembles_proposals_and_they_survive_the_json_boundary(monkey
     assert record["n_ode_parameters"] == 2 and record["stage_objectives"] == [10.0]
     assert R.Outcome.from_dict(json.loads(json.dumps(outcome.as_dict()))) == outcome
     # `tuning` is always None now: the route takes the architecture it is given. The ladders that
-    # used to fill it chose by criteria that measurement refuted (see `neural_ode.tune`).
+    # used to fill it chose by criteria that measurement refuted, and are gone with the module.
     assert R.propose(problem, Config(seconds=1000.0),
                      work_dir=tmp_path / "w2").proposals[0].record["tuning"] is None
 

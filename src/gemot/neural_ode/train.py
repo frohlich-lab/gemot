@@ -67,6 +67,9 @@ class TrainConfig:
     #: One start state for every experiment instead of one per experiment. A parameterisation
     #: choice BIC decides per problem; experiments that really start apart will reject it.
     shared_initial_conditions: bool = False
+    #: Feed the network the pairwise products of its inputs as well (see `stage.product_features`).
+    #: Widens the FIRST layer only; the distiller still regresses on the base variables.
+    multiplicative: bool = False
     #: Windows of curriculum multiple shooting; 1 is single shooting. Stages merge one window at
     #: a time until the last stage is the staged problem itself.
     n_windows: int = 1
@@ -86,7 +89,8 @@ class TrainConfig:
         windows = f"_cms{self.n_windows}" if self.n_windows > 1 else ""
         clock = "_clock" if self.clock else ""
         shared = "_shared" if self.shared_initial_conditions else ""
-        return f"aug{self.n_augmented}_w{self.width}d{self.depth}{windows}{clock}{shared}_s{self.seed}"
+        mult = "_mult" if self.multiplicative else ""
+        return f"aug{self.n_augmented}_w{self.width}d{self.depth}{windows}{clock}{shared}{mult}_s{self.seed}"
 
 
 @dataclass
@@ -163,7 +167,7 @@ def stage_only(problem: Problem, directory: Path | str, config: TrainConfig) -> 
     return S.stage(problem, directory, n_augmented=config.n_augmented, width=config.width,
                    depth=config.depth, clock=config.clock,
                    shared_initial_conditions=config.shared_initial_conditions,
-                   seed=config.seed)
+                   seed=config.seed, multiplicative=config.multiplicative)
 
 
 def trajectories(result: TrainResult, n_times: int = 200) -> dict[str, dict[str, np.ndarray]]:
