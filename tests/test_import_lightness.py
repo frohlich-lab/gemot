@@ -61,6 +61,7 @@ def _assert_light(importline: str) -> None:
     "from petab_harness import fit_budget",
     "from petab_harness.explorer import bundle",
     "from petab_harness.runner import endpoints",
+    "from petab_harness import neural_ode",
 ])
 def test_import_is_light(importline):
     _assert_light(importline)

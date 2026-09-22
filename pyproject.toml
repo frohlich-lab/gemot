@@ -39,7 +39,10 @@ dependencies = [
     # with a new signature; CallToolResult/Tool fields went snake_case). Revisit once
     # langchain-mcp-adapters ships mcp 2.0 support.
     "fastmcp>=3,<4",
-    "petab>=0.5",
+    # 0.9 is the first release whose v2 problem carries the SciML extension natively
+    # (`petab.v2.extensions.sciml`); the neural route stages its problems in that form and
+    # reads them back through `petab.v2.Problem.from_yaml`, which older releases refuse.
+    "petab>=0.9",
     "python-libsbml>=5.19",
     # Floored at 3.2 because `validation.frozen_parametric_stoichiometry_issues` is now the ONLY
     # guard against a symbolic reaction stoichiometry (issue #89). Below 3.2, reusing one symbol
@@ -84,11 +87,23 @@ dev = [
     # developer runs the same check locally.
     "ruff>=0.6",
     "petab-mcp[agent]",
+    "petab-mcp[neural]",
 ]
 
 # The deepagents driver stack: what the analyst panel actually runs on, and the only part of the
 # harness the test suite exercises. Split out from `harness` so `dev` can depend on exactly this
 # much, and so the version pins have ONE home.
+# The neural-ODE route (`petab_harness.neural_ode`): a PEtab problem restated as a PEtab SciML
+# neural ODE and trained through AMICI's JAX backend. `amici[jax]` brings jax, diffrax, equinox
+# and optimistix at the versions AMICI is tested against; optax is the optimiser the training
+# loop runs; petab-sciml writes the network definition and its initial weights in the standard's
+# own formats. None of this is imported by the server or the panel.
+neural = [
+    "amici[jax]>=1.1",
+    "optax>=0.2",
+    "petab-sciml>=0.0.3",
+]
+
 agent = [
     # deepagents 0.7.x runs on the langchain 1.x line (langchain-core 1.5, langgraph 1.2), so
     # langchain-openai must also be on 1.x. create_deep_agent still exposes the
