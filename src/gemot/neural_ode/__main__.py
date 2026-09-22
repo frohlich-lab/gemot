@@ -7,6 +7,8 @@
     python -m petab_harness.neural_ode propose examples/fujita/problem --out runs/fujita \\
         [--config neural.json] [--interpreter PY] [--pysr-interpreter PY] [--seconds 8400] \\
         [--threads 16] [--dosed S]
+    python -m petab_harness.neural_ode score runs/fujita/proposals.json --example examples/fujita \\
+        --out runs/fujita/judge [--n-starts 50] [--only selected,c7]
 
 ``fit`` writes ``<out>/result.json`` -- the field's training nll, its ``k`` (the scalars PEtab
 estimates, never the weights) and its score, the held-out block in the shape every run's
@@ -18,6 +20,10 @@ restart failed.
 ``propose`` runs the route (:mod:`.route`): one training and one distillation at the settings
 given, and writes ``<out>/proposals.json``; flags override the config file. Exit 0 for proposals,
 1 for a refusal.
+
+``score`` commits each proposal through the server and judges it as a panel's model would be
+(:mod:`.judge`), one private copy of the example per proposal; ``<out>/scores.json`` collects
+the rows. Exit 0 when every proposal was judged, 1 otherwise.
 """
 
 from __future__ import annotations
@@ -62,7 +68,19 @@ def main(argv: list[str] | None = None) -> int:
     propose.add_argument("--seconds", type=float, default=None)
     propose.add_argument("--threads", type=int, default=None)
     propose.add_argument("--dosed", default=None, help="condition columns that dose a state, comma-separated")
+    score = commands.add_parser("score", help="judge the proposals through the server")
+    score.add_argument("proposals", type=Path, help="the route's proposals.json")
+    score.add_argument("--example", type=Path, required=True, help="the example directory (holds problem/)")
+    score.add_argument("--out", type=Path, required=True)
+    score.add_argument("--n-starts", dest="n_starts", type=int, default=50)
+    score.add_argument("--only", default="", help="tags to judge, comma-separated (default: all)")
     args = parser.parse_args(argv)
+    if args.command == "score":
+        from . import judge  # noqa: PLC0415
+
+        rows = judge.score_proposals(args.proposals, args.example, args.out, n_starts=args.n_starts,
+                                     only=tuple(x for x in args.only.split(",") if x))
+        return 0 if rows and all(r["exit_code"] == 0 for r in rows) else 1
     return _fit(args) if args.command == "fit" else _propose(args)
 
 

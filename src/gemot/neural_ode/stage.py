@@ -22,8 +22,12 @@ through PyTorch and PyTorch is not a dependency here; the YAML is written beside
 portable record of the architecture. Time is normalised in the rate rules rather than in the
 network, so the field is O(1) in its own clock and derivatives come out in the problem's units.
 
-The readout scale factors are FIXED at their nominal values, though the shipped table estimates
-them. A neural state's magnitude is free, so a scale factor times that state is all the data
+A ``log10`` observable's noise formula is multiplied by ``ln 10``. PEtab v2 has no log10-normal
+noise, so petab's upgrader writes log-normal and warns, which changes the likelihood: the residual
+``(log10 y - log10 ŷ) / σ`` becomes ``(ln y - ln ŷ) / σ``. With ``σ`` scaled by ``ln 10`` the two
+densities are identical, the Jacobian term included, so the field's nll stays comparable with the
+reference's. The readout scale factors are FIXED at their nominal values, though the shipped table
+estimates them. A neural state's magnitude is free, so a scale factor times that state is all the data
 constrain, and estimating both let fujita's drift to 1e-8 and 1e5 while the states went the
 other way -- a fit no better on the training data and worse off it. Fixed, the state carries the
 magnitude, which is what the trainer this replaces did by making the states the readouts.
@@ -32,6 +36,7 @@ magnitude, which is what the trainer this replaces did by making the states the 
 from __future__ import annotations
 
 import hashlib
+import math
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,15 +77,17 @@ class Staged:
 
 def stage(problem: Problem, directory: Path | str, *, n_augmented: int = 0, width: int = 32,
           depth: int = 2, clock: bool = False, shared_initial_conditions: bool = False,
-          seed: int = 0, design: Staged | None = None) -> Staged:
+          seed: int = 0, design: Staged | None = None,
+          estimate_readout_scales: bool = False) -> Staged:
     """Write ``problem`` as a neural ODE into ``directory`` and return what was written.
 
     ``n_augmented`` latent states are appended after the observed and dosed ones; ``clock`` adds
     a state that counts time as a network input; ``seed`` draws the initial weights. ``design``
     stages the problem in another staged problem's units instead -- its scales, horizon, latents,
     clock and network files -- which is how a held-out set is staged in the units the field was
-    trained in; a problem whose states or inputs differ from the design's is refused. Files already
-    in ``directory`` are overwritten.
+    trained in; a problem whose states or inputs differ from the design's is refused.
+    ``estimate_readout_scales`` leaves the readout scale factors estimated, for a transfer set
+    whose scalings are not the training ones. Files already in ``directory`` are overwritten.
 
     The shipped preequilibration periods are always staged. Dropping them was once a knob, and it
     is not one: a problem that preequilibrates says its experiments begin at a steady state, so a
@@ -123,7 +130,7 @@ def stage(problem: Problem, directory: Path | str, *, n_augmented: int = 0, widt
     v1.mkdir(exist_ok=True)
     (v1 / "model.ant").write_text(text)
     (v1 / "model.xml").write_text(sbml)
-    _stage_v1_tables(problem, source, v1)
+    _stage_v1_tables(problem, source, v1, fix_readout_scales=not estimate_readout_scales)
     petab_files_1to2(v1 / "problem.yaml", directory)
 
     # The network: its architecture, the module AMICI loads, and its initial weights.
@@ -201,10 +208,11 @@ def _antimony(problem: Problem, states, integrated, scales, horizon: float) -> s
     return "\n".join((*lines, "end", ""))
 
 
-def _stage_v1_tables(problem: Problem, source, v1: Path) -> None:
+def _stage_v1_tables(problem: Problem, source, v1: Path, *, fix_readout_scales: bool = True) -> None:
     """The shipped tables beside the generated model: dosing columns renamed to the states they
     set, the parameter table cut to what the observables, measurements and conditions reference,
-    and the readout scale factors fixed. The noise model stays the shipped one, flags included."""
+    the readout scale factors fixed, and each estimated sigma started at its data's spread. The
+    noise model stays the shipped one, flags included."""
     conditions = source.condition_df
     if conditions is not None:
         conditions.rename(columns={c: s for c, s in problem.start_columns.items() if c != s}).to_csv(
@@ -213,7 +221,12 @@ def _stage_v1_tables(problem: Problem, source, v1: Path) -> None:
         pd.DataFrame({"conditionId": list(problem.experiment_ids)}).to_csv(
             v1 / "conditions.tsv", sep="\t", index=False)
     source.measurement_df.to_csv(v1 / "measurements.tsv", sep="\t", index=False)
-    source.observable_df.to_csv(v1 / "observables.tsv", sep="\t")
+    observables = source.observable_df.copy()
+    if "observableTransformation" in observables.columns:
+        log10 = observables["observableTransformation"].astype(str).str.strip() == "log10"
+        observables.loc[log10, "noiseFormula"] = [
+            f"({formula}) * {math.log(10.0)!r}" for formula in observables.loc[log10, "noiseFormula"]]
+    observables.to_csv(v1 / "observables.tsv", sep="\t")
     parameters = source.parameter_df
     referenced = set(problem.noise_parameters)
     for column in ("observableFormula", "noiseFormula"):
@@ -227,7 +240,14 @@ def _stage_v1_tables(problem: Problem, source, v1: Path) -> None:
         for column in conditions.columns:
             referenced.update(parameters.index.intersection(conditions[column].astype(str)))
     kept = parameters.loc[[p for p in parameters.index if p in referenced]].copy()
-    kept.loc[[p for p in kept.index if p in problem.observable_parameters], "estimate"] = 0
+    if fix_readout_scales:
+        kept.loc[[p for p in kept.index if p in problem.observable_parameters], "estimate"] = 0
+    seeds = {pid: seed for pid, seed in _sigma_seeds(problem, source).items() if pid in kept.index}
+    if seeds:
+        kept["nominalValue"] = kept["nominalValue"].astype(float)
+        for pid, seed in seeds.items():
+            kept.loc[pid, "nominalValue"] = min(max(seed, float(kept.loc[pid, "lowerBound"])),
+                                                float(kept.loc[pid, "upperBound"]))
     kept.to_csv(v1 / "parameters.tsv", sep="\t")
     (v1 / "problem.yaml").write_text(yaml.safe_dump({
         "format_version": 1, "parameter_file": "parameters.tsv",
@@ -277,6 +297,33 @@ def _write_network(directory: Path, n_in: int, n_out: int, width: int, depth: in
     ArrayDataStandard.save_data(ArrayData(metadata={"pytorch_format": True}, parameters={NETWORK_ID: arrays}),
                                 str(directory / f"{NETWORK_ID}_ps.hdf5"))
     return int(sum(a.size for d in arrays.values() for a in d.values()))
+
+
+def _sigma_seeds(problem: Problem, source) -> dict[str, float]:
+    """A start for each estimated sigma that alone scales some measurements: their spread, on the
+    observable's scale (decades for ``log10``). Adam in log space moves at most its learning rate
+    per step, so a start decades off never arrives within the budget, and the table's nominal is
+    not written to be a start."""
+    observables = source.observable_df
+    pools: dict[str, list[float]] = {}
+    for row in source.measurement_df.itertuples(index=False):
+        oid = str(row.observableId)
+        formula = str(observables.loc[oid, "noiseFormula"])
+        cell = getattr(row, "noiseParameters", None)
+        overrides = [] if cell is None or (isinstance(cell, float) and math.isnan(cell)) else str(cell).split(";")
+        for index, value in enumerate(overrides, start=1):
+            formula = formula.replace(f"noiseParameter{index}_{oid}", value.strip())
+        if formula.strip() not in problem.noise_parameters:
+            continue
+        transformation = str(observables.get("observableTransformation", pd.Series(dtype=str)).get(oid, "lin"))
+        y = float(row.measurement)
+        if transformation == "log10":
+            y = math.log10(y)
+        elif transformation == "log":
+            y = math.log(y)
+        pools.setdefault(formula.strip(), []).append(y)
+    return {pid: float(np.std(values)) for pid, values in pools.items()
+            if len(values) > 1 and np.std(values) > 0.0}
 
 
 def _starts(problem: Problem, experiments: pd.DataFrame, states, latents, scales, *, shared: bool,

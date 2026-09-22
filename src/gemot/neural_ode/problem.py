@@ -332,24 +332,27 @@ def _observed_scale(state, meas, formulas, nominal) -> float:
 
 
 def _gain(expr, state: str, nominal, cell) -> float:
-    """The observable's slope in ``state``: the formula at ``state = 1`` with every parameter at
-    its nominal, every placeholder at the row's override and every other state at zero."""
+    """The observable's slope in ``state``: the formula at ``state = 1`` less the formula at
+    ``state = 0``, with every parameter at its nominal, every placeholder at the row's override
+    and every other state at zero -- so an additive offset does not enter the scale."""
     placeholders = sorted((str(s) for s in expr.free_symbols if _PLACEHOLDER.match(str(s))),
                           key=lambda n: int(re.search(r"\d+", n).group()))
     overrides = [] if _blank(cell) or cell == "None" else str(cell).split(C.PARAMETER_SEPARATOR)
     values = {}
+    own = [symbol for symbol in expr.free_symbols if str(symbol) == state]
     for symbol in expr.free_symbols:
         name = str(symbol)
         if name == state:
-            values[symbol] = 1.0
-        elif name in placeholders:
+            continue
+        if name in placeholders:
             index = placeholders.index(name)
             override = overrides[index].strip() if index < len(overrides) else ""
             values[symbol] = _as_float(override) if _as_float(override) is not None else nominal.get(override, 1.0)
         else:
             values[symbol] = nominal.get(name, 0.0)
     try:
-        gain = abs(float(expr.subs(values)))
+        at = [float(expr.subs({**values, **{symbol: x for symbol in own}})) for x in (1.0, 0.0)]
+        gain = abs(at[0] - at[1])
     except (TypeError, ValueError):
         return 1.0
     return gain if math.isfinite(gain) and gain > 0.0 else 1.0

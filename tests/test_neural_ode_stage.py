@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 
 import h5py
 import pandas as pd
@@ -82,6 +83,28 @@ def test_preequilibration_starts_sit_on_the_basal_condition_and_are_always_stage
     again = S.stage(problem, tmp_path / "again", width=4)
     periods = pd.read_csv(again.directory / "experiments.tsv", sep="\t")
     assert [math.isinf(t) for t in periods["time"].astype(float)] == [True, False, True, False]
+
+
+def test_log10_noise_keeps_the_v1_likelihood_under_v2s_log_normal(tmp_path):
+    problem = P.load(write_problem(tmp_path / "toy", log10=True), dosed=("S",))
+    staged = S.stage(problem, tmp_path / "staged", width=4)
+    observables = pd.read_csv(staged.directory / "observables.tsv", sep="\t").set_index("observableId")
+    # The upgrader writes log-normal; the noise formula carries ln 10 so the density is v1's.
+    assert observables.loc["obs_Q", "noiseDistribution"] == "log-normal"
+    assert observables.loc["obs_Q", "noiseFormula"] == f"(noiseParameter1_obs_Q) * {math.log(10.0)!r}"
+    assert observables.loc["obs_P", "noiseDistribution"] == "normal" and observables.loc["obs_P", "noiseFormula"] == "sigma_P"
+
+
+def test_an_estimated_sigma_starts_at_its_datas_spread(tmp_path):
+    problem = P.load(write_problem(tmp_path / "toy", log10=True, estimate_sigma=True), dosed=("S",))
+    staged = S.stage(problem, tmp_path / "staged", width=4)
+    parameters = pd.read_csv(staged.directory / "parameters.tsv", sep="\t").set_index("parameterId")
+    # sigma_P scales every obs_P datum through the formula; sigma_Q reaches obs_Q through the
+    # measurement override, and obs_Q is log10, so its spread is in decades. Neither is the table's 1e5.
+    assert float(parameters.loc["sigma_P", "nominalValue"]) == pytest.approx(
+        statistics.pstdev([0.0, 0.3, 0.5, 0.7, 0.8, 0.1, 0.9, 1.5, 2.0, 2.4]))
+    assert float(parameters.loc["sigma_Q", "nominalValue"]) == pytest.approx(statistics.pstdev([math.log10(3.0), math.log10(6.0)]))
+    assert str(parameters.loc["sigma_Q", "estimate"]).lower() == "true"
 
 
 def test_shared_starts_are_one_parameter_per_state(tmp_path):

@@ -20,6 +20,12 @@ it. `#167`, `#179` and `#245` predate this budget and still carry two or three e
 were left split because separate code sites cite a different one of them by name, so they are a
 legacy exception and not a precedent.
 
+#347 An estimated sigma starts at its data's spread (`stage._sigma_seeds`), not at the table's
+nominal: Adam in log space moves at most its learning rate per step, and perelson's `sd_viral_load`
+nominal of 1e5 for a log10 sigma kept the likelihood flat for the whole budget -- the weights saw
+no gradient and the "fit" was the sigma descending at the rate cap, identical across two runs whose
+nll differed by exactly `n ln(ln 10)`.
+
 #300 A fixed-θ held-out set may bring ROWS of the training condition table but never a column, and the rows are appended at score time (`validation_data._with_held_out_conditions`) rather than shipped in the agent's `problem/conditions.tsv`. The shipped-table route is the obvious simplification and worked on main before #300; it tells the agent which experiments are held out and moves `Scenario.version`, which is what kept raimundez's EGFR knockdown (Fig 6E) filed as a transfer set in #290's first draft although the paper predicted it at the fitted point.
 
 #256 Manuscript prose cites numbers only through `paper/generated/values.tex` macros: the

@@ -19,12 +19,12 @@ obs_P\tc_hi\t0.5\t0.9\t{preeq_hi}
 obs_P\tc_hi\t1.0\t1.5\t{preeq_hi}
 obs_P\tc_hi\t1.5\t2.0\t{preeq_hi}
 obs_P\tc_hi\t2.0\t2.4\t{preeq_hi}
-obs_Q\tc_lo\t1.0\t3.0\t0.2{preeq_lo}
-obs_Q\tc_hi\t2.0\t6.0\t0.2{preeq_hi}
+obs_Q\tc_lo\t1.0\t3.0\t{sigma_q}{preeq_lo}
+obs_Q\tc_hi\t2.0\t6.0\t{sigma_q}{preeq_hi}
 """
-_OBSERVABLES = """observableId\tobservableFormula\tnoiseFormula
-obs_P\tP\tsigma_P
-obs_Q\tscale_Q * Q\tnoiseParameter1_obs_Q
+_OBSERVABLES = """observableId\tobservableFormula\tnoiseFormula\tobservableTransformation
+obs_P\tP\tsigma_P\tlin
+obs_Q\tscale_Q * Q\tnoiseParameter1_obs_Q\t{transformation}
 """
 _CONDITIONS = """conditionId\tS\tinit_E\tdrug
 c_lo\t2.0\t1.0\t0.0
@@ -32,6 +32,13 @@ c_hi\t8.0\t1.0\t5.0
 {extra}"""
 _PARAMETERS = """parameterId\tparameterScale\tlowerBound\tupperBound\tnominalValue\testimate
 sigma_P\tlin\t0.0001\t100.0\t0.1\t0
+scale_Q\tlog10\t0.001\t1000.0\t2.0\t1
+Q_init\tlin\t0.0\t10.0\t0.5\t0
+"""
+#: The sigmas as an estimation problem states them, nominals far from any start (perelson's 1e5).
+_ESTIMATED_SIGMAS = """parameterId\tparameterScale\tlowerBound\tupperBound\tnominalValue\testimate
+sigma_P\tlog10\t0.0001\t1000000.0\t100000.0\t1
+sigma_Q\tlog10\t0.0001\t1000000.0\t100000.0\t1
 scale_Q\tlog10\t0.001\t1000.0\t2.0\t1
 Q_init\tlin\t0.0\t10.0\t0.5\t0
 """
@@ -52,17 +59,19 @@ _EMPTY_SBML = ('<?xml version="1.0" encoding="UTF-8"?>\n<sbml xmlns="http://www.
 
 
 def write_problem(directory: Path, *, preequilibration: bool = False, protocol: bool = False,
-                  partial_preequilibration: bool = False, version: int = 1) -> Path:
+                  partial_preequilibration: bool = False, version: int = 1, log10: bool = False,
+                  estimate_sigma: bool = False) -> Path:
     """A zero-shot v1 problem: two observed states (one behind a scale factor), a dosed substrate
     ``S`` the convention cannot see, a dosed ``init_E``, a clamped ``drug`` and an empty model."""
     directory.mkdir(parents=True, exist_ok=True)
     preeq = preequilibration or partial_preequilibration
     (directory / "measurements.tsv").write_text(_MEASUREMENTS.format(
         preeq="\tpreequilibrationConditionId" if preeq else "",
-        preeq_lo="\tc_basal" if preeq else "", preeq_hi="\t" if partial_preequilibration else ("\tc_basal" if preeq else "")))
-    (directory / "observables.tsv").write_text(_OBSERVABLES)
+        preeq_lo="\tc_basal" if preeq else "", preeq_hi="\t" if partial_preequilibration else ("\tc_basal" if preeq else ""),
+        sigma_q="sigma_Q" if estimate_sigma else "0.2"))
+    (directory / "observables.tsv").write_text(_OBSERVABLES.format(transformation="log10" if log10 else "lin"))
     (directory / "conditions.tsv").write_text(_CONDITIONS.format(extra="c_basal\t0.0\t1.0\t0.0\n" if preeq else ""))
-    (directory / "parameters.tsv").write_text(_PARAMETERS)
+    (directory / "parameters.tsv").write_text(_ESTIMATED_SIGMAS if estimate_sigma else _PARAMETERS)
     (directory / "model.xml").write_text(_EMPTY_SBML)
     if protocol:
         (directory / "inputs.tsv").write_text(_INPUTS)
@@ -107,6 +116,13 @@ def test_preequilibration_binds_every_experiment_or_none(tmp_path):
     assert problem.basal_conditions == ("c_basal",) and problem.uses_preequilibration
     with pytest.raises(P.ProblemError, match="preequilibrate in no condition"):
         P.load(write_problem(tmp_path / "partial", partial_preequilibration=True), dosed=("S",))
+
+
+def test_an_offset_does_not_enter_a_states_scale():
+    from petab.math import sympify_petab
+
+    assert P._gain(sympify_petab("offset + 2 * Q"), "Q", {"offset": 5.0}, None) == 2.0
+    assert P._gain(sympify_petab("observableParameter1_o * Q"), "Q", {}, "0.5") == 0.5
 
 
 def test_a_v2_problem_is_refused(tmp_path):

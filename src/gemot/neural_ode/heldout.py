@@ -20,7 +20,8 @@ units; a set whose states or inputs differ from the training set's is ``table_mi
 as the server refuses a condition column it has not seen. Fixed-θ also needs every scalar the
 held-out problem estimates to be one the training run fitted: shared starts, or starts the
 held-out data pin. Where that fails, the scalars are refit and the payload says ``transfer``, so
-nothing downstream subtracts it from a fixed-θ bar.
+nothing downstream subtracts it from a fixed-θ bar. A transfer set's readout scale factors are
+refit too: another system's scalings are not the training ones, which is the set's whole point.
 
 Report-only, like the server's: nothing here gates anything.
 """
