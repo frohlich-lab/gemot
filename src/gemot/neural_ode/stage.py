@@ -26,6 +26,7 @@ network, so the field is O(1) in its own clock and derivatives come out in the p
 from __future__ import annotations
 
 import hashlib
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,11 +66,14 @@ class Staged:
 
 def stage(problem: Problem, directory: Path | str, *, n_augmented: int = 0, width: int = 32,
           depth: int = 2, clock: bool = False, shared_initial_conditions: bool = False,
-          seed: int = 0) -> Staged:
+          seed: int = 0, design: Staged | None = None) -> Staged:
     """Write ``problem`` as a neural ODE into ``directory`` and return what was written.
 
     ``n_augmented`` latent states are appended after the observed and dosed ones; ``clock`` adds
-    a state that counts time as a network input; ``seed`` draws the initial weights. Files already
+    a state that counts time as a network input; ``seed`` draws the initial weights. ``design``
+    stages the problem in another staged problem's units instead -- its scales, horizon, latents,
+    clock and network files -- which is how a held-out set is staged in the units the field was
+    trained in; a problem whose states or inputs differ from the design's is refused. Files already
     in ``directory`` are overwritten.
 
     The shipped preequilibration periods are always staged. Dropping them was once a knob, and it
@@ -88,14 +92,23 @@ def stage(problem: Problem, directory: Path | str, *, n_augmented: int = 0, widt
     directory.mkdir(parents=True, exist_ok=True)
     source = petab.Problem.from_yaml(str(problem.source))
 
+    if design is not None:
+        n_augmented = len(design.states) - len(problem.state_names)
+        clock = "clock" in design.field_inputs
     latents = tuple(f"z{i + 1}" for i in range(int(n_augmented)))
     states = (*problem.state_names, *latents)
     integrated = (*states, "clock") if clock else states
     field_inputs = (*integrated, *problem.field_input_names)
     scales = {**problem.scales, **{z: 1.0 for z in latents}, "clock": problem.horizon}
+    horizon = problem.horizon
+    if design is not None:
+        if states != design.states or field_inputs != design.field_inputs:
+            raise ValueError(f"{problem.name} does not fit the design it is staged in: states {states} "
+                             f"against {design.states}, inputs {field_inputs} against {design.field_inputs}")
+        scales, horizon = dict(design.scales), design.horizon
 
     # The model, then the shipped tables around it, upgraded by petab.
-    text = _antimony(problem, states, integrated, scales)
+    text = _antimony(problem, states, integrated, scales, horizon)
     antimony.clearPreviousLoads()
     if antimony.loadAntimonyString(text) < 0:
         raise ValueError(f"the generated model is not valid Antimony: {antimony.getLastError()}")
@@ -108,7 +121,12 @@ def stage(problem: Problem, directory: Path | str, *, n_augmented: int = 0, widt
     petab_files_1to2(v1 / "problem.yaml", directory)
 
     # The network: its architecture, the module AMICI loads, and its initial weights.
-    n_weights = _write_network(directory, len(field_inputs), len(states), width, depth, seed)
+    if design is None:
+        n_weights = _write_network(directory, len(field_inputs), len(states), width, depth, seed)
+    else:
+        for name in (f"{NETWORK_ID}.py", f"{NETWORK_ID}.yaml", f"{NETWORK_ID}_ps.hdf5"):
+            shutil.copy(design.directory / name, directory / name)
+        n_weights = design.n_weights
     pd.DataFrame({
         "targetId": [f"{NETWORK_ID}_input{i}" for i in range(len(field_inputs))]
         + [f"f_{s}" for s in states],
@@ -160,10 +178,10 @@ def stage(problem: Problem, directory: Path | str, *, n_augmented: int = 0, widt
     (directory / "problem.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
     return Staged(directory=directory, yaml=directory / "problem.yaml", states=states,
                   field_inputs=field_inputs, estimated_starts=tuple(estimated), n_weights=n_weights,
-                  scales=scales, horizon=problem.horizon)
+                  scales=scales, horizon=horizon)
 
 
-def _antimony(problem: Problem, states, integrated, scales) -> str:
+def _antimony(problem: Problem, states, integrated, scales, horizon: float) -> str:
     lines = ["model neural_ode", "  compartment cell = 1;",
              "  species " + ", ".join(f"{s} in cell" for s in integrated) + ";"]
     lines += [f"  {s} = 0;" for s in integrated]
@@ -171,7 +189,7 @@ def _antimony(problem: Problem, states, integrated, scales) -> str:
     lines += [f"  {item.target} := {item.formula};" for item in problem.timed_inputs]
     lines += [f"  {s}_norm := {s} / {scales[s]!r};" for s in (*integrated, *problem.field_input_names)]
     lines += [f"  f_{s} = 0;" for s in states]
-    lines += [f"  {s}' = ({scales[s]!r} / {problem.horizon!r}) * f_{s};" for s in states]
+    lines += [f"  {s}' = ({scales[s]!r} / {horizon!r}) * f_{s};" for s in states]
     if "clock" in integrated:
         lines.append("  clock' = 1;")
     return "\n".join((*lines, "end", ""))

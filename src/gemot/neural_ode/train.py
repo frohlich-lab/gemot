@@ -213,6 +213,29 @@ def state_names(result: TrainResult) -> tuple[str, ...]:
     return tuple(result.problem.model.state_ids)
 
 
+def save_bundle(result: TrainResult, directory: Path | str) -> Path:
+    """The trained field as a complete PEtab SciML problem in ``directory``: the staged files with
+    the trained weights in the array file and the fitted scalars as nominal values, so AMICI, or
+    anyone reading the standard, re-imports exactly the model that was scored."""
+    from petab_sciml import ArrayData, ArrayDataStandard  # noqa: PLC0415
+
+    directory = Path(directory)
+    shutil.copytree(result.staged.directory, directory, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("dense", "curriculum", "jax_*", "v1", "__pycache__"))
+    network = result.problem.model.nns[S.NETWORK_ID]
+    arrays = {name: {"weight": np.asarray(layer.weight), "bias": np.asarray(layer.bias)}
+              for name, layer in network.layers.items()}
+    ArrayDataStandard.save_data(ArrayData(metadata={"pytorch_format": True}, parameters={S.NETWORK_ID: arrays}),
+                                str(directory / f"{S.NETWORK_ID}_ps.hdf5"))
+    parameters = pd.read_csv(directory / "parameters.tsv", sep="\t")
+    parameters["nominalValue"] = parameters["nominalValue"].astype(object)
+    for i, pid in enumerate(parameters["parameterId"]):
+        if pid in result.parameters:
+            parameters.loc[i, "nominalValue"] = result.parameters[pid]
+    parameters.to_csv(directory / "parameters.tsv", sep="\t", index=False)
+    return directory
+
+
 def _curriculum(problem: Problem, staged: S.Staged, config: TrainConfig) -> tuple[list[S.Staged], tuple[str, ...]]:
     """The stage problems to fit in order, ending with ``staged`` itself, and any note on why the
     curriculum is shorter than asked."""
@@ -286,16 +309,20 @@ def _budget(steps: int, n_stages: int) -> list[int]:
     return [early] * (n_stages - 1) + [max(1, int(steps) - early * (n_stages - 1))]
 
 
-def _stepper(imported, config: TrainConfig):
+def _stepper(imported, config: TrainConfig, *, freeze_network: bool = False):
     """The objective and one jitted Adam step for ``imported``, built once so every restart reuses
-    the compilation."""
+    the compilation. ``freeze_network`` fits the scalars alone, the weights held as they are."""
     from amici.sim.jax import run_simulations  # noqa: PLC0415
 
     solver = _solver(config)
     optimiser = optax.adam(config.learning_rate)
 
     def objective(trained, base):
-        llh, _ = run_simulations(_with(base, *trained), **solver)
+        networks, log_scalars = trained
+        if freeze_network:
+            networks = jax.tree_util.tree_map(
+                lambda leaf: jax.lax.stop_gradient(leaf) if eqx.is_inexact_array(leaf) else leaf, networks)
+        llh, _ = run_simulations(_with(base, networks, log_scalars), **solver)
         return -llh
 
     @eqx.filter_jit

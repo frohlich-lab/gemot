@@ -159,6 +159,24 @@ def _write_problem_yaml(problem_dir: Path) -> None:
 ANON_MODEL_ID = "zero_shot_problem"
 
 
+def _write_protocols(problem_dir: Path, protocols: dict[str, tuple[str, list[str]]] | None,
+                     condition_columns: list[str]) -> None:
+    """``problem/inputs.tsv`` (``inputId``, ``formula``, ``conditionInputs``) for the declared
+    protocols, or no file: a stale table from an earlier definition must not outlive it."""
+    path = problem_dir / "inputs.tsv"
+    path.unlink(missing_ok=True)
+    if not protocols:
+        return
+    rows = []
+    for input_id, (formula, columns) in protocols.items():
+        missing = sorted(set(columns) - set(condition_columns))
+        if missing:
+            raise ValueError(f"protocol {input_id!r} reads condition columns {missing} the condition "
+                             f"table does not have; it has {condition_columns}")
+        rows.append(f"{input_id}\t{formula}\t{';'.join(columns)}")
+    path.write_text("inputId\tformula\tconditionInputs\n" + "\n".join(rows) + "\n")
+
+
 def _write_empty_sbml(problem_dir: Path) -> None:
     import libsbml
 
@@ -1046,6 +1064,7 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
                 validation_table: str | None = None,
                 reference_patch: dict[str, Any] | None = None,
                 training_measurements: str | None = None,
+                protocols: dict[str, tuple[str, list[str]]] | None = None,
                 collection: Path | None = None) -> dict[str, Any]:
     """Write ``example_dir/problem/`` from the pinned collection — the fast, no-fit path run by
     ``setup.py``. Copies the published measurements/observables/conditions VERBATIM (flattening
@@ -1097,6 +1116,13 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     ``reference_patch`` re-derives, in the REFERENCE model only, initial values the published
     export froze to numbers (:func:`patch_reference_model`), so a transfer set that refits can move
     them; the training bar is the pristine model's.
+
+    ``protocols`` ``{inputId: (formula, [condition columns])}`` writes ``problem/inputs.tsv``, the
+    model-free protocol table: an input the experiment IMPOSED as a function of time and of the
+    condition table's own columns (fujita's EGF, a pulse or ramp set by ``EGF_0``/``EGF_rate``/
+    ``EGF_end``). It states what was done to the system, not how the system responds, which is why
+    it may name only ``time`` and condition columns -- :mod:`petab_harness.neural_ode.problem`
+    refuses anything else. The server ignores the file; the model-producing routes read it.
 """
     from petab.v1.C import CONDITION_NAME
 
@@ -1224,6 +1250,7 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
 
     _write_empty_sbml(problem_dir)
     _write_problem_yaml(problem_dir)
+    _write_protocols(problem_dir, protocols, [str(c) for c in cond.columns])
     out = {"measurements": len(prob.measurement_df), "observables": len(prob.observable_df),
            "conditions": len(prob.condition_df)}
     print(f"[setup] {name}: materialized {len(prob.measurement_df)} measurements, "
