@@ -101,7 +101,11 @@ dev = [
 neural = [
     "amici[jax]>=1.1",
     "optax>=0.2",
-    "petab-sciml>=0.0.3",
+    # The curriculum multiple shooting rewrite (`petab_sciml.training`) is unreleased,
+    # PEtab-dev/petab_sciml#92. Pinned to GitHub's test-merge commit of that PR, because the
+    # branch alone predates `petab_sciml.constants`, which petab 0.9's SciML lint imports.
+    # Revisit once 0.0.4 is on PyPI: `petab-sciml>=0.0.4`.
+    "petab-sciml @ git+https://github.com/PEtab-dev/petab_sciml@08498527900fd6e9de4818df65bde244ad887c86",
 ]
 
 agent = [
@@ -159,6 +163,14 @@ petab-mcp = "petab_mcp.cli:main"
 [project.urls]
 Homepage = "https://github.com/ffroehlich/petab_mcp"
 Repository = "https://github.com/ffroehlich/petab_mcp"
+
+[tool.hatch.metadata]
+# The `neural` extra pins petab-sciml to a git commit (see the comment there: the curriculum
+# multiple shooting rewrite is unreleased). Hatchling refuses a direct reference in metadata
+# unless this says so, and `dev` depends on `petab-mcp[neural]`, so WITHOUT this every
+# `pip install -e '.[dev]'` fails at metadata generation -- CI never reaches the test step.
+# Drop it together with the git pin, once petab-sciml 0.0.4 is on PyPI.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 # petab_harness (the examples' agent harness) ships alongside the server rather than as its

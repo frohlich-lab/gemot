@@ -108,6 +108,13 @@ problem in place, which the same judge then scores at its delivered parameter va
 the harness adds is the difference between the two arms on the same sweep (see
 [`src/petab_harness/agent/barebones.py`](src/petab_harness/agent/barebones.py)).
 
+[`petab_harness.neural_ode`](src/petab_harness/neural_ode) is the harness's non-LLM model
+producer. It reads a PEtab problem's tables without opening the shipped model, restates the
+problem as a PEtab SciML neural ODE — the observed and dosed species as states, a tanh network as
+the right-hand side, the shipped observation model kept — and fits it through AMICI's JAX
+backend. Distilling the fitted field into Antimony rate laws for the judge is not in this
+package yet.
+
 ## Design notes
 
 Principles to hold onto when extending this package.

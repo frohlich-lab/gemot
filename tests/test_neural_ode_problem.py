@@ -10,10 +10,14 @@ from petab_harness.neural_ode import problem as P
 
 _MEASUREMENTS = """observableId\tsimulationConditionId\ttime\tmeasurement\tnoiseParameters{preeq}
 obs_P\tc_lo\t0.0\t0.0\t{preeq_lo}
+obs_P\tc_lo\t0.5\t0.3\t{preeq_lo}
 obs_P\tc_lo\t1.0\t0.5\t{preeq_lo}
+obs_P\tc_lo\t1.5\t0.7\t{preeq_lo}
 obs_P\tc_lo\t2.0\t0.8\t{preeq_lo}
 obs_P\tc_hi\t0.0\t0.1\t{preeq_hi}
+obs_P\tc_hi\t0.5\t0.9\t{preeq_hi}
 obs_P\tc_hi\t1.0\t1.5\t{preeq_hi}
+obs_P\tc_hi\t1.5\t2.0\t{preeq_hi}
 obs_P\tc_hi\t2.0\t2.4\t{preeq_hi}
 obs_Q\tc_lo\t1.0\t3.0\t0.2{preeq_lo}
 obs_Q\tc_hi\t2.0\t6.0\t0.2{preeq_hi}
@@ -76,7 +80,7 @@ def test_states_knobs_starts_and_scales_are_read_off_the_tables(tmp_path):
     assert problem.measured_starts == {("c_lo", "P"): 0.0, ("c_hi", "P"): 0.1}
     assert problem.experiment_ids == ("c_lo", "c_hi") and not problem.uses_preequilibration
     # sigma_P is fixed and obs_Q's noise is numeric, so the problem estimates no sigma.
-    assert problem.noise_parameters == () and problem.n_measurements == 8
+    assert problem.noise_parameters == () and problem.n_measurements == 12
     # Q is scaled by scale_Q (nominal 2), so its magnitude is that of the data divided by it.
     assert problem.scales["Q"] == pytest.approx(((1.5**2 + 3.0**2) / 2) ** 0.5)
     assert problem.scales["S"] == pytest.approx((34.0) ** 0.5) and problem.scales["E"] == 1.0
