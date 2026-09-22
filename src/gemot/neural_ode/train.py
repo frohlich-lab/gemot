@@ -46,6 +46,7 @@ import numpy as np  # noqa: E402
 import optax  # noqa: E402
 import pandas as pd  # noqa: E402
 
+from . import regularise as R  # noqa: E402
 from . import stage as S  # noqa: E402
 from .problem import Problem  # noqa: E402
 
@@ -91,6 +92,11 @@ class TrainConfig:
     #: that builds curvature from the gradients JAX already returns, so an iteration costs about
     #: the same and buys far more. ``steps`` is its iteration cap too.
     optimiser: str = "adam"
+    #: Sparsity penalty on the field's WEIGHTS: one of `regularise.NAMES`. What a distillation has
+    #: to reproduce is which VARIABLES the field reads, and that is decided in the first layer.
+    penalty: str = "none"
+    #: Weight of that penalty in the objective, and the strength of the proximal step under `l21`.
+    penalty_weight: float = 0.0
     #: Share of the step budget Adam gets under ``"adam+fides"``; fides polishes with the rest.
     adam_share: float = 0.5
     learning_rate: float = 3e-3
@@ -108,9 +114,10 @@ class TrainConfig:
         shared = "_shared" if self.shared_initial_conditions else ""
         mult = "_mult" if self.multiplicative else ""
         horizon = f"_cl{self.horizon_stages}" if self.horizon_stages > 1 else ""
+        sparse = "" if self.penalty == "none" else f"_{self.penalty}{self.penalty_weight:g}"
         solver = "" if self.optimiser == "adam" else f"_{self.optimiser}"
         return (f"aug{self.n_augmented}_w{self.width}d{self.depth}{windows}{horizon}{clock}"
-                f"{shared}{mult}{solver}_s{self.seed}")
+                f"{shared}{mult}{sparse}{solver}_s{self.seed}")
 
 
 @dataclass
@@ -137,6 +144,10 @@ class TrainResult:
     problem: object = field(repr=False)
 
 
+class ConfigError(ValueError):
+    """A training configuration that cannot do what it says."""
+
+
 def train(problem: Problem, directory: Path | str, config: TrainConfig) -> TrainResult:
     """Stage ``problem`` in ``directory`` and fit it under ``config``.
 
@@ -151,6 +162,16 @@ def train(problem: Problem, directory: Path | str, config: TrainConfig) -> Train
             "curriculum from one step budget; ask for one. Multiple shooting rewrites the problem "
             "into windows and refuses preequilibration; the horizon curriculum withholds late "
             "measurements and does not")
+    if config.penalty != "none" and config.optimiser != "adam":
+        # Sparsity is the PENALTY plus the proximal step, and the proximal step belongs between
+        # optimiser steps. fides owns its own: it chooses a step from a trust region it sizes from
+        # the curvature it has accumulated, and projecting the iterate behind it invalidates both
+        # the BFGS update and the radius. So `_fit_fides` does not threshold, and a penalised fides
+        # run would add the penalty, never reach an exact zero, and still call itself sparse.
+        raise ConfigError(
+            f"penalty={config.penalty!r} needs optimiser='adam', not {config.optimiser!r}: the "
+            "proximal step that makes a group exactly zero runs between optimiser steps, which a "
+            "trust-region method does not expose")
     started = time.perf_counter()
     staged = stage_only(problem, directory, config)
     stages, notes = _curriculum(problem, staged, config)
@@ -178,6 +199,26 @@ def train(problem: Problem, directory: Path | str, config: TrainConfig) -> Train
         else:
             if objectives[-1] < best_value:
                 best_value, best_trained, best_objectives = objectives[-1], (networks, scalars), tuple(objectives)
+
+    # RELAXED LASSO, WARM STARTED. The penalty selects which variables the field reads and shrinks
+    # every surviving weight while doing it, so the penalised fit understates what that support can
+    # reach. The refit therefore begins AT the penalised optimum -- `best_trained` carries both the
+    # weights and the scalars into it -- rather than from a fresh draw: the support is already the
+    # one worth keeping, and only the shrinkage has to come out. Starting over would re-solve a
+    # problem that is already solved, and could land in a different basin on a different support.
+    # The zeroed columns are held at zero throughout, so the refit cannot reintroduce a dropped
+    # variable; what it recovers is the fit that support was always capable of.
+    if best_trained is not None and config.penalty != "none" and config.penalty_weight:
+        support = _support_mask(best_trained[0])
+        free = replace(config, penalty="none", penalty_weight=0.0)
+        stepper = _stepper(imported[-1], free)
+        value, state, taken, failure = _fit(imported[-1], stepper, *best_trained, config.steps, free,
+                                            support=support)
+        steps_run += taken
+        if failure is None and np.isfinite(value) and value < best_value:
+            best_value, best_trained = value, state
+            best_objectives = (*best_objectives[:-1], value)
+        notes = (*notes, f"refit on the selected support: {failure or f'nll {value:.4f}'}")
 
     final = imported[-1]
     if best_trained is None:
@@ -417,6 +458,38 @@ def _budget(steps: int, n_stages: int) -> list[int]:
     return [early] * (n_stages - 1) + [max(1, int(steps) - early * (n_stages - 1))]
 
 
+def _weight_matrices(networks: dict) -> list:
+    """The field's dense weight matrices, FIRST LAYER FIRST. Biases are left out: a bias is a
+    constant production term, not a dependency on an input variable."""
+    layers = networks[S.NETWORK_ID].layers
+    return [layers[name].weight for name in sorted(layers, key=lambda n: int(n.removeprefix("layer")))]
+
+
+def _variable_groups(imported, config: TrainConfig):
+    """First-layer columns grouped by the input variable they carry, products folded into the
+    variables they are built from (so dropping a variable drops its products too)."""
+    columns = _weight_matrices(imported.model.nns).__getitem__(0).shape[1]
+    if not config.multiplicative:
+        return R.variable_groups(columns)
+    base = int(round((-1 + (1 + 8 * columns) ** 0.5) / 2)) - 1  # columns = b + b(b+1)/2
+    products = [(a, b) for a in range(base) for b in range(a, base)]
+    return R.variable_groups(columns, products)
+
+
+def _threshold(trained, config: TrainConfig, groups):
+    """The proximal step: soft-threshold the first layer's variable groups to EXACT zeros. A
+    penalty optimised with Adam only shrinks a group; this is what removes a variable."""
+    if config.penalty != "l21" or not config.penalty_weight:
+        return trained
+    networks, scalars = trained
+    net = networks[S.NETWORK_ID]
+    first = sorted(net.layers, key=lambda n: int(n.removeprefix("layer")))[0]
+    updated = R.proximal_group_threshold(net.layers[first].weight,
+                                         config.penalty_weight * config.learning_rate, groups)
+    net = eqx.tree_at(lambda n: n.layers[first].weight, net, updated)
+    return {**networks, S.NETWORK_ID: net}, scalars
+
+
 def _stepper(imported, config: TrainConfig, *, freeze_network: bool = False):
     """The objective and one jitted Adam step for ``imported``, built once so every restart reuses
     the compilation. ``freeze_network`` fits the scalars alone, the weights held as they are."""
@@ -425,13 +498,18 @@ def _stepper(imported, config: TrainConfig, *, freeze_network: bool = False):
     solver = _solver(config)
     optimiser = optax.adam(config.learning_rate)
 
+    groups = _variable_groups(imported, config)
+
     def objective(trained, base):
         networks, log_scalars = trained
         if freeze_network:
             networks = jax.tree_util.tree_map(
                 lambda leaf: jax.lax.stop_gradient(leaf) if eqx.is_inexact_array(leaf) else leaf, networks)
         llh, _ = run_simulations(_with(base, networks, log_scalars), **solver)
-        return -llh
+        if config.penalty == "none" or not config.penalty_weight:
+            return -llh
+        return -llh + config.penalty_weight * R.penalty(config.penalty, _weight_matrices(networks),
+                                                        groups=groups)
 
     @eqx.filter_jit
     def step(trained, state, base):
@@ -529,7 +607,25 @@ def _fit_hybrid(imported, stepper, networks: dict, scalars: dict[str, float], st
     return polished, state, taken + more, why
 
 
-def _fit(imported, stepper, networks: dict, scalars: dict[str, float], steps: int, config: TrainConfig):
+def _support_mask(networks: dict):
+    """Which first-layer weights the penalty left alive, as a 0/1 array."""
+    return (np.asarray(_weight_matrices(networks)[0]) != 0.0).astype(float)
+
+
+def _apply_support(trained, support):
+    """Hold the zeroed columns at zero, so a refit cannot reintroduce a dropped variable."""
+    if support is None:
+        return trained
+    networks, scalars = trained
+    net = networks[S.NETWORK_ID]
+    first = sorted(net.layers, key=lambda n: int(n.removeprefix("layer")))[0]
+    net = eqx.tree_at(lambda n: n.layers[first].weight, net,
+                      net.layers[first].weight * jnp.asarray(support))
+    return {**networks, S.NETWORK_ID: net}, scalars
+
+
+def _fit(imported, stepper, networks: dict, scalars: dict[str, float], steps: int,
+         config: TrainConfig, *, support=None):
     """Fit one stage from ``networks`` and the scalars it recognises by id (the rest start at
     their nominal values). Returns the best objective, ``(networks, scalars)`` at it, the steps
     taken and the failure, if any."""
@@ -550,7 +646,7 @@ def _fit(imported, stepper, networks: dict, scalars: dict[str, float], steps: in
             best_value, best_trained, since_improvement = value, trained, 0
         else:
             since_improvement += 1
-        trained = candidate
+        trained = _apply_support(_threshold(candidate, config, _variable_groups(imported, config)), support)
         if since_improvement >= config.patience:
             break
     else:
