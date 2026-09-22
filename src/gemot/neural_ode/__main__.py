@@ -1,7 +1,7 @@
 """The neural route from the command line: fit and score one field, or propose models.
 
     python -m petab_harness.neural_ode fit examples/fujita/problem --out runs/fujita \\
-        [--windows 5 --steps 1600 --restarts 2 --aug 0 --width 32 --depth 2 --seed 0] \\
+        [--windows 5 --horizon-stages 4 --steps 1600 --restarts 2 --aug 0 --width 32 --depth 2 --seed 0] \\
         [--dosed S] [--shared-ics] [--clock] [--multiplicative] \\
         [--heldout PATH | --no-heldout] [--reference PATH]
     python -m petab_harness.neural_ode propose examples/fujita/problem --out runs/fujita \\
@@ -51,6 +51,9 @@ def main(argv: list[str] | None = None) -> int:
     fit.add_argument("--learning-rate", dest="learning_rate", type=float, default=3e-3)
     fit.add_argument("--rtol", type=float, default=1e-6)
     fit.add_argument("--atol", type=float, default=1e-8)
+    fit.add_argument("--horizon-stages", dest="horizon_stages", type=int, default=1,
+                     help="stages of a horizon curriculum: fit an early slice of the time course, "
+                          "then extend (applies where --windows cannot)")
     fit.add_argument("--continuity", type=float, default=1.0)
     fit.add_argument("--steps", type=int, default=1500)
     fit.add_argument("--restarts", type=int, default=4)
@@ -124,7 +127,7 @@ def _fit(args) -> int:
     config = T.TrainConfig(n_augmented=args.aug, width=args.width, depth=args.depth, clock=args.clock,
                            multiplicative=args.multiplicative,
                            shared_initial_conditions=args.shared_ics,
-                           n_windows=args.windows,
+                           n_windows=args.windows, horizon_stages=args.horizon_stages,
                            optimiser=args.optimiser, rtol=args.rtol, atol=args.atol,
                            learning_rate=args.learning_rate,
                            continuity_weight=args.continuity, steps=args.steps, n_restarts=args.restarts,

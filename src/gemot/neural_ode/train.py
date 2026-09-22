@@ -70,6 +70,16 @@ class TrainConfig:
     #: Feed the network the pairwise products of its inputs as well (see `stage.product_features`).
     #: Widens the FIRST layer only; the distiller still regresses on the base variables.
     multiplicative: bool = False
+    #: Stages of a HORIZON curriculum: fit an early slice of the time course, then extend, each
+    #: stage starting from the last one's weights. 1 is no curriculum. Unlike multiple shooting
+    #: this rewrites nothing -- it withholds late measurements -- so it needs neither data at t=0
+    #: nor the absence of preequilibration, and applies where `n_windows` cannot.
+    #:
+    #: MUTUALLY EXCLUSIVE with `n_windows`: both build a curriculum out of the same step budget
+    #: and asking for both is a configuration error, not a preference to resolve. `train` raises
+    #: rather than picking one, because the version that silently let `n_windows` win would run a
+    #: sweep arm labelled as a horizon curriculum that had never built one.
+    horizon_stages: int = 1
     #: Windows of curriculum multiple shooting; 1 is single shooting. Stages merge one window at
     #: a time until the last stage is the staged problem itself.
     n_windows: int = 1
@@ -97,9 +107,10 @@ class TrainConfig:
         clock = "_clock" if self.clock else ""
         shared = "_shared" if self.shared_initial_conditions else ""
         mult = "_mult" if self.multiplicative else ""
+        horizon = f"_cl{self.horizon_stages}" if self.horizon_stages > 1 else ""
         solver = "" if self.optimiser == "adam" else f"_{self.optimiser}"
-        return (f"aug{self.n_augmented}_w{self.width}d{self.depth}{windows}{clock}{shared}{mult}"
-                f"{solver}_s{self.seed}")
+        return (f"aug{self.n_augmented}_w{self.width}d{self.depth}{windows}{horizon}{clock}"
+                f"{shared}{mult}{solver}_s{self.seed}")
 
 
 @dataclass
@@ -134,6 +145,12 @@ def train(problem: Problem, directory: Path | str, config: TrainConfig) -> Train
     one returns ``solver_failed`` with ``nll`` infinite rather than raising: the caller decides
     whether that ends a ladder or the whole route.
     """
+    if config.n_windows > 1 and config.horizon_stages > 1:
+        raise ValueError(
+            f"n_windows={config.n_windows} and horizon_stages={config.horizon_stages} both build a "
+            "curriculum from one step budget; ask for one. Multiple shooting rewrites the problem "
+            "into windows and refuses preequilibration; the horizon curriculum withholds late "
+            "measurements and does not")
     started = time.perf_counter()
     staged = stage_only(problem, directory, config)
     stages, notes = _curriculum(problem, staged, config)
@@ -256,6 +273,8 @@ def save_bundle(result: TrainResult, directory: Path | str) -> Path:
 def _curriculum(problem: Problem, staged: S.Staged, config: TrainConfig) -> tuple[list[S.Staged], tuple[str, ...]]:
     """The stage problems to fit in order, ending with ``staged`` itself, and any note on why the
     curriculum is shorter than asked."""
+    if config.horizon_stages > 1:
+        return _horizon_curriculum(staged, config)
     if config.n_windows <= 1:
         return [staged], ()
     if problem.uses_preequilibration:
@@ -294,6 +313,73 @@ def _curriculum(problem: Problem, staged: S.Staged, config: TrainConfig) -> tupl
             shutil.copy(staged.directory / name, stage / name)
         _seed_window_starts(stage, staged)
     return [*(replace(staged, directory=s, yaml=s / "problem.yaml") for s in stages[:-1]), staged], notes
+
+
+def _horizon_curriculum(staged: S.Staged, config: TrainConfig) -> tuple[list[S.Staged], tuple[str, ...]]:
+    """Stages that fit a growing slice of the time course, the last being the whole of it.
+
+    `petab_sciml.training.CurriculumLearningProblem` builds these -- "training difficulty is
+    progressively increased across stages by gradually extending the measurement time horizon" --
+    and takes the same `UniformPartition` the multiple-shooting path two branches up already
+    imports. An earlier version cut the measurement table here instead; the standard owns this and
+    a second implementation could only drift from it.
+
+    Nothing about the model, the conditions, the experiments or any preequilibration changes --
+    only how much of the trajectory the likelihood sees. That is why this applies where the
+    multiple-shooting rewrite cannot: it needs no datum at t=0 (crauste starts at t=4) and does not
+    refuse preequilibration (perelson's). The trainer carries the weights across the stages, so an
+    early stage is a cheap initialisation for the next, which is the point.
+
+    What the export does not do is keep every observable present: it truncates, so an observable
+    whose first datum comes late vanishes from the early stages. That is restored below.
+    """
+    from petab_sciml.training import CurriculumLearningProblem, UniformPartition  # noqa: PLC0415
+
+    measurements = pd.read_csv(staged.directory / "measurements.tsv", sep="\t")
+    finite = np.sort(measurements["time"].unique())
+    finite = finite[np.isfinite(finite)]
+    asked = int(config.horizon_stages)
+    if len(finite) < 2:
+        return [staged], (f"horizon_stages={asked} ignored: the data have one finite time point",)
+    stages = min(asked, len(finite))
+
+    directory = staged.directory / "cl_prob"
+    shutil.rmtree(directory, ignore_errors=True)
+    CurriculumLearningProblem(yaml=str(staged.yaml), partition=UniformPartition(n=stages)).export()
+    written = sorted((p for p in directory.iterdir() if p.is_dir()),
+                     key=lambda p: int("".join(c for c in p.name if c.isdigit()) or 0))
+    if len(written) != stages:
+        raise ValueError(f"the curriculum asked for {stages} stages and got {len(written)}")
+
+    # The partition is the library's; keeping every observable PRESENT in every stage is ours. A
+    # cutoff drops an observable whose first datum comes later, and an observable with no row
+    # takes its observable/noise parameters out of use, which lint reports as extraneous -- the
+    # failure the dense sampling grid already hit. So each stage gets back the earliest row of any
+    # (experiment, observable) pair its cutoff removed, taken from the last stage, which is the
+    # whole time course written in the export's own schema.
+    keys = ["experimentId", "observableId"]
+    whole = pd.read_csv(written[-1] / "measurements.tsv", sep="\t")
+    if set(map(tuple, whole[keys].to_numpy())) != set(map(tuple, measurements[keys].to_numpy())):
+        raise ValueError("the last curriculum stage is not the whole time course")
+    earliest = whole.loc[whole.groupby(keys, sort=False)["time"].idxmin()]
+    for stage in written[:-1]:
+        table = pd.read_csv(stage / "measurements.tsv", sep="\t")
+        present = set(map(tuple, table[keys].to_numpy()))
+        missing = earliest[[tuple(pair) not in present for pair in earliest[keys].to_numpy()]]
+        if len(missing):
+            rows = pd.concat([table, missing]).sort_values([*keys, "time"], kind="stable")
+            rows.to_csv(stage / "measurements.tsv", sep="\t", index=False)
+
+    # The export carries the PEtab tables; the SciML extension's files (the network, its weights
+    # and the mapping) are the design's and are copied beside them where the export did not.
+    for stage in written:
+        for name in (p.name for p in staged.directory.iterdir() if p.is_file()):
+            if not (stage / name).exists():
+                shutil.copy2(staged.directory / name, stage / name)
+    out = [replace(staged, directory=stage, yaml=stage / staged.yaml.name) for stage in written]
+    notes = () if stages == asked else (
+        f"horizon_stages={asked} reduced to {stages}: only {len(finite)} finite time points",)
+    return out, notes
 
 
 def _seed_window_starts(stage: Path, staged: S.Staged) -> None:

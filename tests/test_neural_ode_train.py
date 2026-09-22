@@ -112,3 +112,44 @@ def test_fides_restarts_are_not_failures_and_share_one_compiled_gradient(tmp_pat
     # The compilations belong to the stepper, one per curriculum stage -- NOT one per restart, so
     # the count must not grow with `restarts`.
     assert len(jits) < restarts, f"{len(jits)} jit compilations for {restarts} restarts"
+
+
+def test_the_horizon_curriculum_grows_the_window_and_carries_the_weights(tmp_path):
+    """Stages come from `petab_sciml.training.CurriculumLearningProblem`, so the standard owns the
+    partition. What this checks is the two things the library does NOT do for us: its export drops
+    the SciML extension's files, without which a stage cannot be imported at all, and it truncates
+    an observable out of the early stages entirely."""
+    import pandas as pd
+
+    problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
+    config = T.TrainConfig(width=4, depth=1, steps=21, n_restarts=1, horizon_stages=3, patience=1000)
+    result = T.train(problem, tmp_path / "run", config)
+    assert config.key() == "aug0_w4d1_cl3_s0" and result.notes == ()
+    # One objective per stage, and the weights carry across them: the loop seeds `networks` once
+    # per RESTART, not per stage, so a stage starts where the previous one ended.
+    assert len(result.stage_objectives) == 3 and result.steps_run == 21
+    assert result.stage_objectives[-1] == result.nll and math.isfinite(result.nll)
+
+    stages = sorted((tmp_path / "run" / "cl_prob").glob("stage*"), key=lambda p: p.name)
+    assert len(stages) == 3
+    rows = [len(pd.read_csv(s / "measurements.tsv", sep="\t")) for s in stages]
+    assert rows == sorted(rows) and rows[0] < rows[-1], "the horizon must grow"
+    full = len(pd.read_csv(tmp_path / "run" / "measurements.tsv", sep="\t"))
+    assert rows[-1] == full, "the last stage is the whole time course"
+    for stage in stages:
+        # The export writes the PEtab tables only; these are copied beside them, and a stage
+        # without them cannot be imported -- which is why the copy is not belt-and-braces.
+        assert (stage / "net1.py").exists() and (stage / "net1_ps.hdf5").exists()
+        assert (stage / "hybridization.tsv").exists()
+        # An observable dropped by truncation would take its noise parameters out of use, which
+        # lint reports as extraneous. Every stage keeps them all.
+        assert pd.read_csv(stage / "measurements.tsv", sep="\t")["observableId"].nunique() == 2
+
+
+def test_a_curriculum_is_one_kind_or_the_other(tmp_path):
+    """Both build a curriculum from one step budget. The version that let `n_windows` silently win
+    would run a sweep arm labelled as a horizon curriculum that had never built one."""
+    problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
+    with pytest.raises(ValueError, match="both build a"):
+        T.train(problem, tmp_path / "run",
+                T.TrainConfig(width=4, depth=1, steps=9, n_restarts=1, n_windows=2, horizon_stages=3))
