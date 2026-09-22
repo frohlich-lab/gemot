@@ -81,13 +81,26 @@ def test_fides_restarts_are_not_failures_and_share_one_compiled_gradient(tmp_pat
     them exhaust ``vm.max_map_count`` -- the ``LLVM compilation error: Cannot allocate memory``
     abort ``pysr_worker`` documents, which killed a fifty-restart fit outright.
     """
+    import sys
+
     import equinox as eqx
 
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
     jits = []
     real_filter_jit = eqx.filter_jit
-    monkeypatch.setattr(T.eqx, "filter_jit",
-                        lambda *a, **k: (jits.append(1), real_filter_jit(*a, **k))[1])
+
+    def counting(*a, **k):
+        # The STEPPER's own calls and nothing else. diffrax, optimistix and amici's `JAXModel`
+        # apply `filter_jit` at IMPORT time -- nineteen calls between them -- so whether those
+        # land inside this window depends only on what an earlier test in the same xdist worker
+        # already imported. Counting them made this pass under the full suite, where something
+        # imports diffrax first, and fail whenever the module was run on its own: 21 against a
+        # budget of 4, from a run whose stepper compiled exactly the 2 it should.
+        if sys._getframe(1).f_globals.get("__name__") == T.__name__:
+            jits.append(1)
+        return real_filter_jit(*a, **k)
+
+    monkeypatch.setattr(T.eqx, "filter_jit", counting)
     restarts = 4
     config = T.TrainConfig(width=4, depth=1, steps=20, n_restarts=restarts, patience=1000,
                            optimiser="fides")
