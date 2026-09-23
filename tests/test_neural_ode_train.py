@@ -153,3 +153,35 @@ def test_a_curriculum_is_one_kind_or_the_other(tmp_path):
     with pytest.raises(ValueError, match="both build a"):
         T.train(problem, tmp_path / "run",
                 T.TrainConfig(width=4, depth=1, steps=9, n_restarts=1, n_windows=2, horizon_stages=3))
+
+
+def test_the_saved_bundle_carries_the_fitted_weights_not_the_staged_ones(tmp_path):
+    """`save_bundle` is what makes a trained field outlive its process, and it had no test at all.
+    Staging writes the network's initial weights; nothing writes them again, so a bundle that
+    merely copied the staged directory would ship a random field that scores like a trained one."""
+    import h5py
+    import numpy as np
+
+    from petab_harness.neural_ode import stage as S
+
+    problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
+    result = T.train(problem, tmp_path / "run", T.TrainConfig(width=4, depth=1, steps=8, n_restarts=1,
+                                                              patience=1000))
+    bundle = T.save_bundle(result, tmp_path / "bundle")
+
+    def arrays(path):
+        out = {}
+        with h5py.File(path) as handle:
+            handle.visititems(lambda name, o: out.__setitem__(name, np.array(o))
+                              if getattr(o, "shape", None) else None)
+        return out
+
+    staged, saved = arrays(result.staged.directory / "net1_ps.hdf5"), arrays(bundle / "net1_ps.hdf5")
+    assert staged and set(staged) == set(saved), "the bundle must hold the same layers"
+    assert any(not np.allclose(staged[k], saved[k]) for k in staged), \
+        "the bundle holds the STAGED weights: the fit was thrown away"
+    # And what it holds is the fit itself, layer for layer, not merely something different.
+    trained = result.problem.model.nns[S.NETWORK_ID].layers
+    for name, layer in trained.items():
+        assert np.allclose(saved[f"parameters/{S.NETWORK_ID}/{name}/weight"], np.asarray(layer.weight))
+        assert np.allclose(saved[f"parameters/{S.NETWORK_ID}/{name}/bias"], np.asarray(layer.bias))

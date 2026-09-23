@@ -147,6 +147,31 @@ def _candidate_k(params, final) -> "tuple[int, int, list[str]]":
     return k_estimated + len(hardcoded), k_estimated, hardcoded
 
 
+def _fitted_parameters(params) -> "dict[str, float] | None":
+    """The scored version's estimated parameters by id, at their FITTED values.
+
+    A fit writes its result into the parameter table's ``nominalValue`` (see
+    ``fitting._slim_fitted_parameters``), so the estimated rows carry the vector and no extra read
+    is needed. Exactly the rows :func:`_candidate_k` counts: an ``in_model: false`` row is a
+    parameter the PROBLEM ships that this model never declared, so it is not a parameter of the
+    model being scored and does not belong in its vector.
+
+    ``None`` rather than ``{}`` where the read is unusable, so "no vector recorded" stays
+    distinguishable from "a model with nothing estimated".
+    """
+    if not isinstance(params, list):
+        return None
+    out: dict[str, float] = {}
+    for parameter in params:
+        if not (isinstance(parameter, dict) and parameter.get("estimate")
+                and parameter.get("in_model", True)):
+            continue
+        value = parameter.get("nominalValue")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[str(parameter.get("parameterId"))] = float(value)
+    return out
+
+
 def _stored_k_and_n(stored) -> "tuple[int | None, int | None]":
     """``(k, n)`` for a stored version: its ESTIMATED-parameter count and its data-point count.
 
@@ -614,6 +639,11 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         # k's two addends, so a k above the estimated-row count is auditable after the fact.
         "k_estimated": k_estimated,
         "hardcoded_constants": hardcoded,
+        # The scored model's parameter VECTOR, not just its count. Every criterion here prices k
+        # parameters and none of them recorded what those parameters came out as, so reading a
+        # finished run's fit back -- to compare two runs' constants, to seed another fit, to say
+        # what a distilled rate law actually claims -- meant re-fitting it.
+        "fitted_parameters": _fitted_parameters(params),
         "n": n,
         "k_eff": k_eff,
         "bic": bic_cand,

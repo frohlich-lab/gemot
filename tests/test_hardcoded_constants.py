@@ -23,7 +23,7 @@ from petab_mcp import fitting
 from petab_mcp import literals as L
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
-from petab_harness.runner.judge import _candidate_k
+from petab_harness.runner.judge import _candidate_k, _fitted_parameters
 
 
 def _sbml_model(ant: str):
@@ -334,3 +334,22 @@ def test_every_declared_reference_charge_is_in_the_committed_reference():
         assert declared == sorted(recorded or []), (run.parent.name, declared, recorded)
         checked += 1
     assert checked >= 1, "fujita declares REFERENCE_HARDCODED_PARAMS; the walk found no example"
+
+
+def test_the_judge_records_the_parameter_vector_it_scored():
+    """Every criterion prices `k` parameters and none of them recorded what those parameters came
+    out AS, so reading a finished run's fit back meant re-fitting it. A fit writes its result into
+    `nominalValue`, and the vector is exactly the rows `_candidate_k` charges: a fixed row is not
+    estimated, and an `in_model: false` row is a shipped parameter this model never declared."""
+    params = [{"parameterId": "a", "estimate": 1, "nominalValue": 0.75},
+              {"parameterId": "b", "estimate": 1, "nominalValue": 12.0},
+              {"parameterId": "sigma", "estimate": 0, "nominalValue": 0.1},
+              {"parameterId": "shipped_unused", "estimate": 1, "in_model": False, "nominalValue": 3.0}]
+    assert _fitted_parameters(params) == {"a": 0.75, "b": 12.0}
+    # The same rows k charges, so the vector's length is auditable against `k_estimated`.
+    assert len(_fitted_parameters(params)) == _candidate_k(params, None)[1]
+    # None, not {}, where the read is unusable: "nothing recorded" is not "nothing estimated".
+    assert _fitted_parameters("not a list") is None and _fitted_parameters([]) == {}
+    # A row whose value is missing or non-numeric is skipped rather than crashing the judge.
+    assert _fitted_parameters([{"parameterId": "a", "estimate": 1, "nominalValue": None},
+                               {"parameterId": "b", "estimate": 1, "nominalValue": "nan"}]) == {}

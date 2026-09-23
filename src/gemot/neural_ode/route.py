@@ -292,6 +292,12 @@ def _default_field(T, D, node_problem, train_config, distil_config, scratch):
     result = T.train(node_problem, Path(scratch) / train_config.key(), train_config)
     if result.solver_failed:
         raise LadderFailure(f"the solver failed after {result.steps_run} steps; no field to distil")
+    # The FITTED field, kept. Staging writes the network's initial weights and nothing writes them
+    # again, so without this the trained field dies with the worker and only its distillations and
+    # the scalars in the record survive -- a sweep cannot re-distil a field at other settings, or
+    # re-score it, without retraining it. Beside the staged directory, never inside it: the bundle
+    # is a copy of that directory and a destination within it would copy into itself.
+    T.save_bundle(result, Path(scratch) / "field" / train_config.key())
     distilled = D.distil(node_problem, result, distil_config)
     if not distilled.pysr_available:
         raise LadderFailure(f"PySR is not available; placeholders are not a proposal. Warnings: "

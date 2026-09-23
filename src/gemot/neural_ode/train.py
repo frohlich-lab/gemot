@@ -253,7 +253,7 @@ def trajectories(result: TrainResult, n_times: int = 200) -> dict[str, dict[str,
     staged = result.staged
     dense = staged.directory / "dense"
     shutil.copytree(staged.directory, dense, dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns("dense", "curriculum", "jax_*", "v1", "__pycache__"))
+                    ignore=shutil.ignore_patterns("dense", "curriculum", "cl_prob", "jax_*", "v1", "__pycache__"))
     measurements = pd.read_csv(dense / "measurements.tsv", sep="\t")
     grid = np.linspace(0.0, staged.horizon, int(n_times))
     rows = []
@@ -296,7 +296,7 @@ def save_bundle(result: TrainResult, directory: Path | str) -> Path:
 
     directory = Path(directory)
     shutil.copytree(result.staged.directory, directory, dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns("dense", "curriculum", "jax_*", "v1", "__pycache__"))
+                    ignore=shutil.ignore_patterns("dense", "curriculum", "cl_prob", "jax_*", "v1", "__pycache__"))
     network = result.problem.model.nns[S.NETWORK_ID]
     arrays = {name: {"weight": np.asarray(layer.weight), "bias": np.asarray(layer.bias)}
               for name, layer in network.layers.items()}

@@ -80,13 +80,17 @@ class _ProblemError(ValueError):
 
 
 def _modules(train=None, distil=None, load=None):
-    """Stand-ins for ``(problem, train, distil)``: a loadable problem, a fit, a distillation."""
+    """Stand-ins for ``(problem, train, distil)``: a loadable problem, a fit, a distillation.
+
+    ``trainer.saved`` records where the route asked for the fitted field to be kept."""
 
     def default_distil(_p, _r, config):
         return _Distilled(config=config, candidates=(_Candidate(config.maxsize - 6),))
 
+    saved: list[Path] = []
     problem = SimpleNamespace(load=load or (lambda path, *, name, dosed=(): _Problem()), ProblemError=_ProblemError)
-    trainer = SimpleNamespace(TrainConfig=_TrainConfig, train=train or (lambda _p, _d, c: _result(c)))
+    trainer = SimpleNamespace(TrainConfig=_TrainConfig, train=train or (lambda _p, _d, c: _result(c)),
+                              save_bundle=lambda _r, directory: saved.append(Path(directory)), saved=saved)
     distiller = SimpleNamespace(DistilConfig=_DistilConfig, distil=distil or default_distil)
     return problem, trainer, distiller
 
@@ -225,3 +229,21 @@ def test_the_command_line_writes_the_outcome_and_exits_one_on_a_refusal(monkeypa
     assert seen["config"].seconds == 12.0
     assert seen["config"].dosed == ("S",)
     assert json.loads((tmp_path / "out" / "proposals.json").read_text())["refusal"]["reason"] == "no trainer"
+
+
+def test_the_route_keeps_the_fitted_field_beside_the_staged_problem(monkeypatch, tmp_path):
+    """Staging writes the network's INITIAL weights and nothing writes them again, so without this
+    the fitted field dies with the worker: only its distillations and the record's scalars survive,
+    and re-distilling a field at other settings, or re-scoring it, means retraining it."""
+    problem, trainer, distiller = _modules()
+    monkeypatch.setattr(R, "_modules", lambda: (problem, trainer, distiller))
+    directory = _write_problem(tmp_path / "toy", [0.0, 1.0, 2.0])
+    outcome = R.propose(directory, Config(), work_dir=tmp_path / "w")
+    assert outcome.proposals and trainer.saved, "a proposal without a kept field is the bug"
+
+    destination, key = trainer.saved[0], _TrainConfig().key()
+    assert destination.name == key and destination.parent.name == "field"
+    # BESIDE the staged directory, never inside it: the bundle is a copy of that directory, so a
+    # destination within it would copy into itself.
+    staged = destination.parent.parent / key
+    assert staged not in destination.parents and destination != staged
