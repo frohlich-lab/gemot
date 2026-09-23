@@ -113,3 +113,58 @@ def test_the_command_line_writes_the_record_and_the_trained_bundle(tmp_path):
     assert not bool(parameters.loc["scale_Q", "estimate"])
     with h5py.File(tmp_path / "out" / "model" / "net1_ps.hdf5") as weights:
         assert weights["parameters/net1/layer1/weight"].shape == (4, 5)
+
+
+def test_a_curve_of_checkpoints_imports_the_held_out_set_once(tmp_path, monkeypatch):
+    """A budget curve scores every checkpoint against one held-out set. Preparing once must stage
+    and import once, however many fields are then scored against it."""
+    from petab_harness.neural_ode import train as T
+    from petab_mcp.validation_data import read_held_out
+
+    problem, result = _trained(tmp_path)
+    held_out = read_held_out(write_held_out(tmp_path / "validation", new_condition=True))
+
+    imported = []
+    real = T._import
+    monkeypatch.setattr(T, "_import", lambda *a, **k: (imported.append(1), real(*a, **k))[1])
+
+    prepared = H.prepare(result, held_out, tmp_path / "curve", training=problem)
+    assert not isinstance(prepared, dict), prepared
+    payloads = [H.score_prepared(prepared, result.problem.model.nns, result.parameters)
+                for _ in range(6)]
+
+    assert len(imported) == 1, f"one import for six scorings, got {len(imported)}"
+    assert all(p["status"] == "ok" and p["mode"] == "fixed" for p in payloads)
+    # Same field six times must give the same score: the context carries no state between calls.
+    assert len({round(p["nll"], 9) for p in payloads}) == 1
+    # And the convenience wrapper still agrees with the prepared path.
+    assert H.score(result, held_out, tmp_path / "once",
+                   training=problem)["nll"] == pytest.approx(payloads[0]["nll"])
+
+
+def test_a_prepared_set_refuses_a_transfer_as_score_does(tmp_path):
+    """Preparing is not a way round the fixed-theta rule: a transfer set is refused up front."""
+    from petab_mcp.validation_data import read_held_out
+
+    problem, result = _trained(tmp_path)
+    held_out = read_held_out(write_held_out(tmp_path / "validation", new_condition=True, transfer=True))
+    prepared = H.prepare(result, held_out, tmp_path / "curve", training=problem)
+    assert isinstance(prepared, dict) and prepared["mode"] == "transfer"
+
+
+def test_scoring_different_fields_against_one_prepared_set_does_not_reuse_a_score(tmp_path):
+    """The reuse must not go too far: a different field has to give a different number, or the
+    curve would be flat by construction and would 'prove' whatever it was pointed at."""
+    from petab_mcp.validation_data import read_held_out
+
+    problem, result = _trained(tmp_path)
+    held_out = read_held_out(write_held_out(tmp_path / "validation", new_condition=True))
+    prepared = H.prepare(result, held_out, tmp_path / "curve", training=problem)
+
+    import jax.tree_util as jtu
+
+    perturbed = jtu.tree_map(lambda x: x * 1.5 if hasattr(x, "shape") else x, result.problem.model.nns)
+    a = H.score_prepared(prepared, result.problem.model.nns, result.parameters)
+    b = H.score_prepared(prepared, perturbed, result.parameters)
+    assert a["status"] == "ok" and b["status"] == "ok"
+    assert a["nll"] != pytest.approx(b["nll"]), "a changed field must move the held-out score"

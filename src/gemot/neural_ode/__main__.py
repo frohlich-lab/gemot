@@ -61,6 +61,12 @@ def main(argv: list[str] | None = None) -> int:
     fit.add_argument("--width", type=int, default=32)
     fit.add_argument("--depth", type=int, default=2)
     fit.add_argument("--seed", type=int, default=0)
+    fit.add_argument("--patience", type=int, default=300,
+                     help="stop after this many steps without improvement; set >= --steps to "
+                          "disable, which a budget sweep must do or it measures patience")
+    fit.add_argument("--checkpoints", default="",
+                     help="comma-separated step counts to score as if the budget ended there "
+                          "(adam only); 'log' spaces 12 points logarithmically over --steps")
     fit.add_argument("--shared-ics", dest="shared_ics", action="store_true")
     fit.add_argument("--clock", action="store_true")
     fit.add_argument("--multiplicative", action="store_true",
@@ -131,7 +137,8 @@ def _fit(args) -> int:
                            optimiser=args.optimiser, rtol=args.rtol, atol=args.atol,
                            learning_rate=args.learning_rate,
                            continuity_weight=args.continuity, steps=args.steps, n_restarts=args.restarts,
-                           seed=args.seed)
+                           seed=args.seed, patience=args.patience,
+                           checkpoints=_checkpoints(args.checkpoints, args.steps))
     args.out.mkdir(parents=True, exist_ok=True)
     result = T.train(problem, args.out / "train", config)
     T.save_bundle(result, args.out / "model")
@@ -172,7 +179,39 @@ def _fit(args) -> int:
     record["held_out"] = payload  # the scorer's own payload, k and bic of a transfer included
     record["held_out_path"] = None if held_out_path is None else str(held_out_path)
     record["reference"] = None if reference is None else {k: reference.get(k) for k in ("nll", "k", "n")}
+
+    # Written BEFORE the curve: the training result is the expensive part, and a curve that dies
+    # (it is a dozen more fits) must not take it down with it. Rewritten below with the curve.
     (args.out / "result.json").write_text(json.dumps(record, indent=1, default=str) + "\n")
+
+    # The budget curve: each checkpoint scored on the SAME held-out set, under the same protocol,
+    # with only the step count differing. Training nll falling while held-out nll rises is
+    # overfitting-with-effort; both falling together is not. The set is staged and compiled ONCE
+    # (`H.prepare`) -- one stepper serves every checkpoint, and building one per point leaks an
+    # XLA executable each time and runs the node out of memory around the tenth.
+    #
+    # This curve DIAGNOSES the method; it must not select a model. The held-out set is the
+    # benchmark's test set (`TrainConfig.checkpoints` says why at length): reporting that held-out
+    # loss turns upward is a finding, picking the budget where it was lowest is leakage.
+    if result.checkpoints and held_out_path is not None:
+        from petab_mcp.validation_data import read_held_out  # noqa: PLC0415
+
+        prepared = H.prepare(result, read_held_out(held_out_path), args.out / "curve",
+                             training=problem)
+        curve = []
+        for i, point in enumerate(result.checkpoints):
+            scored = (prepared if isinstance(prepared, dict) else
+                      H.score_prepared(prepared, point.networks, point.parameters))
+            curve.append({"restart": point.restart, "steps": point.steps, "train_nll": point.nll,
+                          "heldout_status": scored.get("status"), "heldout_mode": scored.get("mode"),
+                          "heldout_nll": scored.get("nll"), "heldout_k": scored.get("k"),
+                          "heldout_reason": scored.get("reason"),
+                          "bic_with_weights": H.bic(point.nll, result.n_ode_parameters
+                                                    + result.n_network_weights, n)})
+            print(f"  checkpoint {i + 1}/{len(result.checkpoints)}: step {point.steps} "
+                  f"train {point.nll:.4f} held-out {scored.get('nll')}", flush=True)
+        record["budget_curve"] = curve
+        (args.out / "result.json").write_text(json.dumps(record, indent=1, default=str) + "\n")
 
     validation = record["validation"] or {}
     print(f"{problem.name}: nll {record['nll']} k {record['k']} n {n} bic {record['bic']} "
@@ -181,6 +220,19 @@ def _fit(args) -> int:
           f"nll {validation.get('nll')} delta {validation.get('delta_nll')}; "
           f"{result.wall_seconds:.0f}s -> {args.out / 'result.json'}")
     return 1 if result.solver_failed else 0
+
+
+def _checkpoints(spec: str, steps: int) -> tuple[int, ...]:
+    """``--checkpoints`` as step counts. ``"log"`` spaces 12 points logarithmically to ``steps``,
+    which is what a budget curve wants: the interesting part of an Adam run is its first decade."""
+    spec = spec.strip()
+    if not spec:
+        return ()
+    if spec == "log":
+        points = {int(round(10 ** x)) for x in
+                  [math.log10(steps) * i / 11 for i in range(12)]}
+        return tuple(sorted(p for p in points if 1 <= p <= steps))
+    return tuple(sorted({int(x) for x in spec.split(",") if x.strip()}))
 
 
 def _default_held_out(problem_dir: Path) -> Path | None:

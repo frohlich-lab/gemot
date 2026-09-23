@@ -107,6 +107,24 @@ class TrainConfig:
     rtol: float = 1e-6
     atol: float = 1e-8
     max_solver_steps: int = 8192
+    #: Step counts at which to keep the best-so-far parameters, so a run can be scored as if its
+    #: budget had ended there. Empty keeps nothing. It records what a run of that length WOULD have
+    #: returned -- the best seen so far, not the current iterate -- so the checkpoints of one long
+    #: run stand in for a series of shorter ones, and a budget sweep costs one training, not N.
+    #: The trajectory is untouched: `key` ignores this, so a checkpointed run and a plain one at
+    #: the same seed are the same run. To read the curve as a BUDGET, set `patience` at or above
+    #: `steps`; otherwise early stopping ends the run and the later checkpoints only repeat it.
+    #:
+    #: **A DIAGNOSTIC, NOT A SELECTION.** Scoring these against `examples/*/validation` measures
+    #: whether held-out loss turns upward as training proceeds -- a property of the method, fine to
+    #: report as such. Picking the budget by which checkpoint scored best is different: that set is
+    #: the benchmark's TEST set, and choosing on it puts it inside the training loop and voids every
+    #: held-out number downstream. It also flatters itself, being a minimum over a dozen points of a
+    #: noisy trace. The protocol is the campaign's: freeze the winner on a training-only criterion,
+    #: then open validation once. An honest early stop needs an inner split of the TRAINING data --
+    #: and note `bic_with_weights` cannot stand in, because `k` is constant along a trajectory, so
+    #: it is monotone in the training nll and blind to this effect by construction.
+    checkpoints: tuple[int, ...] = ()
 
     def key(self) -> str:
         windows = f"_cms{self.n_windows}" if self.n_windows > 1 else ""
@@ -118,6 +136,19 @@ class TrainConfig:
         solver = "" if self.optimiser == "adam" else f"_{self.optimiser}"
         return (f"aug{self.n_augmented}_w{self.width}d{self.depth}{windows}{horizon}{clock}"
                 f"{shared}{mult}{sparse}{solver}_s{self.seed}")
+
+
+@dataclass(frozen=True)
+class Checkpoint:
+    """The best-so-far optimum of one restart at one step count: what a run of that budget would
+    have returned. ``networks`` is live equinox state, so it is held, never serialised."""
+
+    restart: int
+    steps: int
+    #: The objective at the best step SEEN so far, not at step ``steps``.
+    nll: float
+    parameters: dict[str, float]
+    networks: dict = field(repr=False)
 
 
 @dataclass
@@ -142,6 +173,9 @@ class TrainResult:
     parameters: dict[str, float]
     #: The trained ``JAXProblem``; simulate with it, do not serialise it.
     problem: object = field(repr=False)
+    #: One entry per (restart, checkpoint) requested by ``config.checkpoints``, in the order taken.
+    #: Score one with :func:`at_checkpoint`; a restart that failed before a checkpoint has none.
+    checkpoints: tuple[Checkpoint, ...] = ()
 
 
 class ConfigError(ValueError):
@@ -172,6 +206,14 @@ def train(problem: Problem, directory: Path | str, config: TrainConfig) -> Train
             f"penalty={config.penalty!r} needs optimiser='adam', not {config.optimiser!r}: the "
             "proximal step that makes a group exactly zero runs between optimiser steps, which a "
             "trust-region method does not expose")
+    if config.checkpoints:
+        if config.optimiser != "adam":
+            raise ValueError(
+                f"checkpoints need optimiser='adam', not {config.optimiser!r}: a fides or hybrid "
+                "iteration is a trust-region solve of varying cost, so its count is not a budget "
+                "axis and the curve would not mean what it appears to")
+        if min(config.checkpoints) < 1 or max(config.checkpoints) > config.steps:
+            raise ValueError(f"checkpoints {config.checkpoints} fall outside 1..{config.steps}")
     started = time.perf_counter()
     staged = stage_only(problem, directory, config)
     stages, notes = _curriculum(problem, staged, config)
@@ -181,6 +223,7 @@ def train(problem: Problem, directory: Path | str, config: TrainConfig) -> Train
     network_class = type(imported[-1].model.nns[S.NETWORK_ID])
 
     best_value, best_trained, best_objectives, steps_run, failures = np.inf, None, (), 0, []
+    checkpoints: list[Checkpoint] = []
     for restart in range(config.n_restarts):
         networks = {S.NETWORK_ID: network_class(jr.PRNGKey(config.seed + restart))}
         scalars: dict[str, float] = {}
@@ -190,7 +233,15 @@ def train(problem: Problem, directory: Path | str, config: TrainConfig) -> Train
                 fit = {"adam": _fit, "fides": _fit_fides, "adam+fides": _fit_hybrid}[config.optimiser]
             except KeyError as failure:
                 raise ValueError(f"unsupported optimiser {config.optimiser!r}") from failure
-            value, (networks, scalars), taken, failure = fit(jp, stepper, networks, scalars, budget, config)
+            extra = {}
+            if config.checkpoints and fit is _fit:
+                def keep(taken, value, trained, _restart=restart):
+                    nets, pars = trained
+                    checkpoints.append(Checkpoint(restart=_restart, steps=taken, nll=float(value),
+                                                  parameters=dict(pars), networks=nets))
+                extra["on_checkpoint"] = keep
+            value, (networks, scalars), taken, failure = fit(jp, stepper, networks, scalars, budget,
+                                                             config, **extra)
             steps_run += taken
             if failure is not None:
                 failures.append(f"restart {restart}: {failure}")
@@ -230,7 +281,17 @@ def train(problem: Problem, directory: Path | str, config: TrainConfig) -> Train
                        n_ode_parameters=len(final.parameter_ids), n_network_weights=staged.n_weights,
                        solver_failed=best_trained is None, steps_run=steps_run,
                        restart_failures=tuple(failures), stage_objectives=best_objectives, notes=notes,
-                       wall_seconds=time.perf_counter() - started, parameters=values, problem=fitted)
+                       wall_seconds=time.perf_counter() - started, parameters=values, problem=fitted,
+                       checkpoints=tuple(checkpoints))
+
+
+def at_checkpoint(result: TrainResult, checkpoint: Checkpoint) -> TrainResult:
+    """``result`` as it would have been had the budget ended at ``checkpoint``. Everything the
+    held-out scorer reads -- the staged design, the config, the networks and the scalars -- comes
+    from the checkpoint; the run-level counters do not, and are left as the whole run's."""
+    return replace(result, nll=checkpoint.nll, parameters=dict(checkpoint.parameters),
+                   problem=_with(result.problem, checkpoint.networks, checkpoint.parameters),
+                   checkpoints=())
 
 
 def stage_only(problem: Problem, directory: Path | str, config: TrainConfig) -> S.Staged:
@@ -625,11 +686,17 @@ def _apply_support(trained, support):
 
 
 def _fit(imported, stepper, networks: dict, scalars: dict[str, float], steps: int,
-         config: TrainConfig, *, support=None):
+         config: TrainConfig, *, support=None, on_checkpoint=None):
     """Fit one stage from ``networks`` and the scalars it recognises by id (the rest start at
     their nominal values). Returns the best objective, ``(networks, scalars)`` at it, the steps
-    taken and the failure, if any."""
+    taken and the failure, if any.
+
+    ``on_checkpoint(taken, best_value, (networks, scalars))`` fires at each step count in
+    ``config.checkpoints``, carrying the best optimum SEEN so far -- what this fit would return
+    had ``steps`` been ``taken``. It cannot fire after an early stop, because there is no such run.
+    """
     objective, step, optimiser, _value_and_grad = stepper
+    wanted = set(config.checkpoints) if on_checkpoint is not None else set()
     ids = list(imported.parameter_ids)
     nominal = np.asarray(imported.parameters, dtype=float)
     start = jnp.log(jnp.maximum(jnp.asarray([scalars.get(pid, nominal[i]) for i, pid in enumerate(ids)]), LOG_FLOOR))
@@ -647,12 +714,18 @@ def _fit(imported, stepper, networks: dict, scalars: dict[str, float], steps: in
         else:
             since_improvement += 1
         trained = _apply_support(_threshold(candidate, config, _variable_groups(imported, config)), support)
+        # The LAST step's checkpoint waits for the post-loop refinement below, or it would not be
+        # what a run of that budget returns -- which is the one thing a checkpoint promises.
+        if taken in wanted and taken < steps:
+            on_checkpoint(taken, best_value, _unpack(best_trained, ids))
         if since_improvement >= config.patience:
             break
     else:
         final = float(objective(trained, imported))
         if np.isfinite(final) and final < best_value:
             best_value, best_trained = final, trained
+        if steps in wanted:
+            on_checkpoint(steps, best_value, _unpack(best_trained, ids))
     return best_value, _unpack(best_trained, ids), taken, None
 
 

@@ -185,3 +185,66 @@ def test_the_saved_bundle_carries_the_fitted_weights_not_the_staged_ones(tmp_pat
     for name, layer in trained.items():
         assert np.allclose(saved[f"parameters/{S.NETWORK_ID}/{name}/weight"], np.asarray(layer.weight))
         assert np.allclose(saved[f"parameters/{S.NETWORK_ID}/{name}/bias"], np.asarray(layer.bias))
+
+
+def test_checkpoints_record_the_best_so_far_and_reconstruct_a_scorable_result(tmp_path):
+    """A checkpoint must be what a SHORTER run would have returned, not the current iterate."""
+    problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
+    config = T.TrainConfig(width=4, depth=1, n_augmented=1, steps=20, n_restarts=2, patience=1000,
+                           checkpoints=(5, 10, 20))
+    result = T.train(problem, tmp_path / "run", config)
+    assert not result.solver_failed
+
+    # One per (restart, checkpoint), in the order taken.
+    assert [(c.restart, c.steps) for c in result.checkpoints] == [
+        (0, 5), (0, 10), (0, 20), (1, 5), (1, 10), (1, 20)]
+    # Best-so-far can only improve along a restart, and the last must equal what the restart
+    # reached -- the whole point is that checkpoint k stands in for a run of length k.
+    for restart in (0, 1):
+        along = [c.nll for c in result.checkpoints if c.restart == restart]
+        assert along == sorted(along, reverse=True)
+    assert min(c.nll for c in result.checkpoints) == pytest.approx(result.nll)
+
+    # The reconstruction is scorable: it carries the checkpoint's parameters, not the run's.
+    early = next(c for c in result.checkpoints if c.restart == 0 and c.steps == 5)
+    stand_in = T.at_checkpoint(result, early)
+    assert stand_in.nll == early.nll and stand_in.parameters == early.parameters
+    assert stand_in.staged is result.staged and stand_in.config is result.config
+    assert stand_in.checkpoints == ()
+    assert T.trajectories(stand_in, n_times=4)["c_lo"]["states"].shape == (4, 5)
+
+
+def test_checkpoints_are_refused_where_a_step_is_not_a_budget(tmp_path):
+    problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
+    with pytest.raises(ValueError, match="checkpoints need optimiser='adam'"):
+        T.train(problem, tmp_path / "a",
+                T.TrainConfig(width=4, depth=1, steps=20, optimiser="fides", checkpoints=(5,)))
+    with pytest.raises(ValueError, match="fall outside"):
+        T.train(problem, tmp_path / "b",
+                T.TrainConfig(width=4, depth=1, steps=20, checkpoints=(5, 999)))
+
+
+def test_no_checkpoints_is_the_default_and_costs_nothing(tmp_path):
+    """The negative control: without the flag the run is unchanged and records nothing."""
+    problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
+    plain = T.TrainConfig(width=4, depth=1, n_augmented=1, steps=20, n_restarts=1, patience=1000)
+    marked = T.TrainConfig(width=4, depth=1, n_augmented=1, steps=20, n_restarts=1, patience=1000,
+                           checkpoints=(5, 10, 20))
+    a, b = T.train(problem, tmp_path / "a", plain), T.train(problem, tmp_path / "b", marked)
+    assert a.checkpoints == () and len(b.checkpoints) == 3
+    # Checkpointing must not perturb the trajectory: same seed, same optimum, same key.
+    assert a.nll == pytest.approx(b.nll) and a.steps_run == b.steps_run
+    assert a.config.key() == b.config.key()
+
+
+def test_an_early_stop_truncates_the_curve_rather_than_faking_the_tail(tmp_path):
+    """Patience ends the run, so checkpoints past the stop describe no run and must not appear."""
+    problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
+    config = T.TrainConfig(width=4, depth=1, n_augmented=1, steps=40, n_restarts=1,
+                           patience=1, min_improvement=1e9, checkpoints=(2, 20, 40))
+    result = T.train(problem, tmp_path / "run", config)
+    taken = result.steps_run
+    assert taken < 40, "patience=1 with an unreachable min_improvement should stop almost at once"
+    # A checkpoint AT the stopping step still fires -- it precedes the patience check, and a run
+    # of exactly that budget would have returned exactly that optimum. Later ones must not.
+    assert [c.steps for c in result.checkpoints] == [s for s in (2, 20, 40) if s <= taken]

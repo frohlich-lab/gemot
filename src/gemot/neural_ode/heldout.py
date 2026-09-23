@@ -28,6 +28,7 @@ Report-only, like the server's: nothing here gates anything.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import math
 import shutil
 from pathlib import Path
@@ -47,13 +48,27 @@ MODE_FIXED = "fixed"
 MODE_TRANSFER = "transfer"
 
 
-def score(result: T.TrainResult, held_out, directory: Path | str, *, training: P.Problem) -> dict:
-    """``held_out`` (a :class:`petab_mcp.validation_data.HeldOut`) scored against the trained
-    field, as ``{status, mode, nll, n, reason}``. Fixed-θ only; a transfer set is refused."""
-    import equinox as eqx  # noqa: PLC0415
-    import jax.numpy as jnp  # noqa: PLC0415
-    from amici.sim.jax import run_simulations  # noqa: PLC0415
+@dataclass(frozen=True)
+class Prepared:
+    """The held-out problem staged and imported ONCE, ready to score any field of its shape.
 
+    A budget curve scores every checkpoint against the same held-out set; staging and importing
+    it per checkpoint repeats the costliest part of scoring for each point. Fixed-theta only, as
+    :func:`score` is: a transfer set is refused at :func:`prepare`.
+    """
+
+    mode: str
+    n: int
+    staged: object
+    imported: object = field(repr=False)
+    ids: list[str] = field(repr=False)
+    config: T.TrainConfig = field(repr=False)
+
+
+def prepare(result: T.TrainResult, held_out, directory: Path | str, *,
+            training: P.Problem) -> Prepared | dict:
+    """``held_out`` staged against ``result``'s design, ready to score any field of that shape.
+    Returns the failure payload instead if the tables cannot be reconciled."""
     directory = Path(directory)
     n = int(len(held_out.measurement_df))
     if held_out.parameter_df is not None:
@@ -70,14 +85,24 @@ def score(result: T.TrainResult, held_out, directory: Path | str, *, training: P
     except (P.ProblemError, ValueError) as why:
         return {"status": STATUS_TABLE_MISMATCH, "mode": MODE_FIXED, "n": n, "reason": str(why)}
     imported = T._import(staged)
-    imported = eqx.tree_at(lambda p: p.model.nns, imported, result.problem.model.nns)
-    ids = list(imported.parameter_ids)
-    known = {pid: result.parameters[pid] for pid in ids if pid in result.parameters}
-    unknown = [pid for pid in ids if pid not in result.parameters]
+    return Prepared(mode=MODE_FIXED, n=n, staged=staged, imported=imported,
+                    ids=list(imported.parameter_ids), config=result.config)
+
+
+def score_prepared(prepared: Prepared, networks, parameters: dict[str, float]) -> dict:
+    """One field -- ``networks`` and the scalars it fitted -- against a :func:`prepare`d set."""
+    import equinox as eqx  # noqa: PLC0415
+    import jax.numpy as jnp  # noqa: PLC0415
+    from amici.sim.jax import run_simulations  # noqa: PLC0415
+
+    n, ids = prepared.n, prepared.ids
+    imported = eqx.tree_at(lambda p: p.model.nns, prepared.imported, networks)
+    known = {pid: parameters[pid] for pid in ids if pid in parameters}
+    unknown = [pid for pid in ids if pid not in parameters]
 
     if not unknown:
         fitted = imported.update_parameters(jnp.asarray([known[pid] for pid in ids])) if ids else imported
-        llh, _ = run_simulations(fitted, **T._solver(result.config))
+        llh, _ = run_simulations(fitted, **T._solver(prepared.config))
         nll = -float(llh)
         if not math.isfinite(nll):
             return {"status": STATUS_NON_FINITE, "mode": MODE_FIXED, "n": n,
@@ -89,6 +114,15 @@ def score(result: T.TrainResult, held_out, directory: Path | str, *, training: P
                       f"the training run fitted; {unknown} are not. Shared starts or a t=0 datum "
                       f"would pin them. Refitting them instead would be a transfer, which a field "
                       f"cannot answer"}
+
+
+def score(result: T.TrainResult, held_out, directory: Path | str, *, training: P.Problem) -> dict:
+    """``held_out`` (a :class:`petab_mcp.validation_data.HeldOut`) scored against the trained
+    field, as ``{status, mode, nll, n, reason}``. Fixed-θ only; a transfer set is refused."""
+    prepared = prepare(result, held_out, directory, training=training)
+    if isinstance(prepared, dict):
+        return prepared
+    return score_prepared(prepared, result.problem.model.nns, result.parameters)
 
 
 def _held_out_problem(training: P.Problem, held_out, directory: Path) -> P.Problem:
