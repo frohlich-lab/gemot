@@ -110,3 +110,22 @@ def test_a_readout_state_is_emitted_as_a_species_under_its_own_id_and_an_assignm
     assert all("readout_" not in rule for rule in rules) and all("s_P" in rule for rule in rules)
     antimony.clearPreviousLoads()
     assert antimony.loadAntimonyString(model) >= 0, antimony.getLastError()
+
+
+def test_the_network_is_fed_its_products_and_the_regression_is_not(tmp_path):
+    """Under `multiplicative` the network's first layer is `field_inputs + products` wide, because
+    the model computes each product as an assignment rule and amici supplies it during training.
+    The distiller evaluates the network itself, so it has to supply them too. It did not, and the
+    shape error took out every multiplicative cell of a 648-cell grid -- after each had trained
+    for half an hour, since training is exactly the part that worked."""
+    problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
+    config = T.TrainConfig(width=4, depth=1, steps=6, n_restarts=1, patience=1000, multiplicative=True)
+    result = T.train(problem, tmp_path / "run", config)
+    n = len(result.staged.field_inputs)
+    assert len(result.staged.products) == n * (n + 1) // 2 > 0, "the staging must feed products at all"
+
+    features, derivatives, variables = D.sample(problem, result, D.DistilConfig(n_samples=20, n_times=10, seed=1))
+    # What the REGRESSION sees is the base variables, not the products: the search finds a product
+    # itself, which is why one is fed in rather than imposed.
+    assert variables == result.staged.field_inputs and features.shape == (20, n)
+    assert derivatives.shape == (20, len(result.staged.states)) and np.isfinite(derivatives).all()

@@ -194,8 +194,31 @@ def sample(problem: Problem, result: T.TrainResult, config: DistilConfig,
             columns.append(_protocol_values(problem, name, times[draw], experiments[draw]) / staged.scales[name])
     features = np.stack(columns, axis=1)
     network = result.problem.model.nns[S.NETWORK_ID]
-    derivatives = np.asarray(network.forward(features))
+    derivatives = np.asarray(network.forward(_network_inputs(features, staged)))
     return features, derivatives, staged.field_inputs
+
+
+def _network_inputs(features: np.ndarray, staged: S.Staged) -> np.ndarray:
+    """``features`` as the NETWORK reads them: the normalised field inputs, and under
+    ``multiplicative`` the pairwise products staged beside them.
+
+    The two are not the same array and only one caller ever noticed. The model computes each
+    product as an assignment rule over the normalised inputs (``a_x_b := a_norm * b_norm``), so
+    during TRAINING amici evaluates it and hands the network all
+    ``len(field_inputs) + len(products)`` of them. Here the distiller evaluates the network
+    itself, on features it built, and passing the base columns alone is a shape error rather than
+    a wrong answer -- the first layer is the wider width.
+
+    The products are appended in :func:`~.stage.product_features` order, which is the order
+    ``stage`` maps them onto the network's inputs. What is RETURNED for the regression is still
+    the base features: the distiller regresses on the base variables and lets the search find a
+    product, which is the whole point of feeding one in rather than imposing it.
+    """
+    if not staged.products:
+        return features
+    index = {name: i for i, name in enumerate(staged.field_inputs)}
+    products = [features[:, index[a]] * features[:, index[b]] for a, b in staged.products]
+    return np.concatenate([features, np.stack(products, axis=1)], axis=1)
 
 
 def _protocol_values(problem: Problem, target: str, times: np.ndarray, experiments: np.ndarray) -> np.ndarray:
