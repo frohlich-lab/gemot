@@ -49,6 +49,9 @@ class BlindNames:
 
     forward: dict[str, str] = field(default_factory=dict)
     reserved: set[str] = field(default_factory=set)
+    #: The experiment's time-dependent inputs as ``(quantity, rule)`` pairs, in aliases: what a
+    #: modeller is told about the design and the tables alone do not reveal.
+    protocols: list[tuple[str, str]] = field(default_factory=list)
 
     def add(self, original: str, kind: str) -> str:
         if original in self.forward:
@@ -187,6 +190,7 @@ def prepare(source_yaml: Path, work: Path, validation_dir: Path | None = None) -
                     names.reserved.update(_TOKEN.findall(value))
     for kind, table in tables.items():
         names.register_table(kind, table)
+    names.protocols = _anonymous_protocols(Path(source_yaml).parent / "inputs.tsv", names)
     sbml = _anonymous_sbml(document, names)
     work.mkdir(parents=True, exist_ok=True)
     (work / "model.xml").write_text(sbml)
@@ -216,9 +220,45 @@ def prepare(source_yaml: Path, work: Path, validation_dir: Path | None = None) -
             table["conditionId"] = table["conditionId"].map(lambda v: _translate(v, names.forward))
             table.to_csv(destination / units.name, sep="\t", index=False)
     (private / "identifiers.json").write_text(json.dumps({
-        "version": 1, "identifiers": names.forward,
+        "version": 1, "identifiers": names.forward, "protocols": names.protocols,
     }, indent=2) + "\n")
     return names
+
+
+def _anonymous_protocols(path: Path, names: BlindNames) -> list[tuple[str, str]]:
+    """The problem's input protocols (``inputs.tsv``) in the run's aliases.
+
+    A protocol is numerical design, not biology: a time-dependent input the condition table only
+    parameterises -- Fujita's EGF stimulus is a pulse or a ramp only under its rule, and its rate
+    and end time are constant in training. The visible arms read the rule, with its real names, in
+    the scenario's known-constants note, which the blind task replaces; without it here the
+    blinded agent saw three anonymous columns and an instruction to use them, and put the
+    constant two in roles no data could identify. Each rule may read only condition columns and
+    ``time``: anything else would carry a name the aliases do not cover, so it is refused.
+    """
+    if not path.is_file():
+        return []
+    import pandas as pd
+
+    out = []
+    for row in pd.read_csv(path, sep="\t", dtype=str).itertuples():
+        quantity = names.add(row.inputId, "stimulus")
+        rule = _translate(row.formula, names.forward)
+        # Only the row's own condition columns: every table symbol has an alias by now, so
+        # accepting any alias would let a rule read a model parameter as ``parameter_005``.
+        columns = [c for c in str(row.conditionInputs).split(";") if c]
+        allowed = {names.forward[c] for c in columns
+                   if names.forward.get(c, "").startswith("input_")}
+        # A token followed by "(" is a function (piecewise, exp), not a name.
+        leaked = sorted({match[0] for match in _TOKEN.finditer(rule)
+                         if match[0] not in allowed and match[0] not in _RESERVED
+                         and not rule[match.end():].lstrip().startswith("(")})
+        if leaked or len(allowed) != len(columns):
+            raise ValueError(f"input protocol {row.inputId!r} must read only its condition "
+                             f"columns {columns}; it reads {leaked or 'a column the condition '
+                             'table does not have'}, so it cannot be anonymized")
+        out.append((quantity, rule))
+    return out
 
 
 def private_dir(work: Path) -> Path:
@@ -228,7 +268,11 @@ def private_dir(work: Path) -> Path:
 
 def read_names(work: Path) -> BlindNames | None:
     path = private_dir(work) / "identifiers.json"
-    return BlindNames(json.loads(path.read_text())["identifiers"]) if path.is_file() else None
+    if not path.is_file():
+        return None
+    data = json.loads(path.read_text())
+    return BlindNames(data["identifiers"],
+                      protocols=[tuple(pair) for pair in data.get("protocols", [])])
 
 
 class AnonymousSession:

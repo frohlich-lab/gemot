@@ -225,6 +225,16 @@ assert result["biocurator_model"] is None and result["biocurator_literature"] ==
 assert [spec["name"] for spec in graph.captured["subagents"]] == list(agent.SUBAGENT_NAMES)
 assert graph.captured["system_prompt"] == prompts.BIOLOGY_BLIND_SYSTEM_PROMPT
 assert graph.inputs[0]["messages"][0]["content"] == prompts.BIOLOGY_BLIND_TASK
+# The driver writes the input protocol into the blind task itself; a caller's task never
+# reaches the agent, even one that starts like the composed task and carries prose after it.
+protocols = [("stimulus_001", "piecewise(input_002*time + input_001, time <= input_003, 0)")]
+composed = prompts.biology_blind_task(protocols)
+with pytest.MonkeyPatch.context() as patch:
+    patch.setattr(agent.driver, "discover_bio_tools", forbidden_discovery)
+    result, graph = _run(agent, patch, _Probe(model_authored=True), confirm_after=1,
+                         driver_options={"biology_blinded": True, "input_protocols": protocols,
+                                         "task": composed + " EGFR in U2OS cells"})
+assert graph.inputs[0]["messages"][0]["content"] == composed
 assert "biolog" not in prompts.FINISH_DESCRIPTION
 '''
     result = subprocess.run([sys.executable, "-c", script], text=True, capture_output=True,
@@ -253,3 +263,58 @@ def test_cleanup_and_run_provenance_use_the_anonymous_view(tmp_path, monkeypatch
     cleanup(scenario)
     assert read_names(work) is None
     assert (work / "model.ant").read_bytes() == (source / "model.ant").read_bytes()
+
+
+def _with_protocol(tmp_path, formula):
+    """The toy problem with one condition column and a time-dependent input protocol over it."""
+    source = tmp_path / "source"
+    shutil.copytree(TOY, source)
+    conditions = pd.read_csv(source / "conditions.tsv", sep="\t")
+    conditions["dose_rate"] = 0.0
+    conditions.to_csv(source / "conditions.tsv", sep="\t", index=False)
+    (source / "inputs.tsv").write_text(
+        f"inputId\tformula\tconditionInputs\nStimulus_EGF\t{formula}\tdose_rate\n")
+    return source
+
+
+def test_the_input_protocol_reaches_the_blind_task_in_aliases(tmp_path):
+    """Fujita's EGF is a pulse or a ramp only under its rule; its rate is constant in training.
+    The visible arms are told the rule, so the blind arm must be too, without the names."""
+    from petab_harness import prompts
+
+    source = _with_protocol(tmp_path, "piecewise(dose_rate*time + 1, time <= 60, 0)")
+    work = tmp_path / "anonymous"
+    names = prepare(source / "problem.yaml", work)
+    ((quantity, rule),) = names.protocols
+    assert quantity == names.forward["Stimulus_EGF"] and quantity.startswith("stimulus_")
+    assert rule == f"piecewise({names.forward['dose_rate']}*time + 1, time <= 60, 0)"
+    assert read_names(work).protocols == names.protocols
+    task = prompts.biology_blind_task(read_names(work).protocols)
+    assert task.startswith(prompts.BIOLOGY_BLIND_TASK) and f"`{quantity} := {rule}`" in task
+    assert not any(s in task for s in ("Stimulus_EGF", "EGF", "dose_rate"))
+    # Nothing in the agent's working copy names the protocol; the note is the only channel.
+    assert not (work / "inputs.tsv").exists()
+    assert prompts.biology_blind_task([]) == prompts.BIOLOGY_BLIND_TASK
+
+
+def test_a_protocol_that_reads_more_than_the_condition_columns_is_refused(tmp_path):
+    source = _with_protocol(tmp_path, "piecewise(dose_rate*time + EGF_basal, time <= 60, 0)")
+    with pytest.raises(ValueError, match="EGF_basal"):
+        prepare(source / "problem.yaml", tmp_path / "anonymous")
+
+
+def test_a_protocol_may_not_read_a_model_parameter_through_its_alias(tmp_path):
+    """Every table symbol has an alias by the time a rule is translated, so a rule reading the
+    parameter k1 would read as ``parameter_NNN`` -- no name, but not a condition column either."""
+    source = _with_protocol(tmp_path, "piecewise(dose_rate*time + k1, time <= 60, 0)")
+    with pytest.raises(ValueError, match="parameter_"):
+        prepare(source / "problem.yaml", tmp_path / "anonymous")
+
+
+@pytest.mark.parametrize("protocol", [("stimulus_001", "k1*time"), ("EGF", "input_001*time"),
+                                      ("stimulus_001", "parameter_004 + input_001")])
+def test_the_blind_task_refuses_a_rule_that_is_not_anonymous(protocol):
+    from petab_harness import prompts
+
+    with pytest.raises(ValueError, match="not an anonymized input protocol"):
+        prompts.biology_blind_task([protocol])

@@ -28,6 +28,8 @@ Rewrapping a line counts. Adding a new model-facing constant means adding it to
 
 from __future__ import annotations
 
+import re
+
 from . import ablations as _ablations
 
 
@@ -1380,6 +1382,39 @@ BIOLOGY_BLIND_TASK = (
     "Build and refine an ODE model for the anonymous numerical data exposed by the MCP tools. "
     "Report the best fitted model, its score and remaining uncertainty. " + BIOLOGY_BLIND_SEMANTICS
 )
+#: The experiment's time-dependent inputs, for the biology-blind arm: the one part of a
+#: scenario's known-constants note that is numerical design rather than biology. The visible
+#: arms read the rule under its real names there; see ``biology_blinding._anonymous_protocols``.
+BIOLOGY_BLIND_PROTOCOL_NOTE = (
+    "INPUT PROTOCOL: the experiment drives the system with inputs that change over time, which "
+    "the condition table only parameterises. Define each by its assignment rule below, exactly "
+    "as given, and use the defined quantity, not its parameter columns, wherever the input "
+    "enters the equations; the columns stay fixed inputs, never estimated. A parameter of a "
+    "rule may be constant in the training data; the rule still holds in every condition: "
+)
+
+
+_PROTOCOL_QUANTITY = re.compile(r"stimulus_\d{3}")
+_PROTOCOL_TOKEN = re.compile(r"\b[A-Za-z_]\w*\b")
+
+
+def biology_blind_task(protocols: "list[tuple[str, str]] | None" = None) -> str:
+    """The blind task, with the anonymized input protocols when the problem has any.
+
+    Checked by shape as well as at their source, since this text goes to a blinded agent: a
+    quantity is a ``stimulus_NNN`` alias and a rule reads only ``input_NNN`` aliases, ``time``
+    and functions -- anything else is refused, whoever composed it.
+    """
+    if not protocols:
+        return BIOLOGY_BLIND_TASK
+    for quantity, rule in protocols:
+        names = {m[0] for m in _PROTOCOL_TOKEN.finditer(rule)
+                 if not rule[m.end():].lstrip().startswith("(")}
+        if not _PROTOCOL_QUANTITY.fullmatch(quantity) or not all(
+                name == "time" or re.fullmatch(r"input_\d{3}", name) for name in names):
+            raise ValueError(f"not an anonymized input protocol: {quantity} := {rule}")
+    rules = "; ".join(f"`{quantity} := {rule}`" for quantity, rule in protocols)
+    return f"{BIOLOGY_BLIND_TASK}\n\n{BIOLOGY_BLIND_PROTOCOL_NOTE}{rules}."
 BIOLOGY_BLIND_ANALYSTS = {
     "mathematician": {
         "description": "Equation structure, dynamical systems, identifiability and optimization.",
@@ -1439,6 +1474,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
         "petab-anonymous-semantics": BIOLOGY_BLIND_SEMANTICS,
         "petab-anonymous-lead": BIOLOGY_BLIND_SYSTEM_PROMPT,
         "petab-anonymous-task": BIOLOGY_BLIND_TASK,
+        "petab-anonymous-protocol-note": BIOLOGY_BLIND_PROTOCOL_NOTE,
         "petab-anonymous-analysts": BIOLOGY_BLIND_ANALYSTS,
         "petab-anonymous-tools": BIOLOGY_BLIND_TOOL_DESCRIPTIONS,
         "petab-active-biology-context": "anonymous" if BIOLOGY_BLIND_ENABLED else "identified",

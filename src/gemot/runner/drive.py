@@ -193,6 +193,8 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                     curated_entities=getattr(scenario, "biocurator_entities", None),
                     biocurator_model=getattr(args, "biocurator_model", None),
                     biology_blinded=blind_names is not None,
+                    # The anonymized input protocols; the driver writes them into the blind task.
+                    input_protocols=blind_names.protocols if blind_names is not None else None,
                 )
                 stop_reason = agent_out.get("stop_reason", "completed")
                 if stop_reason != "completed":

@@ -550,6 +550,7 @@ async def run_deepagents(
     curated_entities: "list[str] | None" = None,
     biocurator_model: "str | None" = None,
     biology_blinded: bool = False,
+    input_protocols: "list[tuple[str, str]] | None" = None,
 ) -> dict[str, Any]:
     """Drive the orchestrator (+ analyst subagents) against ``session``'s tools.
 
@@ -607,7 +608,11 @@ async def run_deepagents(
             raise ValueError("The biology-blind arm requires an anonymized server problem; "
                              "launch it through the scenario runner")
         system_prompt = prompts.BIOLOGY_BLIND_SYSTEM_PROMPT
-        task = prompts.BIOLOGY_BLIND_TASK
+        # Built here, never taken from the caller: the passed task is discarded whole, so no
+        # scenario prose can reach a blinded agent. The problem's input protocols arrive as data
+        # (``input_protocols``, from the anonymous view) and ``biology_blind_task`` refuses a rule
+        # that is not made of input aliases, ``time`` and functions.
+        task = prompts.biology_blind_task(input_protocols)
 
     # Adapt the MCP tools bound to this already-initialized session, then curate to the
     # union of the lead's + analysts' tools. This pool is only used to resolve each analyst's

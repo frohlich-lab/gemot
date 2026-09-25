@@ -54,6 +54,7 @@ _PROMPT_ROLES = {
     "petab-anonymous-semantics": "system",
     "petab-anonymous-lead": "system",
     "petab-anonymous-task": "user",
+    "petab-anonymous-protocol-note": "user",  # appended to the blind task when a problem has one
     "petab-anonymous-analysts": "system",
     "petab-anonymous-tools": "system",
     "petab-active-biology-context": "system",
