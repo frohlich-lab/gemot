@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from petab_harness import paper_fujita, paper_fujita_models
+from petab_harness import paper_bic_trajectories, paper_fujita, paper_fujita_models, paper_heldout
 from petab_harness.paths import BENCHMARK_EXAMPLES, examples_root, repo_root
 
 #: Header stamped on every emitted file. The manuscript's coauthors edit in Overleaf, where a
@@ -49,9 +49,42 @@ VOLATILE_OUTPUTS = frozenset({"provenance.tex"})
 # both time series use hours. Medians are calculated before any logarithmic transformation.
 SWEEP_METRICS = (
     ("delta_bic", "DeltaBIC", 1, "BIC"),
+    ("delta_aic", "DeltaAIC", 1, "AIC"),
     ("delta_nll", "DeltaNLLH", 1, "negative log likelihood"),
     ("delta_k", "DeltaParameters", 1, "parameters"),
     ("delta_states", "DeltaStates", 1, "states"),
+    # The topology panels were drawn but never exported, so nothing in the prose could cite a
+    # number and a reviewer could only read them off the figure. The bound is in edit operations;
+    # the distance normalises it by the reference's own |V| + |E|, so 1 means "as far from the
+    # published model as an empty graph is".
+    ("topo_bound", "TopologyBound", 1, "graph edit operations, lower bound"),
+    ("topo_distance", "TopologicalDistance", 1, "bound per unit of reference structure"),
+    # The collapsed anchor graph, which is EXACT rather than a bound: the observables match by
+    # name, so its additions and removals are nameable edges. Undefined where fewer than two
+    # observables are shared, and the N macro says for how many runs.
+    ("topo_collapsed_normalised", "CollapsedTopologyDistance", 1,
+     "collapsed anchor-graph edits per unit of reference wiring"),
+    # Context for the collapsed distance: how many perturbations the problem declares and how
+    # many are anchorable on both sides. An example where these differ is measuring less than it
+    # appears to, and the macro says so rather than leaving the reader to assume full coverage.
+    ("topo_interventions", "InterventionsDeclared", 1, "interventions in the shipped problem"),
+    ("topo_interventions_anchored", "InterventionsAnchored", 1, "anchored in both models"),
+    ("topo_discovered", "TopologyDiscovered", 1,
+     "edits toward structure the reference lacks"),
+    ("topo_coarse_grained", "TopologyCoarseGrained", 1,
+     "edits toward reference structure the candidate collapsed"),
+    # Each of those two SPLIT by what it is made of. A connection the other model does not have
+    # and a connection it does have routed through more species are both "further from the
+    # published wiring", and reporting only the sum let sneyd's 0.75 read as new biology when it
+    # was three extra intermediates and not one new connection. Each pair adds to its total.
+    ("topo_new_connections", "TopologyNewConnections", 1,
+     "connections the reference does not have"),
+    ("topo_extra_depth", "TopologyExtraDepth", 1,
+     "extra species on connections both models have"),
+    ("topo_deleted_connections", "TopologyDeletedConnections", 1,
+     "reference connections the candidate does not have"),
+    ("topo_removed_depth", "TopologyRemovedDepth", 1,
+     "species the candidate dropped from connections both models have"),
     ("n_fits", "Fits", 1, "fits per run"),
     ("tokens", "LLMTokens", 1, "tokens per run"),
     ("wall_h", "WallHours", 1, "elapsed hours per run"),
@@ -219,13 +252,6 @@ def git_commit_date() -> str:
     return datetime.fromtimestamp(int(result.stdout.strip()), UTC).date().isoformat()
 
 
-def _count_rows(path: Path) -> int | None:
-    if not path.is_file():
-        return None
-    lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
-    return max(len(lines) - 1, 0)
-
-
 def read_roster() -> list[ExampleRow]:
     """Collect one row per PUBLISHED example.
 
@@ -233,25 +259,35 @@ def read_roster() -> list[ExampleRow]:
     which makes them a harness self-test rather than evidence about real biological data, and
     the paper reports only the published problems.
 
-    ``reference.json`` is committed for all of them, so the bar is always readable. The PEtab
-    tables are NOT: the benchmark examples are materialized by ``examples/setup.py`` and
-    gitignored, so observable and condition counts are ``None`` in a fresh checkout. They are
-    reported as such rather than guessed.
+    ``reference.json`` is committed for all of them, so the bar is always readable. The table
+    sizes are deliberately NOT counted from ``observables.tsv`` and ``conditions.tsv``: those
+    are materialized by ``examples/setup.py`` and gitignored, so counting them live made
+    Table 1 a function of whether whoever built the manuscript had run setup. Overleaf carried
+    a placeholder in all 36 cells while a developer's checkout filled every one, and no test
+    failed, because there was no committed answer to disagree with.
+
+    They come from the committed sweep input instead, which covers the same examples and counts
+    what was actually FITTED: an observable or a condition carrying no training measurement is
+    not part of the problem this table describes. fujita ships sixteen conditions and is fitted
+    on six -- the other ten are the held-out arms of Figure 3 -- and perelson's second condition
+    is its pre-equilibration. Those are the numbers that belong beside ``n``, which is already
+    a count of fitted points.
     """
+    counts = (read_sweep_data() or {}).get("counts", {})
     rows: list[ExampleRow] = []
     for name in BENCHMARK_EXAMPLES:
-        problem = examples_root() / name / "problem"
         ref: dict[str, object] = {}
-        ref_path = problem / "reference.json"
+        ref_path = examples_root() / name / "problem" / "reference.json"
         if ref_path.is_file():
             ref = json.loads(ref_path.read_text())
+        sizes = counts.get(name, {})
         rows.append(ExampleRow(
             name=name,
             reference_k=ref.get("k"),
             reference_n=ref.get("n"),
             reference_nll=ref.get("nll"),
-            n_observables=_count_rows(problem / "observables.tsv"),
-            n_conditions=_count_rows(problem / "conditions.tsv"),
+            n_observables=sizes.get("n_observables"),
+            n_conditions=sizes.get("n_conditions"),
         ))
     return rows
 
@@ -268,7 +304,8 @@ def render_roster(rows: list[ExampleRow]) -> str:
     """The roster longtable (Table 1)."""
     out = [
         DO_NOT_EDIT,
-        r"% Columns marked \needsmaterialize require `python examples/setup.py` first.",
+        r"% Obs. and Cond. count what carries training data, from paper/sweep_data.json;",
+        r"% \needsmaterialize marks an example that sweep input does not cover.",
         r"\begin{tabular}{lrrrrr}",
         r"\toprule",
         r"Example & $k_\mathrm{ref}$ & $n$ & $\mathrm{nll}_\mathrm{ref}$ & Obs. & Cond. \\",
@@ -282,6 +319,13 @@ def render_roster(rows: list[ExampleRow]) -> str:
         )
     out += [r"\bottomrule", r"\end{tabular}", ""]
     return "\n".join(out)
+
+
+def _tex(text: str) -> str:
+    """Escape the characters a run id or an exclusion reason can carry into LaTeX."""
+    for char in "\\&%#_":
+        text = text.replace(char, "\\" + char)
+    return text
 
 
 def render_values(rows: list[ExampleRow], findings: dict[str, dict[str, object]],
@@ -314,7 +358,8 @@ def render_values(rows: list[ExampleRow], findings: dict[str, dict[str, object]]
         figure_macros = paper_fujita.macros(metadata, observations)
         derived.update(figure_macros)
         out += ["% -- Figure 3: paper/fujita_generalisation.csv --",
-                "% Jobs: " + ", ".join(metadata["source"]["jobs"]),
+                "% Experiments: " + ", ".join(experiment["key"] for experiment
+                                              in metadata["source"]["experiments"]),
                 "% Data SHA256: " + metadata["source"]["data_sha256"]]
         for macro, value in figure_macros.items():
             out.append(rf"\newcommand{{\{macro}}}{{{value}}}")
@@ -351,7 +396,7 @@ def render_provenance(rows: list[ExampleRow]) -> str:
         "",
     ]
     if missing:
-        out.append(f"% not materialized in this checkout: {', '.join(missing)}")
+        out.append(f"% no training-data counts in the sweep input: {', '.join(missing)}")
         out.append("")
     return "\n".join(out)
 
@@ -376,11 +421,6 @@ def build(out_dir: Path | None = None) -> dict[Path, str]:
             target / "sweep_medians.csv": render_sweep_csv(sweep),
             target / "sweep_data.json": json.dumps(sweep, indent=2, ensure_ascii=False,
                                                     allow_nan=False) + "\n",
-            target / "sweep_figure.tex": "\n".join([
-                DO_NOT_EDIT,
-                "% Requires graphicx; input this inside the manuscript's figure environment.",
-                r"\includegraphics[width=\linewidth]{paper/generated/sweep_panels.pdf}", "",
-            ]),
         })
     if fujita:
         files.update({target / name: content for name, content in
@@ -407,16 +447,56 @@ def build_figures(out_dir: Path | None = None) -> list[Path]:
         spec = importlib.util.spec_from_file_location("_paper_sweep_panels", script)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        path = target / "sweep_panels.pdf"
-        module.render(data["runs"], str(path), data["title"], data["per_example"],
-                      data["counts"], data["labels"])
-        paths.append(path)
+        # Two figures from one dataset: the manuscript panel is what the MODELS did, the annex
+        # one is what the HARNESS cost. They were a single eight-row figure until the cost rows
+        # crowded the comparison they were printed beside.
+        for name, which, data_panel in (
+                ("sweep_panels.pdf", module.MODEL_PANELS, True),
+                ("sweep_cost_panels.pdf", module.COST_PANELS, False)):
+            path = target / name
+            module.render(data["runs"], str(path), data["title"], data["per_example"],
+                          data["counts"], data["labels"], which=which, data_panel=data_panel)
+            paths.append(path)
+    # The published reference topologies, drawn from a FROZEN payload rather than live from the
+    # examples: building them here would need materialised condition tables, which are gitignored
+    # build artefacts, so the figure would quietly fail to regenerate and nothing would catch it
+    # drifting from the data. With the payload committed, the no-drift test covers them like
+    # every other generated file.
+    topologies = repo_root() / "paper" / "reference_topologies.json"
+    if topologies.is_file():
+        script = repo_root() / "slurm" / "_plot_reference_topologies.py"
+        spec = importlib.util.spec_from_file_location("_paper_reference_topologies", script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        paths.extend(module.render_all(json.loads(topologies.read_text(encoding="utf-8")), target))
     fujita = paper_fujita.read_input(repo_root())
     if fujita:
         metadata, rows = fujita
-        coefficients, _ = paper_fujita.correlations(rows, metadata['symlog'])
+        coefficients, _ = paper_fujita.correlations(rows, metadata, metadata['symlog'])
         for suffix in ('pdf', 'png'):
             path = target / f'figure3.{suffix}'
             paper_fujita.render(rows, coefficients, metadata, path)
             paths.append(path)
+        # The process-description maps are supplementary: Figure 3B carries the readout
+        # networks at text width, and the full maps need a page of their own to be read.
+        for suffix in ('pdf', 'png'):
+            path = target / f'fujita_models_sbgn.{suffix}'
+            paper_fujita.render_models(rows, metadata, path)
+            paths.append(path)
+    heldout = paper_heldout.read_input(repo_root())
+    if heldout:
+        for suffix in ('pdf', 'png'):
+            path = target / f'figure4.{suffix}'
+            paper_heldout.render(heldout, path)
+            paths.append(path)
+    # Supplementary: every run's training ΔBIC per version, for the runs figures 2-4 score.
+    trajectories = paper_bic_trajectories.read_input(repo_root())
+    if trajectories:
+        for name, render in (('bic_trajectories_figure2', paper_bic_trajectories.render_figure2),
+                             ('bic_trajectories_figures34',
+                              paper_bic_trajectories.render_figure34)):
+            for suffix in ('pdf', 'png'):
+                path = target / f'{name}.{suffix}'
+                render(trajectories, path)
+                paths.append(path)
     return paths
