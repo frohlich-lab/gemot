@@ -46,7 +46,7 @@ def export_data(root, metadata, rows, header):
     # are the same string; the stored label stays in the manifest as the archive key.
     labels = [run_name(metadata, row['label']) for row in rows]
     if not rows or len(set(labels)) != len(labels) or any(
-            not re.fullmatch(r'[CF][1-9][a-z]', label) for label in labels):
+            not re.fullmatch(r'[OF][1-9][a-z]', label) for label in labels):
         raise ValueError('invalid or duplicate Fujita model listing labels')
     for row in rows:
         run, label = runs[row['task']], run_name(metadata, row['label'])
@@ -94,7 +94,7 @@ def export_data(root, metadata, rows, header):
         r'sources were exported with their hashes.',
         r'The label, arm, array task and selected version identify each source.',
         r'Listings marked \emph{converted from the archived SBML} are libantimony renderings of'
-        r' the \texttt{model.xml} those runs delivered: the barebones arms wrote no Antimony, so'
+        r' the \texttt{model.xml} those runs delivered: the bare-agent arms wrote no Antimony, so'
         r' none exists to reproduce. The hash recorded for such a row is their'
         r' \texttt{model.xml}, because verifying a derived listing against itself would prove'
         r' nothing; that SBML is not shipped, so the annex is Antimony throughout.'

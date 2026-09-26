@@ -6,12 +6,13 @@ held-out set, with the same axes so the two read together -- training ΔBIC on x
 on y, both candidate minus reference, both signed so that DOWN and LEFT is better. The shaded
 quadrant is where a candidate beats the reference on prediction.
 
-Two arms: the Figure 2 runs, and the biology-blinded runs of the same examples. The neural-ODE
-arms are absent by construction of the input -- see ``slurm/_heldout_benchmarks_input.py``.
+Three arms: the Figure 2 runs, the biology-blinded runs of the same examples, and neural-ODE
+fields distilled into rate laws where distillation succeeded (crauste, perelson) -- see
+``slurm/_heldout_benchmarks_input.py``.
 
 Two scoring modes are mixed and the panel subtitle says which. crauste, lucarelli and perelson
-REFIT the candidate's structure on each held-out unit; raimundez is scored at its fitted point
-against the published control, because its held-out set is fixed rather than a transfer set. A
+REFIT the candidate's structure on each held-out unit; raimundez is scored at its fitted point,
+with only the new per-blot observation scalings solved, against the published control, because its held-out set is fixed rather than a transfer set. A
 ΔNLL is not the same quantity in the two cases and the figure does not pretend otherwise.
 """
 from __future__ import annotations
@@ -23,11 +24,11 @@ from petab_harness.paper_fujita import shaded
 
 #: Figure 3's encoding, taken literally: hue and marker name the language model, the step on its
 #: ramp names the rung. Both LLM arms here are GLM-5.3-flash runs, so both are circles on the blue
-#: ramp -- the baseline at C1's step, the blinded runs at C4's (paper_fujita.SUPPORT_RAMPS).
+#: ramp -- the baseline at O1's step, the blinded runs at O4's (paper_fujita.SUPPORT_RAMPS).
 #: The labels carry figure 3's arm codes, so the two figures' blues read as the same arms.
 ARM_STYLE = {
-    "regular": {"color": "#0A3559", "marker": "o", "label": "C1  Biology visible"},
-    "blinded": {"color": "#9BD0F2", "marker": "o", "label": "C4  Biology blinded"},
+    "regular": {"color": "#0A3559", "marker": "o", "label": "O1  Biology visible"},
+    "blinded": {"color": "#9BD0F2", "marker": "o", "label": "O4  Biology blinded"},
     # No language model, so neither of figure 3's model hues, and a marker no model uses. It
     # was burnt orange, which is figure 3's Astra ramp. Magenta clears both blues by OKLab
     # ΔE >= 15.9 under every simulated colour-vision deficiency; a charcoal did not (9.9).
@@ -128,6 +129,9 @@ def _marginal(axis, arms, ylim, fontsize):
                   markeredgewidth=0.4, linestyle="none", zorder=4)
     axis.axhline(0, color=ZERO_INK, linestyle="--", linewidth=0.7, zorder=1)
     axis.set_xlim(-0.6, 0.6)
+    # Transparent: a run past its cloud's right edge is drawn in the spacer and can reach into
+    # this axes, whose white background would otherwise paint over half of it.
+    axis.patch.set_visible(False)
     axis.set_xticks([])
     axis.tick_params(labelleft=False, left=False, length=0)
     for spine in ("top", "right", "left", "bottom"):
@@ -136,6 +140,9 @@ def _marginal(axis, arms, ylim, fontsize):
 
 #: Type sizes in points at print size; ICLR's 6 pt floor is SMALL.
 TITLE, BODY, SMALL = 7.5, 6.5, 6.0
+#: Panel titles' baseline, in axes fractions: above the band over the frame where off-scale runs
+#: are drawn (render places that band 0.055 of the y span up).
+TITLE_Y = 1.15
 
 
 def render(payload: dict, output, fontsize: float = BODY) -> None:
@@ -153,7 +160,8 @@ def render(payload: dict, output, fontsize: float = BODY) -> None:
     # ONE y scale for every panel. The panels answer the same question on four benchmarks, so a
     # per-panel scale would let a ±12 spread and a ±300 spread look alike. The cost is that the
     # smaller benchmarks occupy little of the axis; the clip keeps one runaway from making that
-    # worse, and it is drawn above the scale with its value rather than dropped.
+    # worse, and it is drawn outside the frame rather than dropped -- named by its place, not by
+    # a printed value, as figure 3A draws its own.
     every = [p["heldout_delta_nll"] for e in examples for a in e["arms"].values()
              for p in a["points"]]
     ylim, offscale = _clipped_limits(every)
@@ -164,7 +172,7 @@ def render(payload: dict, output, fontsize: float = BODY) -> None:
     # Margins in INCHES, so they stay tight at any height: key and titles above, tick labels
     # and the shared x label below.
     page = (paper_style.TEXT_WIDTH, 1.61)
-    above, below = 0.36, 0.27
+    above, below = 0.42, 0.27
     # Each benchmark is a scatter plus a slim marginal, as panel 3A is: the cloud shows the
     # runs, the marginal shows median and range per arm so the two arms can be compared without
     # the reader estimating a centre by eye. Only the y marginal is carried over -- with the y
@@ -173,16 +181,19 @@ def render(payload: dict, output, fontsize: float = BODY) -> None:
     # (cloud, marginal, gap) per benchmark, the gap column left empty. wspace cannot do this: it
     # is uniform, so any value that separates the benchmarks also separates each cloud from its
     # own marginal.
+    # A thin spacer between each cloud and its marginal holds the band past the cloud's right
+    # edge, where a run beyond the panel's ΔBIC scale is drawn -- on the marginal it sat on the
+    # range bars.
     ratios, columns = [], []
     for index in range(len(examples)):
         columns.append(len(ratios))
-        ratios += [1.0, 0.16] if index == len(examples) - 1 else [1.0, 0.16, 0.20]
+        ratios += [1.0, 0.07, 0.16] if index == len(examples) - 1 else [1.0, 0.07, 0.16, 0.20]
     grid = fig.add_gridspec(1, len(ratios), width_ratios=ratios, left=0.098, right=0.995,
                             top=1 - above / page[1], bottom=below / page[1], wspace=0.0)
     axes, margins = [], []
     for index, column in enumerate(columns):
         main = fig.add_subplot(grid[0, column], sharey=axes[0] if axes else None)
-        margin = fig.add_subplot(grid[0, column + 1], sharey=main)
+        margin = fig.add_subplot(grid[0, column + 2], sharey=main)
         # sharey= on add_subplot links the limits but does NOT hide the duplicate tick labels
         # the way plt.subplots(sharey=True) does.
         if index:
@@ -195,65 +206,36 @@ def render(payload: dict, output, fontsize: float = BODY) -> None:
         arms = entry["arms"]
         xs = [p["training_dbic"] for a in arms.values() for p in a["points"]]
         # x is clipped per panel, as figure 3A clips its ΔBIC axis: lucarelli's one blinded run
-        # at +2,642 otherwise stretched the panel to four times its bulk. Drawn on the right
-        # spine, open, with its ΔBIC printed.
+        # at +2,642 otherwise stretched the panel to four times its bulk. It is drawn past the
+        # right edge, and a run above the shared scale in a band over the frame: OUTSIDE the
+        # scales, so no point sits at a coordinate it does not have.
         xfence = _x_fence(xs)
         xlim = _limits([x for x in xs if x <= xfence])
+        beside = xlim[1] + 0.05 * (xlim[1] - xlim[0])
+        over = ylim[1] + 0.055 * (ylim[1] - ylim[0])
         # The "better than reference" region is y < 0: the candidate predicts the held-out data
         # better than the published model does. Drawn before the points so it never hides one.
         axis.axhspan(ylim[0], 0, color=BETTER_FILL, zorder=0)
         axis.axhline(0, color=ZERO_INK, linestyle="--", linewidth=0.8, zorder=1)
         axis.axvline(0, color="#C5CDD2", linewidth=0.7, linestyle=":", zorder=1)
 
-        placed: list[tuple[float, float]] = []   # (x, width pt) of this panel's off-scale labels
         for name, arm in arms.items():
             if not arm["points"]:
                 continue
             style = ARM_STYLE[name]
-            inside = [p for p in arm["points"]
-                      if (offscale is None or p["heldout_delta_nll"] <= ylim[1])
-                      and p["training_dbic"] <= xfence]
-            for point in arm["points"]:
-                if point["training_dbic"] > xfence:
-                    at = min(point["heldout_delta_nll"], ylim[1])
-                    axis.scatter([xlim[1]], [at], s=15, facecolors="white",
-                                 edgecolors=style["color"], marker=style["marker"],
-                                 linewidths=0.8, zorder=4, clip_on=False)
-                    axis.annotate(f"ΔBIC {point['training_dbic']:+,.0f}", (xlim[1], at),
-                                  textcoords="offset points", xytext=(-5, 0), ha="right",
-                                  va="center", fontsize=SMALL, color=style["color"])
-            axis.scatter([p["training_dbic"] for p in inside],
-                         [p["heldout_delta_nll"] for p in inside],
-                         s=15, c=style["color"], marker=style["marker"],
+            # Each run at its own coordinates, or OUTSIDE the scale it has left: past the right
+            # edge when its ΔBIC is beyond the panel's, in the band over the frame when its ΔNLL
+            # is beyond the shared scale, and in the corner where the two meet when both are.
+            # Drawn like any other run -- where it sits is what says it is off the scale.
+            xs_drawn = [beside if p["training_dbic"] > xfence else p["training_dbic"]
+                        for p in arm["points"]]
+            ys_drawn = [over if offscale is not None and p["heldout_delta_nll"] > ylim[1]
+                        else p["heldout_delta_nll"] for p in arm["points"]]
+            axis.scatter(xs_drawn, ys_drawn, s=15, c=style["color"], marker=style["marker"],
                          # Figure 3's outline: the mark's own hue, darker. White erased the
                          # pale blinded step against the page.
                          edgecolors=shaded(style["color"]), linewidths=0.5,
-                         zorder=3)
-            # Off-scale: an OPEN marker on the top rule with the value beside it, so the point
-            # is still placed in x and still attributable to its arm.
-            for point in arm["points"]:
-                if offscale is not None and point["heldout_delta_nll"] > ylim[1]:
-                    axis.scatter([point["training_dbic"]], [ylim[1]], s=15,
-                                 facecolors="white", edgecolors=style["color"],
-                                 marker=style["marker"], linewidths=0.8, zorder=4,
-                                 clip_on=False)
-                    # Stagger only against a label within a sixth of the panel's width --
-                    # lucarelli's two land on each other; raimundez's are far apart and a
-                    # blanket stagger dropped one of them for no reason.
-                    near = 0.16 * (xlim[1] - xlim[0])
-                    label = f"{point['heldout_delta_nll']:+,.0f}"
-                    # A close neighbour's label already sits to the right, so this one follows
-                    # it on the same line. Down, it landed on lucarelli's in-scale +142; left,
-                    # it ran into the previous panel's marginal at one-row width.
-                    ahead = sum(width for x, width in placed
-                                if abs(point["training_dbic"] - x) < near)
-                    placed.append((point["training_dbic"], len(label) * SMALL * 0.62 + 6))
-                    axis.annotate(label, (point["training_dbic"], ylim[1]),
-                                  textcoords="offset points", xytext=(4 + ahead, -1),
-                                  ha="left", fontsize=SMALL, color=style["color"],
-                                  va="center", annotation_clip=False)
-        # No per-panel "above the scale" note: wherever it sat it landed on an off-scale value
-        # label on some panel (lucarelli's +1,241). The open marker is keyed in the legend.
+                         zorder=3, clip_on=False)
 
         _marginal(margin, arms, ylim, fontsize)
         axis.set_xlim(*xlim)
@@ -262,7 +244,7 @@ def render(payload: dict, output, fontsize: float = BODY) -> None:
         # competing for the same corner.
         # Name and mode on ONE line: the bold name, then the mode and size in muted ink right
         # after it. Terse, because a panel is ~1.3 in to the next one; the caption spells out
-        # what each mode means. Lifted clear of the open off-scale markers on the top rule.
+        # what each mode means. Lifted clear of the off-scale band over the frame.
         kind = {"transfer": "transfer", "fixed": "fixed"}.get(entry["mode"], entry["mode"])
         # n is the held-out measurements the panel's ΔNLL is computed on (the reference score
         # records them), not the training count: that one orders the panels and is Figure 2's,
@@ -271,7 +253,7 @@ def render(payload: dict, output, fontsize: float = BODY) -> None:
         subtitle = f"{kind}" + (f" · n={size:,}" if size else "")
         # BASELINE-aligned, both halves: va="bottom" aligns the boxes' bottoms, and a 7.5 pt
         # bold name and a 6 pt label have different descents, so the two sat on different lines.
-        name = axis.text(0, 1.075, entry["example"], transform=axis.transAxes, fontsize=TITLE,
+        name = axis.text(0, TITLE_Y, entry["example"], transform=axis.transAxes, fontsize=TITLE,
                          fontweight="bold", va="baseline")
         titles.append((axis, name, subtitle))
         axis.grid(axis="y", color=GRID, linewidth=0.5, zorder=0)
@@ -292,17 +274,13 @@ def render(payload: dict, output, fontsize: float = BODY) -> None:
     renderer = fig.canvas.get_renderer()
     for axis, name, subtitle in titles:
         end = name.get_window_extent(renderer).transformed(axis.transAxes.inverted()).x1
-        axis.text(end, 1.075, "  " + subtitle, transform=axis.transAxes, fontsize=SMALL,
+        axis.text(end, TITLE_Y, "  " + subtitle, transform=axis.transAxes, fontsize=SMALL,
                   color=MUTED, va="baseline")
 
     handles = [Line2D([], [], color=s["color"], marker=s["marker"], linestyle="none",
                       markersize=3.6, markeredgecolor=shaded(s["color"]),
                       markeredgewidth=0.4,
                       label=s["label"]) for s in ARM_STYLE.values()]
-    if offscale is not None:
-        handles.append(Line2D([], [], color=MUTED, marker="o", linestyle="none", markersize=3.6,
-                              markerfacecolor="white", markeredgewidth=0.7,
-                              label="off the scale (value shown)"))
     fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 1.0), frameon=False,
                fontsize=BODY, handletextpad=0.3, ncol=len(handles),
                columnspacing=1.0, borderpad=0.0)

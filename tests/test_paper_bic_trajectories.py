@@ -57,8 +57,8 @@ def _payload():
                            "3": "biology + deepagents", "4": "gemot"},
         "figure2": {"crauste": visible, "perelson": blinded},
         "figure3": {
-            "baseline": {**history, "code": "C1"},
-            "null": {"code": "C3", "support": 3, "model": "z-ai/glm-5.3-flash",
+            "baseline": {**history, "code": "O1"},
+            "null": {"code": "O3", "support": 3, "model": "z-ai/glm-5.3-flash",
                      "runs": [_run([], -1, 216.0), _run([], -1, -493.0)], "no_model": ["G1"]},
             "astra": {**history, "code": "F2", "support": 2, "model": "openai/gpt-6-astra"},
         },

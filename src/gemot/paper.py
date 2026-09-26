@@ -32,7 +32,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from petab_harness import paper_bic_trajectories, paper_fujita, paper_fujita_models, paper_heldout
+from petab_harness import (paper_bic_trajectories, paper_claims, paper_configurations,
+                           paper_fujita, paper_fujita_models, paper_heldout)
 from petab_harness.paths import BENCHMARK_EXAMPLES, examples_root, repo_root
 
 #: Header stamped on every emitted file. The manuscript's coauthors edit in Overleaf, where a
@@ -329,12 +330,14 @@ def _tex(text: str) -> str:
 
 
 def render_values(rows: list[ExampleRow], findings: dict[str, dict[str, object]],
-                  sweep: dict | None = None, fujita: tuple | None = None) -> str:
+                  sweep: dict | None = None, fujita: tuple | None = None,
+                  claims: dict[str, tuple[str, str]] | None = None) -> str:
     """Every number the prose may cite, as a macro.
 
-    Three sources share one file: counts derived from the checkout, sweep-figure medians and
-    curated historical values. A reader of the manuscript cannot tell them apart, and should
-    not have to -- each carries its provenance as a comment on the definition.
+    Four sources share one file: counts derived from the checkout, sweep-figure medians, the
+    numbers the prose states (:mod:`petab_harness.paper_claims`) and curated historical values.
+    A reader of the manuscript cannot tell them apart, and should not have to -- each carries
+    its provenance as a comment on the definition.
     """
     out = [DO_NOT_EDIT, "", "% -- derived from the checkout --"]
     out.append(rf"\newcommand{{\nExamples}}{{{len(rows)}}}")
@@ -345,7 +348,8 @@ def render_values(rows: list[ExampleRow], findings: dict[str, dict[str, object]]
         out += ["% -- medians of the exact sweep-figure observations: paper/sweep_data.json --",
                 "% Jobs: " + ", ".join(sweep["jobs"]),
                 "% Data SHA256 (canonical JSON): " + fingerprint,
-                "% Selection: latest started runs per example; each metric omits missing values.",
+                "% Selection: latest started runs per example, excluding infrastructure failures;",
+                "% each metric omits missing values.",
                 "% Medians use original units, before log transforms; N gives available runs.",
                 "% Delta values are fitted minus reference; LLMTokens is tokens, not millions.",
                 "% WallHours is full-task elapsed hours; CPUHours sums measured CPU over workers.",
@@ -363,6 +367,16 @@ def render_values(rows: list[ExampleRow], findings: dict[str, dict[str, object]]
                 "% Data SHA256: " + metadata["source"]["data_sha256"]]
         for macro, value in figure_macros.items():
             out.append(rf"\newcommand{{\{macro}}}{{{value}}}")
+        out.append("")
+    if claims:
+        out += ["% -- numbers the prose states: petab_harness.paper_claims, from the inputs above",
+                "% and paper/heldout_benchmarks.json, paper/run_configurations.json --"]
+        for macro, (value, how) in claims.items():
+            if macro in derived:
+                raise ValueError(f"{macro}: defined twice")
+            out.append(f"% {how}")
+            out.append(rf"\newcommand{{\{macro}}}{{{value}}}")
+            derived[macro] = value
         out.append("")
     out.append("% -- transcribed from sweep logs, see paper/findings.toml --")
     macros = {"nExamples", "repoSha", "generatedOn", "nUnmaterialized", *derived}
@@ -411,9 +425,16 @@ def build(out_dir: Path | None = None) -> dict[Path, str]:
         findings = tomllib.loads(findings_path().read_text())
     sweep = read_sweep_data()
     fujita = paper_fujita.read_input(repo_root())
+    configurations, grid = paper_configurations.read_inputs(repo_root())
+    spread = repo_root() / "paper" / "fujita_spread" / "summary.json"
+    claims = paper_claims.macros(repo_root(), sweep, fujita,
+                                 paper_heldout.read_input(repo_root()), configurations, grid,
+                                 paper_bic_trajectories.read_input(repo_root()),
+                                 json.loads(spread.read_text(encoding="utf-8"))
+                                 if spread.is_file() else None)
     files = {
         target / "roster.tex": render_roster(rows),
-        target / "values.tex": render_values(rows, findings, sweep, fujita),
+        target / "values.tex": render_values(rows, findings, sweep, fujita, claims),
         target / "provenance.tex": render_provenance(rows),
     }
     if sweep:
@@ -427,6 +448,9 @@ def build(out_dir: Path | None = None) -> dict[Path, str]:
                       paper_fujita.export_data(repo_root(), *fujita, DO_NOT_EDIT).items()})
         files.update({target / name: content for name, content in
                       paper_fujita_models.export_data(repo_root(), *fujita, DO_NOT_EDIT).items()})
+    # What every scored agent run and the neural-ODE grid ran with, for the annex.
+    files.update({target / name: content for name, content in paper_configurations.export_data(
+        configurations, grid, DO_NOT_EDIT).items()})
     for path, content in files.items():
         path.write_text(content, encoding="utf-8")
     return files
@@ -437,26 +461,35 @@ def build_figures(out_dir: Path | None = None) -> list[Path]:
 
     Kept separate from the text build so numeric inputs remain usable without Matplotlib.
     The repo's existing sweep renderer owns the layout; no plotting logic is duplicated here.
+
+    Every renderer styles its page through matplotlib's GLOBAL rcParams, some at import, so each
+    runs in its own ``rc_context``: unscoped, a figure inherited whatever the one before it
+    left, figure 2 drawn after figures 3 and 4 had its tick labels moved by about a point, and
+    two builds in one process disagreed byte for byte.
     """
+    import matplotlib
+
     target = out_dir or generated_dir()
     target.mkdir(parents=True, exist_ok=True)
     paths = []
     data = read_sweep_data()
     if data is not None:
-        script = repo_root() / "slurm" / "sweep_panels.py"
-        spec = importlib.util.spec_from_file_location("_paper_sweep_panels", script)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        # Two figures from one dataset: the manuscript panel is what the MODELS did, the annex
-        # one is what the HARNESS cost. They were a single eight-row figure until the cost rows
-        # crowded the comparison they were printed beside.
-        for name, which, data_panel in (
-                ("sweep_panels.pdf", module.MODEL_PANELS, True),
-                ("sweep_cost_panels.pdf", module.COST_PANELS, False)):
-            path = target / name
-            module.render(data["runs"], str(path), data["title"], data["per_example"],
-                          data["counts"], data["labels"], which=which, data_panel=data_panel)
-            paths.append(path)
+        with matplotlib.rc_context():
+            script = repo_root() / "slurm" / "sweep_panels.py"
+            spec = importlib.util.spec_from_file_location("_paper_sweep_panels", script)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            # Two figures from one dataset: the manuscript panel is what the MODELS did, the
+            # annex one is what the HARNESS cost. They were a single eight-row figure until the
+            # cost rows crowded the comparison they were printed beside.
+            for name, which, data_panel in (
+                    ("sweep_panels.pdf", module.MODEL_PANELS, True),
+                    ("sweep_cost_panels.pdf", module.COST_PANELS, False)):
+                path = target / name
+                module.render(data["runs"], str(path), data["title"], data["per_example"],
+                              data["counts"], data["labels"], which=which,
+                              data_panel=data_panel)
+                paths.append(path)
     # The published reference topologies, drawn from a FROZEN payload rather than live from the
     # examples: building them here would need materialised condition tables, which are gitignored
     # build artefacts, so the figure would quietly fail to regenerate and nothing would catch it
@@ -464,30 +497,35 @@ def build_figures(out_dir: Path | None = None) -> list[Path]:
     # every other generated file.
     topologies = repo_root() / "paper" / "reference_topologies.json"
     if topologies.is_file():
-        script = repo_root() / "slurm" / "_plot_reference_topologies.py"
-        spec = importlib.util.spec_from_file_location("_paper_reference_topologies", script)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        paths.extend(module.render_all(json.loads(topologies.read_text(encoding="utf-8")), target))
+        with matplotlib.rc_context():
+            script = repo_root() / "slurm" / "_plot_reference_topologies.py"
+            spec = importlib.util.spec_from_file_location("_paper_reference_topologies", script)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            paths.extend(module.render_all(json.loads(topologies.read_text(encoding="utf-8")),
+                                           target))
     fujita = paper_fujita.read_input(repo_root())
     if fujita:
         metadata, rows = fujita
         coefficients, _ = paper_fujita.correlations(rows, metadata, metadata['symlog'])
         for suffix in ('pdf', 'png'):
             path = target / f'figure3.{suffix}'
-            paper_fujita.render(rows, coefficients, metadata, path)
+            with matplotlib.rc_context():
+                paper_fujita.render(rows, coefficients, metadata, path)
             paths.append(path)
         # The process-description maps are supplementary: Figure 3B carries the readout
         # networks at text width, and the full maps need a page of their own to be read.
         for suffix in ('pdf', 'png'):
             path = target / f'fujita_models_sbgn.{suffix}'
-            paper_fujita.render_models(rows, metadata, path)
+            with matplotlib.rc_context():
+                paper_fujita.render_models(rows, metadata, path)
             paths.append(path)
     heldout = paper_heldout.read_input(repo_root())
     if heldout:
         for suffix in ('pdf', 'png'):
             path = target / f'figure4.{suffix}'
-            paper_heldout.render(heldout, path)
+            with matplotlib.rc_context():
+                paper_heldout.render(heldout, path)
             paths.append(path)
     # Supplementary: every run's training ΔBIC per version, for the runs figures 2-4 score.
     trajectories = paper_bic_trajectories.read_input(repo_root())
@@ -497,6 +535,7 @@ def build_figures(out_dir: Path | None = None) -> list[Path]:
                               paper_bic_trajectories.render_figure34)):
             for suffix in ('pdf', 'png'):
                 path = target / f'{name}.{suffix}'
-                render(trajectories, path)
+                with matplotlib.rc_context():
+                    render(trajectories, path)
                 paths.append(path)
     return paths

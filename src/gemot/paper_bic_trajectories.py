@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from petab_harness.paper_fujita import MODEL_MARKERS, SUPPORT_RAMPS, shaded
+from petab_harness.paper_fujita import MODEL_MARKERS, SUPPORT_RAMPS, shaded, support_label
 
 VISIBLE, BLINDED = SUPPORT_RAMPS[0][0], SUPPORT_RAMPS[0][3]
 BETTER_FILL, BETTER_INK, ZERO_INK, MUTED = "#EEF6F2", "#3E7863", "#526370", "#5F6B74"
@@ -272,9 +272,9 @@ def render_figure34(payload: dict, output) -> None:
     top = outer[0].subgridspec(2, 4, wspace=0.16, hspace=0.42)
     ylim = _limits([v for spec in arms.values() for v in _values(spec["runs"])])
     by_cell = {(spec["code"][0], spec["support"]): spec for spec in arms.values()}
-    support = {int(k): v for k, v in payload.get("support_levels", {}).items()}
+    support = {int(k): support_label(v) for k, v in payload.get("support_levels", {}).items()}
     shared = None
-    for row, family in enumerate(("C", "F")):
+    for row, family in enumerate(("O", "F")):
         model = next(spec["model"] for spec in arms.values() if spec["code"][0] == family)
         for column, rung in enumerate(range(1, 5)):
             axis = fig.add_subplot(top[row, column], sharey=shared)
@@ -292,8 +292,8 @@ def render_figure34(payload: dict, output) -> None:
                 continue
             shared = shared or axis
             style(axis, ylim)
-            color = SUPPORT_RAMPS[0 if family == "C" else 1][rung - 1]
-            marker = MODEL_MARKERS[0 if family == "C" else 1]
+            color = SUPPORT_RAMPS[0 if family == "O" else 1][rung - 1]
+            marker = MODEL_MARKERS[0 if family == "O" else 1]
             if any(run["points"] for run in spec["runs"]):
                 draw(axis, spec["runs"], color, marker)
                 axis.xaxis.set_major_locator(MaxNLocator(nbins=3, integer=True))
@@ -327,7 +327,7 @@ def render_figure34(payload: dict, output) -> None:
         fig.text(0.004, y, f"{letter}   {title}", ha="left", va="baseline", fontsize=TITLE + 0.5,
                  fontweight="bold")
         if letter == "B":
-            _key(fig, [(VISIBLE, "C1  Biology visible"), (BLINDED, "C4  Biology blinded")],
+            _key(fig, [(VISIBLE, "O1  Biology visible"), (BLINDED, "O4  Biology blinded")],
                  (0.985, y), loc="lower right")
     fig.supxlabel(X_LABEL, fontsize=BODY, y=0.03 * inch)
     fig.supylabel(Y_LABEL, fontsize=BODY, x=0.004)

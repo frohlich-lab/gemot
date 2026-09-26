@@ -347,7 +347,7 @@ ORDINALS = ('One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nin
 
 
 def macro_name(name):
-    """``C1c`` -> ``COneC``. LaTeX command names cannot contain digits, so every digit becomes a
+    """``O1c`` -> ``OOneC``. LaTeX command names cannot contain digits, so every digit becomes a
     word; the rest of the name is carried through in capitals."""
     spelled = ''
     for char in name:
@@ -364,7 +364,13 @@ def macros(metadata, rows):
     """Caption values share the plotted input, rather than being transcribed into LaTeX."""
     evaluation = metadata['evaluation']
     scored = [row for row in rows if row['complete_heldout']]
-    best = min(scored, key=lambda row: row['heldout_nll'])
+    best, runner_up = sorted(scored, key=lambda row: row['heldout_nll'])[:2]
+    # The supplementary maps are named in the export; they must be the two the scores rank first.
+    for key, row in (('best_generalising', best), ('runner_up', runner_up)):
+        drawn = metadata['process_diagrams'][key]['source']['name']
+        if drawn != run_name(metadata, row['label']):
+            raise ValueError(f'{key} map shows {drawn}, but the scores rank '
+                             f"{run_name(metadata, row['label'])} there")
     values = {
         'fujitaFigureRunCount': str(len(rows)),
         'fujitaFigureArmCount': str(len(arms(metadata))),
@@ -380,6 +386,9 @@ def macros(metadata, rows):
         'fujitaFigureBestLabel': run_name(metadata, best['label']),
         'fujitaFigureBestHeldoutNLL': f"{best['heldout_nll']:.2f}",
         'fujitaFigureBestDeltaNLL': f"{best['heldout_delta_nll']:.2f}",
+        'fujitaFigureRunnerUpLabel': run_name(metadata, runner_up['label']),
+        'fujitaFigureRunnerUpHeldoutNLL': f"{runner_up['heldout_nll']:.2f}",
+        'fujitaFigureRunnerUpDeltaNLL': f"{runner_up['heldout_delta_nll']:.2f}",
         'fujitaFigureConditionCount': str(evaluation['n_conditions']),
         'fujitaFigureMeasurementCount': str(evaluation['n_measurements']),
         'fujitaFigureReferenceNLL': f"{metadata['reference']['heldout_nll']:.2f}",
@@ -422,7 +431,7 @@ def macros(metadata, rows):
                              strict=True))
     # Every coefficient is now per language model, so every macro names which one: a bare
     # \fujitaFigureReactionsSpearman would silently pick whichever pool came first.
-    families = {pool: 'Cheap' if config['code'] == 'C' else 'Frontier'
+    families = {pool: 'OpenWeight' if config['code'] == 'O' else 'Frontier'
                 for pool, config in pools(metadata).items()}
     for coefficient in coefficients:
         prefix = ('fujitaFigure' + families[coefficient['pool']]
@@ -611,13 +620,13 @@ def correlation_sensitivity(rows, metadata, symlog):
 
 #: Panel A puts the design on TWO channels, because the design has two independent parts.
 #:
-#: The MARKER names the language model — a circle for the cheap one, a square for the frontier
+#: The MARKER names the language model — a circle for the open-weight one, a square for the frontier
 #: one — and the COLOUR is a four-step SEQUENTIAL ramp over how much of the harness the agent
 #: kept. The arms are not six unrelated conditions: they are one graded ablation, from the whole
 #: harness down to an agent given neither a curator nor the biology, so the channel that carries
 #: them is graded too. Dark is the full harness, pale is the least of it.
 #:
-#: An arm's name then COMPOSES the two channels — C2 reads as "cheap model, second rung" — which
+#: An arm's name then COMPOSES the two channels — O2 reads as "open-weight model, second rung" — which
 #: is why the legend can teach the channels separately and leave every point, bar and tick label
 #: to be read off them rather than looked up.
 #:
@@ -671,22 +680,34 @@ def marker_encoding(metadata):
             for arm, spec in arms(metadata).items()}
 
 
+#: The harness as the paper names it. The manifests record the bare-agent control by its driver's
+#: library, ``deepagents`` -- which the gemot panel is built with too, so in print that name says
+#: nothing about which arm it is.
+HARNESS_NAMES = {'deepagents': 'bare agent'}
+
+
+def support_label(kept):
+    """A support rung as printed: ``biology + deepagents`` -> ``biology + bare agent``."""
+    return ' + '.join(HARNESS_NAMES.get(part, part) for part in kept.split(' + '))
+
+
 def support_ladder(metadata):
     """``(level, what the arm kept, the arms on that rung)`` for the rungs that were run.
 
     The manifest names every rung of the ablation; only the ones with arms are drawn, so a legend
-    never advertises a condition the sweeps never ran.
+    never advertises a condition the sweeps never ran. What the arm kept is the printed label
+    (:func:`support_label`).
     """
     ladder = []
     for level, kept in sorted(metadata['support_levels'].items(), key=lambda item: int(item[0])):
         here = [arm for arm, spec in arms(metadata).items() if spec['support'] == int(level)]
         if here:
-            ladder.append((int(level), kept, here))
+            ladder.append((int(level), support_label(kept), here))
     return ladder
 
 
 def run_name(metadata, label):
-    """``B3`` -> ``C1c``: the arm's code, then which of its runs.
+    """``B3`` -> ``O1c``: the arm's code, then which of its runs.
 
     The stored label carries the arm's one-letter key, which is an archive identifier and says
     nothing a reader can use. The displayed name is the arm's position in the ablation instead,
@@ -847,7 +868,7 @@ def render_topology_counts(axis, rows, metadata, fontsize=6.0):
         axis.text(x, row['n_retained'] + 0.12, f"{row['n_retained']}/{row['n_models']}",
                   ha='center', va='bottom', fontsize=fontsize - 1.8, fontweight='bold',
                   color=bar_colors[x])
-    axis.set_ylabel('Models with\nreference links', fontsize=fontsize, labelpad=1)
+    axis.set_ylabel('Models with\nreference connections', fontsize=fontsize, labelpad=1)
     axis.set_xticks(range(len(counts)), [spec[arm]['code'] for arm in order],
                     fontsize=fontsize + 0.6)
     axis.set_xlim(-0.62, len(counts) - 0.38)
@@ -861,11 +882,11 @@ def render_topology_counts(axis, rows, metadata, fontsize=6.0):
 def heldout_win_counts(rows):
     """Per arm, how many models PREDICT better than the published reference.
 
-    The denominator is the models with a held-out score, not every model the arm produced: a run
-    whose model could not be integrated on the held-out protocols has no prediction to judge, and
-    counting it as a loss would price an integration failure as a modelling one. The arms that
-    fail to integrate are exactly the arms that fail to model, so folding the two together would
-    flatter nothing -- it would just stop the panel saying which of the two happened.
+    The denominator is every model the arm delivered. A model whose held-out integration failed
+    made no usable prediction of the withheld protocols, and that counts as predicting worse than
+    the reference: dropping it from the denominator would reward an arm for producing models that
+    cannot be integrated. ``n_scored`` stays in the output so the two failure modes remain
+    distinguishable in the data.
     """
     output = []
     for arm in dict.fromkeys(row['arm'] for row in rows):
@@ -892,10 +913,10 @@ def render_heldout_wins(axis, rows, metadata, fontsize=6.0):
     bar_colors = [arm_style(metadata, arm)[0] for arm in order]
     axis.bar(range(len(counts)), [row['n_better'] for row in counts], width=0.68,
              color=bar_colors, edgecolor=bar_colors, linewidth=1.0, zorder=3)
-    maximum = max(row['n_scored'] for row in counts)
+    maximum = max(row['n_models'] for row in counts)
     axis.set(ylim=(0, maximum + 0.9), yticks=range(0, maximum + 1, 2))
     for x, row in enumerate(counts):
-        axis.text(x, row['n_better'] + 0.12, f"{row['n_better']}/{row['n_scored']}",
+        axis.text(x, row['n_better'] + 0.12, f"{row['n_better']}/{row['n_models']}",
                   ha='center', va='bottom', fontsize=fontsize - 1.8, fontweight='bold',
                   color=bar_colors[x])
     axis.set_ylabel('Models beating\nthe reference', fontsize=fontsize, labelpad=1)
@@ -1013,7 +1034,6 @@ def render_cost(axis, rows, metadata, fontsize=6.0):
 
 
 
-
 def render_marginals(top, right, rows, metadata, xlim, ylim, clip, fontsize=5.0):
     """Median and range per (model, harness) cell, on panel A's own axes.
 
@@ -1034,8 +1054,10 @@ def render_marginals(top, right, rows, metadata, xlim, ylim, clip, fontsize=5.0)
     for offset, arm in zip(offsets, order, strict=True):
         color, mark = arm_style(metadata, arm)
         training = [clip(row['training_dbic']) for row in groups[arm]]
-        heldout = [min(row['heldout_delta_nll'], ylim[1]) for row in groups[arm]
-                   if row['complete_heldout']]
+        # A failed held-out integration ranks worst (Figure 3D's rule): at the top of the frame, so
+        # it counts in the median and carries the range to the edge.
+        heldout = [min(row['heldout_delta_nll'], ylim[1]) if row['complete_heldout'] else ylim[1]
+                   for row in groups[arm]]
         for axis, sample, flip in ((top, training, False), (right, heldout, True)):
             if not sample:
                 continue
@@ -1067,7 +1089,8 @@ def render_marginals(top, right, rows, metadata, xlim, ylim, clip, fontsize=5.0)
             spine.set_visible(False)
 
 
-def place_labels(axis, items, fontsize, pad=4.0, taken=None):
+def place_labels(axis, items, fontsize, pad=4.0, taken=None,
+                 steps=(0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5)):
     """Annotate points with names that do not overlap each other, adding a leader when pushed far.
 
     Two arms cluster in the same narrow band of training ΔBIC, and a fixed offset cycle cannot know
@@ -1080,10 +1103,11 @@ def place_labels(axis, items, fontsize, pad=4.0, taken=None):
     estimate is enough to keep names apart.
 
     ``taken`` carries claimed rectangles IN and OUT, so the marks themselves can be claimed before
-    any name is placed and two calls can share one page.
+    any name is placed and two calls can share one page. ``steps`` is the ladder of vertical
+    offsets, in label heights, tried in order: a band that must not grow upwards tries below first.
     """
     scale = axis.figure.dpi / 72
-    ladder = [(side, step) for step in (0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5) for side in (1, -1)]
+    ladder = [(side, step) for step in steps for side in (1, -1)]
     edge = axis.transData.transform((axis.get_xlim()[1], 0))[0]
     taken = [] if taken is None else taken
     for x, y, text, color in items:
@@ -1129,18 +1153,21 @@ def render_scatter(axis, rows, metadata, base):
     """Panel A: training fit against held-out prediction, one point per run.
 
     A LINEAR held-out axis, sized to the band where the models actually differ, with everything
-    above it drawn OUTSIDE the frame and carrying its own value. A symmetric-log axis kept every
-    point inside but made a hundredfold difference look like a small step; putting the few large
-    ones outside says plainly that they are off the scale, and prints what they are.
+    above it drawn OUTSIDE the frame. A symmetric-log axis kept every point inside but made a
+    hundredfold difference look like a small step; putting the few large ones outside says plainly
+    that they are off the scale. They are named, not valued: the axis is sized so the comparison
+    reads inside it, and a printed +243,290 beside the frame drew the eye to exactly the runs it
+    does not compare.
 
-    Returns the x limits the marginal axes must share. Every run the arms launched appears, and a
+    Returns the x limits the marginal axes must share. Every run that built a model appears, and a
     run that cannot be placed on an axis is placed OFF it: past the right edge when its ΔBIC is
-    beyond the range, above the top when its ΔNLL is, and in the corner beyond both when it built
-    no model and has neither. Nothing is drawn at a coordinate it never earned.
+    beyond the range, above the top when its ΔNLL is. A run that built no model has neither
+    coordinate and is left out; the arm table and panel E still count it. Nothing is drawn at a
+    coordinate it never earned.
     """
     spec = arms(metadata)
     # The ΔBIC axis follows the bulk of the models; a run further than `spread` from the median is
-    # drawn clipped at the edge with its value printed, so one outlier cannot flatten the cluster.
+    # drawn clipped at the edge, so one outlier cannot flatten the cluster.
     dbics = sorted(row['training_dbic'] for row in rows)
     median = dbics[len(dbics) // 2]
     spread = 3000
@@ -1196,11 +1223,8 @@ def render_scatter(axis, rows, metadata, base):
                          edgecolors=color if hollow else shaded(color),
                          linewidths=0.8 if hollow else 0.5)
             name = run_name(metadata, row['label']) + ('†' if hollow else '')
-            if row['task'] in outliers:
-                name = f"{name} ΔBIC {row['training_dbic']:+,.0f}"
             marks.append((xpos(row), at))
-            (above if off else labels).append(
-                (xpos(row), at, f'{name} {value:+,.0f}' if beyond else name, color))
+            (above if off else labels).append((xpos(row), at, name, color))
         for row in rows:
             if row['arm'] == arm and not row['complete_heldout']:
                 # No score at this tolerance, so no value to place: an x in the same band, which
@@ -1212,21 +1236,11 @@ def render_scatter(axis, rows, metadata, base):
     # Every mark claims its own box FIRST, so a crowded corner pushes names off the points rather
     # than onto them, and the two bands share one page instead of colliding across it.
     page = claimed(axis, marks)
-    place_labels(axis, sorted(above, key=lambda item: item[0]), base - 1.8, taken=page)
+    # The band above the frame names its runs beside or BELOW them, never above: a name above the
+    # band is what the gap to the marginal would otherwise have to be tall enough to hold.
+    place_labels(axis, sorted(above, key=lambda item: item[0]), base - 1.8, taken=page,
+                 steps=(0, -1, -2, -3, 1, 2))
     place_labels(axis, sorted(labels, key=lambda item: item[0]), base - 1.8, taken=page)
-    # Neither a ΔBIC nor a ΔNLL: the corner past both edges, where no coordinate is claimed.
-    # Where the two off-axis bands CROSS: a run with no model is off the ΔBIC axis and off the
-    # ΔNLL axis at once, so it belongs exactly where those two overflows meet.
-    stack = metadata['no_model_runs']
-    for index, entry in enumerate(stack):
-        color, mark = arm_style(metadata, entry['arm'])
-        at = outside + (index - (len(stack) - 1) / 2) * ceiling * 0.20
-        axis.scatter(beside, at, marker=mark, s=18, facecolors='white', edgecolors=color,
-                     linewidths=0.9, clip_on=False, zorder=6)
-        axis.annotate(run_name(metadata, entry['label']), (beside, at), xytext=(5, 0),
-                      textcoords='offset points',
-                      ha='left', va='center', fontsize=base - 1.8, color=color,
-                      annotation_clip=False)
 
     return (xmin, xmax), ylim, lambda value: min(max(value, xmin), xmax)
 
@@ -1236,9 +1250,7 @@ def render(rows, coefficients, metadata, output):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    from matplotlib.legend_handler import HandlerTuple
     from matplotlib.lines import Line2D
-    from matplotlib.patches import Patch
     from matplotlib.ticker import FuncFormatter
 
     from petab_harness import paper_style, sbgn
@@ -1270,12 +1282,14 @@ def render(rows, coefficients, metadata, output):
     # maps are names and arrows only now, so they need less height than A and the key takes the
     # rest of the column.
     # B's rows in inches: spacer for the titles, the maps, the key. The maps are height-limited
-    # at 0.198 in per box unit, so the map row is sized to its content -- 4 boxes of 0.8 units and
+    # at 0.19 in per box unit, so the map row is sized to its content -- 4 boxes of 0.8 units and
     # 3 gaps of MAP_GAP -- and a wider gap adds height instead of shrinking the boxes.
-    map_gap, map_unit = 1.2, 0.198
-    # The spacer only has to hold the two-line map titles (B's own title sits above the band); what
-    # it gives up goes to the key row, so the maps move up and the figure keeps its height.
-    b_rows = (0.34, map_unit * (4 * 0.8 + 3 * map_gap + 0.8 * 0.18 + 0.55 * map_gap), 0.84)
+    map_gap, map_unit = 1.1, 0.19
+    # B's column sets the band's height, so every row is cut to its content: the spacer holds the
+    # two-line map titles (B's own title sits above the band), the key row the matrix key and its
+    # exception row. Panel A needs no more than that since its off-scale band names runs beside or
+    # below them: the gap to its marginal only holds the band, and the figure is shorter for it.
+    b_rows = (0.31, map_unit * (4 * 0.8 + 3 * map_gap + 0.8 * 0.18 + 0.55 * map_gap), 0.77)
     bands, gap, headroom, footroom = (sum(b_rows), 0.86), 0.50, 0.20, 0.17
     page = (page_width, headroom + sum(bands) + gap + footroom)
     margins |= {'top': 1 - headroom / page[1], 'bottom': footroom / page[1]}
@@ -1283,8 +1297,9 @@ def render(rows, coefficients, metadata, output):
     outer = fig.add_gridspec(3, 1, height_ratios=(bands[0], gap, bands[1]), hspace=0.0,
                              **margins)
     top = outer[0].subgridspec(1, 2, width_ratios=(1.02, 1.0), wspace=0.16)
+    # hspace is the off-scale band and a little air: nothing is named above it (render_scatter).
     block = top[0].subgridspec(2, 2, width_ratios=(1, 0.075), height_ratios=(0.16, 1),
-                               wspace=0.10, hspace=0.36)
+                               wspace=0.10, hspace=0.16)
     # Row 0 is room for B's title and the two-line map titles, which sit above the map axes.
     right = top[1].subgridspec(3, 3, height_ratios=b_rows, wspace=0.10, hspace=0.0)
     middle = outer[2].subgridspec(1, 4, wspace=0.62)
@@ -1322,58 +1337,64 @@ def render(rows, coefficients, metadata, output):
     scatter.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f'{value:,.0f}'))
     render_marginals(top_margin, right_margin, rows, metadata, xlim, ylim, clip,
                      fontsize=base - 1.6)
-    # TWO keys, because there are two channels. The reader learns "colour = how much harness" and
-    # "marker = which model", then reads C3 or F2 straight off a point without a six-row lookup.
-    def key(handles, at, title=None, handler=None, labels=None, ncol=1):
-        drawn = scatter.legend(handles=handles, labels=labels, loc='upper left', ncol=ncol,
-                               columnspacing=0.9,
-                               bbox_to_anchor=at, bbox_transform=keys_axis.transAxes,
-                               frameon=False, fontsize=base - 1.6, handletextpad=0.35,
-                               labelspacing=0.3, borderpad=0.0, handlelength=1.2,
-                               handler_map=handler, title=title, title_fontsize=base - 1.4,
-                               alignment='left')
-        if title:
-            drawn.get_title().set_color('#5F6B74')
-        scatter.add_artist(drawn)
-        return drawn
+    # ONE key for both channels, as a matrix: a row per support rung, a column per model, and in
+    # each cell that arm's own marker in its own colour beside its code. The reader finds O3 where
+    # "biology + bare agent" crosses glm, instead of joining a colour key to a marker key. A cell
+    # stays empty where no sweep ever ran the arm (F1, F4): the key must not advertise it. Drawn
+    # rather than a legend, because a legend spends a handle's width on every row label and the
+    # matrix has to fit under the maps.
+    size, renderer = base - 1.6, fig.canvas.get_renderer()
+    area = keys_axis.get_position()
+    across, down = area.width * page[0], area.height * page[1]   # the key area in inches
 
-    # Each rung shows BOTH hues side by side, which is the claim the palette makes: the same four
-    # steps in two colours, so a swatch pair reads as one rung rather than as two conditions.
-    models = factor_levels(metadata, 'model')
-    ladder = []
-    for level, kept, here in support_ladder(metadata):
-        ran = {spec[arm]['factors']['model'] for arm in here}
-        # A blank where a rung was never run on that model: the key must not advertise F1 and F4,
-        # which no sweep ever launched. The placeholder keeps the swatches in line.
-        ladder.append((tuple(
-            Patch(facecolor=model_ramp(metadata, model)[level - 1], edgecolor='none')
-            if model in ran else Patch(facecolor='none', edgecolor='none') for model in models),
-            f'{level}  {kept}'))
-    families = []
-    for model in models:
-        arm = next(name for name, entry in spec.items() if entry['factors']['model'] == model)
-        families.append(Line2D([], [], color=model_ramp(metadata, model)[1], marker=
-                               marker_encoding(metadata)[arm], linestyle='none', markersize=3.4,
-                               label=f"{spec[arm]['code'][0]}  {short_model(model)}"))
+    def width(text):
+        """``text``'s rendered width in inches, at the key's size."""
+        probe = keys_axis.text(0, 0, text, fontsize=size)
+        inches = probe.get_window_extent(renderer).width / fig.dpi
+        probe.remove()
+        return inches
+
+    def put(x, y, text, **style):
+        """Text at ``(x, y)`` inches from the key area's top left."""
+        keys_axis.text(x / across, 1 - y / down, text, fontsize=size, va='center', ha='left',
+                       transform=keys_axis.transAxes, **style)
+
+    models, ladder = factor_levels(metadata, 'model'), support_ladder(metadata)
+    cells = {(level, spec[arm]['factors']['model']): arm
+             for level, _kept, here in ladder for arm in here}
+    rows_text = [f'{level}  {kept}' for level, kept, _here in ladder]
+    pitch, gap, glyph = 1.42 * size / 72, 0.12, 0.10   # row pitch, column gap, marker slot (in)
+    left = -0.05 * across
+    code = max(width(spec[arm]['code']) for arm in cells.values())
+    columns = [left + max(width(text) for text in rows_text + ['harness support']) + gap]
+    for model in models[:-1]:
+        columns.append(columns[-1] + max(width(short_model(model)), glyph + code) + gap)
+    header = '#5F6B74'
+    put(left, 0.5 * pitch, 'harness support', color=header)
+    for model, x in zip(models, columns, strict=True):
+        put(x, 0.5 * pitch, short_model(model), color=header)
+    for row, ((level, _kept, _here), text) in enumerate(zip(ladder, rows_text, strict=True)):
+        y = (row + 1.6) * pitch
+        put(left, y, text)
+        for model, x in zip(models, columns, strict=True):
+            arm = cells.get((level, model))
+            if arm is None:
+                continue
+            color, mark = arm_style(metadata, arm)
+            keys_axis.scatter((x + glyph / 2) / across, 1 - y / down, s=14, marker=mark,
+                              facecolors=color, edgecolors=shaded(color), linewidths=0.5,
+                              transform=keys_axis.transAxes, clip_on=False)
+            put(x + glyph, y, spec[arm]['code'])
+    # The marker exceptions, one row beneath the matrix.
     marks = [Line2D([], [], color='#43515C', marker=MARKER, linestyle='none', markersize=3.6,
-                    markerfacecolor='white', label='† missing reference link'),
+                    markerfacecolor='white', label='† missing reference connection'),
              Line2D([], [], color='#43515C', marker='x', linestyle='none', markersize=3.6,
-                    label='no held-out score'),
-             Line2D([], [], color='#9B7FD4', marker=MARKER, linestyle='none', markersize=3.6,
-                    markerfacecolor='white', label='no model built')]
-    # ONE COLUMN. The three blocks read as a sequence -- what the colour means, what the marker
-    # means, then the marker exceptions -- and side by side the reader had to discover that
-    # order. Each block is drawn, measured, and the next hung below it, because the heights
-    # depend on the arm count and the model count and cannot be hard-coded.
-    # Under B: the colour ladder and the marker key side by side, then the marker exceptions as
-    # one row beneath both. x and y are fractions of the key area under the maps.
-    colour = key([pair for pair, _ in ladder], (-0.05, 1.0), labels=[name for _, name in ladder],
-                 title='colour — harness support',
-                 handler={tuple: HandlerTuple(ndivide=None, pad=0.4)})
-    key(families, (0.62, 1.0), title='marker — model')
-    fig.canvas.draw()
-    under = colour.get_window_extent().transformed(keys_axis.transAxes.inverted())
-    key(marks, (-0.05, under.y0 - 0.08), ncol=2)
+                    label='no held-out score')]
+    beneath = scatter.legend(handles=marks, loc='upper left', ncol=2, columnspacing=0.9,
+                             bbox_to_anchor=(left / across, 1 - (len(ladder) + 1.35) * pitch / down),
+                             bbox_transform=keys_axis.transAxes, frameon=False, fontsize=size,
+                             handletextpad=0.35, borderpad=0.0, handlelength=1.2)
+    scatter.add_artist(beneath)
 
     # Panel B and the model maps share one colour scale for the measured quantities.
     accents = readout_colors(metadata)
@@ -1434,12 +1455,17 @@ def render(rows, coefficients, metadata, output):
     plt.close(fig)
 
 
-def render_models(rows, metadata, output):
-    """The two process-description maps, side by side, as a figure of their own.
+#: The process-description maps the supplementary figure draws, in panel order.
+MODEL_MAPS = ('reference', 'best_generalising', 'runner_up')
 
-    They came out of Figure 3 because a map that is worth reading needs room: half a page each,
-    with the pools large enough to carry their names, is more than a panel of a six-panel figure
-    can be given.
+
+def render_models(rows, metadata, output):
+    """The process-description maps, side by side, as a figure of their own: the reference and
+    the two candidates with the lowest held-out NLL.
+
+    They came out of Figure 3 because a map that is worth reading needs room, more than a panel
+    of a six-panel figure can be given. How to read them is the caption's to say, not a block of
+    text under the drawing.
     """
     import matplotlib
     matplotlib.use('Agg')
@@ -1452,51 +1478,26 @@ def render_models(rows, metadata, output):
                                'axes.titlesize': base + 1.4, 'text.color': '#26343E',
                                'pdf.fonttype': 42, 'ps.fonttype': 42, 'svg.fonttype': 'none',
                                'svg.hashsalt': 'fujita-generalisation-models'})
-    page_width, margins = 8.27, {'left': 0.055, 'right': 0.985}
+    page_width, margins = 8.27, {'left': 0.04, 'right': 0.99}
     column = page_width * (margins['right'] - margins['left'])
-    diagrams = [metadata['process_diagrams'][key] for key in ('reference', 'best_generalising')]
+    diagrams = [metadata['process_diagrams'][key] for key in MODEL_MAPS]
     anchors = [readout_anchors(metadata, diagram) for diagram in diagrams]
     grid, slots = sbgn.entity_rows(diagrams, anchors)
     geometry = {'entity': (1.42, 0.44), 'dx': 2.05, 'dy': 1.72, 'flow': 'vertical', 'grid': grid,
                 'slots': slots}
     limits = [sbgn.process_description_limits(diagram, **geometry) for diagram in diagrams]
     along = (min(low for _x, (low, _high) in limits), max(high for _x, (_low, high) in limits))
-    half, tall = (column - 0.42) / 2, along[1] - along[0]
+    gap = 0.3
+    width, tall = (column - gap * (len(diagrams) - 1)) / len(diagrams), along[1] - along[0]
     # Capped so the figure still fits a page; below the cap the maps are as large as the width
     # allows, above it the width goes unused rather than the figure running off the paper.
-    body = min(9.15, min(half * tall / (high - low) for (low, high), _y in limits))
-    notes = [_wrap(note, 168) for note in (
-        'SBGN process description of the published reference model and of the best generalising '
-        f"candidate ({diagrams[1]['source']['name']}), drawn from one portable export with one "
-        'deterministic layout, so the renderer never loads or simulates a model. Rounded: '
-        'macromolecule; cut corners: complex; concave hexagon: perturbation; small square: a '
-        'process; struck circle: source or sink. Plain line: consumption; filled arrowhead: '
-        'production; open arrowhead: stimulation; bar: inhibition.',
-        'ONE ROW PER CONSERVED MOIETY, with the progression along it: the unmodified form on the '
-        'left and each further state one step to the right. A moiety is one entity in all the '
-        'states any map gives it, found from the arcs rather than the names — a process with one '
-        'reactant and one product is a state change, and pools summed into the same observable '
-        'join the group. A complex belongs to neither of the moieties it joins, so it sits on a '
-        'half-row under the earlier of its parts. Processes occupy the layers between rows, and '
-        'between two pools of one row. Every row and every position along it is the same in both '
-        'maps, so a state only one model has simply extends its row further: reading the panels '
-        'against each other shows what each has that the other does not.',
-        'A pool is outlined and named in the colour of the observable it is summed into. Entity '
-        'classes follow a naming heuristic recorded with the export, and modulation arcs are '
-        "signed from the rate laws. Each heading gives that model's size and its rank, smallest "
-        'first, among the '
-        f"{sum(row['contains_reference_topology'] for row in rows)} candidates that recovered the "
-        'reference connections — a model that missed one is small or large for a reason that has '
-        'nothing to do with parsimony.')]
-    line = (base - 1.4) * 1.32 / 72
-    footer = sum(line * (note.count('\n') + 1) + 0.035 for note in notes)
+    body = min(9.15, min(width * tall / (high - low) for (low, high), _y in limits))
     headroom, footroom = 0.46, 0.14
-    height = headroom + body + footer + footroom
-    page = (page_width, height)
-    margins |= {'top': 1 - headroom / height, 'bottom': (footer + footroom) / height}
-    fig = plt.figure(figsize=page, facecolor='white')
-    cells = fig.add_gridspec(1, 2, wspace=0.42 / half, **margins)
-    for index, (letter, diagram) in enumerate(zip('AB', diagrams, strict=True)):
+    height = headroom + body + footroom
+    margins |= {'top': 1 - headroom / height, 'bottom': footroom / height}
+    fig = plt.figure(figsize=(page_width, height), facecolor='white')
+    cells = fig.add_gridspec(1, len(diagrams), wspace=gap / width, **margins)
+    for index, (letter, diagram) in enumerate(zip('ABC', diagrams, strict=True)):
         axis = fig.add_subplot(cells[0, index])
         # Equal aspect shrinks a narrow map's box; anchoring it top-left keeps the heading over
         # the column rather than over whatever width the drawing happened to need.
@@ -1510,11 +1511,6 @@ def render_models(rows, metadata, output):
         sbgn.process_description(axis, diagram, fontsize=base - 1.8, along=along,
                                  curve=-0.16, pad=2.6,
                                  highlight=readout_highlight(metadata, diagram), **geometry)
-    at = footer / height
-    for note in notes:
-        at -= (line * (note.count('\n') + 1) + 0.035) / height
-        fig.text(margins['left'], at, note, fontsize=base - 1.4, va='bottom', linespacing=1.32,
-                 color='#43515C')
     extension = output.suffix.lower()
     stamps = {'CreationDate': None, 'ModDate': None} if extension == '.pdf' else {}
     if extension == '.svg':
@@ -1523,7 +1519,3 @@ def render_models(rows, metadata, output):
     plt.close(fig)
 
 
-def _wrap(text, width):
-    import textwrap
-
-    return '\n'.join(textwrap.wrap(text, width))
