@@ -6,6 +6,7 @@ metadata is omitted. The private bijection stays on the harness side, and the ju
 translates identifiers back so diagnostics and reference-sigma pairing retain their meaning.
 The agent has only structured MCP tools, not access to these host files or this mapping.
 """
+
 from __future__ import annotations
 
 import json
@@ -16,16 +17,50 @@ from pathlib import Path
 
 _TOKEN = re.compile(r"\b[A-Za-z_]\w*\b")
 _PLACEHOLDER = re.compile(r"^(observable|noise)Parameter(\d+)_(.+)$")
-_RESERVED = {"time", "t", "true", "false", "nan", "inf", "INF", "NaN", "pi", "exponentiale", "avogadro"}
+_RESERVED = {
+    "time",
+    "t",
+    "true",
+    "false",
+    "nan",
+    "inf",
+    "INF",
+    "NaN",
+    "pi",
+    "exponentiale",
+    "avogadro",
+}
 _COLUMNS = {
-    "observables": ("observableId", "observableFormula", "noiseFormula",
-                    "observableTransformation", "noiseDistribution"),
-    "parameters": ("parameterId", "parameterScale", "lowerBound", "upperBound",
-                   "nominalValue", "estimate", "initializationPriorType",
-                   "initializationPriorParameters", "objectivePriorType", "objectivePriorParameters"),
-    "measurements": ("observableId", "preequilibrationConditionId", "simulationConditionId",
-                     "measurement", "time", "observableParameters", "noiseParameters",
-                     "datasetId", "replicateId"),
+    "observables": (
+        "observableId",
+        "observableFormula",
+        "noiseFormula",
+        "observableTransformation",
+        "noiseDistribution",
+    ),
+    "parameters": (
+        "parameterId",
+        "parameterScale",
+        "lowerBound",
+        "upperBound",
+        "nominalValue",
+        "estimate",
+        "initializationPriorType",
+        "initializationPriorParameters",
+        "objectivePriorType",
+        "objectivePriorParameters",
+    ),
+    "measurements": (
+        "observableId",
+        "preequilibrationConditionId",
+        "simulationConditionId",
+        "measurement",
+        "time",
+        "observableParameters",
+        "noiseParameters",
+        "datasetId",
+        "replicateId",
+    ),
 }
 
 
@@ -74,15 +109,22 @@ class BlindNames:
             placeholder = _PLACEHOLDER.fullmatch(token)
             if placeholder:
                 kind, number, observable = placeholder.groups()
-                self.forward[token] = f"{kind}Parameter{number}_{self.add(observable, 'observable')}"
-            elif not value[match.end():].lstrip().startswith("("):
+                self.forward[token] = (
+                    f"{kind}Parameter{number}_{self.add(observable, 'observable')}"
+                )
+            elif not value[match.end() :].lstrip().startswith("("):
                 self.add(token, "readout" if token.startswith("readout_") else "symbol")
 
     def register_table(self, kind, table) -> None:
-        for column, prefix in (("observableId", "observable"), ("parameterId", "parameter"),
-                               ("conditionId", "condition"), ("simulationConditionId", "condition"),
-                               ("preequilibrationConditionId", "condition"),
-                               ("datasetId", "dataset"), ("replicateId", "replicate")):
+        for column, prefix in (
+            ("observableId", "observable"),
+            ("parameterId", "parameter"),
+            ("conditionId", "condition"),
+            ("simulationConditionId", "condition"),
+            ("preequilibrationConditionId", "condition"),
+            ("datasetId", "dataset"),
+            ("replicateId", "replicate"),
+        ):
             if column in table:
                 for value in table[column].dropna().unique():
                     if isinstance(value, str):
@@ -94,27 +136,48 @@ class BlindNames:
                     for value in table[column]:
                         self.expression(value)
         else:
-            for column in ("observableFormula", "noiseFormula", "observableParameters", "noiseParameters"):
+            for column in (
+                "observableFormula",
+                "noiseFormula",
+                "observableParameters",
+                "noiseParameters",
+            ):
                 if column in table:
                     for value in table[column]:
                         self.expression(value)
 
     def table(self, kind, table):
         self.register_table(kind, table)
-        columns = ([c for c in table if c != "conditionName"] if kind == "conditions"
-                   else [c for c in _COLUMNS[kind] if c in table])
+        columns = (
+            [c for c in table if c != "conditionName"]
+            if kind == "conditions"
+            else [c for c in _COLUMNS[kind] if c in table]
+        )
         result = table[columns].copy()
         for column in columns:
             # These columns contain enums or numbers, not identifiers. A source parameter
             # called "normal" or "log10" must not rewrite a distribution or scale.
-            if column in {"parameterScale", "observableTransformation", "noiseDistribution",
-                          "initializationPriorType", "objectivePriorType", "measurement", "time",
-                          "lowerBound", "upperBound", "nominalValue", "estimate",
-                          "initializationPriorParameters", "objectivePriorParameters"}:
+            if column in {
+                "parameterScale",
+                "observableTransformation",
+                "noiseDistribution",
+                "initializationPriorType",
+                "objectivePriorType",
+                "measurement",
+                "time",
+                "lowerBound",
+                "upperBound",
+                "nominalValue",
+                "estimate",
+                "initializationPriorParameters",
+                "objectivePriorParameters",
+            }:
                 continue
             result[column] = result[column].map(lambda value: _translate(value, self.forward))
         if kind == "conditions":
-            result = result.rename(columns={c: self.forward[c] for c in columns if c != "conditionId"})
+            result = result.rename(
+                columns={c: self.forward[c] for c in columns if c != "conditionId"}
+            )
         return result
 
     def judge_call(self, call):
@@ -175,13 +238,18 @@ def prepare(source_yaml: Path, work: Path, validation_dir: Path | None = None) -
         shutil.rmtree(private)
     private.mkdir(parents=True)
     problem = petab.Problem.from_yaml(str(source_yaml))
-    tables = {"parameters": problem.parameter_df.reset_index(),
-              "observables": problem.observable_df.reset_index(),
-              "conditions": problem.condition_df.reset_index(),
-              "measurements": problem.measurement_df.copy()}
+    tables = {
+        "parameters": problem.parameter_df.reset_index(),
+        "observables": problem.observable_df.reset_index(),
+        "conditions": problem.condition_df.reset_index(),
+        "measurements": problem.measurement_df.copy(),
+    }
     document = problem.model.sbml_model.getSBMLDocument()
-    names = BlindNames(reserved={element.getId() for element in document.getListOfAllElements()
-                                if element.isSetId()})
+    names = BlindNames(
+        reserved={
+            element.getId() for element in document.getListOfAllElements() if element.isSetId()
+        }
+    )
     for table in tables.values():
         for column in table:
             names.reserved.add(str(column))
@@ -196,12 +264,23 @@ def prepare(source_yaml: Path, work: Path, validation_dir: Path | None = None) -
     (work / "model.xml").write_text(sbml)
     for kind, table in tables.items():
         names.table(kind, table).to_csv(work / f"{kind}.tsv", sep="\t", index=False)
-    (work / "problem.yaml").write_text(yaml.safe_dump({
-        "format_version": 1, "parameter_file": "parameters.tsv", "problems": [{
-            "sbml_files": ["model.xml"], "condition_files": ["conditions.tsv"],
-            "observable_files": ["observables.tsv"], "measurement_files": ["measurements.tsv"],
-        }],
-    }, sort_keys=False))
+    (work / "problem.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "format_version": 1,
+                "parameter_file": "parameters.tsv",
+                "problems": [
+                    {
+                        "sbml_files": ["model.xml"],
+                        "condition_files": ["conditions.tsv"],
+                        "observable_files": ["observables.tsv"],
+                        "measurement_files": ["measurements.tsv"],
+                    }
+                ],
+            },
+            sort_keys=False,
+        )
+    )
     # Held-out files remain outside the problem loaded by the agent's server. Extending
     # the mapping here cannot change any training alias or expose a held-out label.
     if validation_dir and (validation_dir / "measurements.tsv").is_file():
@@ -219,9 +298,17 @@ def prepare(source_yaml: Path, work: Path, validation_dir: Path | None = None) -
             table = pd.read_csv(units, sep="\t", dtype=str)
             table["conditionId"] = table["conditionId"].map(lambda v: _translate(v, names.forward))
             table.to_csv(destination / units.name, sep="\t", index=False)
-    (private / "identifiers.json").write_text(json.dumps({
-        "version": 1, "identifiers": names.forward, "protocols": names.protocols,
-    }, indent=2) + "\n")
+    (private / "identifiers.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "identifiers": names.forward,
+                "protocols": names.protocols,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
     return names
 
 
@@ -247,16 +334,26 @@ def _anonymous_protocols(path: Path, names: BlindNames) -> list[tuple[str, str]]
         # Only the row's own condition columns: every table symbol has an alias by now, so
         # accepting any alias would let a rule read a model parameter as ``parameter_005``.
         columns = [c for c in str(row.conditionInputs).split(";") if c]
-        allowed = {names.forward[c] for c in columns
-                   if names.forward.get(c, "").startswith("input_")}
+        allowed = {
+            names.forward[c] for c in columns if names.forward.get(c, "").startswith("input_")
+        }
         # A token followed by "(" is a function (piecewise, exp), not a name.
-        leaked = sorted({match[0] for match in _TOKEN.finditer(rule)
-                         if match[0] not in allowed and match[0] not in _RESERVED
-                         and not rule[match.end():].lstrip().startswith("(")})
+        leaked = sorted(
+            {
+                match[0]
+                for match in _TOKEN.finditer(rule)
+                if match[0] not in allowed
+                and match[0] not in _RESERVED
+                and not rule[match.end() :].lstrip().startswith("(")
+            }
+        )
         if leaked or len(allowed) != len(columns):
-            raise ValueError(f"input protocol {row.inputId!r} must read only its condition "
-                             f"columns {columns}; it reads {leaked or 'a column the condition '
-                             'table does not have'}, so it cannot be anonymized")
+            raise ValueError(
+                f"input protocol {row.inputId!r} must read only its condition "
+                f"columns {columns}; it reads {
+                    leaked or 'a column the condition table does not have'
+                }, so it cannot be anonymized"
+            )
         out.append((quantity, rule))
     return out
 
@@ -271,8 +368,9 @@ def read_names(work: Path) -> BlindNames | None:
     if not path.is_file():
         return None
     data = json.loads(path.read_text())
-    return BlindNames(data["identifiers"],
-                      protocols=[tuple(pair) for pair in data.get("protocols", [])])
+    return BlindNames(
+        data["identifiers"], protocols=[tuple(pair) for pair in data.get("protocols", [])]
+    )
 
 
 class AnonymousSession:
@@ -307,6 +405,7 @@ class AnonymousSession:
         try:
             result = await self._call_tool(*args, **kwargs)
         except McpError as error:
-            raise McpError(type(error.error).model_validate(
-                self._scrub(error.error.model_dump()))) from None
+            raise McpError(
+                type(error.error).model_validate(self._scrub(error.error.model_dump()))
+            ) from None
         return type(result).model_validate(self._scrub(result.model_dump()))

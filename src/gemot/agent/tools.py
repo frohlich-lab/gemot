@@ -14,9 +14,14 @@ the text the panel actually reads, and the reason every tool here needs an entry
 
 from __future__ import annotations
 
-from ..prompts import (BIOLOGY_BLIND_ENABLED, BIOLOGY_BLIND_TOOL_DESCRIPTIONS,
-                       DATA_REGIMES_ENABLED, DIFF_EDITS_ENABLED, LEAD_SELF_READ_TOOLS,
-                       TOOL_DESCRIPTIONS)
+from ..prompts import (
+    BIOLOGY_BLIND_ENABLED,
+    BIOLOGY_BLIND_TOOL_DESCRIPTIONS,
+    DATA_REGIMES_ENABLED,
+    DIFF_EDITS_ENABLED,
+    LEAD_SELF_READ_TOOLS,
+    TOOL_DESCRIPTIONS,
+)
 
 # ---------------------------------------------------------------- tool exposure
 # Per the module docstring: each persona's set is as SMALL as its lens allows, and a tool it
@@ -27,16 +32,16 @@ from ..prompts import (BIOLOGY_BLIND_ENABLED, BIOLOGY_BLIND_TOOL_DESCRIPTIONS,
 # laws) + the parameter search space + the fit metrics + — uniquely — the pyPESTO/Fides log.
 MATHEMATICIAN_TOOLS = [
     "get_model_structure",  # species, reactions, rate laws (empty until a model is built)
-    "get_measurements",     # the DATA — dynamics/shape to reason about candidate structure
+    "get_measurements",  # the DATA — dynamics/shape to reason about candidate structure
     # The same shape questions, already decided against the noise floor. A feasibility argument is
     # far stronger stated against a computed verdict ("the data REQUIRES a pulse, and this topology
     # cannot make one") than against an eyeballed trace, and this is the analyst whose job is that
     # argument.
     "get_data_regimes",
-    "list_observables",     # what is measured
-    "get_parameters",       # scales, bounds — identifiability / conditioning
+    "list_observables",  # what is measured
+    "get_parameters",  # scales, bounds — identifiability / conditioning
     "get_fit_summary",
-    "get_fitting_log",      # pyPESTO/Fides log: multistart spread, convergence, bounds
+    "get_fitting_log",  # pyPESTO/Fides log: multistart spread, convergence, bounds
     # get_skill is NOT here: every analyst fetched the same petab-model-building document once
     # per spawn (203/203, 217/217, 115/115 across the A/B) — a deterministic call is a constant,
     # so the skill is INLINED into the persona prompts (prompts.py) where it caches as prefix.
@@ -46,18 +51,18 @@ MATHEMATICIAN_TOOLS = [
 # (the readout + data shape), and whether the rate magnitudes are plausible.
 SYSTEMS_SCIENTIST_TOOLS = [
     "get_model_structure",  # the mechanism as written
-    "list_observables",     # what quantity is measured
-    "get_measurements",     # the actual data / dynamic behaviour
+    "list_observables",  # what quantity is measured
+    "get_measurements",  # the actual data / dynamic behaviour
     # What any mechanism must reproduce, before proposing one — a requirement is better known up
     # front than discovered after a topology has been built that cannot meet it.
     "get_data_regimes",
-    "get_parameters",       # are the rate magnitudes plausible?
+    "get_parameters",  # are the rate magnitudes plausible?
 ]
 
 # Signal-processing engineer: residuals as signals, entirely via SQL over the data.
 SIGNAL_ENGINEER_TOOLS = [
-    "list_data_tables",     # the queryable tables (simulations, residuals, ...) + columns
-    "query_data",           # SQL over measured-vs-simulated points + residual breakdowns
+    "list_data_tables",  # the queryable tables (simulations, residuals, ...) + columns
+    "query_data",  # SQL over measured-vs-simulated points + residual breakdowns
     # The standing verdicts this analyst would otherwise re-derive in SQL every run, already
     # measured against the noise floor. Its own reads stay the way to answer anything bespoke; this
     # keeps the routine shape/timescale/dose questions off the lottery of whether it thought to ask.
@@ -78,7 +83,7 @@ ORCHESTRATOR_TOOLS = [
     # does not hold, and a tool dropped from here disappears from the prompt with it. What each is
     # FOR is documented at that tuple.
     *LEAD_SELF_READ_TOOLS,
-    "list_conditions",      # per-condition inputs/doses set in the condition table (match by name)
+    "list_conditions",  # per-condition inputs/doses set in the condition table (match by name)
     # What the DATA requires of any model — excursion vs monotone, how many timescales,
     # dose-response steepness, a conserved total — computed from the measurement table alone. It is
     # a lead tool despite the "no bulky data" rule because it returns VERDICTS, not data: 1-9 kB on
@@ -96,7 +101,7 @@ ORCHESTRATOR_TOOLS = [
     # such calls against 451 fits: near-zero benefit for a tool schema re-sent every turn. The tool
     # stays on the server: the analysts (who never fit) and the harness's own finish gate and
     # final scoring all read the score through it. `describe_problem` covers has_unfit_edits.
-    "get_version",          # read a prior version's Antimony + params (to inspect / re-author from)
+    "get_version",  # read a prior version's Antimony + params (to inspect / re-author from)
     # NOTE: restore_version is deliberately NOT a lead tool. It sets HEAD to a prior version, but
     # make_changes with `antimony=` re-authors the whole model and IGNORES HEAD — so a restore
     # immediately followed by a wholesale re-author (the lead's dominant use: 7 of 9 restores in
@@ -150,8 +155,12 @@ ORCHESTRATOR_TOOLS = [
 
 #: Every curated list, so the arm strip and ALLOWED_TOOLS below cannot disagree about which
 #: lists exist. Adding a persona means adding it HERE, not at three call sites.
-_TOOLSETS = (ORCHESTRATOR_TOOLS, MATHEMATICIAN_TOOLS, SYSTEMS_SCIENTIST_TOOLS,
-             SIGNAL_ENGINEER_TOOLS)
+_TOOLSETS = (
+    ORCHESTRATOR_TOOLS,
+    MATHEMATICIAN_TOOLS,
+    SYSTEMS_SCIENTIST_TOOLS,
+    SIGNAL_ENGINEER_TOOLS,
+)
 
 # The ablation arms. Applied to the lists AFTER they are defined, so each persona's rationale
 # above reads as the intended design and this is visibly a subtraction from it — and so a future
@@ -166,7 +175,6 @@ for _on, _names in _ARM_TOOLS:
         continue
     for _lst in _TOOLSETS:
         _lst[:] = [n for n in _lst if n not in _names]
-
 
 
 # The full set handed to create_deep_agent: the union of the lead's tools and every
@@ -188,7 +196,9 @@ def _trim_descriptions(tools: list) -> list:
     """
     for t in tools:
         name = getattr(t, "name", None)
-        descriptions = BIOLOGY_BLIND_TOOL_DESCRIPTIONS if BIOLOGY_BLIND_ENABLED else TOOL_DESCRIPTIONS
+        descriptions = (
+            BIOLOGY_BLIND_TOOL_DESCRIPTIONS if BIOLOGY_BLIND_ENABLED else TOOL_DESCRIPTIONS
+        )
         short = descriptions.get(name)
         if BIOLOGY_BLIND_ENABLED and short is None:
             raise ValueError(f"No anonymous description registered for tool {name!r}")
@@ -216,8 +226,10 @@ def _select_tools(tools: list) -> list:
     available = {getattr(t, "name", None) for t in tools}
     missing = ALLOWED_TOOLS - available
     if missing:
-        print(f"[agent] WARNING: expected tools not found on the server: {sorted(missing)} "
-              "(tool names may have drifted)")
+        print(
+            f"[agent] WARNING: expected tools not found on the server: {sorted(missing)} "
+            "(tool names may have drifted)"
+        )
     selected = [t for t in tools if getattr(t, "name", None) in ALLOWED_TOOLS]
     if not selected:
         raise RuntimeError(

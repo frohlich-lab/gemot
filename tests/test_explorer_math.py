@@ -23,8 +23,7 @@ from pathlib import Path
 
 import pytest
 
-APP_JS = (Path(__file__).parent.parent / "src" / "petab_harness" / "explorer"
-          / "static" / "app.js")
+APP_JS = Path(__file__).parent.parent / "src" / "petab_harness" / "explorer" / "static" / "app.js"
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 
@@ -35,21 +34,76 @@ _PRELUDE_END = "\n(function main()"
 # Every MathML element the converter is allowed to emit. MathML Core only -- no `mfenced`, no
 # `menclose` (dropped from Core, unimplemented in Chromium).
 _MATHML_OK = {
-    "math", "mrow", "mi", "mn", "mo", "mtext", "mspace", "mfrac", "msqrt", "mroot",
-    "msub", "msup", "msubsup", "munder", "mover", "munderover", "mtable", "mtr", "mtd",
+    "math",
+    "mrow",
+    "mi",
+    "mn",
+    "mo",
+    "mtext",
+    "mspace",
+    "mfrac",
+    "msqrt",
+    "mroot",
+    "msub",
+    "msup",
+    "msubsup",
+    "munder",
+    "mover",
+    "munderover",
+    "mtable",
+    "mtr",
+    "mtd",
 }
-_HTML_OK = {"p", "code", "pre", "strong", "em", "a", "h1", "h2", "h3", "h4", "h5", "h6",
-            "ul", "ol", "li", "blockquote", "hr", "span", "div",
-            "table", "thead", "tbody", "tr", "th", "td"}
+_HTML_OK = {
+    "p",
+    "code",
+    "pre",
+    "strong",
+    "em",
+    "a",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "ul",
+    "ol",
+    "li",
+    "blockquote",
+    "hr",
+    "span",
+    "div",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "th",
+    "td",
+}
 # Every attribute the renderer may put on an element. The values are fixed strings chosen by
 # app.js, never model text -- which is what keeps esc() (which does not escape the double quote)
 # sufficient. `a@href` is the pre-existing link rule, quote-escaped there.
 _ATTRS_OK = {
-    ("div", "class"), ("span", "class"), ("code", "class"), ("pre", "class"),
-    ("mtext", "class"), ("mrow", "class"), ("mtd", "class"), ("mtable", "class"),
-    ("mtable", "columnalign"), ("math", "display"), ("mo", "stretchy"), ("mover", "accent"),
-    ("mspace", "width"), ("a", "href"), ("a", "target"), ("a", "rel"),
-    ("table", "class"), ("th", "class"), ("td", "class"),
+    ("div", "class"),
+    ("span", "class"),
+    ("code", "class"),
+    ("pre", "class"),
+    ("mtext", "class"),
+    ("mrow", "class"),
+    ("mtd", "class"),
+    ("mtable", "class"),
+    ("mtable", "columnalign"),
+    ("math", "display"),
+    ("mo", "stretchy"),
+    ("mover", "accent"),
+    ("mspace", "width"),
+    ("a", "href"),
+    ("a", "target"),
+    ("a", "rel"),
+    ("table", "class"),
+    ("th", "class"),
+    ("td", "class"),
 } | {(f"h{n}", "class") for n in range(1, 7)}
 
 
@@ -63,14 +117,18 @@ def _prelude() -> str:
 def _md(*sources: str) -> list[str]:
     """``mdToHtml`` applied to each source, evaluated in node. Cases go over stdin so no LaTeX
     backslash ever has to survive an argv round-trip."""
-    runner = _prelude() + """
+    runner = (
+        _prelude()
+        + """
 let raw = ""; process.stdin.on("data", d => raw += d);
 process.stdin.on("end", () => {
   process.stdout.write(JSON.stringify(JSON.parse(raw).map(mdToHtml)));
 });
 """
-    proc = subprocess.run(["node", "-e", runner], input=json.dumps(list(sources)),
-                          capture_output=True, text=True)
+    )
+    proc = subprocess.run(
+        ["node", "-e", runner], input=json.dumps(list(sources)), capture_output=True, text=True
+    )
     assert proc.returncode == 0, f"node failed evaluating app.js:\n{proc.stderr}"
     return json.loads(proc.stdout)
 
@@ -118,21 +176,24 @@ def test_math_emits_only_whitelisted_tags():
         assert set(_tags(html)) <= _MATHML_OK | _HTML_OK, html
 
 
-@pytest.mark.parametrize("src", [
-    r"\(<img src=x onerror=alert(1)>\)",
-    r"\(a \href{javascript:alert(1)}{b}\)",
-    r"\(</math><script>alert(1)</script>\)",
-    r"$$ \text{</math><script>alert(1)</script>} $$",
-    r"\(\mathrm{<svg/onload=alert(1)>}\)",
-    r"\[\begin{evil}<script>1</script>\end{evil}\]",
-    '\\[ \\begin{aligned} <a href="javascript:1">x</a> & = 2 \\end{aligned} \\]',
-    r"\(\text{" '"' r' onmouseover="alert(1)}\)',
-    r"- \(\text{</li></ul><img src=x>}\)",
-    "> \\[ a </blockquote><script>1</script> \\]",
-    # a formula inside a link URL: math is restored after the link rule, so a placeholder left in
-    # the href would splice unescaped MathML (quotes and all) into an attribute value
-    r'[ref](https://e.com/\(\text{" style="animation:live-pulse 1s" onanimationstart="x()" q="}\))',
-])
+@pytest.mark.parametrize(
+    "src",
+    [
+        r"\(<img src=x onerror=alert(1)>\)",
+        r"\(a \href{javascript:alert(1)}{b}\)",
+        r"\(</math><script>alert(1)</script>\)",
+        r"$$ \text{</math><script>alert(1)</script>} $$",
+        r"\(\mathrm{<svg/onload=alert(1)>}\)",
+        r"\[\begin{evil}<script>1</script>\end{evil}\]",
+        '\\[ \\begin{aligned} <a href="javascript:1">x</a> & = 2 \\end{aligned} \\]',
+        r"\(\text{" '"' r' onmouseover="alert(1)}\)',
+        r"- \(\text{</li></ul><img src=x>}\)",
+        "> \\[ a </blockquote><script>1</script> \\]",
+        # a formula inside a link URL: math is restored after the link rule, so a placeholder left in
+        # the href would splice unescaped MathML (quotes and all) into an attribute value
+        r'[ref](https://e.com/\(\text{" style="animation:live-pulse 1s" onanimationstart="x()" q="}\))',
+    ],
+)
 def test_math_cannot_inject_markup(src):
     r"""Model text is escaped before anything else, so `<`/`&` inside math stay text. Asserting on
     what a parser BUILDS rather than on substrings, because an escaped payload legitimately still
@@ -162,16 +223,18 @@ def test_a_math_body_cannot_borrow_the_code_block_placeholder():
     one: that would delete the code block it stands for. The math sentinel itself is unforgeable
     (a per-call random tag), so a literal one in the prose is just text."""
     (html,) = _md("```\nreal code\n```\n\n\\[@@0@@\\] and \\(@@M0@@\\)")
-    assert "real code" in html          # the code block still resolves to its own text
-    assert "<math" not in html          # neither body reached into a stash ...
-    assert html.count("@@0@@") == 1 and "@@M0@@" in html   # ... they stayed literal source
+    assert "real code" in html  # the code block still resolves to its own text
+    assert "<math" not in html  # neither body reached into a stash ...
+    assert html.count("@@0@@") == 1 and "@@M0@@" in html  # ... they stayed literal source
 
 
 def test_a_mispaired_delimiter_does_not_eat_a_code_block():
     """One unclosed `\\[` pairing with a `\\]` further down used to swallow the fenced-code
     placeholder between them, and the code vanished from the page."""
-    for html in _md("opened \\[a\n\n```\nS1 -> P; k1*S1\n```\n\nand closed b\\]",
-                    "cost $$a\n\n```python\nprint('important')\n```\n\nb$$"):
+    for html in _md(
+        "opened \\[a\n\n```\nS1 -> P; k1*S1\n```\n\nand closed b\\]",
+        "cost $$a\n\n```python\nprint('important')\n```\n\nb$$",
+    ):
         assert "S1 -&gt; P; k1*S1" in html or "print('important')" in html, html
 
 
@@ -208,8 +271,8 @@ def test_a_relation_at_the_start_of_a_line_is_not_a_quote_marker():
     (html,) = _md("\\[\n  a\n  > b\n\\]")
     assert "<mo>&gt;</mo>" in html, html
     (html,) = _md("> as follows\n>\n> \\[\n>   v_{r1}= \\frac{S}{K_m+S}\n>   \\]\n")
-    assert "&gt;" not in html, html                       # prefixes gone from the formula
-    assert '<blockquote><div class="md-math">' in html    # and it kept its scroll box
+    assert "&gt;" not in html, html  # prefixes gone from the formula
+    assert '<blockquote><div class="md-math">' in html  # and it kept its scroll box
 
 
 def test_a_concentration_bracket_after_a_row_break_survives():
@@ -237,15 +300,18 @@ def test_a_row_break_inside_dollars_is_not_a_display_opener():
     assert "4pt" not in html
 
 
-@pytest.mark.parametrize("src", [
-    "costs $5 to $10 per run",
-    "pay $foo and $bar",
-    "$1,000 and $2,500 budgets",
-    "the `$` modifier and a `$` again",
-    "Total spend: $12 (compute) + $3 (storage)",
-    "budget $50-$80 per sweep",
-    "at $0.50/token vs $2 elsewhere",
-])
+@pytest.mark.parametrize(
+    "src",
+    [
+        "costs $5 to $10 per run",
+        "pay $foo and $bar",
+        "$1,000 and $2,500 budgets",
+        "the `$` modifier and a `$` again",
+        "Total spend: $12 (compute) + $3 (storage)",
+        "budget $50-$80 per sweep",
+        "at $0.50/token vs $2 elsewhere",
+    ],
+)
 def test_a_bare_dollar_in_prose_is_not_math(src):
     """Single ``$...$`` is real math in these traces, so it is a delimiter -- but it is the one a
     lone `$` in prose can fake, hence the it-must-look-like-a-formula guard. A body that opens
@@ -308,9 +374,11 @@ def test_a_braceless_argument_takes_one_character():
 
 def test_an_aligned_table_has_one_row_per_row():
     (html,) = _md(r"\[\begin{aligned} a &= 1 \\ b &= 2 \\ \end{aligned}\]")
-    assert html.count("<mtr>") == 2, html            # a trailing `\\` opens no empty row
+    assert html.count("<mtr>") == 2, html  # a trailing `\\` opens no empty row
     (html,) = _md(r"\[\begin{aligned} a = 1 \\ b &= 2 \end{aligned}\]")
-    assert 'md-math-r"' not in html.split("</mtr>")[0], html  # a row with no `&` is not pulled right
+    assert 'md-math-r"' not in html.split("</mtr>")[0], (
+        html
+    )  # a row with no `&` is not pulled right
 
 
 def test_a_function_name_keeps_its_space():
@@ -318,14 +386,20 @@ def test_a_function_name_keeps_its_space():
     (html,) = _md(r"\[ \frac{d \log f}{d \log p} = 1 \]")
     assert "<mi>log</mi><mspace" in html, html
     (html,) = _md(r"\[ \max_{\beta>0} x \]")
-    assert "<munder><mi>max</mi>" in html, html       # ... and \max still stacks its limit
+    assert "<munder><mi>max</mi>" in html, html  # ... and \max still stacks its limit
 
 
 # -- the markdown that already worked keeps working ------------------------
 def test_plain_markdown_is_unchanged():
     """A regression net for the slice above: the math pass must not disturb the subset #35 added."""
-    got = _md("**bold** and `code`", "- one\n- two", "# Header",
-              "```python\nx = {'a': 1}\n```", "> a quote\n", "text with @@0@@ literal")
+    got = _md(
+        "**bold** and `code`",
+        "- one\n- two",
+        "# Header",
+        "```python\nx = {'a': 1}\n```",
+        "> a quote\n",
+        "text with @@0@@ literal",
+    )
     assert got == [
         "<p><strong>bold</strong> and <code>code</code></p>",
         "<ul>\n<li>one</li>\n<li>two</li>\n</ul>",
@@ -371,12 +445,15 @@ def test_a_script_base_is_exactly_one_element():
     assert "<mi>lim</mi><mspace" not in html, html
 
 
-@pytest.mark.parametrize("prose", [
-    "export $SLURM_JOB_ID and $HOME are set",
-    "we sweep $k_deg and $k_syn jointly",
-    "budget $N (compute) and $M (storage)",
-    "the $x/y ratio for the run",
-])
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "export $SLURM_JOB_ID and $HOME are set",
+        "we sweep $k_deg and $k_syn jointly",
+        "budget $N (compute) and $M (storage)",
+        "the $x/y ratio for the run",
+    ],
+)
 def test_single_dollar_does_not_eat_prose(prose):
     """Two shell/parameter names either side of a sentence are not a formula.
 
@@ -385,13 +462,20 @@ def test_single_dollar_does_not_eat_prose(prose):
     """
     (html,) = _md(prose)
     assert "<math" not in html, html
-    assert html.count("$") == prose.count("$"), html   # neither delimiter is swallowed
+    assert html.count("$") == prose.count("$"), html  # neither delimiter is swallowed
 
 
-@pytest.mark.parametrize("formula", [
-    r"$V_{\max}$", "$ n > 2 $", "$t = 0.5$", r"$ V_{max}S/(K_m + S + S^2/K_i) $",
-    r"$\tau \to 0$", r"$v = V_{\max} \frac{S}{K_m + S}$",
-])
+@pytest.mark.parametrize(
+    "formula",
+    [
+        r"$V_{\max}$",
+        "$ n > 2 $",
+        "$t = 0.5$",
+        r"$ V_{max}S/(K_m + S + S^2/K_i) $",
+        r"$\tau \to 0$",
+        r"$v = V_{\max} \frac{S}{K_m + S}$",
+    ],
+)
 def test_real_single_dollar_formulas_still_render(formula):
     """The prose guard must keep every single-$ form the traces actually contain."""
     (html,) = _md(formula)
@@ -417,8 +501,10 @@ def test_a_nested_environment_keeps_its_own_rows():
     A \begin{cases} inside \begin{aligned} otherwise had its `\\` rows split as the OUTER table's,
     shredding the inner environment into raw <mtext> with "cases" set as italic math letters.
     """
-    (html,) = _md(r"\[\begin{aligned} x &= \begin{cases} a \\ b \end{cases} \\ y &= 2 \end{aligned}\]")
-    assert html.count("<mtable") == 2, html            # outer aligned + inner cases
+    (html,) = _md(
+        r"\[\begin{aligned} x &= \begin{cases} a \\ b \end{cases} \\ y &= 2 \end{aligned}\]"
+    )
+    assert html.count("<mtable") == 2, html  # outer aligned + inner cases
     assert "md-math-raw" not in html, html
     assert "<mi>c</mi><mi>a</mi><mi>s</mi>" not in html, html
 
@@ -444,11 +530,14 @@ def test_an_optional_argument_may_follow_a_space():
     assert "<mo>[</mo>" in html, html
 
 
-@pytest.mark.parametrize("tex,want", [
-    (r"\(\text{50\% of } x\)", "<mtext>50% of </mtext>"),
-    (r"\(\text{a\_b}\)", "<mtext>a_b</mtext>"),
-    (r"\(\text{A\&B}\)", "<mtext>A&amp;B</mtext>"),
-])
+@pytest.mark.parametrize(
+    "tex,want",
+    [
+        (r"\(\text{50\% of } x\)", "<mtext>50% of </mtext>"),
+        (r"\(\text{a\_b}\)", "<mtext>a_b</mtext>"),
+        (r"\(\text{A\&B}\)", "<mtext>A&amp;B</mtext>"),
+    ],
+)
 def test_text_mode_escapes_do_not_leak_their_backslash(tex, want):
     """TeX's own escapes are not part of the text, and a plain <mtext> cannot signal raw source."""
     (html,) = _md(tex)
@@ -476,14 +565,16 @@ def test_display_math_under_an_open_list_stays_in_the_item():
 # -- GFM pipe tables -------------------------------------------------------
 def test_a_pipe_table_becomes_a_table():
     """The analysts tabulate constantly; the block loop used to join every row into one paragraph."""
-    (html,) = _md("| Observable | n | Measured range |\n|---|---:|---:|\n"
-                  "| `0ac` | 18 | 0.687–0.786 |\n| `4ac` | 18 | 0.00141–0.00688 |")
-    assert html.count("<tr>") == 3, html                 # header + two body rows
+    (html,) = _md(
+        "| Observable | n | Measured range |\n|---|---:|---:|\n"
+        "| `0ac` | 18 | 0.687–0.786 |\n| `4ac` | 18 | 0.00141–0.00688 |"
+    )
+    assert html.count("<tr>") == 3, html  # header + two body rows
     assert "<th>Observable</th>" in html, html
-    assert '<th class="md-t-r">n</th>' in html, html     # alignment from the delimiter row
-    assert "<td><code>0ac</code></td>" in html, html     # cells still run the inline rules
+    assert '<th class="md-t-r">n</th>' in html, html  # alignment from the delimiter row
+    assert "<td><code>0ac</code></td>" in html, html  # cells still run the inline rules
     assert "0.687–0.786" in html, html
-    assert "|---|" not in html, html                     # the delimiter row is consumed
+    assert "|---|" not in html, html  # the delimiter row is consumed
 
 
 def test_a_table_scrolls_only_inside_its_own_wrapper():

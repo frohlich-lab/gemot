@@ -4,6 +4,7 @@ Regression cover for the runaway that motivated it: one run made 1,493 LLM calls
 recursion_limit=250 with zero fits, because deepagents gives each `task` call a FRESH step budget
 and every progress-based early stop needs fitted ops to fire (session.py `should_stop`).
 """
+
 import pytest
 
 pytest.importorskip("langchain.agents.middleware.types")
@@ -20,8 +21,12 @@ def _state(n_ai: int, *, tool_calls: bool = True):
     msgs = [HumanMessage(content="investigate the residuals")]
     for i in range(n_ai):
         if tool_calls:
-            msgs.append(AIMessage(content="", tool_calls=[
-                {"name": "query_data", "args": {"sql": "select 1"}, "id": f"c{i}"}]))
+            msgs.append(
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "query_data", "args": {"sql": "select 1"}, "id": f"c{i}"}],
+                )
+            )
             msgs.append(ToolMessage(content="rows", tool_call_id=f"c{i}"))
         else:
             msgs.append(AIMessage(content="thinking"))
@@ -43,7 +48,7 @@ def test_the_hard_stop_never_returns_to_the_model():
     only safe jump at a boundary that can land mid tool-call."""
     out = _subagent_turn_limit(CAP).after_model(_state(CAP + 1), None)
     assert out == {"jump_to": "end"}
-    assert "messages" not in out            # nothing appended to state
+    assert "messages" not in out  # nothing appended to state
 
 
 def test_budget_is_per_delegation_not_cumulative():
@@ -62,12 +67,20 @@ async def test_async_hook_matches_the_sync_one():
 
 
 # --- the approach warnings ----------------------------------------------------------------
-@pytest.mark.parametrize("used,expect", [
-    (0, None), (5, None), (9, None),            # 95% of real delegations finish in here
-    (10, "NOTE"), (14, "NOTE"),
-    (15, "WARNING"), (18, "WARNING"),
-    (19, "FINAL TURN"), (20, "FINAL TURN"),
-])
+@pytest.mark.parametrize(
+    "used,expect",
+    [
+        (0, None),
+        (5, None),
+        (9, None),  # 95% of real delegations finish in here
+        (10, "NOTE"),
+        (14, "NOTE"),
+        (15, "WARNING"),
+        (18, "WARNING"),
+        (19, "FINAL TURN"),
+        (20, "FINAL TURN"),
+    ],
+)
 def test_notice_escalates_at_ten_five_and_one(used, expect):
     got = _turn_notice(used, CAP)
     assert (got is None) if expect is None else (expect in got)
@@ -116,7 +129,7 @@ def test_the_notice_never_mutates_the_cached_prefix():
 
     _subagent_turn_limit(CAP).wrap_model_call(_Req(), lambda r: r)
     out = seen["messages"]
-    assert out[:len(base_msgs)] == list(base_msgs), "the prefix must be byte-identical"
+    assert out[: len(base_msgs)] == list(base_msgs), "the prefix must be byte-identical"
     assert len(out) == len(base_msgs) + 1
     assert isinstance(out[-1], HumanMessage)
 
@@ -126,10 +139,12 @@ def test_no_notice_leaves_the_request_untouched():
         messages = _state(2)["messages"]
         system_prompt = "unchanged"
 
-        def override(self, **kw):                     # pragma: no cover - must not be called
+        def override(self, **kw):  # pragma: no cover - must not be called
             raise AssertionError("request was overridden with no notice due")
 
-    assert _subagent_turn_limit(CAP).wrap_model_call(_Req(), lambda r: r).system_prompt == "unchanged"
+    assert (
+        _subagent_turn_limit(CAP).wrap_model_call(_Req(), lambda r: r).system_prompt == "unchanged"
+    )
 
 
 # --- wiring -------------------------------------------------------------------------------

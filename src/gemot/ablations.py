@@ -68,7 +68,7 @@ class Ablation:
     env: str
     default_on: bool
     changes_prompt: bool
-    effect: str                        # what the NON-DEFAULT side does, in one line
+    effect: str  # what the NON-DEFAULT side does, in one line
 
     @property
     def setting(self) -> str:
@@ -143,8 +143,8 @@ ABLATIONS: tuple[Ablation, ...] = (
         default_on=False,
         changes_prompt=True,
         effect="ON adds the `get_data_regimes` tool to every agent's toolset AND the "
-               "independence-audit pointer to the lead prompt and the server's structural "
-               "nudges — they ship and are tested together. Measured HARMFUL as built; see above",
+        "independence-audit pointer to the lead prompt and the server's structural "
+        "nudges — they ship and are tested together. Measured HARMFUL as built; see above",
     ),
     # DEFAULT ON since 2026-08-19 — for COST, not capability. Five A/Bs measured no outcome
     # effect and a -28% token saving on alkan (p=0.0065); see the `effect` string below for
@@ -173,22 +173,22 @@ ABLATIONS: tuple[Ablation, ...] = (
         default_on=True,
         changes_prompt=True,
         effect="ON registers make_changes WITH `model_edits` (a BATCH of ID-addressed operations "
-               "— add_reaction, remove_reaction, set_rate_law, set_initial, set_assignment, "
-               "remove_assignment, rename — each an "
-               "Antimony statement, applied server-side, all-or-nothing) + `base_version` (edit a "
-               "prior version's stored source), adds `get_model` to the lead's toolset, and adds "
-               "the edit-by-operation guidance to its prompt. Batched deliberately: one fit per "
-               "call, not per edit. MEASURED over five A/Bs (~90 runs, sneyd/fujita/isensee/alkan): "
-               "NO outcome effect — sneyd 5/10 vs 6/10, fujita 1/10 vs 3/10, isensee 2/8 vs 1/7, "
-               "alkan 1/10 vs 1/10 — but a real COST saving that scales with model size. On alkan "
-               "(6v6 with full token accounting) median 7.03M vs 9.77M total tokens (-28%), "
-               "completion 110k vs 182k (-40%), 42 vs 48 LLM calls, exact two-sided "
-               "Mann-Whitney p = 0.0065. It does NOT generalise down: sneyd and fujita measured at "
-               "PARITY, because a wholesale re-author is ~292 tokens on sneyd and ~462 on fujita "
-               "but thousands on alkan's 53-reaction models, while a structured batch stays ~80. "
-               "Rejections also fell from 74 (substring arm) to 17 across 23 runs, with zero "
-               "unknown-reaction-id and zero base_version-alone errors. DEFAULT ON for the cost, "
-               "not for capability",
+        "— add_reaction, remove_reaction, set_rate_law, set_initial, set_assignment, "
+        "remove_assignment, rename — each an "
+        "Antimony statement, applied server-side, all-or-nothing) + `base_version` (edit a "
+        "prior version's stored source), adds `get_model` to the lead's toolset, and adds "
+        "the edit-by-operation guidance to its prompt. Batched deliberately: one fit per "
+        "call, not per edit. MEASURED over five A/Bs (~90 runs, sneyd/fujita/isensee/alkan): "
+        "NO outcome effect — sneyd 5/10 vs 6/10, fujita 1/10 vs 3/10, isensee 2/8 vs 1/7, "
+        "alkan 1/10 vs 1/10 — but a real COST saving that scales with model size. On alkan "
+        "(6v6 with full token accounting) median 7.03M vs 9.77M total tokens (-28%), "
+        "completion 110k vs 182k (-40%), 42 vs 48 LLM calls, exact two-sided "
+        "Mann-Whitney p = 0.0065. It does NOT generalise down: sneyd and fujita measured at "
+        "PARITY, because a wholesale re-author is ~292 tokens on sneyd and ~462 on fujita "
+        "but thousands on alkan's 53-reaction models, while a structured batch stays ~80. "
+        "Rejections also fell from 74 (substring arm) to 17 across 23 runs, with zero "
+        "unknown-reaction-id and zero base_version-alone errors. DEFAULT ON for the cost, "
+        "not for capability",
     ),
     # DEFAULT ON since 2026-08-15, when the A/B ran: measured helpful on sneyd (7/10 vs 2/10
     # basin-hit at n=10/cell, p=0.07). Motivated by the sneyd basin post-mortem (50 runs,
@@ -234,11 +234,11 @@ ABLATIONS: tuple[Ablation, ...] = (
         changes_prompt=True,
         # Per the field contract this describes the NON-DEFAULT side (=0), like every other entry.
         effect="OFF drops the lead-prompt clause that tells it to declare every "
-               "cooperativity/gating exponent as an estimated parameter WHENEVER the term is "
-               "introduced — first model, later edit, or sharpening an existing rate law "
-               "(never hardcoding 1 or 2) and trim after the first fit — i.e. the pre-2026-08-15 "
-               "behaviour. ON is the default: measured helpful on sneyd, 7/10 vs 2/10 basin-hit "
-               "at n=10/cell (p=0.07); see the note above for what that does and does not support",
+        "cooperativity/gating exponent as an estimated parameter WHENEVER the term is "
+        "introduced — first model, later edit, or sharpening an existing rate law "
+        "(never hardcoding 1 or 2) and trim after the first fit — i.e. the pre-2026-08-15 "
+        "behaviour. ON is the default: measured helpful on sneyd, 7/10 vs 2/10 basin-hit "
+        "at n=10/cell (p=0.07); see the note above for what that does and does not support",
     ),
     Ablation(
         name="bio_literature",
@@ -246,10 +246,10 @@ ABLATIONS: tuple[Ablation, ...] = (
         default_on=False,
         changes_prompt=False,
         effect="ON additionally gives the biocurator EuropePMC + bioRxiv literature search. Off by "
-               "default because literature search over a benchmark problem's distinctive entity "
-               "panel could surface its withheld source paper; the structured knowledge "
-               "(interactions/pathways/ontologies/OmniPath) is general biology. On the panel, "
-               "biocurator=off or biology_blind=on disables both kinds of knowledge access",
+        "default because literature search over a benchmark problem's distinctive entity "
+        "panel could surface its withheld source paper; the structured knowledge "
+        "(interactions/pathways/ontologies/OmniPath) is general biology. On the panel, "
+        "biocurator=off or biology_blind=on disables both kinds of knowledge access",
     ),
     Ablation(
         name="biology_blind",
@@ -257,8 +257,8 @@ ABLATIONS: tuple[Ablation, ...] = (
         default_on=False,
         changes_prompt=True,
         effect="ON anonymizes the agent's PEtab identifiers and removes descriptive metadata, "
-               "scenario biology, the biocurator and external knowledge tools. The panel receives "
-               "numerical modeling instructions; a private mapping preserves reference scoring",
+        "scenario biology, the biocurator and external knowledge tools. The panel receives "
+        "numerical modeling instructions; a private mapping preserves reference scoring",
     ),
     Ablation(
         name="biocurator",
@@ -266,9 +266,9 @@ ABLATIONS: tuple[Ablation, ...] = (
         default_on=True,
         changes_prompt=True,
         effect="OFF removes the biocurator from the deepagents panel, its external knowledge "
-               "tools and the lead's curator guidance. Biological identifiers, descriptions, "
-               "scenario context and the three modeling analysts are preserved. The "
-               "biology_blind arm also removes the curator, regardless of this setting",
+        "tools and the lead's curator guidance. Biological identifiers, descriptions, "
+        "scenario context and the three modeling analysts are preserved. The "
+        "biology_blind arm also removes the curator, regardless of this setting",
     ),
 )
 
@@ -340,8 +340,9 @@ def describe(*, use_color: bool = False) -> str:
     return (
         f"{bold}Ablations{reset} — switches that change what a run does, without changing the "
         f"code.\nEvery arm is an environment variable; export it before the run.\n"
-        f"Current arm: {bold}{arm()}{reset}\n\n" + "\n".join(rows) +
-        f"\n{dim}Every run records these in result.json as `ablations`, plus the flat "
+        f"Current arm: {bold}{arm()}{reset}\n\n"
+        + "\n".join(rows)
+        + f"\n{dim}Every run records these in result.json as `ablations`, plus the flat "
         f"`ablation_arm` column in the metrics CSV, so an A/B can always be split after the "
         f"fact.{reset}"
     )
@@ -356,18 +357,33 @@ def _main(argv: "list[str] | None" = None) -> int:
         prog="python -m petab_harness.ablations",
         description="List the ablations available in this repo and their current values.",
     )
-    p.add_argument("--json", action="store_true",
-                   help="emit the registry as JSON (name, env, default, current, effect)")
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the registry as JSON (name, env, default, current, effect)",
+    )
     args = p.parse_args(argv)
     if args.json:
-        print(json.dumps({
-            "arm": arm(),
-            "ablations": [
-                {"name": a.name, "env": a.env, "setting": a.setting, "default_on": a.default_on,
-                 "current": a.enabled(), "changes_prompt": a.changes_prompt, "effect": a.effect}
-                for a in ABLATIONS
-            ],
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "arm": arm(),
+                    "ablations": [
+                        {
+                            "name": a.name,
+                            "env": a.env,
+                            "setting": a.setting,
+                            "default_on": a.default_on,
+                            "current": a.enabled(),
+                            "changes_prompt": a.changes_prompt,
+                            "effect": a.effect,
+                        }
+                        for a in ABLATIONS
+                    ],
+                },
+                indent=2,
+            )
+        )
     else:
         print(describe(use_color=sys.stdout.isatty()))
     return 0

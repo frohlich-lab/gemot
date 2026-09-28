@@ -43,12 +43,15 @@ def test_the_patch_adds_constants_and_sets_initial_values_leaving_the_pristine_m
     assert problem.model.sbml_model.getInitialAssignmentBySymbol("k2") is None
 
 
-@pytest.mark.parametrize("patch, needle", [
-    ({"parameters": {"k1": 1.0}}, "already in the reference model"),
-    ({"initial_assignments": {"k2": "0.1 * V0"}}, "does not define"),
-    ({"initial_assignments": {"nothing": "1"}}, "not in the reference model"),
-    ({"initial_assignments": {"A": "2"}}, "already has an initial assignment"),
-])
+@pytest.mark.parametrize(
+    "patch, needle",
+    [
+        ({"parameters": {"k1": 1.0}}, "already in the reference model"),
+        ({"initial_assignments": {"k2": "0.1 * V0"}}, "does not define"),
+        ({"initial_assignments": {"nothing": "1"}}, "not in the reference model"),
+        ({"initial_assignments": {"A": "2"}}, "already has an initial assignment"),
+    ],
+)
 def test_a_patch_that_would_not_do_what_it_says_is_refused(patch, needle):
     with pytest.raises(ValueError, match=needle):
         B.patch_reference_model(_toy().model, patch)
@@ -85,11 +88,17 @@ def test_the_stated_problem_carries_the_patched_model_and_a_fixed_row_for_what_i
 def _curated(tmp_path, condition):
     d = tmp_path / "curated"
     d.mkdir(exist_ok=True)
-    pd.DataFrame({"observableId": ["obs_B", "obs_B"], "simulationConditionId": [condition] * 2,
-                  "time": [0.0, 1.0], "measurement": [1.0, 1.0]}).to_csv(
-        d / "measurements.tsv", sep="\t", index=False)
+    pd.DataFrame(
+        {
+            "observableId": ["obs_B", "obs_B"],
+            "simulationConditionId": [condition] * 2,
+            "time": [0.0, 1.0],
+            "measurement": [1.0, 1.0],
+        }
+    ).to_csv(d / "measurements.tsv", sep="\t", index=False)
     pd.DataFrame({"conditionId": [condition]}).to_csv(
-        d / V.HELD_OUT_CONDITIONS, sep="\t", index=False)
+        d / V.HELD_OUT_CONDITIONS, sep="\t", index=False
+    )
     return "curated/measurements.tsv"
 
 
@@ -118,10 +127,12 @@ def test_a_transfer_set_is_refit_on_the_stated_problem(tmp_path, monkeypatch):
     table = _curated(tmp_path, "c_new")
     (tmp_path / "curated" / V.HELD_OUT_PARAMETERS).write_text(
         "parameterId\tparameterScale\tlowerBound\tupperBound\tnominalValue\testimate\n"
-        "V0\tlin\t0.01\t100.0\t2.0\t1\n")
+        "V0\tlin\t0.01\t100.0\t2.0\t1\n"
+    )
 
-    B.write_reference_for(name="X", example_dir=tmp_path, validation_table=table,
-                          reference_patch=PATCH)
+    B.write_reference_for(
+        name="X", example_dir=tmp_path, validation_table=table, reference_patch=PATCH
+    )
 
     assert seen["held_out"] is None, "a transfer set is refit, not scored at the training vector"
     assert seen["refit_model"].has_entity_with_id("V0")
@@ -139,8 +150,9 @@ def test_a_patch_with_a_fixed_theta_set_is_refused(tmp_path, monkeypatch):
     table = _curated(tmp_path, "c_new")
 
     with pytest.raises(ValueError, match="only applied where the reference is REFIT"):
-        B.write_reference_for(name="X", example_dir=tmp_path, validation_table=table,
-                              reference_patch=PATCH)
+        B.write_reference_for(
+            name="X", example_dir=tmp_path, validation_table=table, reference_patch=PATCH
+        )
 
 
 def test_materialize_checks_the_held_out_set_against_the_stated_problem(tmp_path, monkeypatch):
@@ -151,10 +163,16 @@ def test_materialize_checks_the_held_out_set_against_the_stated_problem(tmp_path
     table = _curated(tmp_path, "c_new")
     (tmp_path / "curated" / V.HELD_OUT_PARAMETERS).write_text(
         "parameterId\tparameterScale\tlowerBound\tupperBound\tnominalValue\testimate\n"
-        "V0\tlin\t0.01\t100.0\t2.0\t1\n")
+        "V0\tlin\t0.01\t100.0\t2.0\t1\n"
+    )
 
-    B.materialize(name="X", shipped_param_ids=["sigma_B", "A_init", "B_init"],
-                  example_dir=tmp_path, validation_table=table, reference_patch=PATCH)
+    B.materialize(
+        name="X",
+        shipped_param_ids=["sigma_B", "A_init", "B_init"],
+        example_dir=tmp_path,
+        validation_table=table,
+        reference_patch=PATCH,
+    )
 
     held = V.read_held_out(B.validation_measurements_path(tmp_path))
     assert held.mode == V.MODE_TRANSFER

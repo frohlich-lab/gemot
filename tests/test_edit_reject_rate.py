@@ -32,27 +32,41 @@ def test_an_applied_edit_is_counted_but_not_rejected():
     clock = _ToolClock()
     clock.note_result("make_changes", _Envelope({"applied": True}))
     assert clock.reject_summary() == {
-        "attempted": 1, "rejected": 0, "fit_reverted": 0, "reject_rate": 0.0, "by_cause": {}}
+        "attempted": 1,
+        "rejected": 0,
+        "fit_reverted": 0,
+        "reject_rate": 0.0,
+        "by_cause": {},
+    }
 
 
-@pytest.mark.parametrize("error,cause", [
-    ("Failed to parse antimony model: syntax error, unexpected ':'", "antimony_syntax"),
-    ("Operation 'set_model' rejected: the resulting problem is invalid.", "invalid_problem"),
-    # The reasons now travel INSIDE the message (see operations._rejection_summary). The bucket must
-    # be unchanged: the substring is still there, and no earlier pattern may capture the embedded
-    # issue text -- `antimony_syntax` is matched first, and a parse failure raises before
-    # validation, so it can never appear here.
-    ("Operation 'make_changes' rejected: the resulting problem is invalid: 'RAF_total' ships "
-     "FIXED (estimate=0) in this problem | Extraneous parameter(s) in parameter table: {'pAkt_S6'} "
-     "(+2 more in `issues`)", "invalid_problem"),
-    ("Refusing to widen 'k' a 3rd time: it re-pinned at its upper bound", "repeated_widening"),
-    ("change_parameters: 'k' sets only one bound — a bound edit needs BOTH", "bad_bounds_usage"),
-    ("change_parameters: entry for 'k' has unknown key(s) ['bounds']", "unknown_key"),
-    ("Unknown parameter id 'kx'. Known ids: [...]", "unknown_parameter"),
-    ("Invalid parameterScale 'lin10'; use one of ['lin', 'log', 'log10'].", "bad_scale"),
-    ("Cannot interpret estimate value 'yes' as 0/1.", "bad_estimate"),
-    ("something nobody has bucketed yet", "other"),
-])
+@pytest.mark.parametrize(
+    "error,cause",
+    [
+        ("Failed to parse antimony model: syntax error, unexpected ':'", "antimony_syntax"),
+        ("Operation 'set_model' rejected: the resulting problem is invalid.", "invalid_problem"),
+        # The reasons now travel INSIDE the message (see operations._rejection_summary). The bucket must
+        # be unchanged: the substring is still there, and no earlier pattern may capture the embedded
+        # issue text -- `antimony_syntax` is matched first, and a parse failure raises before
+        # validation, so it can never appear here.
+        (
+            "Operation 'make_changes' rejected: the resulting problem is invalid: 'RAF_total' ships "
+            "FIXED (estimate=0) in this problem | Extraneous parameter(s) in parameter table: {'pAkt_S6'} "
+            "(+2 more in `issues`)",
+            "invalid_problem",
+        ),
+        ("Refusing to widen 'k' a 3rd time: it re-pinned at its upper bound", "repeated_widening"),
+        (
+            "change_parameters: 'k' sets only one bound — a bound edit needs BOTH",
+            "bad_bounds_usage",
+        ),
+        ("change_parameters: entry for 'k' has unknown key(s) ['bounds']", "unknown_key"),
+        ("Unknown parameter id 'kx'. Known ids: [...]", "unknown_parameter"),
+        ("Invalid parameterScale 'lin10'; use one of ['lin', 'log', 'log10'].", "bad_scale"),
+        ("Cannot interpret estimate value 'yes' as 0/1.", "bad_estimate"),
+        ("something nobody has bucketed yet", "other"),
+    ],
+)
 def test_every_observed_rejection_reason_gets_a_bucket(error, cause):
     """The buckets are taken from the real distribution, and an unmatched reason must fall into
     ``other`` rather than being dropped — a silently uncounted rejection is the thing this
@@ -99,10 +113,19 @@ def test_a_fit_error_on_an_APPLIED_change_is_not_a_rejection():
     the rate and filled `by_cause` with fit failures, in the one metric whose whole job is telling
     edit refusals apart from fit failures."""
     clock = _ToolClock()
-    clock.note_result("make_changes", _Envelope(
-        {"applied": True, "committed": False, "version": 7, "error": "fit did not converge"}))
+    clock.note_result(
+        "make_changes",
+        _Envelope(
+            {"applied": True, "committed": False, "version": 7, "error": "fit did not converge"}
+        ),
+    )
     assert clock.reject_summary() == {
-        "attempted": 1, "rejected": 0, "fit_reverted": 0, "reject_rate": 0.0, "by_cause": {}}
+        "attempted": 1,
+        "rejected": 0,
+        "fit_reverted": 0,
+        "reject_rate": 0.0,
+        "by_cause": {},
+    }
 
 
 def test_a_fit_revert_is_not_an_edit_rejection():
@@ -111,9 +134,18 @@ def test_a_fit_revert_is_not_an_edit_rejection():
     has run, `bundle_result` always sets `committed`. Counting the reverts as refusals made this
     an edit-or-fit failure rate and broke comparability with the pre-#130 baseline."""
     clock = _ToolClock()
-    clock.note_result("make_changes", _Envelope(
-        {"applied": False, "committed": False, "version": None,
-         "message": "Change REVERTED: it could not be scored", "error": "fit diverged"}))
+    clock.note_result(
+        "make_changes",
+        _Envelope(
+            {
+                "applied": False,
+                "committed": False,
+                "version": None,
+                "message": "Change REVERTED: it could not be scored",
+                "error": "fit diverged",
+            }
+        ),
+    )
     s = clock.reject_summary()
     assert (s["rejected"], s["fit_reverted"], s["reject_rate"]) == (0, 1, 0.0)
 
@@ -125,12 +157,23 @@ def test_the_history_csv_gets_flat_edit_reject_columns(tmp_path):
     import csv as _csv
 
     from petab_harness import metrics
+
     out = tmp_path / "history.csv"
-    metrics.append_history([{
-        "scenario": "demo",
-        "edit_rejects": {"attempted": 8, "rejected": 3, "fit_reverted": 1,
-                         "reject_rate": 0.375, "by_cause": {"antimony_syntax": 2, "other": 1}},
-    }], history_path=out)
+    metrics.append_history(
+        [
+            {
+                "scenario": "demo",
+                "edit_rejects": {
+                    "attempted": 8,
+                    "rejected": 3,
+                    "fit_reverted": 1,
+                    "reject_rate": 0.375,
+                    "by_cause": {"antimony_syntax": 2, "other": 1},
+                },
+            }
+        ],
+        history_path=out,
+    )
     row = next(iter(_csv.DictReader(out.open())))
     assert row["edits_attempted"] == "8"
     assert row["edits_rejected"] == "3"
@@ -149,7 +192,8 @@ def test_every_reject_bucket_matches_a_message_the_server_can_emit():
     from petab_harness.runner.clock import _REJECT_PATTERNS
 
     src = "\n".join(
-        p.read_text() for p in (Path(__file__).resolve().parents[1] / "src" / "petab_mcp").rglob("*.py")
+        p.read_text()
+        for p in (Path(__file__).resolve().parents[1] / "src" / "petab_mcp").rglob("*.py")
     ).lower()
     dead = [label for label, needle in _REJECT_PATTERNS if needle not in src]
     assert not dead, f"reject buckets matching no message the server emits: {dead}"
@@ -159,13 +203,15 @@ def test_every_reject_bucket_matches_a_message_the_server_can_emit():
 def test_rejection_summary_names_the_reasons():
     from petab_mcp.operations import _rejection_summary
 
-    out = _rejection_summary([
-        "'RAF_total' ships FIXED (estimate=0) in this problem — a known constant",
-        "Extraneous parameter(s) in parameter table: {'pEGFR_Akt', 'pAkt_S6'}",
-    ])
-    assert "resulting problem is invalid" in out       # bucket substring preserved
-    assert "RAF_total" in out and "pAkt_S6" in out     # the actionable detail is IN the message
-    assert "more in `issues`" not in out               # nothing elided at 2 issues
+    out = _rejection_summary(
+        [
+            "'RAF_total' ships FIXED (estimate=0) in this problem — a known constant",
+            "Extraneous parameter(s) in parameter table: {'pEGFR_Akt', 'pAkt_S6'}",
+        ]
+    )
+    assert "resulting problem is invalid" in out  # bucket substring preserved
+    assert "RAF_total" in out and "pAkt_S6" in out  # the actionable detail is IN the message
+    assert "more in `issues`" not in out  # nothing elided at 2 issues
 
 
 def test_rejection_summary_caps_and_says_what_it_elided():
@@ -173,19 +219,21 @@ def test_rejection_summary_caps_and_says_what_it_elided():
 
     out = _rejection_summary([f"issue number {i}" for i in range(7)])
     assert "issue number 0" in out and "issue number 2" in out
-    assert "issue number 3" not in out                 # capped at 3
-    assert "(+4 more in `issues`)" in out              # a truncated view never looks complete
+    assert "issue number 3" not in out  # capped at 3
+    assert "(+4 more in `issues`)" in out  # a truncated view never looks complete
 
 
 def test_rejection_summary_collapses_multiline_libsbml_noise():
     from petab_mcp.operations import _rejection_summary
 
-    long_sbml = ("libSBML Error (SBML component consistency): The value of a 'symbol' field in any "
-                 "<initialAssignment>\n   definition cannot also appear as the value of a "
-                 "'variable' field.\n   " + "x" * 400)
+    long_sbml = (
+        "libSBML Error (SBML component consistency): The value of a 'symbol' field in any "
+        "<initialAssignment>\n   definition cannot also appear as the value of a "
+        "'variable' field.\n   " + "x" * 400
+    )
     out = _rejection_summary([long_sbml])
-    assert "\n" not in out                             # one line, not a wall of text
-    assert len(out) < 420                              # per-issue truncation actually applied
+    assert "\n" not in out  # one line, not a wall of text
+    assert len(out) < 420  # per-issue truncation actually applied
 
 
 def test_rejection_summary_falls_back_when_there_is_no_error_level_issue():
@@ -205,8 +253,9 @@ def test_git_diff_digest_fingerprints_an_uncommitted_tree(tmp_path):
     from petab_harness.runner.provenance import _git_diff_digest, _git_sha
 
     def git(*a):
-        subprocess.check_call(["git", *a], cwd=tmp_path,
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.check_call(
+            ["git", *a], cwd=tmp_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
 
     git("init")
     git("config", "user.email", "t@t")
@@ -236,23 +285,31 @@ def test_git_diff_digest_fingerprints_an_uncommitted_tree(tmp_path):
 
 def test_git_diff_digest_never_raises_outside_a_checkout(tmp_path):
     from petab_harness.runner.provenance import _git_diff_digest
+
     assert _git_diff_digest(tmp_path / "does-not-exist") is None
-    assert _git_diff_digest(tmp_path) is None          # a real dir that is not a git tree
+    assert _git_diff_digest(tmp_path) is None  # a real dir that is not a git tree
 
 
 def test_the_history_csv_carries_the_working_tree_digest(tmp_path):
     import csv as _csv
 
     from petab_harness import metrics
+
     out = tmp_path / "history.csv"
-    metrics.append_history([
-        {"scenario": "dirty", "git_sha": "abc1234+dirty",
-         "git_diff": {"sha256": "f" * 64, "lines": 12, "files": ["src/x.py"], "n_files": 1}},
-        {"scenario": "clean", "git_sha": "abc1234"},
-    ], history_path=out)
+    metrics.append_history(
+        [
+            {
+                "scenario": "dirty",
+                "git_sha": "abc1234+dirty",
+                "git_diff": {"sha256": "f" * 64, "lines": 12, "files": ["src/x.py"], "n_files": 1},
+            },
+            {"scenario": "clean", "git_sha": "abc1234"},
+        ],
+        history_path=out,
+    )
     rows = list(_csv.DictReader(out.open()))
     assert rows[0]["git_diff_sha256"] == "f" * 64
-    assert rows[1]["git_diff_sha256"] == ""            # clean tree -> empty, i.e. attributable
+    assert rows[1]["git_diff_sha256"] == ""  # clean tree -> empty, i.e. attributable
 
 
 # -- which tools were called, not just how many ------------------------------------------------

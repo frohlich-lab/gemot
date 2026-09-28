@@ -18,14 +18,19 @@ from mcp.client.streamable_http import streamablehttp_client
 from .. import ablations, benchmark, prompts
 from ..bio_sessions import open_bio_sessions
 from ..explorer.archive import archive_run
-from ..fit_budget import (FIT_BUDGET_CEILING_S, FIT_N_WORKERS, FIT_PER_START_TIMEOUT_S,
-                          fit_time_budget_for)
+from ..fit_budget import (
+    FIT_BUDGET_CEILING_S,
+    FIT_N_WORKERS,
+    FIT_PER_START_TIMEOUT_S,
+    fit_time_budget_for,
+)
 from .drive import _drive
 from .endpoints import BIO_MCP_URLS
 from .failure import _should_reraise, _summarize_exc, _write_degraded_result
 from .provenance import _base_meta, _now_iso
 from ..scenario import Scenario
 from .server import _SERVER_BOOTSTRAP, _free_port, _wait_until_listening
+
 
 # --------------------------------------------------------------------------- steps
 def cleanup(scenario: Scenario) -> Path:
@@ -40,8 +45,11 @@ def cleanup(scenario: Scenario) -> Path:
     if ablations.enabled("biology_blind"):
         from ..biology_blinding import prepare
 
-        prepare(scenario.problem_dir / "problem.yaml", work,
-                benchmark.validation_measurements_path(scenario.example_dir).parent)
+        prepare(
+            scenario.problem_dir / "problem.yaml",
+            work,
+            benchmark.validation_measurements_path(scenario.example_dir).parent,
+        )
     else:
         shutil.copytree(scenario.problem_dir, work)
     print(f"[cleanup] fresh working copy at {work.relative_to(scenario.example_dir.parent)}")
@@ -59,12 +67,17 @@ class _ServerHandle:
 
 
 @contextlib.asynccontextmanager
-async def _petab_server(work: Path, build_root: Path, args: argparse.Namespace, *,
-                        scenario: Scenario,
-                        score_shipped_model: bool = False,
-                        listen_timeout: float = 120.0,
-                        yaml_path: Path | None = None,
-                        handle_out: dict | None = None) -> AsyncIterator[_ServerHandle]:
+async def _petab_server(
+    work: Path,
+    build_root: Path,
+    args: argparse.Namespace,
+    *,
+    scenario: Scenario,
+    score_shipped_model: bool = False,
+    listen_timeout: float = 120.0,
+    yaml_path: Path | None = None,
+    handle_out: dict | None = None,
+) -> AsyncIterator[_ServerHandle]:
     """Launch the petab-mcp server on ``work/problem.yaml``, open one initialized MCP session to
     it, and tear both down afterwards. Shared by :func:`_main_async` (server before the driver)
     and the barebones pipeline (server after, on the delivered problem, with
@@ -90,10 +103,16 @@ async def _petab_server(work: Path, build_root: Path, args: argparse.Namespace, 
 
         validation_tsv = private_dir(work) / "validation/measurements.tsv"
     server_cmd = [
-        sys.executable, "-c", _SERVER_BOOTSTRAP,
-        str(work_yaml), str(build_root),
-        "off" if ablations.enabled("biology_blind") else args.reference_validation, host, str(port),
-        str(args.n_starts), str(validation_tsv) if validation_tsv.is_file() else "",
+        sys.executable,
+        "-c",
+        _SERVER_BOOTSTRAP,
+        str(work_yaml),
+        str(build_root),
+        "off" if ablations.enabled("biology_blind") else args.reference_validation,
+        host,
+        str(port),
+        str(args.n_starts),
+        str(validation_tsv) if validation_tsv.is_file() else "",
         # <score_shipped>: "1" only for a problem that arrives finished (the barebones judge
         # path). Passed either way, never omitted -- the bootstrap unpacks a fixed arity so a
         # dropped argument fails loudly at startup.
@@ -105,7 +124,9 @@ async def _petab_server(work: Path, build_root: Path, args: argparse.Namespace, 
     amici_log = amici_log_path.open("w")
 
     print(f"[server] launching on http://{host}:{port}/mcp")
-    print(f"[server] server log -> {server_log_path.name} | AMICI build log -> {amici_log_path.name}")
+    print(
+        f"[server] server log -> {server_log_path.name} | AMICI build log -> {amici_log_path.name}"
+    )
     # Split the streams: fd1 (stdout) carries the C++ build toolchain output that would
     # otherwise corrupt a stdio channel -> amici_build.log; fd2 (stderr) carries uvicorn
     # request logs + Python/AMICI logging -> server.log.
@@ -121,10 +142,12 @@ async def _petab_server(work: Path, build_root: Path, args: argparse.Namespace, 
     # systemd-coredump, which stores node-locally and is not readable by the job's user — so the
     # in-process traceback is the artifact that actually survives. array_task.sh raises the core
     # limit too, so a core lands as well where the node permits it.
-    server_env = {**os.environ,
-                  "PYTHONFAULTHANDLER": "1",
-                  "PETAB_MCP_FIT_PER_START_TIMEOUT": str(FIT_PER_START_TIMEOUT_S),
-                  "PETAB_MCP_FIT_N_WORKERS": str(FIT_N_WORKERS)}
+    server_env = {
+        **os.environ,
+        "PYTHONFAULTHANDLER": "1",
+        "PETAB_MCP_FIT_PER_START_TIMEOUT": str(FIT_PER_START_TIMEOUT_S),
+        "PETAB_MCP_FIT_N_WORKERS": str(FIT_N_WORKERS),
+    }
     try:
         proc = subprocess.Popen(server_cmd, stdout=amici_log, stderr=server_log, env=server_env)
     except Exception:
@@ -182,8 +205,11 @@ async def _petab_server(work: Path, build_root: Path, args: argparse.Namespace, 
                     # run with a large --n-starts can compute a default budget past the ceiling
                     # (the ceiling bounds what the MODEL may ask for, not what the operator
                     # configured), and this has to stay looser than both.
-                    sse_read_timeout=max(FIT_BUDGET_CEILING_S,
-                                         fit_time_budget_for(None, args.n_starts)) * 1.2)
+                    sse_read_timeout=max(
+                        FIT_BUDGET_CEILING_S, fit_time_budget_for(None, args.n_starts)
+                    )
+                    * 1.2,
+                )
             )
             # Session-wide fallback UNDER the per-call cut. mcp prefers a per-request
             # read_timeout_seconds outright (it does not take a min), so clock._wrap_call_timeout
@@ -191,10 +217,15 @@ async def _petab_server(work: Path, build_root: Path, args: argparse.Namespace, 
             # does not cover: `initialize()` below, which would otherwise run against the
             # non-binding ceiling, and the case where installing the shadow FAILS -- which
             # previously left the run with no effective call timeout at all.
-            session = await stack.enter_async_context(ClientSession(
-                read, write,
-                read_timeout_seconds=timedelta(
-                    seconds=fit_time_budget_for(None, args.n_starts))))
+            session = await stack.enter_async_context(
+                ClientSession(
+                    read,
+                    write,
+                    read_timeout_seconds=timedelta(
+                        seconds=fit_time_budget_for(None, args.n_starts)
+                    ),
+                )
+            )
             await session.initialize()
             handle.session = session
             yield handle
@@ -226,8 +257,9 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
     build_root = scenario.example_dir / ".amici_build"
     launched: dict = {}
     try:
-        async with _petab_server(work, build_root, args, scenario=scenario,
-                                 handle_out=launched) as server:
+        async with _petab_server(
+            work, build_root, args, scenario=scenario, handle_out=launched
+        ) as server:
             proc = server.proc
             session = server.session
             if session is None:
@@ -241,12 +273,19 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
             # is contained and degrades the biocurator to "dumb", NEVER aborting the run (issue
             # #86). Empty for scripted or a disabled curator. An enabled curator stays on the
             # panel even if no bio tools resolve, using the model's own knowledge.
-            bio_urls = (BIO_MCP_URLS if args.driver != "scripted"
-                        and prompts.BIOCURATOR_ENABLED else ())
+            bio_urls = (
+                BIO_MCP_URLS if args.driver != "scripted" and prompts.BIOCURATOR_ENABLED else ()
+            )
             async with open_bio_sessions(bio_urls) as bio_sessions:
-                exit_code, result = await _drive(scenario, session, work, args,
-                                                 run_started_at=started_at, server_proc=proc,
-                                                 bio_sessions=bio_sessions)
+                exit_code, result = await _drive(
+                    scenario,
+                    session,
+                    work,
+                    args,
+                    run_started_at=started_at,
+                    server_proc=proc,
+                    bio_sessions=bio_sessions,
+                )
                 # Snapshot the run's on-disk half (result.json + version store) into the runs
                 # archive while work/ still exists — the next run of this example wipes it. The
                 # run explorer (examples/explore_ui.py) stitches this with the persisted Phoenix
@@ -276,6 +315,11 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
             raise
         server = launched.get("handle")  # absent only if the subprocess never spawned
         rc = server.proc.poll() if server is not None else None
-        result = _write_degraded_result(work, _base_meta(scenario, args, started_at),
-                                        scenario, _summarize_exc(exc), server_returncode=rc)
+        result = _write_degraded_result(
+            work,
+            _base_meta(scenario, args, started_at),
+            scenario,
+            _summarize_exc(exc),
+            server_returncode=rc,
+        )
         return 1, result

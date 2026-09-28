@@ -8,6 +8,7 @@ from uuid import UUID
 #: Explicit graph name used by the driver and reported in LangChain callback metadata.
 _LEAD_AGENT_NAME = "lead"
 
+
 def _token_accountant():
     """A LangChain callback that sums token usage across EVERY LLM call in a run.
 
@@ -65,9 +66,9 @@ def _token_accountant():
     class _Accountant(AsyncCallbackHandler):
         def __init__(self):
             self.prompt = self.completion = self.cache_read = self.n_calls = 0
-            self.cost, self.n_costed = 0.0, 0     # billed USD, and the calls that reported one
-            self.cache_write = 0         # prompt tokens WRITTEN to the cache (billed at a premium)
-            self.max_prompt = 0          # largest single-call prompt — the context-stop signal
+            self.cost, self.n_costed = 0.0, 0  # billed USD, and the calls that reported one
+            self.cache_write = 0  # prompt tokens WRITTEN to the cache (billed at a premium)
+            self.max_prompt = 0  # largest single-call prompt — the context-stop signal
             self.final_lead_prompt: int | None = None
             self.max_lead_prompt: int | None = None
             self._lead_runs: set[UUID] = set()
@@ -75,13 +76,16 @@ def _token_accountant():
             # (upstream provider, service tier) -> calls served by it. See `endpoints()`.
             self.served: dict[tuple, int] = {}
 
-        async def on_chat_model_start(self, serialized, messages, *, run_id, metadata=None,
-                                      **kwargs):
+        async def on_chat_model_start(
+            self, serialized, messages, *, run_id, metadata=None, **kwargs
+        ):
             # Subagent graphs replace lc_agent_name with their own name even when they share
             # the lead's model. before_model helpers inherit the name but have another node.
-            if (isinstance(metadata, dict)
-                    and metadata.get("lc_agent_name") == _LEAD_AGENT_NAME
-                    and metadata.get("langgraph_node") == "model"):
+            if (
+                isinstance(metadata, dict)
+                and metadata.get("lc_agent_name") == _LEAD_AGENT_NAME
+                and metadata.get("langgraph_node") == "model"
+            ):
                 self._lead_runs.add(run_id)
                 self._last_lead_run = run_id
                 self.final_lead_prompt = None
@@ -170,13 +174,18 @@ def _token_accountant():
                         # other generations, or the llm_output fallback below.
                         self.prompt += _as_int(um.get("input_tokens"))
                         self.max_prompt = max(self.max_prompt, _as_int(um.get("input_tokens")))
-                        if is_lead and (size := _reported_prompt(um.get("input_tokens"))) is not None:
+                        if (
+                            is_lead
+                            and (size := _reported_prompt(um.get("input_tokens"))) is not None
+                        ):
                             lead_prompt = max(lead_prompt or 0, size)
                         self.completion += _as_int(um.get("output_tokens"))
                         self.cache_read += _as_int(
-                            (um.get("input_token_details") or {}).get("cache_read"))
+                            (um.get("input_token_details") or {}).get("cache_read")
+                        )
                         self.cache_write += _as_int(
-                            (um.get("input_token_details") or {}).get("cache_creation"))
+                            (um.get("input_token_details") or {}).get("cache_creation")
+                        )
                 if not found:
                     # Older/non-usage_metadata responses carry an aggregate in llm_output.
                     # isinstance, not `or {}` -- see _record_endpoint.
@@ -189,9 +198,11 @@ def _token_accountant():
                             lead_prompt = _reported_prompt(tu.get("prompt_tokens"))
                         self.completion += _as_int(tu.get("completion_tokens"))
                         self.cache_read += _as_int(
-                            (tu.get("prompt_tokens_details") or {}).get("cached_tokens"))
+                            (tu.get("prompt_tokens_details") or {}).get("cached_tokens")
+                        )
                         self.cache_write += _as_int(
-                            (tu.get("prompt_tokens_details") or {}).get("cache_write_tokens"))
+                            (tu.get("prompt_tokens_details") or {}).get("cache_write_tokens")
+                        )
                         self.n_calls += 1
             except Exception:  # pragma: no cover - accounting must never break a run
                 pass
@@ -206,7 +217,7 @@ def _token_accountant():
             return {
                 "prompt_tokens": self.prompt,
                 "completion_tokens": self.completion,
-                "cache_read_tokens": self.cache_read,    # cached prompt tokens
+                "cache_read_tokens": self.cache_read,  # cached prompt tokens
                 # 0 wherever caching is implicit; elsewhere the tokens billed at the premium.
                 "cache_write_tokens": self.cache_write,
                 "total_tokens": self.prompt + self.completion,
@@ -218,7 +229,9 @@ def _token_accountant():
                 "final_lead_prompt_tokens": self.final_lead_prompt,
                 "max_lead_prompt_tokens": self.max_lead_prompt,
                 "n_llm_calls": self.n_calls,
-                "cost_usd": self.cost if self.n_costed else None,   # billed USD; None if none reported
+                "cost_usd": self.cost
+                if self.n_costed
+                else None,  # billed USD; None if none reported
                 "n_uncosted_calls": max(self.n_calls - self.n_costed, 0),
             }
 
@@ -231,8 +244,10 @@ def _token_accountant():
             otherwise have to be read as "probably fine", which is how provenance rots.
             """
             served = sorted(
-                ({"provider": p, "service_tier": t, "n_calls": n}
-                 for (p, t), n in self.served.items()),
+                (
+                    {"provider": p, "service_tier": t, "n_calls": n}
+                    for (p, t), n in self.served.items()
+                ),
                 key=lambda r: (-r["n_calls"], str(r["provider"])),
             )
             # Drift is judged over ATTRIBUTED endpoints only. The unattributed bucket is a gap in
@@ -244,8 +259,7 @@ def _token_accountant():
             return {
                 "served": served,
                 "n_distinct": len(attributed),
-                "n_unattributed_calls": sum(s["n_calls"] for s in served
-                                            if s["provider"] is None),
+                "n_unattributed_calls": sum(s["n_calls"] for s in served if s["provider"] is None),
                 # One endpoint = no drift. Zero happens when nothing reported a provider (a
                 # non-OpenRouter base_url), which is not drift either.
                 "drifted": len(attributed) > 1,

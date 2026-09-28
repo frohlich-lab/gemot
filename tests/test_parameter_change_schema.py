@@ -5,6 +5,7 @@ the JSON schema is what a model is constrained by, and when this argument was `l
 Any]]` it named none of its keys, so 527 of 889 `make_changes` calls in the August benchmark runs
 were rejected for guessing them. Nothing failed loudly; the runs just scored badly.
 """
+
 import asyncio
 
 import pytest
@@ -33,6 +34,7 @@ def _schema():
 
 
 # ------------------------------------------------------------------ the tool contract
+
 
 def test_schema_names_parameter_id_as_required():
     """The failure that cost 484 rejections: `parameter_id` existed only in prose."""
@@ -75,6 +77,7 @@ def test_model_facing_description_stays_short():
 
 # ------------------------------------------------------------------ boundary conversion
 
+
 def test_entries_convert_to_plain_dicts_for_operations():
     out = _parameter_entries([ParameterChange(parameter_id="k1", lower_bound=1e-3, scale="log10")])
     assert out == [{"parameter_id": "k1", "lower_bound": 1e-3, "scale": "log10"}]
@@ -86,6 +89,7 @@ def test_entries_pass_dicts_through_and_none_stays_none():
 
 
 # ------------------------------------------------------------------ content-filter classification
+
 
 def test_classifies_the_refusal_seen_in_the_sweep():
     """Verbatim from gpt-5.6-luna-pro on a PEtab immunology model."""
@@ -119,16 +123,19 @@ def test_a_payload_with_no_trailing_comma_does_not_leak_braces():
 
 def test_does_not_swallow_unrelated_400s():
     """Narrow on purpose: a plain bad request must keep its own exception text."""
-    for exc in (ValueError("{'message': 'invalid model id', 'code': 400}"),
-                RuntimeError("Recursion limit of 250 reached"),
-                # a bare mention of moderation must NOT be relabelled -- the marker list is
-                # documented as narrow, so it matches explicit refusal phrases only
-                ValueError("{'message': 'moderation service timed out', 'code': 400}"),
-                TimeoutError("stalled")):
+    for exc in (
+        ValueError("{'message': 'invalid model id', 'code': 400}"),
+        RuntimeError("Recursion limit of 250 reached"),
+        # a bare mention of moderation must NOT be relabelled -- the marker list is
+        # documented as narrow, so it matches explicit refusal phrases only
+        ValueError("{'message': 'moderation service timed out', 'code': 400}"),
+        TimeoutError("stalled"),
+    ):
         assert _content_filter_stop_reason(exc) is None
 
 
 # ------------------------------------------------- unclassified provider 5xx (resume, not die)
+
 
 def test_the_observed_504_is_classified_as_transient():
     """Verbatim from a mimo-v2.5 run that died 25 minutes in with 5 fits and a committed model.
@@ -140,7 +147,8 @@ def test_the_observed_504_is_classified_as_transient():
     from petab_harness.agent.driver import _transient_provider_reason
 
     reason = _transient_provider_reason(
-        ValueError("{'message': 'The operation was aborted', 'code': 504}"))
+        ValueError("{'message': 'The operation was aborted', 'code': 504}")
+    )
     assert reason is not None and reason.startswith("provider 504")
 
 
@@ -148,10 +156,14 @@ def test_the_observed_504_is_classified_as_transient():
 def test_any_5xx_resumes(code):
     from petab_harness.agent.driver import _transient_provider_reason
 
-    assert _transient_provider_reason(
-        ValueError(f"{{'message': 'upstream', 'code': {code}}}")) is not None
-    assert _transient_provider_reason(
-        ValueError(f'{{"message": "upstream", "code": {code}}}')) is not None, "double-quoted too"
+    assert (
+        _transient_provider_reason(ValueError(f"{{'message': 'upstream', 'code': {code}}}"))
+        is not None
+    )
+    assert (
+        _transient_provider_reason(ValueError(f'{{"message": "upstream", "code": {code}}}'))
+        is not None
+    ), "double-quoted too"
 
 
 @pytest.mark.parametrize("code", [400, 401, 403, 404, 422, 429])
@@ -161,8 +173,7 @@ def test_4xx_is_never_treated_as_transient(code):
     the same terminal answer."""
     from petab_harness.agent.driver import _transient_provider_reason
 
-    assert _transient_provider_reason(
-        ValueError(f"{{'message': 'nope', 'code': {code}}}")) is None
+    assert _transient_provider_reason(ValueError(f"{{'message': 'nope', 'code': {code}}}")) is None
 
 
 def test_a_content_refusal_stays_terminal_even_though_it_carries_a_code():
@@ -171,7 +182,8 @@ def test_a_content_refusal_stays_terminal_even_though_it_carries_a_code():
     from petab_harness.agent.driver import _content_filter_stop_reason, _transient_provider_reason
 
     exc = ValueError(
-        "{'message': 'This content was flagged for possible biological risk.', 'code': 400}")
+        "{'message': 'This content was flagged for possible biological risk.', 'code': 400}"
+    )
     assert _content_filter_stop_reason(exc) is not None
     assert _transient_provider_reason(exc) is None
 
@@ -179,9 +191,11 @@ def test_a_content_refusal_stays_terminal_even_though_it_carries_a_code():
 def test_an_error_with_no_code_is_left_alone():
     from petab_harness.agent.driver import _transient_provider_reason
 
-    for exc in (RuntimeError("Recursion limit of 250 reached"),
-                TimeoutError("stalled"),
-                ValueError("something went wrong")):
+    for exc in (
+        RuntimeError("Recursion limit of 250 reached"),
+        TimeoutError("stalled"),
+        ValueError("something went wrong"),
+    ):
         assert _transient_provider_reason(exc) is None
 
 
@@ -192,8 +206,9 @@ def test_an_error_with_no_code_is_left_alone():
 def test_unwrap_listish_recovers_the_item_wrapper():
     from petab_mcp.server import _unwrap_listish
 
-    payload = {"item": [{"parameter_id": "k1", "lower_bound": 1e-6, "upper_bound": 1e3,
-                         "scale": "log10"}]}
+    payload = {
+        "item": [{"parameter_id": "k1", "lower_bound": 1e-6, "upper_bound": 1e3, "scale": "log10"}]
+    }
     assert _unwrap_listish(payload) == payload["item"]
     # references saw the same shape
     refs = {"item": ["PMID:1547331 (Fujita 2010)", "Cell 166:461 (reduction)"]}
@@ -238,8 +253,11 @@ def test_make_changes_still_advertises_an_array_schema():
     mcp = FastMCP("wrapper-probe")
 
     @mcp.tool()
-    def probe(parameters: Annotated[list[ParameterChange] | None,
-                                    BeforeValidator(_unwrap_listish)] = None) -> dict:
+    def probe(
+        parameters: Annotated[
+            list[ParameterChange] | None, BeforeValidator(_unwrap_listish)
+        ] = None,
+    ) -> dict:
         """probe"""
         return {}
 
@@ -248,7 +266,7 @@ def test_make_changes_still_advertises_an_array_schema():
     entry = s["properties"]["parameters"]
     branches = entry.get("anyOf", [entry])
     array_branch = next(b for b in branches if b.get("type") == "array")
-    assert array_branch["type"] == "array"          # still an array, not anyOf[array, object]
+    assert array_branch["type"] == "array"  # still an array, not anyOf[array, object]
     assert not any(b.get("type") == "object" for b in branches)
 
 

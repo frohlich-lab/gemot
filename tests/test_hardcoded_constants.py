@@ -38,37 +38,40 @@ def _rate_law(law: str) -> str:
 
 
 # ------------------------------------------------------------------------------ the rule
-@pytest.mark.parametrize("law, priced", [
-    # the literals of the motivating run: fitted values, frozen in
-    ("0.000878*A", ["0.000878"]),
-    ("2.69e-5*A", ["2.69e-5"]),
-    ("kf*A^1.333", ["1.333"]),
-    ("kf*A/(0.0305 + A)", ["0.0305"]),
-    # published-looking numbers, integer or not
-    ("68190*kf", ["68190"]),
-    ("kf*A/(12.5 + A)", ["12.5"]),
-    # STRUCTURAL_VALUES stay free: zero, the identities, the oligomer multiplicities and their
-    # reciprocals, however spelled
-    ("0*A + 1*B", []),
-    ("2*kf*A", []),
-    ("kf*A^2/(1 + A^2)", []),
-    ("kf*A^3", []),
-    ("kf*A^4", []),
-    ("6*kf*A", []),
-    ("0.5*kf*A - 0.25*kf*B", []),          # 1/2 and 1/4 by value
-    ("kf*A*(1/3) + kf*B*(1/6)", []),
-    ("kf*A/6 - kf*B/4", []),
-    ("100*kf*A", []),                      # percent: a unit with nothing to absorb it into
-    ("kf*A/100", []),
-    # ...and nothing else is. A unit or scale factor is a magnitude like any other: name it, or
-    # pay for it. These were all free under the old three-significant-digit threshold.
-    ("1000000*kf*A", ["1000000"]),
-    ("60*kf*A + 3600*kf*B", ["60", "3600"]),
-    ("5*kf*A", ["5"]),                     # 5 is not an oligomer size and not in the set
-    ("5e-5*A", ["5e-5"]),
-    # exact rational comparison: a rounded third is not a third
-    ("kf*A*0.333", ["0.333"]),
-])
+@pytest.mark.parametrize(
+    "law, priced",
+    [
+        # the literals of the motivating run: fitted values, frozen in
+        ("0.000878*A", ["0.000878"]),
+        ("2.69e-5*A", ["2.69e-5"]),
+        ("kf*A^1.333", ["1.333"]),
+        ("kf*A/(0.0305 + A)", ["0.0305"]),
+        # published-looking numbers, integer or not
+        ("68190*kf", ["68190"]),
+        ("kf*A/(12.5 + A)", ["12.5"]),
+        # STRUCTURAL_VALUES stay free: zero, the identities, the oligomer multiplicities and their
+        # reciprocals, however spelled
+        ("0*A + 1*B", []),
+        ("2*kf*A", []),
+        ("kf*A^2/(1 + A^2)", []),
+        ("kf*A^3", []),
+        ("kf*A^4", []),
+        ("6*kf*A", []),
+        ("0.5*kf*A - 0.25*kf*B", []),  # 1/2 and 1/4 by value
+        ("kf*A*(1/3) + kf*B*(1/6)", []),
+        ("kf*A/6 - kf*B/4", []),
+        ("100*kf*A", []),  # percent: a unit with nothing to absorb it into
+        ("kf*A/100", []),
+        # ...and nothing else is. A unit or scale factor is a magnitude like any other: name it, or
+        # pay for it. These were all free under the old three-significant-digit threshold.
+        ("1000000*kf*A", ["1000000"]),
+        ("60*kf*A + 3600*kf*B", ["60", "3600"]),
+        ("5*kf*A", ["5"]),  # 5 is not an oligomer size and not in the set
+        ("5e-5*A", ["5e-5"]),
+        # exact rational comparison: a rounded third is not a third
+        ("kf*A*0.333", ["0.333"]),
+    ],
+)
 def test_only_the_structural_multiplicities_are_free(law, priced):
     """The free set is enumerated (`literals.STRUCTURAL_VALUES`), not a threshold, so there is no
     rounding move onto it: the nearest free value to a fitted rate constant is `0`, which deletes
@@ -99,10 +102,12 @@ def test_the_free_set_is_closed_under_sign_and_reciprocal():
 def test_each_distinct_value_is_charged_once_however_written():
     """`1.333` appears in three of the motivating run's rate laws as ONE shared exponent — one
     degree of freedom, one parameter. Two spellings of the same value are the same constant."""
-    ant = ("model m\n  species A, B, C;\n  A = 5; B = 0; C = 0;\n  kf = 0.5;\n"
-           "  R1: A -> B; kf*A^1.333;\n"
-           "  R2: B -> C; kf*B^1.333 + 2.69e-5*B;\n"
-           "  R3: C -> A; 0.0000269*C + kf*C^1.333;\nend\n")
+    ant = (
+        "model m\n  species A, B, C;\n  A = 5; B = 0; C = 0;\n  kf = 0.5;\n"
+        "  R1: A -> B; kf*A^1.333;\n"
+        "  R2: B -> C; kf*B^1.333 + 2.69e-5*B;\n"
+        "  R3: C -> A; 0.0000269*C + kf*C^1.333;\nend\n"
+    )
     assert L.hardcoded_constants(_sbml_model(ant)) == ["2.69e-5", "1.333"]
 
 
@@ -113,12 +118,14 @@ def test_every_math_container_is_scanned_but_species_initials_and_parameter_valu
     into an ESTIMATED `<sid>_init` row already, so scanning it would double-charge. A parameter's
     model value is overridden by the table, so it is not scanned either. `2.5` in the assignment
     IS charged — two significant digits bought nothing once the free set became a fixed list."""
-    ant = ("function hill(y)\n  y^1.333/(0.0305^1.333 + y^1.333)\nend\n"
-           "model m\n  species A, B;\n  A = 5.678; B = 0;\n  kf = 0.000878;\n  scale = 0.5;\n"
-           "  R1: A -> B; kf*hill(A);\n"
-           "  readout_B := 0.0345*B;\n"
-           "  scale = 2.5*kf;\n"
-           "  E1: at (time > 10.5): A = 1.234;\nend\n")
+    ant = (
+        "function hill(y)\n  y^1.333/(0.0305^1.333 + y^1.333)\nend\n"
+        "model m\n  species A, B;\n  A = 5.678; B = 0;\n  kf = 0.000878;\n  scale = 0.5;\n"
+        "  R1: A -> B; kf*hill(A);\n"
+        "  readout_B := 0.0345*B;\n"
+        "  scale = 2.5*kf;\n"
+        "  E1: at (time > 10.5): A = 1.234;\nend\n"
+    )
     sm = _sbml_model(ant)
     assert L.hardcoded_constants(sm) == ["0.0305", "0.0345", "1.234", "1.333", "2.5", "10.5"]
 
@@ -153,8 +160,11 @@ def test_the_shipped_true_models_price_only_these_literals():
 
     offenders = {}
     for run in sorted((Path(__file__).parent.parent / "examples").glob("*/run.py")):
-        m = re.search(r'^TRUE_ANT\s*=\s*(?:r?"""|\'\'\')\\?\n?(.*?)(?:"""|\'\'\')', run.read_text(),
-                      re.S | re.M)
+        m = re.search(
+            r'^TRUE_ANT\s*=\s*(?:r?"""|\'\'\')\\?\n?(.*?)(?:"""|\'\'\')',
+            run.read_text(),
+            re.S | re.M,
+        )
         if m is None:
             continue
         found = L.hardcoded_constants(_sbml_model(m.group(1)))
@@ -165,7 +175,9 @@ def test_the_shipped_true_models_price_only_these_literals():
 
 # --------------------------------------------------------------------------- the assembly
 def test_complexity_k_adds_the_constants_to_the_estimated_rows():
-    assert fitting.complexity_k({"n_estimated": 4, "hardcoded_constants": ["0.000878", "1.333"]}) == 6
+    assert (
+        fitting.complexity_k({"n_estimated": 4, "hardcoded_constants": ["0.000878", "1.333"]}) == 6
+    )
     # a payload from before the field existed charges none; one without n_estimated has no k at all
     assert fitting.complexity_k({"n_estimated": 4}) == 4
     assert fitting.complexity_k({"hardcoded_constants": ["1.333"]}) is None
@@ -175,9 +187,15 @@ def test_complexity_k_adds_the_constants_to_the_estimated_rows():
 def test_the_fit_result_block_prices_the_constants_and_names_them():
     """The block's bic must charge the literals AND say so: a `k` above `n_estimated` with nothing
     to explain it reads as a bug, and the agent cannot act on a number it is not shown."""
-    fitsim = {"status": "fit", "neg_log_likelihood": -50.0, "chi2": 18.0, "n_data_points": 100,
-              "n_estimated": 4, "hardcoded_constants": ["0.000878", "2.69e-5", "1.333"],
-              "fitted_parameters": {"a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0}}
+    fitsim = {
+        "status": "fit",
+        "neg_log_likelihood": -50.0,
+        "chi2": 18.0,
+        "n_data_points": 100,
+        "n_estimated": 4,
+        "hardcoded_constants": ["0.000878", "2.69e-5", "1.333"],
+        "fitted_parameters": {"a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0},
+    }
     block = fitting.fit_result_block(fitsim)
     assert block["n_estimated"] == 4 and block["k"] == 7
     assert block["hardcoded_constants"] == ["0.000878", "2.69e-5", "1.333"]
@@ -190,10 +208,19 @@ def test_the_fit_result_block_prices_the_constants_and_names_them():
 def test_a_new_best_is_judged_on_the_priced_bic(session):
     """`is_new_best` tracks BIC, so freezing four fitted values must not register as an
     improvement over estimating them: same nll, same k, same bic."""
-    estimated = {"status": "fit", "neg_log_likelihood": -50.0, "chi2": 18.0, "n_data_points": 100,
-                 "n_estimated": 8, "hardcoded_constants": []}
-    frozen = {**estimated, "n_estimated": 4,
-              "hardcoded_constants": ["0.000878", "2.69e-5", "1.333", "0.0305"]}
+    estimated = {
+        "status": "fit",
+        "neg_log_likelihood": -50.0,
+        "chi2": 18.0,
+        "n_data_points": 100,
+        "n_estimated": 8,
+        "hardcoded_constants": [],
+    }
+    frozen = {
+        **estimated,
+        "n_estimated": 4,
+        "hardcoded_constants": ["0.000878", "2.69e-5", "1.333", "0.0305"],
+    }
     a = fitting.compute_improvement(session, nllh=-50.0, objective_before=None, fitsim=estimated)
     b = fitting.compute_improvement(session, nllh=-50.0, objective_before=None, fitsim=frozen)
     assert a["bic"] == pytest.approx(b["bic"])
@@ -203,9 +230,15 @@ def test_the_streak_checkpoint_and_the_stored_version_use_the_same_k(session):
     """The early-stop checkpoint (`record_fit_progress`) and the version meta the judge scans
     (`_snapshot_version`) must price the literals too, or a frozen model would become the
     best-BIC checkpoint the judge restores while the fit block said otherwise."""
-    fitsim = {"status": "fit", "neg_log_likelihood": -50.0, "chi2": 18.0, "n_data_points": 100,
-              "n_estimated": 4, "hardcoded_constants": ["0.000878", "1.333"],
-              "fitted_parameters": {"k1": 0.5, "k2": 0.1}}
+    fitsim = {
+        "status": "fit",
+        "neg_log_likelihood": -50.0,
+        "chi2": 18.0,
+        "n_data_points": 100,
+        "n_estimated": 4,
+        "hardcoded_constants": ["0.000878", "1.333"],
+        "fitted_parameters": {"k1": 0.5, "k2": 0.1},
+    }
     expected = 6 * math.log(100) + 2 * -50.0
     session.record_fit_progress(0, fitsim, {"is_new_best": True})
     # Checkpoint.score is the run's criterion — bic under the default the session resolves to.
@@ -219,9 +252,12 @@ def test_the_judge_derives_the_same_k_from_its_own_reads():
     model never declared (`in_model: false`, appended by get_parameters for display) is not a free
     parameter of the model being scored and must not be charged — counting it made the judge's k
     exceed the server's by one per undeclared shipped row."""
-    params = [{"parameter_id": "a", "estimate": 1}, {"parameter_id": "b", "estimate": 1},
-              {"parameter_id": "sigma", "estimate": 0},
-              {"parameter_id": "shipped_unused", "estimate": 1, "in_model": False}]
+    params = [
+        {"parameter_id": "a", "estimate": 1},
+        {"parameter_id": "b", "estimate": 1},
+        {"parameter_id": "sigma", "estimate": 0},
+        {"parameter_id": "shipped_unused", "estimate": 1, "in_model": False},
+    ]
     final = {"neg_log_likelihood": -50.0, "hardcoded_constants": ["0.000878", "1.333"]}
     assert _candidate_k(params, final) == (4, 2, ["0.000878", "1.333"])
     # a summary without the list (an older server) or an unreadable read charges none
@@ -229,12 +265,16 @@ def test_the_judge_derives_the_same_k_from_its_own_reads():
     assert _candidate_k("not a list", None) == (0, 0, [])
 
 
-_TOY_BASE = (DATA_DIR / "problem.yaml")
+_TOY_BASE = DATA_DIR / "problem.yaml"
 
 
 def _server(tmp_path, auto_fit=False):
-    return create_server(str(_TOY_BASE), provenance_dir=str(tmp_path / "prov"),
-                         resolver=StubReferenceResolver(), auto_fit=auto_fit)
+    return create_server(
+        str(_TOY_BASE),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+        auto_fit=auto_fit,
+    )
 
 
 _FROZEN_TOY = """model conversion_reaction
@@ -259,9 +299,15 @@ def test_the_server_reports_the_constants_on_the_edit_result_and_the_summary(tmp
     mcp = _server(tmp_path)
 
     async def go():
-        res = (await mcp.call_tool("make_changes", {
-            "antimony": _FROZEN_TOY, "justification": "freeze k2 at its fitted value",
-        })).structured_content
+        res = (
+            await mcp.call_tool(
+                "make_changes",
+                {
+                    "antimony": _FROZEN_TOY,
+                    "justification": "freeze k2 at its fitted value",
+                },
+            )
+        ).structured_content
         assert res["applied"] is True and res["committed"] is True
         summary = (await mcp.call_tool("get_fit_summary", {})).structured_content
         assert summary["hardcoded_constants"] == ["0.0987"]
@@ -306,7 +352,7 @@ def test_the_reference_pays_for_its_fitted_literals():
     ref = {"nll": -66.58, "k": 19, "n": 144, "noise_sigma": {}}
     charged = charge_hardcoded_parameters(ref, {"68190": "pro_EGFR, the author's fitted pool"})
     assert charged == {**ref, "k": 20, "hardcoded_constants": ["68190"]}
-    assert ref["k"] == 19                      # pure: the input is not mutated
+    assert ref["k"] == 19  # pure: the input is not mutated
     assert charge_hardcoded_parameters(ref, None) is ref
     assert charge_hardcoded_parameters(ref, {}) is ref
 
@@ -324,11 +370,17 @@ def test_every_declared_reference_charge_is_in_the_committed_reference():
         tree = ast.parse(run.read_text())
         declared = None
         for node in tree.body:
-            targets = getattr(node, "targets", None) or ([node.target] if hasattr(node, "target") else [])
+            targets = getattr(node, "targets", None) or (
+                [node.target] if hasattr(node, "target") else []
+            )
             if any(getattr(t, "id", None) == "REFERENCE_HARDCODED_PARAMS" for t in targets):
                 declared = sorted(ast.literal_eval(node.value))
         ref_path = run.parent / "problem" / "reference.json"
-        recorded = json.loads(ref_path.read_text()).get("hardcoded_constants") if ref_path.is_file() else None
+        recorded = (
+            json.loads(ref_path.read_text()).get("hardcoded_constants")
+            if ref_path.is_file()
+            else None
+        )
         if declared is None and recorded is None:
             continue
         assert declared == sorted(recorded or []), (run.parent.name, declared, recorded)
@@ -341,15 +393,24 @@ def test_the_judge_records_the_parameter_vector_it_scored():
     out AS, so reading a finished run's fit back meant re-fitting it. A fit writes its result into
     `nominalValue`, and the vector is exactly the rows `_candidate_k` charges: a fixed row is not
     estimated, and an `in_model: false` row is a shipped parameter this model never declared."""
-    params = [{"parameterId": "a", "estimate": 1, "nominalValue": 0.75},
-              {"parameterId": "b", "estimate": 1, "nominalValue": 12.0},
-              {"parameterId": "sigma", "estimate": 0, "nominalValue": 0.1},
-              {"parameterId": "shipped_unused", "estimate": 1, "in_model": False, "nominalValue": 3.0}]
+    params = [
+        {"parameterId": "a", "estimate": 1, "nominalValue": 0.75},
+        {"parameterId": "b", "estimate": 1, "nominalValue": 12.0},
+        {"parameterId": "sigma", "estimate": 0, "nominalValue": 0.1},
+        {"parameterId": "shipped_unused", "estimate": 1, "in_model": False, "nominalValue": 3.0},
+    ]
     assert _fitted_parameters(params) == {"a": 0.75, "b": 12.0}
     # The same rows k charges, so the vector's length is auditable against `k_estimated`.
     assert len(_fitted_parameters(params)) == _candidate_k(params, None)[1]
     # None, not {}, where the read is unusable: "nothing recorded" is not "nothing estimated".
     assert _fitted_parameters("not a list") is None and _fitted_parameters([]) == {}
     # A row whose value is missing or non-numeric is skipped rather than crashing the judge.
-    assert _fitted_parameters([{"parameterId": "a", "estimate": 1, "nominalValue": None},
-                               {"parameterId": "b", "estimate": 1, "nominalValue": "nan"}]) == {}
+    assert (
+        _fitted_parameters(
+            [
+                {"parameterId": "a", "estimate": 1, "nominalValue": None},
+                {"parameterId": "b", "estimate": 1, "nominalValue": "nan"},
+            ]
+        )
+        == {}
+    )

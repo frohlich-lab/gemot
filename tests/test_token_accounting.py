@@ -13,8 +13,6 @@ pytest.importorskip("langchain_core", reason="harness-only dependency")
 from petab_harness.agent import token_usage as _token_usage  # noqa: E402
 
 
-
-
 def _resp(usage_list=None, llm_output=None, metas=None):
     """A fake LLMResult: generations carry AIMessage.usage_metadata (and response_metadata, where
     a stream's usage block lands); llm_output is the fallback."""
@@ -22,24 +20,33 @@ def _resp(usage_list=None, llm_output=None, metas=None):
     if usage_list is not None:
         metas = metas or [None] * len(usage_list)
         generations = [
-            [type("G", (), {"message": type("M", (), {"usage_metadata": um,
-                                                       "response_metadata": meta})()})()]
-            for um, meta in zip(usage_list, metas)]
+            [
+                type(
+                    "G",
+                    (),
+                    {"message": type("M", (), {"usage_metadata": um, "response_metadata": meta})()},
+                )()
+            ]
+            for um, meta in zip(usage_list, metas)
+        ]
     return type("R", (), {"generations": generations, "llm_output": llm_output})()
 
 
 def _um(inp, out, cache=0, written=0):
     """langchain's UsageMetadata. `cache_creation` is where langchain_openai puts OpenRouter's
     `prompt_tokens_details.cache_write_tokens` — the premium-priced column."""
-    return {"input_tokens": inp, "output_tokens": out,
-            "input_token_details": {"cache_read": cache, "cache_creation": written}}
+    return {
+        "input_tokens": inp,
+        "output_tokens": out,
+        "input_token_details": {"cache_read": cache, "cache_creation": written},
+    }
 
 
 @pytest.mark.asyncio
 async def test_sums_usage_metadata_including_cache_read():
     acc = _token_usage._token_accountant()
     await acc.on_llm_end(_resp([_um(1000, 50, cache=800)]))
-    await acc.on_llm_end(_resp([_um(2000, 40, cache=1500)]))   # accumulates across calls
+    await acc.on_llm_end(_resp([_um(2000, 40, cache=1500)]))  # accumulates across calls
     t = acc.totals()
     assert t["prompt_tokens"] == 3000
     assert t["completion_tokens"] == 90
@@ -76,9 +83,17 @@ async def test_sums_cache_writes_separately_from_reads():
 @pytest.mark.asyncio
 async def test_falls_back_to_llm_output_when_no_usage_metadata():
     acc = _token_usage._token_accountant()
-    await acc.on_llm_end(_resp(llm_output={"token_usage": {
-        "prompt_tokens": 700, "completion_tokens": 30,
-        "prompt_tokens_details": {"cached_tokens": 400, "cache_write_tokens": 250}}}))
+    await acc.on_llm_end(
+        _resp(
+            llm_output={
+                "token_usage": {
+                    "prompt_tokens": 700,
+                    "completion_tokens": 30,
+                    "prompt_tokens_details": {"cached_tokens": 400, "cache_write_tokens": 250},
+                }
+            }
+        )
+    )
     t = acc.totals()
     assert t["prompt_tokens"] == 700 and t["completion_tokens"] == 30
     assert t["cache_read_tokens"] == 400 and t["n_llm_calls"] == 1
@@ -92,8 +107,10 @@ async def test_no_usage_records_zero_and_no_call():
     particular, does not count as an LLM call — so the run-level n_llm_calls==0 warning can fire
     rather than the zeros passing as a genuinely tiny run."""
     acc = _token_usage._token_accountant()
-    await acc.on_llm_end(_resp([{"input_tokens": 0, "output_tokens": 0}]))  # empty-but-present usage
-    await acc.on_llm_end(_resp(llm_output={}))                              # no usage anywhere
+    await acc.on_llm_end(
+        _resp([{"input_tokens": 0, "output_tokens": 0}])
+    )  # empty-but-present usage
+    await acc.on_llm_end(_resp(llm_output={}))  # no usage anywhere
     t = acc.totals()
     assert t["total_tokens"] == 0
     # the empty-but-present usage_metadata counts as a call; the usage-less one does not
@@ -105,13 +122,20 @@ async def test_malformed_field_does_not_discard_other_records():
     """A bad value in one usage field must contribute 0 without aborting the rest of the
     response's records — a whole-method try/except would have dropped the good one too."""
     acc = _token_usage._token_accountant()
-    await acc.on_llm_end(_resp([
-        {"input_tokens": "oops", "output_tokens": 10},   # bad prompt -> 0, completion still 10
-        _um(500, 25, cache=200),                          # fully valid, must still be counted
-    ]))
+    await acc.on_llm_end(
+        _resp(
+            [
+                {
+                    "input_tokens": "oops",
+                    "output_tokens": 10,
+                },  # bad prompt -> 0, completion still 10
+                _um(500, 25, cache=200),  # fully valid, must still be counted
+            ]
+        )
+    )
     t = acc.totals()
-    assert t["prompt_tokens"] == 500          # 0 (bad) + 500 (good)
-    assert t["completion_tokens"] == 35       # 10 + 25 — the good record was NOT discarded
+    assert t["prompt_tokens"] == 500  # 0 (bad) + 500 (good)
+    assert t["completion_tokens"] == 35  # 10 + 25 — the good record was NOT discarded
     assert t["cache_read_tokens"] == 200
     assert t["n_llm_calls"] == 2
 
@@ -119,13 +143,14 @@ async def test_malformed_field_does_not_discard_other_records():
 @pytest.mark.asyncio
 async def test_never_raises_on_malformed_response():
     acc = _token_usage._token_accountant()
-    await acc.on_llm_end(_resp(llm_output=None))                 # nothing usable
+    await acc.on_llm_end(_resp(llm_output=None))  # nothing usable
     await acc.on_llm_end(type("R", (), {"generations": "garbage", "llm_output": 5})())
     assert acc.totals()["total_tokens"] == 0
     assert acc.totals()["cost_usd"] is None
 
 
 # ------------------------------------------------------------------ billed cost (#178)
+
 
 def _tu(cost, prompt=1000, completion=50):
     """OpenRouter's raw usage block as langchain_openai keeps it in ``token_usage``."""
@@ -149,8 +174,13 @@ async def test_cost_is_counted_once_per_response():
     n>1; it is the bill for one call and is added once."""
     acc = _token_usage._token_accountant()
     tu = _tu(0.005)
-    await acc.on_llm_end(_resp([_um(1000, 50), _um(1000, 50)], llm_output={"token_usage": tu},
-                               metas=[{"token_usage": tu}, {"token_usage": tu}]))
+    await acc.on_llm_end(
+        _resp(
+            [_um(1000, 50), _um(1000, 50)],
+            llm_output={"token_usage": tu},
+            metas=[{"token_usage": tu}, {"token_usage": tu}],
+        )
+    )
     assert acc.totals()["cost_usd"] == pytest.approx(0.005)
 
 
@@ -158,8 +188,9 @@ async def test_cost_is_counted_once_per_response():
 async def test_streamed_response_cost_is_read_from_response_metadata():
     """A stream arrives with llm_output=None and its usage block on response_metadata only."""
     acc = _token_usage._token_accountant()
-    await acc.on_llm_end(_resp([_um(1000, 50)], llm_output=None,
-                               metas=[{"token_usage": _tu(0.002)}]))
+    await acc.on_llm_end(
+        _resp([_um(1000, 50)], llm_output=None, metas=[{"token_usage": _tu(0.002)}])
+    )
     t = acc.totals()
     assert t["cost_usd"] == pytest.approx(0.002) and t["n_uncosted_calls"] == 0
 
@@ -168,8 +199,9 @@ async def test_streamed_response_cost_is_read_from_response_metadata():
 async def test_no_billed_cost_records_none_not_zero():
     """Usage without `cost` (a non-OpenRouter endpoint) records None, not 0.0."""
     acc = _token_usage._token_accountant()
-    await acc.on_llm_end(_resp([_um(1000, 50)],
-                               llm_output={"token_usage": {"prompt_tokens": 1000}}))
+    await acc.on_llm_end(
+        _resp([_um(1000, 50)], llm_output={"token_usage": {"prompt_tokens": 1000}})
+    )
     t = acc.totals()
     assert t["cost_usd"] is None
     assert t["n_uncosted_calls"] == t["n_llm_calls"] == 1
@@ -202,8 +234,9 @@ async def test_partial_cost_coverage_is_visible():
 
 async def _start(acc, agent="lead", node="model"):
     run_id = uuid4()
-    await acc.on_chat_model_start({}, [], run_id=run_id,
-                                  metadata={"lc_agent_name": agent, "langgraph_node": node})
+    await acc.on_chat_model_start(
+        {}, [], run_id=run_id, metadata={"lc_agent_name": agent, "langgraph_node": node}
+    )
     return run_id
 
 
@@ -232,8 +265,11 @@ async def test_lead_final_does_not_reuse_an_earlier_count_when_usage_is_missing(
     """Both provider usage shapes preserve unknown vs zero, even after a measured lead call."""
     acc = _token_usage._token_accountant()
     await acc.on_llm_end(_resp([_um(1000, 10)]), run_id=await _start(acc))
-    result = (_resp(llm_output={"token_usage": {"prompt_tokens": size, "completion_tokens": 10}})
-              if raw_usage else _resp([_um(size, 10)]))
+    result = (
+        _resp(llm_output={"token_usage": {"prompt_tokens": size, "completion_tokens": 10}})
+        if raw_usage
+        else _resp([_um(size, 10)])
+    )
     await acc.on_llm_end(result, run_id=await _start(acc))
     expected = size if type(size) is int and size >= 0 else None
     assert acc.totals()["final_lead_prompt_tokens"] == expected
@@ -278,9 +314,16 @@ async def test_real_deepagents_callbacks_separate_shared_model_and_summary_calls
     from langgraph.checkpoint.memory import MemorySaver
 
     def message(size, content="done", **kwargs):
-        return AIMessage(content=content, usage_metadata={
-            "input_tokens": size, "output_tokens": 10, "total_tokens": size + 10,
-            "input_token_details": {"cache_read": size // 2}}, **kwargs)
+        return AIMessage(
+            content=content,
+            usage_metadata={
+                "input_tokens": size,
+                "output_tokens": 10,
+                "total_tokens": size + 10,
+                "input_token_details": {"cache_read": size // 2},
+            },
+            **kwargs,
+        )
 
     class ToolModel(FakeMessagesListChatModel):
         def bind_tools(self, tools, **kwargs):
@@ -292,17 +335,38 @@ async def test_real_deepagents_callbacks_separate_shared_model_and_summary_calls
         async def abefore_model(self, state, runtime):
             await helper.ainvoke([HumanMessage(content="summarize")])
 
-    llm = ToolModel(responses=[
-        message(1000, content="", tool_calls=[
-            {"name": "task", "args": {"subagent_type": name, "description": "inspect"},
-             "id": name, "type": "tool_call"} for name in ["analyst_a", "analyst_b"]]),
-        message(5000), message(9000), message(300), message(400),
-    ])
+    llm = ToolModel(
+        responses=[
+            message(
+                1000,
+                content="",
+                tool_calls=[
+                    {
+                        "name": "task",
+                        "args": {"subagent_type": name, "description": "inspect"},
+                        "id": name,
+                        "type": "tool_call",
+                    }
+                    for name in ["analyst_a", "analyst_b"]
+                ],
+            ),
+            message(5000),
+            message(9000),
+            message(300),
+            message(400),
+        ]
+    )
     graph = create_deep_agent(
-        model=llm, name=_token_usage._LEAD_AGENT_NAME, system_prompt="lead", tools=[],
-        subagents=[{"name": name, "description": "analyst", "system_prompt": "analyst",
-                    "tools": []} for name in ["analyst_a", "analyst_b"]],
-        middleware=[SummaryProbe()], checkpointer=MemorySaver(),
+        model=llm,
+        name=_token_usage._LEAD_AGENT_NAME,
+        system_prompt="lead",
+        tools=[],
+        subagents=[
+            {"name": name, "description": "analyst", "system_prompt": "analyst", "tools": []}
+            for name in ["analyst_a", "analyst_b"]
+        ],
+        middleware=[SummaryProbe()],
+        checkpointer=MemorySaver(),
     )
     acc = _token_usage._token_accountant()
     config = {"callbacks": [acc], "configurable": {"thread_id": "lead-prompt-test"}}

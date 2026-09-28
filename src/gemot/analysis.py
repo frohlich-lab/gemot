@@ -62,6 +62,7 @@ from . import paths
 # cost
 # ---------------------------------------------------------------------------------------------
 
+
 def run_cost(token_usage: dict | None) -> float | None:
     """Dollars for one run, as the provider billed it: ``token_usage["cost_usd"]``.
 
@@ -92,6 +93,7 @@ def cache_fraction(rows: Iterable[dict]) -> float | None:
 # loading
 # ---------------------------------------------------------------------------------------------
 
+
 def default_results_root() -> Path:
     """Where a sweep's per-task results land when ``make_sweep.py`` is run with its defaults.
 
@@ -119,8 +121,12 @@ def work_roots() -> tuple[Path, ...]:
     version-store check in :func:`find_work_dir` is what makes searching all of them safe.
     """
     repo = paths.repo_root()
-    candidates = [default_work_root(), repo / "slurm" / "runs" / "work",
-                  repo / "slurm" / "work", repo / ".slurm_scratch"]
+    candidates = [
+        default_work_root(),
+        repo / "slurm" / "runs" / "work",
+        repo / "slurm" / "work",
+        repo / ".slurm_scratch",
+    ]
     seen: dict[Path, None] = {}
     for c in candidates:
         seen.setdefault(c, None)
@@ -149,8 +155,12 @@ def _load_json(path: str | Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def load_sweep_results(jobs: Iterable[str | int] | str | int, results_root: str | Path | None = None,
-                       *, include_missing: bool = False) -> list[dict]:
+def load_sweep_results(
+    jobs: Iterable[str | int] | str | int,
+    results_root: str | Path | None = None,
+    *,
+    include_missing: bool = False,
+) -> list[dict]:
     """One row per task of the given Slurm array job(s): ``result.json`` joined with ``combo.env``.
 
     Each row is the run's ``result.json`` dict plus ``task`` (``<job>_<index>``), ``job``, ``index``
@@ -183,11 +193,13 @@ def load_sweep_results(jobs: Iterable[str | int] | str | int, results_root: str 
                     "model": combo.get("model"),
                     "success": False,
                     "delta_bic": None,
-                    "stop_reason": combo.get("reason") or f"no result.json (exit {combo.get('exit_code', '?')})",
+                    "stop_reason": combo.get("reason")
+                    or f"no result.json (exit {combo.get('exit_code', '?')})",
                 }
             index = task_dir.name.rsplit("_", 1)[-1]
-            rows.append({**result, "task": task_dir.name, "job": str(job), "index": index,
-                         "combo": combo})
+            rows.append(
+                {**result, "task": task_dir.name, "job": str(job), "index": index, "combo": combo}
+            )
     return rows
 
 
@@ -221,16 +233,16 @@ def load_archive_results(archive_root: str | Path | None = None) -> list[dict]:
 
 #: The buckets :func:`stop_class` sorts a run into, in the order a report should list them.
 STOP_CLASSES = (
-    "completed",          # the agent finished through the gate
-    "early_stop",         # the server's plateau / streak stop fired
-    "budget",             # wall-time, token, or recursion budget — a genuine outcome, counted
-    "no_model",           # never committed a fittable model
-    "content_filter",     # the provider refused the prompt — deterministic, not retried
-    "reconstructed",      # rebuilt from a killed run's version store (slurm/recover_run.py)
-    "server_unreachable", # the task never reached the petab-mcp server (exit 97, shared-server sweeps)
-    "no_result",          # the task left a combo.env but no result.json: killed before its verdict
-    "infra_partial",      # infrastructure abort AFTER real modeling work — a valid partial result
-    "infra_noop",         # infrastructure abort before any work — scoring noise, excluded
+    "completed",  # the agent finished through the gate
+    "early_stop",  # the server's plateau / streak stop fired
+    "budget",  # wall-time, token, or recursion budget — a genuine outcome, counted
+    "no_model",  # never committed a fittable model
+    "content_filter",  # the provider refused the prompt — deterministic, not retried
+    "reconstructed",  # rebuilt from a killed run's version store (slurm/recover_run.py)
+    "server_unreachable",  # the task never reached the petab-mcp server (exit 97, shared-server sweeps)
+    "no_result",  # the task left a combo.env but no result.json: killed before its verdict
+    "infra_partial",  # infrastructure abort AFTER real modeling work — a valid partial result
+    "infra_noop",  # infrastructure abort before any work — scoring noise, excluded
     "other",
 )
 
@@ -306,6 +318,7 @@ def is_scoreable(row: dict) -> bool:
 # aggregation
 # ---------------------------------------------------------------------------------------------
 
+
 def _median(values: list[float]) -> float | None:
     return statistics.median(values) if values else None
 
@@ -327,26 +340,32 @@ def summarize_by(rows: Iterable[dict], key: str = "model") -> list[dict]:
     for group, runs in sorted(groups.items(), key=lambda kv: str(kv[0])):
         scoreable = [r for r in runs if is_scoreable(r)]
         deltas = [d for d in (score_delta(r) for r in scoreable) if d is not None]
-        costs = [c for c in (run_cost(r.get("token_usage")) for r in runs)
-                 if c is not None]
+        costs = [c for c in (run_cost(r.get("token_usage")) for r in runs) if c is not None]
         stops: dict[str, int] = {}
         for r in runs:
             stops[stop_class(r)] = stops.get(stop_class(r), 0) + 1
-        out.append({
-            key: group,
-            "n": len(runs),
-            "n_scoreable": len(scoreable),
-            "n_success": sum(1 for r in scoreable if r.get("success")),
-            "success_rate": (sum(1 for r in scoreable if r.get("success")) / len(scoreable)
-                             if scoreable else None),
-            "median_delta": _median(deltas),
-            "best_delta": min(deltas) if deltas else None,
-            "total_cost": sum(costs) if costs else None,
-            "mean_cost": (sum(costs) / len(costs)) if costs else None,
-            "cache_fraction": cache_fraction(runs),
-            "llm_calls": sum((r.get("token_usage") or {}).get("n_llm_calls") or 0 for r in runs),
-            "stops": dict(sorted(stops.items())),
-        })
+        out.append(
+            {
+                key: group,
+                "n": len(runs),
+                "n_scoreable": len(scoreable),
+                "n_success": sum(1 for r in scoreable if r.get("success")),
+                "success_rate": (
+                    sum(1 for r in scoreable if r.get("success")) / len(scoreable)
+                    if scoreable
+                    else None
+                ),
+                "median_delta": _median(deltas),
+                "best_delta": min(deltas) if deltas else None,
+                "total_cost": sum(costs) if costs else None,
+                "mean_cost": (sum(costs) / len(costs)) if costs else None,
+                "cache_fraction": cache_fraction(runs),
+                "llm_calls": sum(
+                    (r.get("token_usage") or {}).get("n_llm_calls") or 0 for r in runs
+                ),
+                "stops": dict(sorted(stops.items())),
+            }
+        )
     return out
 
 
@@ -359,6 +378,7 @@ def timing_split(row: dict) -> dict[str, float | None]:
     have measured itself. ``tool_wall`` is the raw client-side busy interval that ``compute``
     is derived from (``compute = tool_wall - queue``).
     """
+
     def _f(k: str) -> float | None:
         v = row.get(k)
         try:
@@ -367,10 +387,16 @@ def timing_split(row: dict) -> dict[str, float | None]:
             return None
 
     return {
-        "wall": _f("wall_seconds"), "llm": _f("llm_seconds"), "compute": _f("compute_seconds"),
-        "tool_wall": _f("tool_wall_seconds"), "queue": _f("queue_seconds"),
-        "compile": _f("compile_seconds"), "fit": _f("fit_seconds"),
-        "n_queue_waits": _f("n_queue_waits"), "n_fits": _f("n_fits"), "n_compiles": _f("n_compiles"),
+        "wall": _f("wall_seconds"),
+        "llm": _f("llm_seconds"),
+        "compute": _f("compute_seconds"),
+        "tool_wall": _f("tool_wall_seconds"),
+        "queue": _f("queue_seconds"),
+        "compile": _f("compile_seconds"),
+        "fit": _f("fit_seconds"),
+        "n_queue_waits": _f("n_queue_waits"),
+        "n_fits": _f("n_fits"),
+        "n_compiles": _f("n_compiles"),
     }
 
 
@@ -386,6 +412,7 @@ def timing_summary(rows: Iterable[dict]) -> dict[str, float | None]:
 
 def format_table(rows: list[dict], columns: list[tuple[str, str, str]]) -> str:
     """A plain-text table. ``columns`` are ``(key, header, format_spec)``; ``None`` prints ``-``."""
+
     def cell(row: dict, key: str, spec: str) -> str:
         v = row.get(key)
         if v is None:
@@ -400,13 +427,13 @@ def format_table(rows: list[dict], columns: list[tuple[str, str, str]]) -> str:
     table = [[h for _k, h, _s in columns]]
     table += [[cell(r, k, s) for k, _h, s in columns] for r in rows]
     widths = [max(len(line[i]) for line in table) for i in range(len(columns))]
-    return "\n".join("  ".join(c.ljust(w) for c, w in zip(line, widths)).rstrip()
-                     for line in table)
+    return "\n".join("  ".join(c.ljust(w) for c, w in zip(line, widths)).rstrip() for line in table)
 
 
 # ---------------------------------------------------------------------------------------------
 # the version store and the provenance log
 # ---------------------------------------------------------------------------------------------
+
 
 def store_dir(run_dir: str | Path) -> Path:
     """The ``.petab_mcp`` store for a run directory, whether given the run dir or the store itself."""
@@ -448,8 +475,9 @@ def bic_of(meta: dict, n_data_points: int | None) -> float | None:
     return 2.0 * float(nll) + k * math.log(n_data_points)
 
 
-def best_fitted_version(run_dir: str | Path, n_data_points: int | None = None
-                        ) -> tuple[float, dict, int] | None:
+def best_fitted_version(
+    run_dir: str | Path, n_data_points: int | None = None
+) -> tuple[float, dict, int] | None:
     """``(bic, meta, n_fitted)`` for the lowest-BIC REAL fit in a run's store, or ``None``.
 
     Only versions with ``fit_status == "fit"`` and a finite nll count: a simulate-only pass or a
@@ -470,8 +498,9 @@ def best_fitted_version(run_dir: str | Path, n_data_points: int | None = None
     return (best[0], best[1], n_fitted) if best else None
 
 
-def provenance_events(run_dir: str | Path, types: Iterable[str] | None = ("fit", "alteration")
-                      ) -> list[dict]:
+def provenance_events(
+    run_dir: str | Path, types: Iterable[str] | None = ("fit", "alteration")
+) -> list[dict]:
     """The events of a run's ``provenance.jsonl``, optionally filtered by ``type``.
 
     ``fit`` is the versioned op since issue #81 made every version a fit; older traces recorded it
@@ -569,8 +598,9 @@ def run_digest(run_dir: str | Path) -> dict:
 _WORK_DEPTHS = (("{tag}", "*", "work"), ("{tag}", "*", "*", "work"), ("*", "{tag}", "*", "work"))
 
 
-def find_work_dir(tag: str, results_root: str | Path | None = None,
-                  work_root: str | Path | None = None) -> Path | None:
+def find_work_dir(
+    tag: str, results_root: str | Path | None = None, work_root: str | Path | None = None
+) -> Path | None:
     """Where a sweep task's version store survives, for a run that never wrote ``result.json``.
 
     Looks, in order, at: the archive directory its ``result.json`` names (if one exists and holds
@@ -604,7 +634,9 @@ def find_work_dir(tag: str, results_root: str | Path | None = None,
     return None
 
 
-def find_live_runs(job: str | int = "*", work_root: str | Path | None = None) -> list[tuple[str, Path, dict]]:
+def find_live_runs(
+    job: str | int = "*", work_root: str | Path | None = None
+) -> list[tuple[str, Path, dict]]:
     """``(tag, work_dir, run_live)`` for every task of ``job`` that has started.
 
     ``run_live.json`` is written into the working directory at task START and carries the scenario,
@@ -615,8 +647,9 @@ def find_live_runs(job: str | int = "*", work_root: str | Path | None = None) ->
     out: dict[str, tuple[str, Path, dict]] = {}
     for root in roots:
         for parts in _WORK_DEPTHS:
-            pattern = os.path.join(str(root), *(p.format(tag=f"{job}_*") for p in parts),
-                                   "run_live.json")
+            pattern = os.path.join(
+                str(root), *(p.format(tag=f"{job}_*") for p in parts), "run_live.json"
+            )
             for path in sorted(glob.glob(pattern)):
                 live = _load_json(path)
                 if live is None:
@@ -656,18 +689,25 @@ def live_rows(job: str | int = "*", work_root: str | Path | None = None) -> list
                 continue
             n_fits += 1
             best = bic if best is None else min(best, bic)
-        if best is None:                                    # no provenance log: use the store
+        if best is None:  # no provenance log: use the store
             found = best_fitted_version(work, live.get("n_data_points"))
             if found:
                 best, _, n_fits = found
         ref, thr = live.get("bic_reference"), live.get("bic_threshold")
         delta = (best - ref) if (best is not None and ref is not None) else None
-        rows.append({
-            "task": tag, "work_dir": str(work), "scenario": live.get("scenario"),
-            "n_fits": n_fits, "best_bic": best, "bic_reference": ref, "bic_threshold": thr,
-            "delta_bic": delta,
-            "passing": None if (delta is None or thr is None) else delta <= thr,
-        })
+        rows.append(
+            {
+                "task": tag,
+                "work_dir": str(work),
+                "scenario": live.get("scenario"),
+                "n_fits": n_fits,
+                "best_bic": best,
+                "bic_reference": ref,
+                "bic_threshold": thr,
+                "delta_bic": delta,
+                "passing": None if (delta is None or thr is None) else delta <= thr,
+            }
+        )
     return rows
 
 
@@ -677,9 +717,22 @@ def live_rows(job: str | int = "*", work_root: str | Path | None = None) -> list
 
 #: The run identity the harness stamps on a trace's root span (``harness.tracing.record_run_result``),
 #: as ``petab.<key>`` attributes.
-PETAB_RUN_KEYS = ("scenario", "model", "success", "delta_bic", "criterion", "delta_criterion",
-                  "bic", "k", "n", "stop_reason", "final_nll", "baseline_nll", "git_sha",
-                  "recursion_limit")
+PETAB_RUN_KEYS = (
+    "scenario",
+    "model",
+    "success",
+    "delta_bic",
+    "criterion",
+    "delta_criterion",
+    "bic",
+    "k",
+    "n",
+    "stop_reason",
+    "final_nll",
+    "baseline_nll",
+    "git_sha",
+    "recursion_limit",
+)
 
 
 def phoenix_connect(db_path: str | Path) -> sqlite3.Connection:
@@ -757,10 +810,15 @@ def _span_row(row: sqlite3.Row) -> dict:
     except ValueError:
         raw = {}
     return {
-        "id": row["id"], "trace_rowid": row["trace_rowid"], "parent_id": row["parent_id"],
-        "name": row["name"], "span_kind": (row["span_kind"] or "").upper(),
-        "status_code": row["status_code"], "status_message": row["status_message"],
-        "start_time": row["start_time"], "attributes": flatten_attrs(raw),
+        "id": row["id"],
+        "trace_rowid": row["trace_rowid"],
+        "parent_id": row["parent_id"],
+        "name": row["name"],
+        "span_kind": (row["span_kind"] or "").upper(),
+        "status_code": row["status_code"],
+        "status_message": row["status_message"],
+        "start_time": row["start_time"],
+        "attributes": flatten_attrs(raw),
     }
 
 
@@ -775,18 +833,25 @@ def trace_rowids(conn: sqlite3.Connection, trace_ids: Iterable[str]) -> dict[str
     if not ids:
         return {}
     out: dict[str, int] = {}
-    for start in range(0, len(ids), 500):        # keep well under SQLITE_MAX_VARIABLE_NUMBER
-        chunk = ids[start:start + 500]
+    for start in range(0, len(ids), 500):  # keep well under SQLITE_MAX_VARIABLE_NUMBER
+        chunk = ids[start : start + 500]
         placeholders = ",".join("?" * len(chunk))
         for row in conn.execute(
-                f"select trace_id, id from traces where trace_id in ({placeholders})", chunk):
+            f"select trace_id, id from traces where trace_id in ({placeholders})", chunk
+        ):
             out[row["trace_id"]] = row["id"]
     return out
 
 
-def iter_spans(conn: sqlite3.Connection, *, kind: str | None = None,
-               trace_rowid: int | None = None, trace_ids: Iterable[str] | None = None,
-               name_like: str | None = None, roots_only: bool = False) -> Iterator[dict]:
+def iter_spans(
+    conn: sqlite3.Connection,
+    *,
+    kind: str | None = None,
+    trace_rowid: int | None = None,
+    trace_ids: Iterable[str] | None = None,
+    name_like: str | None = None,
+    roots_only: bool = False,
+) -> Iterator[dict]:
     """Stream spans as dicts with FLATTENED attributes, in start order.
 
     Filters are pushed into SQL so a 28 GB DB is walked once and only the matching rows are
@@ -816,8 +881,10 @@ def iter_spans(conn: sqlite3.Connection, *, kind: str | None = None,
         args.append(name_like)
     if roots_only:
         where.append("parent_id IS NULL")
-    sql = ("select id, trace_rowid, parent_id, name, span_kind, attributes, status_code, "
-           "status_message, start_time from spans")
+    sql = (
+        "select id, trace_rowid, parent_id, name, span_kind, attributes, status_code, "
+        "status_message, start_time from spans"
+    )
     if where:
         sql += " where " + " and ".join(where)
     sql += " order by start_time"
@@ -870,10 +937,17 @@ def tool_output(span: dict) -> Any:
 # ---------------------------------------------------------------------------------------------
 
 _SUMMARY_COLUMNS = [
-    ("model", "model", ""), ("n", "n", "d"), ("n_scoreable", "scored", "d"),
-    ("n_success", "ok", "d"), ("success_rate", "rate", ".2f"), ("median_delta", "med d", ".1f"),
-    ("best_delta", "best d", ".1f"), ("mean_cost", "$/run", ".3f"), ("total_cost", "total $", ".2f"),
-    ("cache_fraction", "cache", ".2f"), ("llm_calls", "calls", "d"),
+    ("model", "model", ""),
+    ("n", "n", "d"),
+    ("n_scoreable", "scored", "d"),
+    ("n_success", "ok", "d"),
+    ("success_rate", "rate", ".2f"),
+    ("median_delta", "med d", ".1f"),
+    ("best_delta", "best d", ".1f"),
+    ("mean_cost", "$/run", ".3f"),
+    ("total_cost", "total $", ".2f"),
+    ("cache_fraction", "cache", ".2f"),
+    ("llm_calls", "calls", "d"),
 ]
 
 
@@ -888,44 +962,86 @@ def _cmd_summary(args) -> int:
     print()
     print("stop buckets:")
     for r in by:
-        print(f"  {str(r[args.by])[:32]:32s} " + "  ".join(f"{k}={n}" for k, n in r["stops"].items()))
+        print(
+            f"  {str(r[args.by])[:32]:32s} " + "  ".join(f"{k}={n}" for k, n in r["stops"].items())
+        )
     timing = timing_summary(rows)
     print()
-    print("timing (medians, s): " + "  ".join(
-        f"{k[len('median_'):]}={v:.0f}" for k, v in timing.items()
-        if k.startswith("median_") and v is not None)
-          + f"  runs_with_queue_wait={timing['runs_with_queue_wait']}")
+    print(
+        "timing (medians, s): "
+        + "  ".join(
+            f"{k[len('median_') :]}={v:.0f}"
+            for k, v in timing.items()
+            if k.startswith("median_") and v is not None
+        )
+        + f"  runs_with_queue_wait={timing['runs_with_queue_wait']}"
+    )
     return 0
 
 
 #: ``rows`` CSV columns taken verbatim off ``result.json``, after the derived ones. The runaway
 #: counters are here because the guard's accuracy claim rests on them: a run that scored well with
 #: ``reasoning_runaways`` high was rescued by the ladder, not by the model.
-_ROW_PASSTHROUGH = ("llm_seconds", "compute_seconds", "queue_seconds", "server_mode",
-                    "workspace_id", "n_ops", "reasoning_runaways", "reasoning_runaway_recovered",
-                    "reasoning_runaway_retry_errors", "max_output_tokens", "ablation_state")
+_ROW_PASSTHROUGH = (
+    "llm_seconds",
+    "compute_seconds",
+    "queue_seconds",
+    "server_mode",
+    "workspace_id",
+    "n_ops",
+    "reasoning_runaways",
+    "reasoning_runaway_recovered",
+    "reasoning_runaway_retry_errors",
+    "max_output_tokens",
+    "ablation_state",
+)
 
 
 def _cmd_rows(args) -> int:
     rows = load_sweep_results(args.jobs, args.results_dir, include_missing=True)
     writer = csv.writer(__import__("sys").stdout)
-    writer.writerow(["task", "scenario", "model", "success", "delta", "criterion", "delta_bic",
-                     "stop_class", "stop_reason", "cost", *_ROW_PASSTHROUGH])
+    writer.writerow(
+        [
+            "task",
+            "scenario",
+            "model",
+            "success",
+            "delta",
+            "criterion",
+            "delta_bic",
+            "stop_class",
+            "stop_reason",
+            "cost",
+            *_ROW_PASSTHROUGH,
+        ]
+    )
     for r in rows:
-        writer.writerow([r.get("task"), r.get("scenario"), r.get("model"), r.get("success"),
-                         score_delta(r), r.get("criterion"),
-                         r.get("delta_bic"), stop_class(r), r.get("stop_reason"),
-                         run_cost(r.get("token_usage")),
-                         *(r.get(f) for f in _ROW_PASSTHROUGH)])
+        writer.writerow(
+            [
+                r.get("task"),
+                r.get("scenario"),
+                r.get("model"),
+                r.get("success"),
+                score_delta(r),
+                r.get("criterion"),
+                r.get("delta_bic"),
+                stop_class(r),
+                r.get("stop_reason"),
+                run_cost(r.get("token_usage")),
+                *(r.get(f) for f in _ROW_PASSTHROUGH),
+            ]
+        )
     return 0
 
 
 def _cmd_live(args) -> int:
     rows = live_rows(args.job, args.work_root)
     if not rows:
-        print(f"no run_live.json for job {args.job} under "
-              + ", ".join(str(r) for r in ([args.work_root] if args.work_root else work_roots()))
-              + " — has the sweep started?")
+        print(
+            f"no run_live.json for job {args.job} under "
+            + ", ".join(str(r) for r in ([args.work_root] if args.work_root else work_roots()))
+            + " — has the sweep started?"
+        )
         return 1
     scored = [r for r in rows if r["delta_bic"] is not None]
     print(f"{'task':<16} {'scenario':<12} {'fits':>4} {'best BIC':>11} {'ΔBIC':>9}  pass")
@@ -941,17 +1057,21 @@ def _cmd_live(args) -> int:
         thr = next((r["bic_threshold"] for r in scored if r["bic_threshold"] is not None), 0.0)
         under = sum(1 for r in scored if r["delta_bic"] <= thr)
         deltas = sorted(r["delta_bic"] for r in scored)
-        print(f"\n{under}/{len(scored)} under ΔBIC {thr:+.0f}, "
-              f"median {statistics.median(deltas):+.1f}, best {deltas[0]:+.1f} "
-              f"({len(rows) - len(scored)} with no scored fit yet)")
+        print(
+            f"\n{under}/{len(scored)} under ΔBIC {thr:+.0f}, "
+            f"median {statistics.median(deltas):+.1f}, best {deltas[0]:+.1f} "
+            f"({len(rows) - len(scored)} with no scored fit yet)"
+        )
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    p = argparse.ArgumentParser(prog="python -m petab_harness.analysis",
-                                description="Sweep summaries from result.json + combo.env.")
+    p = argparse.ArgumentParser(
+        prog="python -m petab_harness.analysis",
+        description="Sweep summaries from result.json + combo.env.",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("summary", help="per-model (or per-example) outcome, cost and timing table")
     s.add_argument("jobs", nargs="+", help="Slurm array job id(s)")
@@ -964,8 +1084,11 @@ def main(argv: list[str] | None = None) -> int:
     r.set_defaults(fn=_cmd_rows)
     live = sub.add_parser("live", help="best-so-far ΔBIC for an IN-FLIGHT sweep (no Phoenix)")
     live.add_argument("job", nargs="?", default="*", help="Slurm array job id (default: any)")
-    live.add_argument("--work-root", default=None,
-                      help="search only this work root (default: every root in work_roots())")
+    live.add_argument(
+        "--work-root",
+        default=None,
+        help="search only this work root (default: every root in work_roots())",
+    )
     live.set_defaults(fn=_cmd_live)
     args = p.parse_args(argv)
     return args.fn(args)

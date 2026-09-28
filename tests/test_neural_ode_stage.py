@@ -52,14 +52,26 @@ def test_the_staged_problem_is_lint_clean_and_wired_end_to_end(tmp_path):
     parameters = pd.read_csv(staged.directory / "parameters.tsv", sep="\t").set_index("parameterId")
     assert set(parameters.index) == {"sigma_P", "scale_Q", "net1_ps", "z1_0_c_lo", "z1_0_c_hi"}
     assert parameters.loc["net1_ps", "nominalValue"] == "array"
-    assert parameters.loc["z1_0_c_lo", "upperBound"] == 10.0 and str(parameters.loc["sigma_P", "estimate"]).lower() == "false"
+    assert (
+        parameters.loc["z1_0_c_lo", "upperBound"] == 10.0
+        and str(parameters.loc["sigma_P", "estimate"]).lower() == "false"
+    )
     # The readout scale factor is fixed at its nominal: the state carries the magnitude.
-    assert str(parameters.loc["scale_Q", "estimate"]).lower() == "false" and float(parameters.loc["scale_Q", "nominalValue"]) == 2.0
+    assert (
+        str(parameters.loc["scale_Q", "estimate"]).lower() == "false"
+        and float(parameters.loc["scale_Q", "nominalValue"]) == 2.0
+    )
     document = yaml.safe_load(staged.yaml.read_text())
     assert document["extensions"]["sciml"]["neural_networks"]["net1"]["format"] == "equinox"
     # Experiments and measurements are named after the simulation conditions the route knows.
-    assert pd.read_csv(staged.directory / "experiments.tsv", sep="\t")["experimentId"].tolist() == ["c_lo", "c_hi"]
-    assert set(pd.read_csv(staged.directory / "measurements.tsv", sep="\t")["experimentId"]) == {"c_lo", "c_hi"}
+    assert pd.read_csv(staged.directory / "experiments.tsv", sep="\t")["experimentId"].tolist() == [
+        "c_lo",
+        "c_hi",
+    ]
+    assert set(pd.read_csv(staged.directory / "measurements.tsv", sep="\t")["experimentId"]) == {
+        "c_lo",
+        "c_hi",
+    }
 
 
 def test_preequilibration_starts_sit_on_the_basal_condition_and_are_always_staged(tmp_path):
@@ -88,11 +100,18 @@ def test_preequilibration_starts_sit_on_the_basal_condition_and_are_always_stage
 def test_log10_noise_keeps_the_v1_likelihood_under_v2s_log_normal(tmp_path):
     problem = P.load(write_problem(tmp_path / "toy", log10=True), dosed=("S",))
     staged = S.stage(problem, tmp_path / "staged", width=4)
-    observables = pd.read_csv(staged.directory / "observables.tsv", sep="\t").set_index("observableId")
+    observables = pd.read_csv(staged.directory / "observables.tsv", sep="\t").set_index(
+        "observableId"
+    )
     # The upgrader writes log-normal; the noise formula carries ln 10 so the density is v1's.
     assert observables.loc["obs_Q", "noiseDistribution"] == "log-normal"
-    assert observables.loc["obs_Q", "noiseFormula"] == f"(noiseParameter1_obs_Q) * {math.log(10.0)!r}"
-    assert observables.loc["obs_P", "noiseDistribution"] == "normal" and observables.loc["obs_P", "noiseFormula"] == "sigma_P"
+    assert (
+        observables.loc["obs_Q", "noiseFormula"] == f"(noiseParameter1_obs_Q) * {math.log(10.0)!r}"
+    )
+    assert (
+        observables.loc["obs_P", "noiseDistribution"] == "normal"
+        and observables.loc["obs_P", "noiseFormula"] == "sigma_P"
+    )
 
 
 def test_an_estimated_sigma_starts_at_its_datas_spread(tmp_path):
@@ -102,13 +121,18 @@ def test_an_estimated_sigma_starts_at_its_datas_spread(tmp_path):
     # sigma_P scales every obs_P datum through the formula; sigma_Q reaches obs_Q through the
     # measurement override, and obs_Q is log10, so its spread is in decades. Neither is the table's 1e5.
     assert float(parameters.loc["sigma_P", "nominalValue"]) == pytest.approx(
-        statistics.pstdev([0.0, 0.3, 0.5, 0.7, 0.8, 0.1, 0.9, 1.5, 2.0, 2.4]))
-    assert float(parameters.loc["sigma_Q", "nominalValue"]) == pytest.approx(statistics.pstdev([math.log10(3.0), math.log10(6.0)]))
+        statistics.pstdev([0.0, 0.3, 0.5, 0.7, 0.8, 0.1, 0.9, 1.5, 2.0, 2.4])
+    )
+    assert float(parameters.loc["sigma_Q", "nominalValue"]) == pytest.approx(
+        statistics.pstdev([math.log10(3.0), math.log10(6.0)])
+    )
     assert str(parameters.loc["sigma_Q", "estimate"]).lower() == "true"
 
 
 def test_shared_starts_are_one_parameter_per_state(tmp_path):
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
-    staged = S.stage(problem, tmp_path / "shared", width=4, n_augmented=2, shared_initial_conditions=True)
+    staged = S.stage(
+        problem, tmp_path / "shared", width=4, n_augmented=2, shared_initial_conditions=True
+    )
     assert staged.estimated_starts == ("z1_0", "z2_0")
     assert _starts(staged)[("c_lo", "z2")] == _starts(staged)[("c_hi", "z2")] == "z2_0"

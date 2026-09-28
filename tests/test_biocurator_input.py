@@ -26,13 +26,16 @@ from petab_harness import agent, prompts, scenario
 def test_unexpected_task_kwargs_flags_only_the_extras():
     assert agent._unexpected_task_kwargs({"description": "d", "subagent_type": "b"}) == []
     assert agent._unexpected_task_kwargs(
-        {"description": "d", "subagent_type": "b", "prompt": "p"}) == ["prompt"]
+        {"description": "d", "subagent_type": "b", "prompt": "p"}
+    ) == ["prompt"]
 
 
 def test_unexpected_task_kwargs_is_order_stable_and_multi():
     # insertion order is preserved; both extras are reported
-    assert agent._unexpected_task_kwargs(
-        {"prompt": "p", "message": "m", "description": "d"}) == ["prompt", "message"]
+    assert agent._unexpected_task_kwargs({"prompt": "p", "message": "m", "description": "d"}) == [
+        "prompt",
+        "message",
+    ]
 
 
 def test_unexpected_task_kwargs_handles_non_dict():
@@ -44,7 +47,7 @@ def test_unexpected_task_kwargs_handles_non_dict():
 def test_task_arg_reject_message_names_the_keys_and_the_channel():
     msg = agent._task_arg_reject_message(["prompt"])
     assert "prompt" in msg
-    assert "description" in msg          # points the model at the right channel
+    assert "description" in msg  # points the model at the right channel
     assert "REJECTED" in msg
 
 
@@ -71,7 +74,7 @@ def test_build_biocurator_subagent_injects_names_into_the_prompt():
     key = agent._subagent_prompt_key()
     spec = agent._build_biocurator_subagent([], ["Naive", "Memory"])
     assert spec["name"] == "biocurator"
-    assert spec[key].startswith(agent.BIOCURATOR_PROMPT)   # persona kept, block appended
+    assert spec[key].startswith(agent.BIOCURATOR_PROMPT)  # persona kept, block appended
     assert "Naive" in spec[key] and "Memory" in spec[key]
 
 
@@ -102,8 +105,8 @@ def test_biocurator_report_contract_branches_the_report_form():
     """The report CONTRACT — the thing that forced 'one section per bullet above' every call —
     now branches, so a focused answer is a valid shape and not a survey."""
     c = prompts._BIOCURATOR_REPORT_CONTRACT
-    assert "OPEN request" in c and "one section per bullet above" in c   # survey path kept
-    assert "SPECIFIC question" in c and "need not walk all three bullets" in c   # focused path
+    assert "OPEN request" in c and "one section per bullet above" in c  # survey path kept
+    assert "SPECIFIC question" in c and "need not walk all three bullets" in c  # focused path
     # the invariants that hold in BOTH shapes survive the branch
     assert "PMID/DOI" in c and "NEVER return an empty message" in c
 
@@ -123,9 +126,17 @@ def test_biocurator_prompt_stays_blind_after_the_branch():
     'data', and 'judge fit before relying on a paper' is 'fit' = suitability."""
     opening, _, rest = agent.BIOCURATOR_PROMPT.partition("\n")
     assert "list_observables" in opening and "never see the model" in opening, (
-        "the sanctioned-window opening moved; re-anchor this test")
-    frame = [r"\bmodel", r"\bdata\b", r"\bfitting\b", r"\bfitted\b",
-             r"\bexperiment", r"\bsimulat", r"\bparameter"]
+        "the sanctioned-window opening moved; re-anchor this test"
+    )
+    frame = [
+        r"\bmodel",
+        r"\bdata\b",
+        r"\bfitting\b",
+        r"\bfitted\b",
+        r"\bexperiment",
+        r"\bsimulat",
+        r"\bparameter",
+    ]
     leaked = [f for f in frame if re.search(f, rest, re.IGNORECASE)]
     assert not leaked, f"blind-breaking frame words leaked into the biocurator persona: {leaked}"
 
@@ -142,10 +153,16 @@ def test_scenario_has_biocurator_entities_field():
     assert default.biocurator_entities == []
     # the mutable default must not be shared between instances
     default.biocurator_entities.append("LEAK")
-    assert mod.Scenario(name="z", problem_dir=Path("/tmp"),
-                        scripted_fix=_noop).biocurator_entities == []
-    set_ = mod.Scenario(name="y", problem_dir=Path("/tmp"), scripted_fix=_noop,
-                        biocurator_entities=["STAT5A", "STAT5B"])
+    assert (
+        mod.Scenario(name="z", problem_dir=Path("/tmp"), scripted_fix=_noop).biocurator_entities
+        == []
+    )
+    set_ = mod.Scenario(
+        name="y",
+        problem_dir=Path("/tmp"),
+        scripted_fix=_noop,
+        biocurator_entities=["STAT5A", "STAT5B"],
+    )
     assert set_.biocurator_entities == ["STAT5A", "STAT5B"]
 
 
@@ -185,7 +202,7 @@ def test_task_arg_guard_rejects_a_task_with_unexpected_kwargs():
     out = mw.wrap_tool_call(bad, handler)
     assert isinstance(out, ToolMessage)
     assert out.status == "error"
-    assert dispatched == []                              # subagent never ran on truncated input
+    assert dispatched == []  # subagent never ran on truncated input
     assert stats["task_arg_rejections"] == 1
     assert stats["unexpected_task_kwargs"] == ["prompt"]
 
@@ -223,14 +240,14 @@ def test_task_arg_guard_relents_after_the_cap():
         return "DISPATCHED"
 
     bad = _FakeRequest("task", {"description": "d", "subagent_type": "biocurator", "prompt": "e"})
-    assert isinstance(mw.wrap_tool_call(bad, handler), ToolMessage)   # reject 1
-    assert isinstance(mw.wrap_tool_call(bad, handler), ToolMessage)   # reject 2
+    assert isinstance(mw.wrap_tool_call(bad, handler), ToolMessage)  # reject 1
+    assert isinstance(mw.wrap_tool_call(bad, handler), ToolMessage)  # reject 2
     assert dispatched == []
     # cap hit -> relent: the third bad call falls through and dispatches (extras dropped downstream)
     assert mw.wrap_tool_call(bad, handler) == "DISPATCHED"
     assert len(dispatched) == 1
-    assert stats["task_arg_rejections"] == 2                          # counter stopped at the cap
-    assert stats["unexpected_task_kwargs"] == ["prompt"]             # still recorded every time
+    assert stats["task_arg_rejections"] == 2  # counter stopped at the cap
+    assert stats["unexpected_task_kwargs"] == ["prompt"]  # still recorded every time
 
 
 @requires_langchain
@@ -276,26 +293,54 @@ def test_task_arg_guard_end_to_end_bounces_then_retry_dispatches():
         return "subagent report"
 
     msgs = [
-        AIMessage(content="", tool_calls=[{  # the broken call from the issue's t1
-            "name": "task", "id": "c1", "type": "tool_call",
-            "args": {"description": "markers", "subagent_type": "biocurator",
-                     "prompt": "Naive, EarlyEffector"}}]),
-        AIMessage(content="", tool_calls=[{  # the corrected retry
-            "name": "task", "id": "c2", "type": "tool_call",
-            "args": {"description": "Naive, EarlyEffector", "subagent_type": "biocurator"}}]),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {  # the broken call from the issue's t1
+                    "name": "task",
+                    "id": "c1",
+                    "type": "tool_call",
+                    "args": {
+                        "description": "markers",
+                        "subagent_type": "biocurator",
+                        "prompt": "Naive, EarlyEffector",
+                    },
+                }
+            ],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {  # the corrected retry
+                    "name": "task",
+                    "id": "c2",
+                    "type": "tool_call",
+                    "args": {"description": "Naive, EarlyEffector", "subagent_type": "biocurator"},
+                }
+            ],
+        ),
         AIMessage(content="done"),
     ]
-    stats = {"tools_executed": 0, "dropped_dup_tool_calls": 0, "idle_nudges": 0,
-             "gave_up_no_tools": False, "unexpected_task_kwargs": [], "task_arg_rejections": 0}
+    stats = {
+        "tools_executed": 0,
+        "dropped_dup_tool_calls": 0,
+        "idle_nudges": 0,
+        "gave_up_no_tools": False,
+        "unexpected_task_kwargs": [],
+        "task_arg_rejections": 0,
+    }
     # same relative order as run_deepagents: _task_arg_guard OUTSIDE _tool_dispatch_guard.
-    graph = create_agent(ToolFakeModel(responses=msgs), tools=[task],
-                         middleware=[agent._task_arg_guard(stats),
-                                     agent._tool_dispatch_guard(stats)])
-    graph.invoke({"messages": [HumanMessage(content="build a model")]},
-                 config={"recursion_limit": 30})
+    graph = create_agent(
+        ToolFakeModel(responses=msgs),
+        tools=[task],
+        middleware=[agent._task_arg_guard(stats), agent._tool_dispatch_guard(stats)],
+    )
+    graph.invoke(
+        {"messages": [HumanMessage(content="build a model")]}, config={"recursion_limit": 30}
+    )
 
-    assert ran == [("Naive, EarlyEffector", "biocurator")]   # only the clean retry ran
-    assert stats["tools_executed"] == 1                       # the bounced call was NOT counted
+    assert ran == [("Naive, EarlyEffector", "biocurator")]  # only the clean retry ran
+    assert stats["tools_executed"] == 1  # the bounced call was NOT counted
     assert stats["task_arg_rejections"] == 1
     assert stats["unexpected_task_kwargs"] == ["prompt"]
 

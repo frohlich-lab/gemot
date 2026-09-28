@@ -121,8 +121,9 @@ def _subagent_prompt_key() -> str:
     return "system_prompt"
 
 
-def _build_subagents(tools_by_name: dict[str, Any],
-                     stats: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def _build_subagents(
+    tools_by_name: dict[str, Any], stats: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
     """Analyst specs with each persona's tool NAMES resolved to the server's tool OBJECTS.
 
     deepagents' ``SubAgent`` spec takes ``tools`` as a sequence of ``BaseTool``/callable
@@ -138,27 +139,33 @@ def _build_subagents(tools_by_name: dict[str, Any],
         tools = [tools_by_name[n] for n in spec["tools"] if n in tools_by_name]
         dropped = [n for n in spec["tools"] if n not in tools_by_name]
         if dropped:
-            print(f"[agent] WARNING: analyst {spec['name']!r} missing tools {dropped} "
-                  "(dropped from its tool set)")
-        subagents.append({
-            "name": spec["name"],
-            "description": spec["description"],
-            prompt_key: spec["prompt"],
-            "tools": tools,
-            # Bound each delegation. Without this an analyst may explore until the parent's
-            # limit or the credit runs out -- see the note on _subagent_turn_limit.
-            #
-            # The runaway guard rides along because deepagents builds each subagent its OWN
-            # middleware stack (graph.py: `spec.get("middleware", [])`) -- the lead's list does
-            # not reach here. A reasoning runaway is a property of the MODEL, not of the lead:
-            # of 32 length-terminated calls measured on glm-5.3-flash over bachmann/isensee/
-            # boehm, 11 were on analysts. Un-guarded, those surface as a blank `task` return
-            # that _empty_report_guard papers over with a marker, so the same defect was being
-            # diagnosed as an "empty report" instead of a truncation that a cheap reduced-effort
-            # retry recovers.
-            "middleware": ([_subagent_turn_limit(ANALYST_MAX_TURNS)]
-                           + ([_reasoning_runaway_guard(stats)] if stats is not None else [])),
-        })
+            print(
+                f"[agent] WARNING: analyst {spec['name']!r} missing tools {dropped} "
+                "(dropped from its tool set)"
+            )
+        subagents.append(
+            {
+                "name": spec["name"],
+                "description": spec["description"],
+                prompt_key: spec["prompt"],
+                "tools": tools,
+                # Bound each delegation. Without this an analyst may explore until the parent's
+                # limit or the credit runs out -- see the note on _subagent_turn_limit.
+                #
+                # The runaway guard rides along because deepagents builds each subagent its OWN
+                # middleware stack (graph.py: `spec.get("middleware", [])`) -- the lead's list does
+                # not reach here. A reasoning runaway is a property of the MODEL, not of the lead:
+                # of 32 length-terminated calls measured on glm-5.3-flash over bachmann/isensee/
+                # boehm, 11 were on analysts. Un-guarded, those surface as a blank `task` return
+                # that _empty_report_guard papers over with a marker, so the same defect was being
+                # diagnosed as an "empty report" instead of a truncation that a cheap reduced-effort
+                # retry recovers.
+                "middleware": (
+                    [_subagent_turn_limit(ANALYST_MAX_TURNS)]
+                    + ([_reasoning_runaway_guard(stats)] if stats is not None else [])
+                ),
+            }
+        )
     return subagents
 
 
@@ -191,16 +198,22 @@ def _disable_general_purpose_subagent() -> bool:
     if _gp_subagent_disabled:
         return True
     try:
-        from deepagents import (GeneralPurposeSubagentProfile, HarnessProfile,
-                                register_harness_profile)
+        from deepagents import (
+            GeneralPurposeSubagentProfile,
+            HarnessProfile,
+            register_harness_profile,
+        )
+
         register_harness_profile(
             "openai",
             HarnessProfile(general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)),
         )
     except Exception as exc:  # pragma: no cover - guards against a deepagents API drift
-        print(f"[agent] WARNING: could not disable deepagents' `general-purpose` subagent "
-              f"({type(exc).__name__}: {exc}); the lead may be able to delegate model authoring "
-              "to it (issue #112).")
+        print(
+            f"[agent] WARNING: could not disable deepagents' `general-purpose` subagent "
+            f"({type(exc).__name__}: {exc}); the lead may be able to delegate model authoring "
+            "to it (issue #112)."
+        )
         return False
     _gp_subagent_disabled = True
     return True
@@ -215,6 +228,7 @@ def _general_purpose_enabled(llm) -> "bool | None":
     """
     try:
         from deepagents.profiles.harness.harness_profiles import _harness_profile_for_model
+
         profile = _harness_profile_for_model(llm, None).general_purpose_subagent
     except Exception:  # pragma: no cover - guards against a deepagents API drift
         return None
@@ -234,9 +248,18 @@ def _general_purpose_enabled(llm) -> "bool | None":
 # tool-caller and is the one worth trimming. Trimming the analysts cleanly needs an upstream
 # deepagents fix. Note this caveat no longer covers the biggest FS-call sink: the uncurated
 # `general-purpose` subagent is removed outright above, not filtered.
-_BUILTIN_TOOLS_TO_HIDE = frozenset({
-    "write_todos", "ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute",
-})
+_BUILTIN_TOOLS_TO_HIDE = frozenset(
+    {
+        "write_todos",
+        "ls",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "glob",
+        "grep",
+        "execute",
+    }
+)
 
 
 def _builtin_tool_filter():
@@ -257,12 +280,14 @@ def _builtin_tool_filter():
     class _DropBuiltinTools(AgentMiddleware):
         def wrap_model_call(self, request, handler):
             request = request.override(
-                tools=[t for t in request.tools if _name(t) not in _BUILTIN_TOOLS_TO_HIDE])
+                tools=[t for t in request.tools if _name(t) not in _BUILTIN_TOOLS_TO_HIDE]
+            )
             return handler(request)
 
         async def awrap_model_call(self, request, handler):
             request = request.override(
-                tools=[t for t in request.tools if _name(t) not in _BUILTIN_TOOLS_TO_HIDE])
+                tools=[t for t in request.tools if _name(t) not in _BUILTIN_TOOLS_TO_HIDE]
+            )
             return await handler(request)
 
     return _DropBuiltinTools()

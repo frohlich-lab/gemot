@@ -32,8 +32,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from petab_harness import (paper_bic_trajectories, paper_claims, paper_configurations,
-                           paper_fujita, paper_fujita_models, paper_heldout)
+from petab_harness import (
+    paper_bic_trajectories,
+    paper_claims,
+    paper_configurations,
+    paper_fujita,
+    paper_fujita_models,
+    paper_heldout,
+)
 from petab_harness.paths import BENCHMARK_EXAMPLES, examples_root, repo_root
 
 #: Header stamped on every emitted file. The manuscript's coauthors edit in Overleaf, where a
@@ -63,29 +69,47 @@ SWEEP_METRICS = (
     # The collapsed anchor graph, which is EXACT rather than a bound: the observables match by
     # name, so its additions and removals are nameable edges. Undefined where fewer than two
     # observables are shared, and the N macro says for how many runs.
-    ("topo_collapsed_normalised", "CollapsedTopologyDistance", 1,
-     "collapsed anchor-graph edits per unit of reference wiring"),
+    (
+        "topo_collapsed_normalised",
+        "CollapsedTopologyDistance",
+        1,
+        "collapsed anchor-graph edits per unit of reference wiring",
+    ),
     # Context for the collapsed distance: how many perturbations the problem declares and how
     # many are anchorable on both sides. An example where these differ is measuring less than it
     # appears to, and the macro says so rather than leaving the reader to assume full coverage.
     ("topo_interventions", "InterventionsDeclared", 1, "interventions in the shipped problem"),
     ("topo_interventions_anchored", "InterventionsAnchored", 1, "anchored in both models"),
-    ("topo_discovered", "TopologyDiscovered", 1,
-     "edits toward structure the reference lacks"),
-    ("topo_coarse_grained", "TopologyCoarseGrained", 1,
-     "edits toward reference structure the candidate collapsed"),
+    ("topo_discovered", "TopologyDiscovered", 1, "edits toward structure the reference lacks"),
+    (
+        "topo_coarse_grained",
+        "TopologyCoarseGrained",
+        1,
+        "edits toward reference structure the candidate collapsed",
+    ),
     # Each of those two SPLIT by what it is made of. A connection the other model does not have
     # and a connection it does have routed through more species are both "further from the
     # published wiring", and reporting only the sum let sneyd's 0.75 read as new biology when it
     # was three extra intermediates and not one new connection. Each pair adds to its total.
-    ("topo_new_connections", "TopologyNewConnections", 1,
-     "connections the reference does not have"),
-    ("topo_extra_depth", "TopologyExtraDepth", 1,
-     "extra species on connections both models have"),
-    ("topo_deleted_connections", "TopologyDeletedConnections", 1,
-     "reference connections the candidate does not have"),
-    ("topo_removed_depth", "TopologyRemovedDepth", 1,
-     "species the candidate dropped from connections both models have"),
+    (
+        "topo_new_connections",
+        "TopologyNewConnections",
+        1,
+        "connections the reference does not have",
+    ),
+    ("topo_extra_depth", "TopologyExtraDepth", 1, "extra species on connections both models have"),
+    (
+        "topo_deleted_connections",
+        "TopologyDeletedConnections",
+        1,
+        "reference connections the candidate does not have",
+    ),
+    (
+        "topo_removed_depth",
+        "TopologyRemovedDepth",
+        1,
+        "species the candidate dropped from connections both models have",
+    ),
     ("n_fits", "Fits", 1, "fits per run"),
     ("tokens", "LLMTokens", 1, "tokens per run"),
     ("wall_h", "WallHours", 1, "elapsed hours per run"),
@@ -116,10 +140,12 @@ def read_sweep_data() -> dict | None:
     for example, counts in data["counts"].items():
         if "modalities" in counts:
             modalities = counts["modalities"]
-            if (not isinstance(modalities, list)
-                    or any(not isinstance(m, str) or not m for m in modalities)
-                    or counts.get("n_modalities") != len(modalities)
-                    or len(set(modalities)) != len(modalities)):
+            if (
+                not isinstance(modalities, list)
+                or any(not isinstance(m, str) or not m for m in modalities)
+                or counts.get("n_modalities") != len(modalities)
+                or len(set(modalities)) != len(modalities)
+            ):
                 raise ValueError(f"{path}: inconsistent modality count for {example}")
     return data
 
@@ -134,11 +160,15 @@ def sweep_statistics(data: dict) -> dict[str, dict]:
         runs = [r for r in data["runs"] if r["example"] == ex]
         row = {"run_count": len(runs), "counts": data["counts"].get(ex, {}), "metrics": {}}
         for key, suffix, factor, unit in metrics:
-            values = [float(r[key]) * factor for r in runs
-                      if r.get(key) is not None and math.isfinite(float(r[key]))]
+            values = [
+                float(r[key]) * factor
+                for r in runs
+                if r.get(key) is not None and math.isfinite(float(r[key]))
+            ]
             row["metrics"][suffix] = {
                 "median": statistics.median(values) if values else None,
-                "n": len(values), "unit": unit,
+                "n": len(values),
+                "unit": unit,
             }
         summary[ex] = row
     return summary
@@ -154,9 +184,11 @@ def _sweep_number(value) -> str:
 
 def sweep_macros(data: dict) -> dict[str, str]:
     """One namespace for this figure, distinct from older campaigns in findings.toml."""
-    macros = {"sweepFigureExampleCount": str(len(data["example_order"])),
-              "sweepFigureRunCount": str(len(data["runs"])),
-              "sweepFigureRunsPerExample": str(data["per_example"])}
+    macros = {
+        "sweepFigureExampleCount": str(len(data["example_order"])),
+        "sweepFigureRunCount": str(len(data["runs"])),
+        "sweepFigureRunsPerExample": str(data["per_example"]),
+    }
     for ex, row in sweep_statistics(data).items():
         if not re.fullmatch(r"[a-z]+(?:_[a-z]+)*", ex):
             raise ValueError(f"invalid sweep example name: {ex!r}")
@@ -164,8 +196,12 @@ def sweep_macros(data: dict) -> dict[str, str]:
         if prefix + "RunCount" in macros:
             raise ValueError(f"duplicate sweep macro prefix: {prefix}")
         macros[prefix + "RunCount"] = str(row["run_count"])
-        for key, suffix in (("n_observables", "Observables"), ("n_datapoints", "Datapoints"),
-                            ("n_conditions", "Conditions"), ("n_modalities", "Modalities")):
+        for key, suffix in (
+            ("n_observables", "Observables"),
+            ("n_datapoints", "Datapoints"),
+            ("n_conditions", "Conditions"),
+            ("n_modalities", "Modalities"),
+        ):
             macros[prefix + suffix] = _sweep_number(row["counts"].get(key))
         for suffix, metric in row["metrics"].items():
             macros[prefix + "Median" + suffix] = _sweep_number(metric["median"])
@@ -177,9 +213,14 @@ def render_sweep_csv(data: dict) -> str:
     """Unrounded median values and available sample sizes, in the same example order."""
     rows = []
     for ex, summary in sweep_statistics(data).items():
-        row = {"example": ex, "n_runs": summary["run_count"],
-               **{key: summary["counts"].get(key)
-                  for key in ("n_observables", "n_datapoints", "n_conditions", "n_modalities")}}
+        row = {
+            "example": ex,
+            "n_runs": summary["run_count"],
+            **{
+                key: summary["counts"].get(key)
+                for key in ("n_observables", "n_datapoints", "n_conditions", "n_modalities")
+            },
+        }
         for suffix, metric in summary["metrics"].items():
             row["median_" + suffix] = metric["median"]
             row["n_" + suffix] = metric["n"]
@@ -226,13 +267,20 @@ def git_sha() -> str:
     and the run behind it can be lined up by string equality.
     """
     root = repo_root()
-    sha = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
-        capture_output=True, text=True, check=False,
-    ).stdout.strip() or "unknown"
+    sha = (
+        subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        or "unknown"
+    )
     dirty = subprocess.run(
         ["git", "-C", str(root), "status", "--porcelain"],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     ).stdout.strip()
     return f"{sha}+dirty" if dirty else sha
 
@@ -246,7 +294,9 @@ def git_commit_date() -> str:
     """
     result = subprocess.run(
         ["git", "-C", str(repo_root()), "show", "-s", "--format=%ct", "HEAD"],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if result.returncode or not result.stdout.strip():
         return "unknown"
@@ -282,14 +332,16 @@ def read_roster() -> list[ExampleRow]:
         if ref_path.is_file():
             ref = json.loads(ref_path.read_text())
         sizes = counts.get(name, {})
-        rows.append(ExampleRow(
-            name=name,
-            reference_k=ref.get("k"),
-            reference_n=ref.get("n"),
-            reference_nll=ref.get("nll"),
-            n_observables=sizes.get("n_observables"),
-            n_conditions=sizes.get("n_conditions"),
-        ))
+        rows.append(
+            ExampleRow(
+                name=name,
+                reference_k=ref.get("k"),
+                reference_n=ref.get("n"),
+                reference_nll=ref.get("nll"),
+                n_observables=sizes.get("n_observables"),
+                n_conditions=sizes.get("n_conditions"),
+            )
+        )
     return rows
 
 
@@ -329,9 +381,13 @@ def _tex(text: str) -> str:
     return text
 
 
-def render_values(rows: list[ExampleRow], findings: dict[str, dict[str, object]],
-                  sweep: dict | None = None, fujita: tuple | None = None,
-                  claims: dict[str, tuple[str, str]] | None = None) -> str:
+def render_values(
+    rows: list[ExampleRow],
+    findings: dict[str, dict[str, object]],
+    sweep: dict | None = None,
+    fujita: tuple | None = None,
+    claims: dict[str, tuple[str, str]] | None = None,
+) -> str:
     """Every number the prose may cite, as a macro.
 
     Four sources share one file: counts derived from the checkout, sweep-figure medians, the
@@ -345,15 +401,17 @@ def render_values(rows: list[ExampleRow], findings: dict[str, dict[str, object]]
     derived = sweep_macros(sweep) if sweep else {}
     if sweep:
         fingerprint = hashlib.sha256(json.dumps(sweep, sort_keys=True).encode()).hexdigest()
-        out += ["% -- medians of the exact sweep-figure observations: paper/sweep_data.json --",
-                "% Jobs: " + ", ".join(sweep["jobs"]),
-                "% Data SHA256 (canonical JSON): " + fingerprint,
-                "% Selection: latest started runs per example, excluding infrastructure failures;",
-                "% each metric omits missing values.",
-                "% Medians use original units, before log transforms; N gives available runs.",
-                "% Delta values are fitted minus reference; LLMTokens is tokens, not millions.",
-                "% WallHours is full-task elapsed hours; CPUHours sums measured CPU over workers.",
-                "% Numeric macros use up to six decimal places; sweep_medians.csv is unrounded."]
+        out += [
+            "% -- medians of the exact sweep-figure observations: paper/sweep_data.json --",
+            "% Jobs: " + ", ".join(sweep["jobs"]),
+            "% Data SHA256 (canonical JSON): " + fingerprint,
+            "% Selection: latest started runs per example, excluding infrastructure failures;",
+            "% each metric omits missing values.",
+            "% Medians use original units, before log transforms; N gives available runs.",
+            "% Delta values are fitted minus reference; LLMTokens is tokens, not millions.",
+            "% WallHours is full-task elapsed hours; CPUHours sums measured CPU over workers.",
+            "% Numeric macros use up to six decimal places; sweep_medians.csv is unrounded.",
+        ]
         for macro, value in derived.items():
             out.append(rf"\newcommand{{\{macro}}}{{{value}}}")
         out.append("")
@@ -361,16 +419,20 @@ def render_values(rows: list[ExampleRow], findings: dict[str, dict[str, object]]
         metadata, observations = fujita
         figure_macros = paper_fujita.macros(metadata, observations)
         derived.update(figure_macros)
-        out += ["% -- Figure 3: paper/fujita_generalisation.csv --",
-                "% Experiments: " + ", ".join(experiment["key"] for experiment
-                                              in metadata["source"]["experiments"]),
-                "% Data SHA256: " + metadata["source"]["data_sha256"]]
+        out += [
+            "% -- Figure 3: paper/fujita_generalisation.csv --",
+            "% Experiments: "
+            + ", ".join(experiment["key"] for experiment in metadata["source"]["experiments"]),
+            "% Data SHA256: " + metadata["source"]["data_sha256"],
+        ]
         for macro, value in figure_macros.items():
             out.append(rf"\newcommand{{\{macro}}}{{{value}}}")
         out.append("")
     if claims:
-        out += ["% -- numbers the prose states: petab_harness.paper_claims, from the inputs above",
-                "% and paper/heldout_benchmarks.json, paper/run_configurations.json --"]
+        out += [
+            "% -- numbers the prose states: petab_harness.paper_claims, from the inputs above",
+            "% and paper/heldout_benchmarks.json, paper/run_configurations.json --",
+        ]
         for macro, (value, how) in claims.items():
             if macro in derived:
                 raise ValueError(f"{macro}: defined twice")
@@ -427,30 +489,57 @@ def build(out_dir: Path | None = None) -> dict[Path, str]:
     fujita = paper_fujita.read_input(repo_root())
     configurations, grid = paper_configurations.read_inputs(repo_root())
     spread = repo_root() / "paper" / "fujita_spread" / "summary.json"
-    claims = paper_claims.macros(repo_root(), sweep, fujita,
-                                 paper_heldout.read_input(repo_root()), configurations, grid,
-                                 paper_bic_trajectories.read_input(repo_root()),
-                                 json.loads(spread.read_text(encoding="utf-8"))
-                                 if spread.is_file() else None)
+    claims = paper_claims.macros(
+        repo_root(),
+        sweep,
+        fujita,
+        paper_heldout.read_input(repo_root()),
+        configurations,
+        grid,
+        paper_bic_trajectories.read_input(repo_root()),
+        json.loads(spread.read_text(encoding="utf-8")) if spread.is_file() else None,
+    )
     files = {
         target / "roster.tex": render_roster(rows),
         target / "values.tex": render_values(rows, findings, sweep, fujita, claims),
         target / "provenance.tex": render_provenance(rows),
     }
     if sweep:
-        files.update({
-            target / "sweep_medians.csv": render_sweep_csv(sweep),
-            target / "sweep_data.json": json.dumps(sweep, indent=2, ensure_ascii=False,
-                                                    allow_nan=False) + "\n",
-        })
+        files.update(
+            {
+                target / "sweep_medians.csv": render_sweep_csv(sweep),
+                target / "sweep_data.json": json.dumps(
+                    sweep, indent=2, ensure_ascii=False, allow_nan=False
+                )
+                + "\n",
+            }
+        )
     if fujita:
-        files.update({target / name: content for name, content in
-                      paper_fujita.export_data(repo_root(), *fujita, DO_NOT_EDIT).items()})
-        files.update({target / name: content for name, content in
-                      paper_fujita_models.export_data(repo_root(), *fujita, DO_NOT_EDIT).items()})
+        files.update(
+            {
+                target / name: content
+                for name, content in paper_fujita.export_data(
+                    repo_root(), *fujita, DO_NOT_EDIT
+                ).items()
+            }
+        )
+        files.update(
+            {
+                target / name: content
+                for name, content in paper_fujita_models.export_data(
+                    repo_root(), *fujita, DO_NOT_EDIT
+                ).items()
+            }
+        )
     # What every scored agent run and the neural-ODE grid ran with, for the annex.
-    files.update({target / name: content for name, content in paper_configurations.export_data(
-        configurations, grid, DO_NOT_EDIT).items()})
+    files.update(
+        {
+            target / name: content
+            for name, content in paper_configurations.export_data(
+                configurations, grid, DO_NOT_EDIT
+            ).items()
+        }
+    )
     for path, content in files.items():
         path.write_text(content, encoding="utf-8")
     return files
@@ -483,12 +572,20 @@ def build_figures(out_dir: Path | None = None) -> list[Path]:
             # annex one is what the HARNESS cost. They were a single eight-row figure until the
             # cost rows crowded the comparison they were printed beside.
             for name, which, data_panel in (
-                    ("sweep_panels.pdf", module.MODEL_PANELS, True),
-                    ("sweep_cost_panels.pdf", module.COST_PANELS, False)):
+                ("sweep_panels.pdf", module.MODEL_PANELS, True),
+                ("sweep_cost_panels.pdf", module.COST_PANELS, False),
+            ):
                 path = target / name
-                module.render(data["runs"], str(path), data["title"], data["per_example"],
-                              data["counts"], data["labels"], which=which,
-                              data_panel=data_panel)
+                module.render(
+                    data["runs"],
+                    str(path),
+                    data["title"],
+                    data["per_example"],
+                    data["counts"],
+                    data["labels"],
+                    which=which,
+                    data_panel=data_panel,
+                )
                 paths.append(path)
     # The published reference topologies, drawn from a FROZEN payload rather than live from the
     # examples: building them here would need materialised condition tables, which are gitignored
@@ -502,39 +599,41 @@ def build_figures(out_dir: Path | None = None) -> list[Path]:
             spec = importlib.util.spec_from_file_location("_paper_reference_topologies", script)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
-            paths.extend(module.render_all(json.loads(topologies.read_text(encoding="utf-8")),
-                                           target))
+            paths.extend(
+                module.render_all(json.loads(topologies.read_text(encoding="utf-8")), target)
+            )
     fujita = paper_fujita.read_input(repo_root())
     if fujita:
         metadata, rows = fujita
-        coefficients, _ = paper_fujita.correlations(rows, metadata, metadata['symlog'])
-        for suffix in ('pdf', 'png'):
-            path = target / f'figure3.{suffix}'
+        coefficients, _ = paper_fujita.correlations(rows, metadata, metadata["symlog"])
+        for suffix in ("pdf", "png"):
+            path = target / f"figure3.{suffix}"
             with matplotlib.rc_context():
                 paper_fujita.render(rows, coefficients, metadata, path)
             paths.append(path)
         # The process-description maps are supplementary: Figure 3B carries the readout
         # networks at text width, and the full maps need a page of their own to be read.
-        for suffix in ('pdf', 'png'):
-            path = target / f'fujita_models_sbgn.{suffix}'
+        for suffix in ("pdf", "png"):
+            path = target / f"fujita_models_sbgn.{suffix}"
             with matplotlib.rc_context():
                 paper_fujita.render_models(rows, metadata, path)
             paths.append(path)
     heldout = paper_heldout.read_input(repo_root())
     if heldout:
-        for suffix in ('pdf', 'png'):
-            path = target / f'figure4.{suffix}'
+        for suffix in ("pdf", "png"):
+            path = target / f"figure4.{suffix}"
             with matplotlib.rc_context():
                 paper_heldout.render(heldout, path)
             paths.append(path)
     # Supplementary: every run's training ΔBIC per version, for the runs figures 2-4 score.
     trajectories = paper_bic_trajectories.read_input(repo_root())
     if trajectories:
-        for name, render in (('bic_trajectories_figure2', paper_bic_trajectories.render_figure2),
-                             ('bic_trajectories_figures34',
-                              paper_bic_trajectories.render_figure34)):
-            for suffix in ('pdf', 'png'):
-                path = target / f'{name}.{suffix}'
+        for name, render in (
+            ("bic_trajectories_figure2", paper_bic_trajectories.render_figure2),
+            ("bic_trajectories_figures34", paper_bic_trajectories.render_figure34),
+        ):
+            for suffix in ("pdf", "png"):
+                path = target / f"{name}.{suffix}"
                 with matplotlib.rc_context():
                     render(trajectories, path)
                 paths.append(path)

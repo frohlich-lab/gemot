@@ -21,10 +21,12 @@ from petab_mcp.validation import _undefined_readout_issues
 
 def _prob(formulas: dict[str, str], noise: dict[str, str] | None = None):
     """A minimal problem-shaped object carrying just an observable_df."""
-    odf = pd.DataFrame({
-        "observableFormula": pd.Series(formulas),
-        "noiseFormula": pd.Series(noise or {k: f"noiseParameter1_{k}" for k in formulas}),
-    })
+    odf = pd.DataFrame(
+        {
+            "observableFormula": pd.Series(formulas),
+            "noiseFormula": pd.Series(noise or {k: f"noiseParameter1_{k}" for k in formulas}),
+        }
+    )
     odf.index.name = "observableId"
 
     class _P:
@@ -38,15 +40,22 @@ def test_blinding_rewrites_formula_and_writes_the_description():
     from petab_harness.benchmark import _blind_observables
 
     prob = _prob({"pAkt_tot": "observableParameter1_pAkt_tot * (pAkt + pAkt_S6)"})
-    _blind_observables(prob, {"pAkt_tot": {
-        "formula": "observableParameter1_pAkt_tot * readout_pAkt_tot",
-        "measures": "immunoblot signal for phospho-Akt"}})
+    _blind_observables(
+        prob,
+        {
+            "pAkt_tot": {
+                "formula": "observableParameter1_pAkt_tot * readout_pAkt_tot",
+                "measures": "immunoblot signal for phospho-Akt",
+            }
+        },
+    )
     row = prob.observable_df.loc["pAkt_tot"]
     assert row["observableFormula"] == "observableParameter1_pAkt_tot * readout_pAkt_tot"
     assert row["observableName"] == "immunoblot signal for phospho-Akt"
     # the model-content symbols are GONE
     assert "pAkt" not in row["observableFormula"].replace("readout_pAkt_tot", "").replace(
-        "observableParameter1_pAkt_tot", "")
+        "observableParameter1_pAkt_tot", ""
+    )
 
 
 def test_blinding_refuses_an_unknown_observable():
@@ -70,8 +79,10 @@ def test_blinding_refuses_a_smuggled_symbol():
     from petab_harness.benchmark import _blind_observables
 
     with pytest.raises(ValueError, match="scaling/offset"):
-        _blind_observables(_prob({"a": "scale_a * x"}),
-                           {"a": {"formula": "scale_a * readout_a + hill_n", "measures": "m"}})
+        _blind_observables(
+            _prob({"a": "scale_a * x"}),
+            {"a": {"formula": "scale_a * readout_a + hill_n", "measures": "m"}},
+        )
 
 
 def test_blinding_refuses_a_noise_side_leak():
@@ -87,16 +98,19 @@ def test_blinding_keeps_scalings_and_the_noise_model():
     from petab_harness.benchmark import _blind_observables
 
     prob = _prob({"a": "scale_a * x + offset_a"})
-    _blind_observables(prob, {"a": {"formula": "scale_a * readout_a + offset_a",
-                                    "measures": "m"}})
+    _blind_observables(prob, {"a": {"formula": "scale_a * readout_a + offset_a", "measures": "m"}})
     row = prob.observable_df.loc["a"]
     assert "scale_a" in row["observableFormula"] and "offset_a" in row["observableFormula"]
     assert row["noiseFormula"] == "noiseParameter1_a"  # untouched
 
 
 # ------------------------------------------------------------------ commit-time remedy
-def _sbml_with(ids: list[str], with_reaction: bool = True, rules: list[str] | None = None,
-               rate_rules: list[str] | None = None):
+def _sbml_with(
+    ids: list[str],
+    with_reaction: bool = True,
+    rules: list[str] | None = None,
+    rate_rules: list[str] | None = None,
+):
     """Returns (document, model). The DOCUMENT must be kept alive by the caller: libsbml's
     SWIG proxies do not own their C++ objects, so dropping the document frees the model out
     from under the proxy and the next `getElementBySId` segfaults the interpreter."""
@@ -105,28 +119,42 @@ def _sbml_with(ids: list[str], with_reaction: bool = True, rules: list[str] | No
     doc = libsbml.SBMLDocument(3, 1)
     m = doc.createModel()
     for sid in ids:
-        p = m.createParameter(); p.setId(sid); p.setConstant(True); p.setValue(1.0)
-    for sid in (rules or []):
-        r = m.createAssignmentRule(); r.setVariable(sid); r.setFormula("1")
-    for sid in (rate_rules or []):
-        r = m.createRateRule(); r.setVariable(sid); r.setFormula("1")
+        p = m.createParameter()
+        p.setId(sid)
+        p.setConstant(True)
+        p.setValue(1.0)
+    for sid in rules or []:
+        r = m.createAssignmentRule()
+        r.setVariable(sid)
+        r.setFormula("1")
+    for sid in rate_rules or []:
+        r = m.createRateRule()
+        r.setVariable(sid)
+        r.setFormula("1")
     if with_reaction:
         # `_undefined_readout_issues` self-skips a model with no dynamics (the v0 seed), so a
         # test of the CHECK needs one reaction to get past that.
-        rx = m.createReaction(); rx.setId("r1"); rx.setReversible(False); rx.setFast(False)
+        rx = m.createReaction()
+        rx.setId("r1")
+        rx.setReversible(False)
+        rx.setFast(False)
     return doc, m
 
 
-def _lintable(formulas: dict[str, str], model_ids: list[str], names: dict | None = None,
-              with_reaction: bool = True, rules: list[str] | None = None,
-              rate_rules: list[str] | None = None):
+def _lintable(
+    formulas: dict[str, str],
+    model_ids: list[str],
+    names: dict | None = None,
+    with_reaction: bool = True,
+    rules: list[str] | None = None,
+    rate_rules: list[str] | None = None,
+):
     prob = _prob(formulas)
     prob.observable_df["observableName"] = pd.Series(names or {})
-    doc, sm = _sbml_with(model_ids, with_reaction=with_reaction, rules=rules,
-                         rate_rules=rate_rules)
+    doc, sm = _sbml_with(model_ids, with_reaction=with_reaction, rules=rules, rate_rules=rate_rules)
 
     class _M:
-        _doc = doc            # lifetime anchor — see _sbml_with
+        _doc = doc  # lifetime anchor — see _sbml_with
         sbml_model = sm
 
     prob.model = _M()
@@ -135,8 +163,9 @@ def _lintable(formulas: dict[str, str], model_ids: list[str], names: dict | None
 
 
 def test_an_undefined_readout_is_an_error_carrying_remedy_and_biology():
-    prob = _lintable({"a": "scale_a * readout_a"}, model_ids=["scale_a"],
-                     names={"a": "immunoblot signal for X"})
+    prob = _lintable(
+        {"a": "scale_a * readout_a"}, model_ids=["scale_a"], names={"a": "immunoblot signal for X"}
+    )
     issues = _undefined_readout_issues(prob)
     assert len(issues) == 1 and issues[0]["level"] == "error"
     msg = issues[0]["message"]
@@ -174,9 +203,26 @@ def _examples_on_path():
 
 
 # Every benchmark example is blinded now; a new one must join this list (and ship a spec).
-BLINDED = ["alkan", "armistead", "bachmann", "blasi", "boehm", "brannmark", "bruno", "crauste",
-           "fiedler", "fujita", "isensee", "lucarelli", "oliveira", "perelson", "rahman",
-           "raimundez", "schwen", "sneyd"]
+BLINDED = [
+    "alkan",
+    "armistead",
+    "bachmann",
+    "blasi",
+    "boehm",
+    "brannmark",
+    "bruno",
+    "crauste",
+    "fiedler",
+    "fujita",
+    "isensee",
+    "lucarelli",
+    "oliveira",
+    "perelson",
+    "rahman",
+    "raimundez",
+    "schwen",
+    "sneyd",
+]
 
 
 @pytest.mark.parametrize("example", BLINDED)
@@ -194,6 +240,7 @@ def test_example_spec_is_internally_consistent(example, _examples_on_path):
     assert blinding, f"{example}: no blinding spec"
     assert mod.SCENARIO.version >= 2, (example, "blinding changed the problem; bump the version")
     import re as _re
+
     for obs_id, spec in blinding.items():
         # Flattened tables share one readout across gel/dataset rows via the "readout" key.
         readout = spec.get("readout", f"readout_{obs_id}")
@@ -230,8 +277,7 @@ def test_a_missing_description_does_not_render_as_nan():
     "It measures: nan." """
     import math
 
-    prob = _lintable({"a": "readout_a"}, model_ids=[], with_reaction=True,
-                     names={"a": math.nan})
+    prob = _lintable({"a": "readout_a"}, model_ids=[], with_reaction=True, names={"a": math.nan})
     msg = _undefined_readout_issues(prob)[0]["message"]
     assert "nan" not in msg.lower(), msg
 
@@ -246,8 +292,9 @@ def test_the_seed_declares_a_readout_as_a_parameter_not_a_species():
     is not an option."""
     from petab_mcp.reconcile import seed_model_antimony
 
-    odf = pd.DataFrame({"observableFormula": pd.Series(
-        {"a": "scale_a * readout_a", "b": "some_species"})})
+    odf = pd.DataFrame(
+        {"observableFormula": pd.Series({"a": "scale_a * readout_a", "b": "some_species"})}
+    )
     odf.index.name = "observableId"
 
     class _P:
@@ -258,7 +305,9 @@ def test_the_seed_declares_a_readout_as_a_parameter_not_a_species():
     text = seed_model_antimony(_P())
     assert "species some_species;" in text
     assert "readout_a = 0.1;" in text
-    assert "species readout_a" not in text, "a seeded readout species is the over-determination trap"
+    assert "species readout_a" not in text, (
+        "a seeded readout species is the over-determination trap"
+    )
     assert ":=" not in text, "a seeded rule would make the dynamics-free seed count as authored"
 
 
@@ -292,15 +341,21 @@ def test_a_rate_rule_model_with_no_reactions_is_still_checked():
     a bare `getNumReactions() == 0` skipped exactly those models -- letting one commit with every
     readout left as a free constant, which is the loophole this check exists to close.
     """
-    prob = _lintable({"a": "readout_a"}, model_ids=["readout_a", "x"],
-                     with_reaction=False, rate_rules=["x"])
+    prob = _lintable(
+        {"a": "readout_a"}, model_ids=["readout_a", "x"], with_reaction=False, rate_rules=["x"]
+    )
     issues = _undefined_readout_issues(prob)
     assert len(issues) == 1 and "readout_a" in str(issues[0])
 
 
 def test_a_rate_rule_model_that_defines_its_readout_passes():
-    prob = _lintable({"a": "readout_a"}, model_ids=["readout_a", "x"],
-                     with_reaction=False, rate_rules=["x"], rules=["readout_a"])
+    prob = _lintable(
+        {"a": "readout_a"},
+        model_ids=["readout_a", "x"],
+        with_reaction=False,
+        rate_rules=["x"],
+        rules=["readout_a"],
+    )
     assert _undefined_readout_issues(prob) == []
 
 
@@ -310,12 +365,19 @@ def test_collapsing_a_spec_rewrites_placeholders_only():
     from petab_harness.benchmark import _collapse_blinding
 
     out = _collapse_blinding(
-        {"pAkt": {"formula": "observableParameter1_pAkt * readout_pAkt",
-                  "measures": "phospho-Akt, quantified from the pAkt_tot lane",
-                  "readout": "readout_pAkt"},
-         "pAkt_tot": {"formula": "observableParameter1_pAkt_tot * readout_pAkt_tot",
-                      "measures": "total Akt"}},
-        {"pAkt": "pAkt_obs"})
+        {
+            "pAkt": {
+                "formula": "observableParameter1_pAkt * readout_pAkt",
+                "measures": "phospho-Akt, quantified from the pAkt_tot lane",
+                "readout": "readout_pAkt",
+            },
+            "pAkt_tot": {
+                "formula": "observableParameter1_pAkt_tot * readout_pAkt_tot",
+                "measures": "total Akt",
+            },
+        },
+        {"pAkt": "pAkt_obs"},
+    )
     assert out["pAkt_obs"]["formula"] == "observableParameter1_pAkt_obs * readout_pAkt"
     assert out["pAkt_obs"]["measures"] == "phospho-Akt, quantified from the pAkt_tot lane"
     assert out["pAkt_obs"]["readout"] == "readout_pAkt"
@@ -329,9 +391,9 @@ def test_collapsing_rewrites_the_noise_formula_too():
     from petab_harness.benchmark import _collapse_blinding
 
     out = _collapse_blinding(
-        {"x": {"formula": "readout_x", "noise": "noiseParameter1_x * readout_x",
-               "measures": "m"}},
-        {"x": "x_obs"})
+        {"x": {"formula": "readout_x", "noise": "noiseParameter1_x * readout_x", "measures": "m"}},
+        {"x": "x_obs"},
+    )
     assert out["x_obs"]["noise"] == "noiseParameter1_x_obs * readout_x_obs"
     assert out["x_obs"]["formula"] == "readout_x_obs"
 
@@ -341,9 +403,12 @@ def test_specs_that_disagree_after_collapsing_are_refused():
 
     with pytest.raises(ValueError, match="disagree"):
         _collapse_blinding(
-            {"a": {"formula": "readout_a", "measures": "one"},
-             "b": {"formula": "readout_a", "measures": "another"}},
-            {"a": "shared", "b": "shared"})
+            {
+                "a": {"formula": "readout_a", "measures": "one"},
+                "b": {"formula": "readout_a", "measures": "another"},
+            },
+            {"a": "shared", "b": "shared"},
+        )
 
 
 # ------------------------------------------------------------------ the noise branch's guards
@@ -352,17 +417,30 @@ def test_a_noise_spec_may_reference_a_readout_other_than_its_own():
     DERIVED `readout_<obsId>` refused that legal shape."""
     from petab_harness.benchmark import _blind_observables
 
-    prob = _prob({"Cer_obs": "observableParameter1_Cer_obs * Cer"},
-                 noise={"Cer_obs": "noiseParameter1_Cer_obs * Cer"})
-    prob.parameter_df = pd.DataFrame(index=pd.Index(["observableParameter1_Cer_obs",
-                                                     "noiseParameter1_Cer_obs"],
-                                                    name="parameterId"))
-    _blind_observables(prob, {"Cer_obs": {
-        "formula": "observableParameter1_Cer_obs * readout_ceramide",
-        "noise": "noiseParameter1_Cer_obs * readout_ceramide",
-        "readout": "readout_ceramide", "measures": "total ceramide"}})
-    assert prob.observable_df.loc["Cer_obs", "noiseFormula"] == \
-        "noiseParameter1_Cer_obs * readout_ceramide"
+    prob = _prob(
+        {"Cer_obs": "observableParameter1_Cer_obs * Cer"},
+        noise={"Cer_obs": "noiseParameter1_Cer_obs * Cer"},
+    )
+    prob.parameter_df = pd.DataFrame(
+        index=pd.Index(
+            ["observableParameter1_Cer_obs", "noiseParameter1_Cer_obs"], name="parameterId"
+        )
+    )
+    _blind_observables(
+        prob,
+        {
+            "Cer_obs": {
+                "formula": "observableParameter1_Cer_obs * readout_ceramide",
+                "noise": "noiseParameter1_Cer_obs * readout_ceramide",
+                "readout": "readout_ceramide",
+                "measures": "total ceramide",
+            }
+        },
+    )
+    assert (
+        prob.observable_df.loc["Cer_obs", "noiseFormula"]
+        == "noiseParameter1_Cer_obs * readout_ceramide"
+    )
 
 
 def test_a_model_entity_left_in_the_noise_formula_is_refused():
@@ -373,14 +451,21 @@ def test_a_model_entity_left_in_the_noise_formula_is_refused():
     species is what that widening exists for."""
     from petab_harness.benchmark import _blind_observables
 
-    prob = _prob({"a": "observableParameter1_a * S1"},
-                 noise={"a": "noiseParameter1_a * S2"})
-    prob.parameter_df = pd.DataFrame(index=pd.Index(["observableParameter1_a",
-                                                     "noiseParameter1_a"], name="parameterId"))
+    prob = _prob({"a": "observableParameter1_a * S1"}, noise={"a": "noiseParameter1_a * S2"})
+    prob.parameter_df = pd.DataFrame(
+        index=pd.Index(["observableParameter1_a", "noiseParameter1_a"], name="parameterId")
+    )
     with pytest.raises(ValueError, match=r"reference-model entities.*\['S2'\]|\['S2'\]"):
-        _blind_observables(prob, {"a": {
-            "formula": "observableParameter1_a * readout_a",
-            "noise": "noiseParameter1_a * S2", "measures": "m"}})
+        _blind_observables(
+            prob,
+            {
+                "a": {
+                    "formula": "observableParameter1_a * readout_a",
+                    "noise": "noiseParameter1_a * S2",
+                    "measures": "m",
+                }
+            },
+        )
 
 
 def test_a_sigma_only_species_is_refused_even_without_a_noise_key():
@@ -390,11 +475,11 @@ def test_a_sigma_only_species_is_refused_even_without_a_noise_key():
     from petab_harness.benchmark import _blind_observables
 
     prob = _prob({"a": "observableParameter1_a * S1"}, noise={"a": "0.1 * S2"})
-    prob.parameter_df = pd.DataFrame(index=pd.Index(["observableParameter1_a"],
-                                                    name="parameterId"))
+    prob.parameter_df = pd.DataFrame(index=pd.Index(["observableParameter1_a"], name="parameterId"))
     with pytest.raises(ValueError, match="S2"):
-        _blind_observables(prob, {"a": {"formula": "observableParameter1_a * readout_a",
-                                        "measures": "m"}})
+        _blind_observables(
+            prob, {"a": {"formula": "observableParameter1_a * readout_a", "measures": "m"}}
+        )
 
 
 def test_a_noise_formula_may_reference_the_observable_itself():
@@ -404,10 +489,19 @@ def test_a_noise_formula_may_reference_the_observable_itself():
     from petab_harness.benchmark import _blind_observables
 
     prob = _prob({"a": "observableParameter1_a * S1"}, noise={"a": "noiseParameter1_a * a"})
-    prob.parameter_df = pd.DataFrame(index=pd.Index(["observableParameter1_a",
-                                                     "noiseParameter1_a"], name="parameterId"))
-    _blind_observables(prob, {"a": {"formula": "observableParameter1_a * readout_a",
-                                    "noise": "noiseParameter1_a * a", "measures": "m"}})
+    prob.parameter_df = pd.DataFrame(
+        index=pd.Index(["observableParameter1_a", "noiseParameter1_a"], name="parameterId")
+    )
+    _blind_observables(
+        prob,
+        {
+            "a": {
+                "formula": "observableParameter1_a * readout_a",
+                "noise": "noiseParameter1_a * a",
+                "measures": "m",
+            }
+        },
+    )
     assert prob.observable_df.loc["a", "noiseFormula"] == "noiseParameter1_a * a"
 
 
@@ -417,9 +511,10 @@ def test_a_derived_readout_follows_its_observable_through_a_merge():
     "must reference readout_<mergedId>" guard fires. Eleven blinded examples omit the key."""
     from petab_harness.benchmark import _blind_observables, _collapse_blinding
 
-    spec = _collapse_blinding({"observable_k5": {"formula": "readout_observable_k5",
-                                                 "measures": "H4K5ac"}},
-                              {"observable_k5": "observable_k5_obs"})
+    spec = _collapse_blinding(
+        {"observable_k5": {"formula": "readout_observable_k5", "measures": "H4K5ac"}},
+        {"observable_k5": "observable_k5_obs"},
+    )
     assert spec["observable_k5_obs"]["formula"] == "readout_observable_k5_obs"
     # and it survives the guard it used to trip
     prob = _prob({"observable_k5_obs": "x_k5"})
@@ -434,19 +529,30 @@ def test_a_merge_does_not_inherit_one_members_dataset_label():
     import pandas as _pd
     from petab_harness.benchmark import _merge_equivalent_observables
 
-    odf = _pd.DataFrame({
-        "observableName": ["EGFR_ID1_A", "EGFR_ID2_B"],
-        "observableFormula": ["observableParameter1_EGFR_ID1_A*EGFR",
-                              "observableParameter1_EGFR_ID2_B*EGFR"],
-        "noiseFormula": ["noiseParameter1_EGFR_ID1_A", "noiseParameter1_EGFR_ID2_B"],
-    }, index=_pd.Index(["EGFR_ID1_A", "EGFR_ID2_B"], name="observableId"))
-    mdf = _pd.DataFrame({
-        "observableId": ["EGFR_ID1_A", "EGFR_ID2_B"],
-        # DIFFERENT conditions: the merge trials itself against `needs_flattening` and declines
-        # when the members share one, since overrides differing within a condition are exactly
-        # what separate observables are for.
-        "simulationConditionId": ["c1", "c2"], "time": [0.0, 0.0], "measurement": [1.0, 2.0],
-        "observableParameters": ["s1", "s2"], "noiseParameters": ["n1", "n2"]})
+    odf = _pd.DataFrame(
+        {
+            "observableName": ["EGFR_ID1_A", "EGFR_ID2_B"],
+            "observableFormula": [
+                "observableParameter1_EGFR_ID1_A*EGFR",
+                "observableParameter1_EGFR_ID2_B*EGFR",
+            ],
+            "noiseFormula": ["noiseParameter1_EGFR_ID1_A", "noiseParameter1_EGFR_ID2_B"],
+        },
+        index=_pd.Index(["EGFR_ID1_A", "EGFR_ID2_B"], name="observableId"),
+    )
+    mdf = _pd.DataFrame(
+        {
+            "observableId": ["EGFR_ID1_A", "EGFR_ID2_B"],
+            # DIFFERENT conditions: the merge trials itself against `needs_flattening` and declines
+            # when the members share one, since overrides differing within a condition are exactly
+            # what separate observables are for.
+            "simulationConditionId": ["c1", "c2"],
+            "time": [0.0, 0.0],
+            "measurement": [1.0, 2.0],
+            "observableParameters": ["s1", "s2"],
+            "noiseParameters": ["n1", "n2"],
+        }
+    )
 
     class _P:
         observable_df = odf
@@ -465,8 +571,9 @@ def test_a_noise_key_without_a_noise_column_is_a_clear_error():
 
     prob = _prob({"x": "observableParameter1_x * S"})
     del prob.observable_df["noiseFormula"]
-    prob.parameter_df = pd.DataFrame(index=pd.Index(["observableParameter1_x"],
-                                                    name="parameterId"))
+    prob.parameter_df = pd.DataFrame(index=pd.Index(["observableParameter1_x"], name="parameterId"))
     with pytest.raises(ValueError, match="no noiseFormula column"):
-        _blind_observables(prob, {"x": {"formula": "observableParameter1_x * readout_x",
-                                        "noise": "1", "measures": "m"}})
+        _blind_observables(
+            prob,
+            {"x": {"formula": "observableParameter1_x * readout_x", "noise": "1", "measures": "m"}},
+        )

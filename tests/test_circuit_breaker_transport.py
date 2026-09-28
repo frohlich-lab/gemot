@@ -19,8 +19,6 @@ httpx = pytest.importorskip("httpx")
 from petab_harness.agent import circuit_breaker as _breaker  # noqa: E402
 
 
-
-
 class _Tool:
     def __init__(self, name, coro):
         self.name, self.coroutine = name, coro
@@ -33,16 +31,21 @@ def _degraded_text(result):
 
 def test_is_transport_error_matches_real_and_generic():
     mod = _breaker
-    assert mod._is_transport_error(anyio.ClosedResourceError()) is True   # the real class name
+    assert mod._is_transport_error(anyio.ClosedResourceError()) is True  # the real class name
     assert mod._is_transport_error(ConnectionError("down")) is True
     # The WHOLE httpx.TransportError family classifies as transport (same surface as the resume
     # backstop), including subclasses the old hand-listed name set omitted — e.g. PoolTimeout.
     assert mod._is_transport_error(httpx.ConnectError("refused")) is True
     assert mod._is_transport_error(httpx.PoolTimeout("no conn")) is True
     assert mod._is_transport_error(ValueError("bad args")) is False
-    assert mod._is_transport_error(httpx.HTTPStatusError(  # NOT transport: a real HTTP response
-        "500", request=httpx.Request("GET", "http://x"),
-        response=httpx.Response(500))) is False
+    assert (
+        mod._is_transport_error(
+            httpx.HTTPStatusError(  # NOT transport: a real HTTP response
+                "500", request=httpx.Request("GET", "http://x"), response=httpx.Response(500)
+            )
+        )
+        is False
+    )
 
 
 def test_breaker_degrades_a_transport_error_without_raising_or_3_strikes():
@@ -59,12 +62,13 @@ def test_breaker_degrades_a_transport_error_without_raising_or_3_strikes():
     state = mod._new_breaker_state()
     tool = _Tool("get_reactome_info_by_identifier", _coro)
     mod._wrap_tools_with_circuit_breaker(
-        [tool], state, transport_disable_names={"get_reactome_info_by_identifier"})
+        [tool], state, transport_disable_names={"get_reactome_info_by_identifier"}
+    )
 
-    result = asyncio.run(tool.coroutine(runtime=None))          # must NOT raise
+    result = asyncio.run(tool.coroutine(runtime=None))  # must NOT raise
     assert "TOOL DISABLED" in _degraded_text(result)
     assert "get_reactome_info_by_identifier" in state["disabled"]
-    assert calls["n"] == 1                                       # called once, then degraded
+    assert calls["n"] == 1  # called once, then degraded
     # A later call short-circuits on the disabled set (still no server hit, still no raise).
     assert "TOOL DISABLED" in _degraded_text(asyncio.run(tool.coroutine(runtime=None)))
     assert calls["n"] == 1
@@ -81,8 +85,9 @@ def test_transport_error_on_a_core_tool_is_not_auto_disabled():
 
     state = mod._new_breaker_state()
     tool = _Tool("fit", _coro)
-    mod._wrap_tools_with_circuit_breaker([tool], state,
-                                         transport_disable_names={"get_reactome_info_by_identifier"})
+    mod._wrap_tools_with_circuit_breaker(
+        [tool], state, transport_disable_names={"get_reactome_info_by_identifier"}
+    )
     with pytest.raises(anyio.ClosedResourceError):
         asyncio.run(tool.coroutine(runtime=None))
     assert "fit" not in state["disabled"]

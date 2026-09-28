@@ -136,11 +136,11 @@ actionable message.
 
 ## Linting
 
-`ruff check .` — config and the reason for every entry in `[tool.ruff]` in
-[pyproject.toml](../pyproject.toml). CI runs it as its own fast job (ruff only, no
-toolchain).
+`ruff check .` and `ruff format .` — config and the reason for every entry in `[tool.ruff]`
+in [pyproject.toml](../pyproject.toml). CI runs `ruff check` as its own fast job (ruff only,
+no toolchain).
 
-The rule set is `E`, `F`, `W`, minus `E501` and `E702`. It is narrow on purpose: it was
+The rule set is `E`, `F`, `W`, minus `E501`. It is narrow on purpose: it was
 configured onto a codebase that had never run a linter, so it is what the code already
 satisfies.
 

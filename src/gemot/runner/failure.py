@@ -15,6 +15,7 @@ from pathlib import Path
 from .provenance import _now_iso
 from ..scenario import Scenario
 
+
 def _summarize_exc(exc: BaseException) -> str:
     """A short, readable one-liner for an exception — unwrapping an ExceptionGroup (anyio's
     TaskGroup wraps a background provider/connection failure in one) down to its first leaf,
@@ -63,16 +64,24 @@ def _committed_versions(work: Path) -> "int | None":
     as ``head_version``/``n_ops``.
     """
     try:
-        vs = [d.name for d in (work / "prov" / "versions").iterdir()
-              if d.is_dir() and re.fullmatch(r"v\d+", d.name)]
+        vs = [
+            d.name
+            for d in (work / "prov" / "versions").iterdir()
+            if d.is_dir() and re.fullmatch(r"v\d+", d.name)
+        ]
     except Exception:  # pragma: no cover - no store, or an unreadable one
         return None
     return max(int(v[1:]) for v in vs) if vs else None
 
 
-def _write_degraded_result(work: Path, base_meta: dict, scenario: Scenario,
-                           reason: str, server_returncode: int | None = None,
-                           clock=None) -> dict:
+def _write_degraded_result(
+    work: Path,
+    base_meta: dict,
+    scenario: Scenario,
+    reason: str,
+    server_returncode: int | None = None,
+    clock=None,
+) -> dict:
     """Persist (and return) the degraded ``result.json`` written when a run aborts before a
     verdict, so the batch and the cross-run aggregator find a well-formed row instead of a
     missing file.
@@ -94,8 +103,10 @@ def _write_degraded_result(work: Path, base_meta: dict, scenario: Scenario,
             server_note = f" [MCP server had exited with code {server_returncode}]"
         else:
             server_note = " [MCP server had exited cleanly]"
-    print(f"[run] aborted by an unrecoverable error ({reason}){server_note}; "
-          "writing a degraded result.json and exiting.")
+    print(
+        f"[run] aborted by an unrecoverable error ({reason}){server_note}; "
+        "writing a degraded result.json and exiting."
+    )
     result = {
         **base_meta,
         "scenario": scenario.name,
@@ -108,8 +119,15 @@ def _write_degraded_result(work: Path, base_meta: dict, scenario: Scenario,
         # An aborted run still made edits, and they are the MOST interesting ones: omitting them
         # scored every abort as zero rejections, biasing the sweep-wide rate DOWN for exactly the
         # runs that struggled. `clock` is None only when the abort predates the session.
-        **({"tool_calls": clock.calls, "tool_call_counts": dict(clock.by_tool),
-           "edit_rejects": clock.reject_summary()} if clock else {}),
+        **(
+            {
+                "tool_calls": clock.calls,
+                "tool_call_counts": dict(clock.by_tool),
+                "edit_rejects": clock.reject_summary(),
+            }
+            if clock
+            else {}
+        ),
         # `n_ops` read off the version store rather than the judge, which never ran. Without it
         # `experiments._did_modeling_work` sees no n_ops and no n_fits, `is_noop_infra_abort`
         # returns True, and the run is DROPPED from the aggregation as pure scoring noise -- which

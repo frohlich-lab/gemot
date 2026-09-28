@@ -78,8 +78,9 @@ def _symbol_locals(model) -> dict:
     ids.add("time")
     # A user-defined FUNCTION is a call name, so it must NOT be bound to a Symbol (that would make
     # it non-callable); drop any id that names one.
-    functions = {model.getFunctionDefinition(i).getId()
-                 for i in range(model.getNumFunctionDefinitions())}
+    functions = {
+        model.getFunctionDefinition(i).getId() for i in range(model.getNumFunctionDefinitions())
+    }
     ids -= functions
     return {name: sp.Symbol(name) for name in ids if name and name.isidentifier()}
 
@@ -115,17 +116,20 @@ def _parse_l3(formula: str, where: str, known: set[str] | None = None):
     # them back is correct. Only an undeclared `zoo`/`oo`/`nan`/`inf` means the substitution went
     # non-finite (e.g. a denominator that substituted to 0).
     bad = ({"zoo", "oo", "nan", "inf"} - set(known or ())) & set(
-        re.findall(r"[A-Za-z_]\w*", formula))
+        re.findall(r"[A-Za-z_]\w*", formula)
+    )
     if bad:
         raise ValueError(
             f"{where}: simplification produced sympy constant(s) {sorted(bad)} in {formula!r} — "
             "the substitution made the expression non-finite (or a symbol was parsed as a sympy "
-            "constant). Refusing to write it as a rate law.")
+            "constant). Refusing to write it as a rate law."
+        )
     ast = libsbml.parseL3Formula(formula)
     if ast is None:
         raise ValueError(
             f"{where}: libsbml could not parse the simplified formula {formula!r} "
-            f"({libsbml.getLastParseL3Error()}). Refusing to write empty math.")
+            f"({libsbml.getLastParseL3Error()}). Refusing to write empty math."
+        )
     return ast
 
 
@@ -202,10 +206,14 @@ def prune(name: str, fixed_params: list[str], collection: Path | None = None) ->
             before = libsbml.formulaToL3String(node.getMath())
             if any(re.search(rf"\b{p}\b", before) for p in fixed_params):
                 target = node.getVariable() if kind == "rule" else node.getSymbol()
-                node.setMath(_parse_l3(_to_l3(_to_sympy(before, zeros, symbols)),
-                                       f"{kind} {target}", set(symbols)))
-                simplified.append((f"{kind} {target}", before,
-                                   libsbml.formulaToL3String(node.getMath())))
+                node.setMath(
+                    _parse_l3(
+                        _to_l3(_to_sympy(before, zeros, symbols)), f"{kind} {target}", set(symbols)
+                    )
+                )
+                simplified.append(
+                    (f"{kind} {target}", before, libsbml.formulaToL3String(node.getMath()))
+                )
 
     # Drop the zeroed parameters once nothing references them. Orphan SPECIES are left alone:
     # the server's reconcile.prune_orphans removes those (and their IC parameters) on set_model.
@@ -283,13 +291,17 @@ def main(argv: list[str]) -> int:
     ant, report = prune(name, argv[2:])
     out.write_text(ant)
     print(f"[prune] {name} -> {out}")
-    print(f"[prune]   removed reactions ({len(report['removed_reactions'])}): "
-          f"{report['removed_reactions']}")
+    print(
+        f"[prune]   removed reactions ({len(report['removed_reactions'])}): "
+        f"{report['removed_reactions']}"
+    )
     print(f"[prune]   simplified ({len(report['simplified'])}):")
     for where, before, after in report["simplified"]:
         print(f"[prune]     {where}: {before[:60]} -> {after[:60]}")
-    print(f"[prune]   removed parameters ({len(report['removed_parameters'])}): "
-          f"{report['removed_parameters']}")
+    print(
+        f"[prune]   removed parameters ({len(report['removed_parameters'])}): "
+        f"{report['removed_parameters']}"
+    )
     if report["still_referenced"]:
         print(f"[prune]   STILL REFERENCED (not removed): {report['still_referenced']}")
     return 0

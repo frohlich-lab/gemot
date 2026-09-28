@@ -16,6 +16,7 @@ from mcp import ClientSession
 
 from ..fit_budget import fit_time_budget_for
 
+
 # --------------------------------------------------------------------------- MCP glue
 def _unwrap(result):
     """Turn a CallToolResult into the tool's Python return value."""
@@ -91,7 +92,7 @@ _REJECT_PATTERNS = (
     # `note_result` prefers, so prose entries for them would be dead code — and a generic one
     # like "already exists" would additionally steal any FUTURE rejection containing the phrase,
     # which is the needle-shadows-the-bucket failure the labels were introduced to end.
-    ("op_malformed", "nothing was applied"),      # residual, for anything unlabelled
+    ("op_malformed", "nothing was applied"),  # residual, for anything unlabelled
 )
 
 
@@ -143,8 +144,17 @@ class _ToolClock:
     36 GB trace DB after the fact. Carrying the rate per run makes it visible during a sweep.
     """
 
-    __slots__ = ("seconds", "calls", "_active", "_since", "edits", "rejects", "fit_reverts",
-                 "reject_causes", "by_tool")
+    __slots__ = (
+        "seconds",
+        "calls",
+        "_active",
+        "_since",
+        "edits",
+        "rejects",
+        "fit_reverts",
+        "reject_causes",
+        "by_tool",
+    )
 
     def __init__(self) -> None:
         self.seconds = 0.0
@@ -300,10 +310,12 @@ def _wrap_call_timeout(session: ClientSession, default_n_starts: int) -> None:
                 # queue term stays. (Dropping that term is what made two earlier per-handle
                 # attempts unsafe: the finish gate reads from inside a super-step.)
                 budget = NON_FIT_CALL_TIMEOUT_S + (
-                    fit_time_budget_for(queued, default_n_starts) if queued else 0.0)
+                    fit_time_budget_for(queued, default_n_starts) if queued else 0.0
+                )
             else:
                 budget = fit_time_budget_for(
-                    None if asked is None else _plus(asked, queued), default_n_starts)
+                    None if asked is None else _plus(asked, queued), default_n_starts
+                )
             kwargs["read_timeout_seconds"] = timedelta(seconds=budget)
         tracked = None
         if can_fit:
@@ -335,8 +347,10 @@ def _wrap_call_timeout(session: ClientSession, default_n_starts: int) -> None:
         # ClientSession-wide read_timeout_seconds `runner.main` sets, which is sized to the run
         # DEFAULT -- safe, but blind to a call asking for more. Print it so a sweep post-mortem
         # can tell that apart from a genuinely slow fit.
-        print(f"[runner] could not install per-call fit timeouts ({type(exc).__name__}: {exc}) — "
-              "tool calls fall back to the session-wide default-sized timeout")
+        print(
+            f"[runner] could not install per-call fit timeouts ({type(exc).__name__}: {exc}) — "
+            "tool calls fall back to the session-wide default-sized timeout"
+        )
 
 
 def _plus(asked, queued: int):

@@ -76,6 +76,7 @@ _MAX_ROWS = 200
 
 def snapshot_dir() -> Path:
     from .paths import repo_root
+
     return repo_root() / "slurm" / "omnipath_snapshot"
 
 
@@ -135,13 +136,16 @@ def _quote_reserved(sql: str) -> str:
     import re
 
     parts = sql.split("'")
-    for i in range(0, len(parts), 2):          # even indices are OUTSIDE string literals
-        parts[i] = re.sub(r'(?<!")\breferences\b(?!")', '"references"', parts[i],
-                          flags=re.IGNORECASE)
+    for i in range(0, len(parts), 2):  # even indices are OUTSIDE string literals
+        parts[i] = re.sub(
+            r'(?<!")\breferences\b(?!")', '"references"', parts[i], flags=re.IGNORECASE
+        )
     return "'".join(parts)
 
 
-def run_sql(sql: str, *, max_rows: int = _MAX_ROWS, directory: "Path | None" = None) -> dict[str, Any]:
+def run_sql(
+    sql: str, *, max_rows: int = _MAX_ROWS, directory: "Path | None" = None
+) -> dict[str, Any]:
     """Execute one read-only query against the snapshot and return rows + metadata.
 
     Errors are RETURNED, not raised: a malformed query is something the model should see and fix,
@@ -166,10 +170,13 @@ def run_sql(sql: str, *, max_rows: int = _MAX_ROWS, directory: "Path | None" = N
             "snapshot": snapshot_info().get("fetched_at"),
         }
     except Exception as exc:  # noqa: BLE001 - a bad query is the model's to fix, not a run-ender
-        return {"error": f"{type(exc).__name__}: {exc}",
-                "available_tables": sorted(_TABLES),
-                "annotation_resources_in_snapshot": list(_ANNOTATION_RESOURCES),
-                "rows": [], "n_rows": 0}
+        return {
+            "error": f"{type(exc).__name__}: {exc}",
+            "available_tables": sorted(_TABLES),
+            "annotation_resources_in_snapshot": list(_ANNOTATION_RESOURCES),
+            "rows": [],
+            "n_rows": 0,
+        }
     finally:
         if con is not None:
             con.close()
@@ -211,27 +218,38 @@ class LocalOmniPathSession:
 
         return ListToolsResult(
             nextCursor=None,
-            tools=[Tool(
-                name="execute_sql_query_on_omnipath_db",
-                description=TOOL_DESCRIPTION,
-                inputSchema={
-                    "type": "object",
-                    "properties": {"sqlQuery": {
-                        "type": "string",
-                        "description": "A read-only SQL SELECT over the tables named above.",
-                    }},
-                    "required": ["sqlQuery"],
-                },
-            )],
+            tools=[
+                Tool(
+                    name="execute_sql_query_on_omnipath_db",
+                    description=TOOL_DESCRIPTION,
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "sqlQuery": {
+                                "type": "string",
+                                "description": "A read-only SQL SELECT over the tables named above.",
+                            }
+                        },
+                        "required": ["sqlQuery"],
+                    },
+                )
+            ],
         )
 
     async def call_tool(self, name, arguments=None, *args, **kwargs):
         from mcp.types import CallToolResult, TextContent
 
         if name != "execute_sql_query_on_omnipath_db":
-            return CallToolResult(isError=True, content=[TextContent(
-                type="text", text=f"unknown tool {name!r}; this endpoint serves only "
-                                  "execute_sql_query_on_omnipath_db")])
+            return CallToolResult(
+                isError=True,
+                content=[
+                    TextContent(
+                        type="text",
+                        text=f"unknown tool {name!r}; this endpoint serves only "
+                        "execute_sql_query_on_omnipath_db",
+                    )
+                ],
+            )
         sql = (arguments or {}).get("sqlQuery") if isinstance(arguments, dict) else None
         out = run_sql(sql if isinstance(sql, str) else "", directory=self._dir)
         # `isError` mirrors the hosted service so the breaker and the cache treat a bad query the
@@ -241,7 +259,7 @@ class LocalOmniPathSession:
             content=[TextContent(type="text", text=json.dumps(out, default=str))],
         )
 
-    async def initialize(self):      # a network session needs one; this is a no-op
+    async def initialize(self):  # a network session needs one; this is a no-op
         return None
 
 

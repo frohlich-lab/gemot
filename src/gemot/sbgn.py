@@ -19,18 +19,31 @@ Glyphs follow the SBGN specifications (sbgn.github.io):
 
 Only the glyphs these figures use are implemented; anything else raises rather than guessing.
 """
+
 from __future__ import annotations
 
 import math
 
-INK = '#26343E'
-MUTED = '#5F6B74'
+INK = "#26343E"
+MUTED = "#5F6B74"
 #: Entity-class fills. Deliberately pale: SBGN's meaning is in the SHAPE, and colour must not
 #: become a second, conflicting code.
-FILLS = {'macromolecule': '#EDF3F8', 'complex': '#EAF1EC', 'perturbation': '#FDF1E4',
-         'simple chemical': '#F4F0F8', 'source': '#FFFFFF', 'sink': '#FFFFFF'}
-EDGES = {'macromolecule': '#486B88', 'complex': '#3E7863', 'perturbation': '#B4661E',
-         'simple chemical': '#6A4C8C', 'source': MUTED, 'sink': MUTED}
+FILLS = {
+    "macromolecule": "#EDF3F8",
+    "complex": "#EAF1EC",
+    "perturbation": "#FDF1E4",
+    "simple chemical": "#F4F0F8",
+    "source": "#FFFFFF",
+    "sink": "#FFFFFF",
+}
+EDGES = {
+    "macromolecule": "#486B88",
+    "complex": "#3E7863",
+    "perturbation": "#B4661E",
+    "simple chemical": "#6A4C8C",
+    "source": MUTED,
+    "sink": MUTED,
+}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -40,8 +53,15 @@ def _rounded(axis, x, y, w, h, **kw):
     from matplotlib.patches import FancyBboxPatch
 
     pad = min(w, h) * 0.18
-    axis.add_patch(FancyBboxPatch((x - w / 2 + pad, y - h / 2 + pad), w - 2 * pad, h - 2 * pad,
-                                  boxstyle=f'round,pad={pad:g},rounding_size={pad * 1.4:g}', **kw))
+    axis.add_patch(
+        FancyBboxPatch(
+            (x - w / 2 + pad, y - h / 2 + pad),
+            w - 2 * pad,
+            h - 2 * pad,
+            boxstyle=f"round,pad={pad:g},rounding_size={pad * 1.4:g}",
+            **kw,
+        )
+    )
 
 
 def _rectangle(axis, x, y, w, h, **kw):
@@ -55,11 +75,22 @@ def _cut_corner(axis, x, y, w, h, **kw):
     from matplotlib.patches import Polygon
 
     c = min(w, h) * 0.22
-    axis.add_patch(Polygon([(x - w / 2 + c, y - h / 2), (x + w / 2 - c, y - h / 2),
-                            (x + w / 2, y - h / 2 + c), (x + w / 2, y + h / 2 - c),
-                            (x + w / 2 - c, y + h / 2), (x - w / 2 + c, y + h / 2),
-                            (x - w / 2, y + h / 2 - c), (x - w / 2, y - h / 2 + c)],
-                           closed=True, **kw))
+    axis.add_patch(
+        Polygon(
+            [
+                (x - w / 2 + c, y - h / 2),
+                (x + w / 2 - c, y - h / 2),
+                (x + w / 2, y - h / 2 + c),
+                (x + w / 2, y + h / 2 - c),
+                (x + w / 2 - c, y + h / 2),
+                (x - w / 2 + c, y + h / 2),
+                (x - w / 2, y + h / 2 - c),
+                (x - w / 2, y - h / 2 + c),
+            ],
+            closed=True,
+            **kw,
+        )
+    )
 
 
 def _perturbation(axis, x, y, w, h, **kw):
@@ -67,9 +98,20 @@ def _perturbation(axis, x, y, w, h, **kw):
     from matplotlib.patches import Polygon
 
     c = w * 0.16
-    axis.add_patch(Polygon([(x - w / 2, y - h / 2), (x + w / 2, y - h / 2),
-                            (x + w / 2 - c, y), (x + w / 2, y + h / 2),
-                            (x - w / 2, y + h / 2), (x - w / 2 + c, y)], closed=True, **kw))
+    axis.add_patch(
+        Polygon(
+            [
+                (x - w / 2, y - h / 2),
+                (x + w / 2, y - h / 2),
+                (x + w / 2 - c, y),
+                (x + w / 2, y + h / 2),
+                (x - w / 2, y + h / 2),
+                (x - w / 2 + c, y),
+            ],
+            closed=True,
+            **kw,
+        )
+    )
 
 
 def _source_sink(axis, x, y, w, h, **kw):
@@ -79,17 +121,27 @@ def _source_sink(axis, x, y, w, h, **kw):
     radius = min(w, h) / 2
     axis.add_patch(Circle((x, y), radius, **kw))
     offset = radius * 0.7071
-    axis.plot([x - offset, x + offset], [y - offset, y + offset],
-              color=kw.get('edgecolor', INK), linewidth=kw.get('linewidth', 1.3),
-              zorder=kw.get('zorder', 5) + 1, solid_capstyle='round')
+    axis.plot(
+        [x - offset, x + offset],
+        [y - offset, y + offset],
+        color=kw.get("edgecolor", INK),
+        linewidth=kw.get("linewidth", 1.3),
+        zorder=kw.get("zorder", 5) + 1,
+        solid_capstyle="round",
+    )
 
 
-ENTITY_GLYPH = {'macromolecule': _rounded, 'complex': _cut_corner, 'perturbation': _perturbation,
-                'simple chemical': _rounded, 'source': _source_sink, 'sink': _source_sink}
+ENTITY_GLYPH = {
+    "macromolecule": _rounded,
+    "complex": _cut_corner,
+    "perturbation": _perturbation,
+    "simple chemical": _rounded,
+    "source": _source_sink,
+    "sink": _source_sink,
+}
 
 
-def _terminator(axis, start, end, kind, color=INK, scale=13.0, shrink=0.0, curve=0.0,
-                pad=0.0):
+def _terminator(axis, start, end, kind, color=INK, scale=13.0, shrink=0.0, curve=0.0, pad=0.0):
     """Draw one arc with the SBGN terminator for ``kind`` at ``end``.
 
     ``curve`` bows the arc rather than running it straight. Two glyphs joined both ways get one
@@ -100,29 +152,54 @@ def _terminator(axis, start, end, kind, color=INK, scale=13.0, shrink=0.0, curve
     import numpy as np
     from matplotlib.patches import FancyArrowPatch
 
-    style = {'consumption': '-', 'production': '-|>', 'positive influence': '-|>',
-             'stimulation': '-|>', 'necessary stimulation': '-|>', 'negative influence': '-',
-             'inhibition': '-', 'unknown influence': '-', 'modulation': '-',
-             'catalysis': '-'}[kind]
-    filled = kind == 'production'
-    axis.add_patch(FancyArrowPatch(
-        start, end, arrowstyle=style, mutation_scale=scale, linewidth=1.2, shrinkA=pad,
-        shrinkB=shrink + pad, facecolor=color if filled else 'white', edgecolor=color, zorder=3,
-        joinstyle='miter', connectionstyle=f'arc3,rad={curve:g}'))
-    if kind in ('negative influence', 'inhibition', 'necessary stimulation'):
+    style = {
+        "consumption": "-",
+        "production": "-|>",
+        "positive influence": "-|>",
+        "stimulation": "-|>",
+        "necessary stimulation": "-|>",
+        "negative influence": "-",
+        "inhibition": "-",
+        "unknown influence": "-",
+        "modulation": "-",
+        "catalysis": "-",
+    }[kind]
+    filled = kind == "production"
+    axis.add_patch(
+        FancyArrowPatch(
+            start,
+            end,
+            arrowstyle=style,
+            mutation_scale=scale,
+            linewidth=1.2,
+            shrinkA=pad,
+            shrinkB=shrink + pad,
+            facecolor=color if filled else "white",
+            edgecolor=color,
+            zorder=3,
+            joinstyle="miter",
+            connectionstyle=f"arc3,rad={curve:g}",
+        )
+    )
+    if kind in ("negative influence", "inhibition", "necessary stimulation"):
         # A bar across the arc: the whole terminator for inhibition, and the extra stroke that
         # turns a positive arrowhead into necessary stimulation.
         direction = np.array(end, dtype=float) - np.array(start, dtype=float)
         length = float(np.hypot(*direction)) or 1.0
         unit = direction / length
         normal = np.array([-unit[1], unit[0]])
-        back = 0.055 if kind == 'necessary stimulation' else 0.0
+        back = 0.055 if kind == "necessary stimulation" else 0.0
         at = np.array(end, dtype=float) - unit * (shrink / 72.0 + back)
         bar = 0.055
-        axis.plot([at[0] - normal[0] * bar, at[0] + normal[0] * bar],
-                  [at[1] - normal[1] * bar, at[1] + normal[1] * bar],
-                  color=color, linewidth=1.6, zorder=4, solid_capstyle='butt')
-    if kind in ('unknown influence', 'modulation'):
+        axis.plot(
+            [at[0] - normal[0] * bar, at[0] + normal[0] * bar],
+            [at[1] - normal[1] * bar, at[1] + normal[1] * bar],
+            color=color,
+            linewidth=1.6,
+            zorder=4,
+            solid_capstyle="butt",
+        )
+    if kind in ("unknown influence", "modulation"):
         import numpy as np
 
         direction = np.array(end, dtype=float) - np.array(start, dtype=float)
@@ -132,22 +209,58 @@ def _terminator(axis, start, end, kind, color=INK, scale=13.0, shrink=0.0, curve
         tip = np.array(end, dtype=float)
         d = 0.05
         from matplotlib.patches import Polygon
-        axis.add_patch(Polygon([tip, tip - unit * d + normal * d * 0.7,
-                                tip - unit * 2 * d, tip - unit * d - normal * d * 0.7],
-                               closed=True, facecolor='white', edgecolor=color,
-                               linewidth=1.2, zorder=4))
-    if kind == 'catalysis':
-        axis.plot(*end, marker='o', markersize=7, markerfacecolor='white',
-                  markeredgecolor=color, markeredgewidth=1.2, zorder=4)
+
+        axis.add_patch(
+            Polygon(
+                [
+                    tip,
+                    tip - unit * d + normal * d * 0.7,
+                    tip - unit * 2 * d,
+                    tip - unit * d - normal * d * 0.7,
+                ],
+                closed=True,
+                facecolor="white",
+                edgecolor=color,
+                linewidth=1.2,
+                zorder=4,
+            )
+        )
+    if kind == "catalysis":
+        axis.plot(
+            *end,
+            marker="o",
+            markersize=7,
+            markerfacecolor="white",
+            markeredgecolor=color,
+            markeredgewidth=1.2,
+            zorder=4,
+        )
 
 
 # ---------------------------------------------------------------------------------------------
 # Activity Flow
 # ---------------------------------------------------------------------------------------------
-def activity_flow(axis, network, *, box=(1.30, 0.40), gap=0.62, fontsize=11.5, colors=None,
-                  classes=None, mechanics=None, floor=0.0, compact=False, annotate=True,
-                  influence=None, arrow_x=0.0, notes=None, note_size=None, arrow_scale=15,
-                  rounded=False, box_linewidth=1.8):
+def activity_flow(
+    axis,
+    network,
+    *,
+    box=(1.30, 0.40),
+    gap=0.62,
+    fontsize=11.5,
+    colors=None,
+    classes=None,
+    mechanics=None,
+    floor=0.0,
+    compact=False,
+    annotate=True,
+    influence=None,
+    arrow_x=0.0,
+    notes=None,
+    note_size=None,
+    arrow_scale=15,
+    rounded=False,
+    box_linewidth=1.8,
+):
     """Draw a readout network as an SBGN Activity Flow map, top to bottom.
 
     ``network`` is the manifest's ``reference_network``: nodes with ``label``/``kind``/``species``
@@ -171,100 +284,175 @@ def activity_flow(axis, network, *, box=(1.30, 0.40), gap=0.62, fontsize=11.5, c
     notes = notes or {}
     # ``floor`` holds the secondary text at a minimum print size (ICLR: 6 pt) where the map is
     # drawn small; the defaults keep the supplement's large maps exactly as they were.
-    tag_size, detail_size, edge_size = (max(floor, fontsize - 2.8), max(floor, fontsize - 2.9),
-                                        max(floor, fontsize - 2.0))
-    words = {'macromolecule': 'monomer', 'complex': 'complex', 'simple chemical': 'chemical',
-             'perturbation': 'input'}
+    tag_size, detail_size, edge_size = (
+        max(floor, fontsize - 2.8),
+        max(floor, fontsize - 2.9),
+        max(floor, fontsize - 2.0),
+    )
+    words = {
+        "macromolecule": "monomer",
+        "complex": "complex",
+        "simple chemical": "chemical",
+        "perturbation": "input",
+    }
     width, height = box
-    nodes = network['nodes']
-    axis.set_aspect('equal')
-    axis.axis('off')
+    nodes = network["nodes"]
+    axis.set_aspect("equal")
+    axis.axis("off")
     positions = {}
     for index, node in enumerate(nodes):
         y = -index * (height + gap)
-        positions[node['id']] = y
-        kind = 'perturbation' if node['kind'] == 'input' else 'macromolecule'
-        accent = colors.get(node['id'], INK)
+        positions[node["id"]] = y
+        kind = "perturbation" if node["kind"] == "input" else "macromolecule"
+        accent = colors.get(node["id"], INK)
         # The activity is a rectangle (rounded on request); the unit of information carries the class.
         # ``rounded`` keeps the outer size (the pad is taken inside), so it changes no layout.
-        (_rounded if rounded else _rectangle)(axis, 0, y, width, height, facecolor='white',
-                                              edgecolor=accent, linewidth=box_linewidth,
-                   zorder=2)
+        (_rounded if rounded else _rectangle)(
+            axis,
+            0,
+            y,
+            width,
+            height,
+            facecolor="white",
+            edgecolor=accent,
+            linewidth=box_linewidth,
+            zorder=2,
+        )
         # A perturbation's unit says "perturbation", the longest tag there is, inside a notched
         # glyph that loses width to its points: it gets the wider unit.
-        unit_w = (min(width * 0.70, 1.65) if kind == 'perturbation'
-                  else min(width * 0.46, 1.05))
+        unit_w = min(width * 0.70, 1.65) if kind == "perturbation" else min(width * 0.46, 1.05)
         unit_h = height * 0.32
         ux, uy = -width / 2 + unit_w / 2 + height * 0.10, y + height / 2
         # annotate=False draws the map as boxes, arrows and names only -- how Figure 3B shows it
         # at text width. The unit of information, the detail and the edge labels are secondary
         # text that cannot be set at 6 pt in a 0.9 in column; the supplement prints them all.
-        axis.text(0, y + (height * 0.04 if annotate else 0), node['label'], ha='center',
-                  va='center', fontsize=fontsize, fontweight='bold', color=accent, zorder=4)
+        axis.text(
+            0,
+            y + (height * 0.04 if annotate else 0),
+            node["label"],
+            ha="center",
+            va="center",
+            fontsize=fontsize,
+            fontweight="bold",
+            color=accent,
+            zorder=4,
+        )
         if not annotate:
             continue
-        glyph = _perturbation if kind == 'perturbation' else _rounded
-        glyph(axis, ux, uy, unit_w, unit_h, facecolor='white', edgecolor=MUTED,
-              linewidth=0.8, zorder=3)
+        glyph = _perturbation if kind == "perturbation" else _rounded
+        glyph(
+            axis,
+            ux,
+            uy,
+            unit_w,
+            unit_h,
+            facecolor="white",
+            edgecolor=MUTED,
+            linewidth=0.8,
+            zorder=3,
+        )
         # The unit of information names what the quantity is MEASURED BY where that is known: an
         # entity class a reader can already see from the glyph is the less useful of the two.
-        tag = node.get('modality') or ('perturbation' if kind == 'perturbation' else 'protein')
-        axis.text(ux, uy, tag, ha='center', va='center', fontsize=tag_size, color=MUTED,
-                  zorder=4)
+        tag = node.get("modality") or ("perturbation" if kind == "perturbation" else "protein")
+        axis.text(ux, uy, tag, ha="center", va="center", fontsize=tag_size, color=MUTED, zorder=4)
         grouped: dict[str, list[str]] = {}
-        for name in node['species']:
-            grouped.setdefault(words.get(classes.get(name, ''), 'state'), []).append(name)
-        said = [f"{word}{'s' if len(found) > 1 else ''} {', '.join(found)}"
-                for word, found in grouped.items()]
-        detail = ('applied stimulus' if node['kind'] == 'input'
-                  else 'measured as ' + ('\n' if len(node['species']) > 1 else '')
-                  + ' and '.join(said))
+        for name in node["species"]:
+            grouped.setdefault(words.get(classes.get(name, ""), "state"), []).append(name)
+        said = [
+            f"{word}{'s' if len(found) > 1 else ''} {', '.join(found)}"
+            for word, found in grouped.items()
+        ]
+        detail = (
+            "applied stimulus"
+            if node["kind"] == "input"
+            else "measured as " + ("\n" if len(node["species"]) > 1 else "") + " and ".join(said)
+        )
         # compact keeps only the mechanics line: at text width with a 6 pt floor the species a
         # readout sums do not fit in the box, and the supplement's process-description maps
         # carry them in full.
-        if compact and node['kind'] != 'input':
-            detail = ''
-        reactions, motifs_here = mechanics.get(node['id'], (None, ()))
+        if compact and node["kind"] != "input":
+            detail = ""
+        reactions, motifs_here = mechanics.get(node["id"], (None, ()))
         if reactions is not None:
-            line = (f"{reactions} reaction" + ('s' if reactions != 1 else '')
-                    + (' · ' + ', '.join(motifs_here) if motifs_here else ''))
+            line = (
+                f"{reactions} reaction"
+                + ("s" if reactions != 1 else "")
+                + (" · " + ", ".join(motifs_here) if motifs_here else "")
+            )
             detail = f"{detail}\n{line}" if detail else line
-        axis.text(0, y - height * (0.26 if compact else 0.22), detail, ha='center', va='center',
-                  fontsize=detail_size, color=MUTED, zorder=4, linespacing=1.15)
-    for edge in network['edges']:
-        start = positions[edge['source']] - height / 2
-        end = positions[edge['target']] + height / 2
-        kind = influence or {'positive': 'positive influence',
-                             'negative': 'negative influence'}.get(edge.get('influence'),
-                                                                   'unknown influence')
+        axis.text(
+            0,
+            y - height * (0.26 if compact else 0.22),
+            detail,
+            ha="center",
+            va="center",
+            fontsize=detail_size,
+            color=MUTED,
+            zorder=4,
+            linespacing=1.15,
+        )
+    for edge in network["edges"]:
+        start = positions[edge["source"]] - height / 2
+        end = positions[edge["target"]] + height / 2
+        kind = influence or {
+            "positive": "positive influence",
+            "negative": "negative influence",
+        }.get(edge.get("influence"), "unknown influence")
         x = arrow_x * width
         _terminator(axis, (x, start), (x, end), kind, color=INK, scale=arrow_scale)
-        note = notes.get((edge['source'], edge['target']))
+        note = notes.get((edge["source"], edge["target"]))
         if note:
-            axis.text(x + width * 0.13, (start + end) / 2, note, ha='left', va='center',
-                      fontsize=note_size or edge_size, color=MUTED, zorder=5, linespacing=1.0,
-                      gid="note")
+            axis.text(
+                x + width * 0.13,
+                (start + end) / 2,
+                note,
+                ha="left",
+                va="center",
+                fontsize=note_size or edge_size,
+                color=MUTED,
+                zorder=5,
+                linespacing=1.0,
+                gid="note",
+            )
         if not annotate:
             continue
-        label = f"{edge['hops']} reaction" + ('s' if edge['hops'] != 1 else '')
-        if edge['path'][1:-1]:
+        label = f"{edge['hops']} reaction" + ("s" if edge["hops"] != 1 else "")
+        if edge["path"][1:-1]:
             # One line when compact: the gap between boxes holds a single 6 pt line, and a
             # second one ran into the next box's unit of information.
-            label += (' via ' if compact else '\nvia ') + ', '.join(edge['path'][1:-1])
-        axis.text(0, (start + end) / 2, label, ha='center', va='center',
-                  fontsize=edge_size, color=MUTED, linespacing=1.05, zorder=5,
-                  bbox={'facecolor': 'white', 'edgecolor': 'none', 'pad': 0.6})
+            label += (" via " if compact else "\nvia ") + ", ".join(edge["path"][1:-1])
+        axis.text(
+            0,
+            (start + end) / 2,
+            label,
+            ha="center",
+            va="center",
+            fontsize=edge_size,
+            color=MUTED,
+            linespacing=1.05,
+            zorder=5,
+            bbox={"facecolor": "white", "edgecolor": "none", "pad": 0.6},
+        )
     axis.set_xlim(-width / 2 - width * 0.06, width / 2 + width * 0.06)
-    axis.set_ylim(-(len(nodes) - 1) * (height + gap) - height / 2 - gap * 0.55,
-                  height / 2 + height * 0.18)
+    axis.set_ylim(
+        -(len(nodes) - 1) * (height + gap) - height / 2 - gap * 0.55, height / 2 + height * 0.18
+    )
 
 
 def activity_flow_key(axis, x, y, *, fontsize=7.4):
     """A one-line key naming the glyphs, so the panel is readable without the SBGN spec."""
-    axis.text(x, y, 'SBGN activity flow: rectangle = biological activity, tag = entity class '
-              '(mt:prot macromolecule, pert perturbation),\nopen arrowhead = positive influence '
-              '(sign tested on the published kinetics).', ha='center', va='top',
-              fontsize=fontsize, color=MUTED, transform=axis.transAxes)
+    axis.text(
+        x,
+        y,
+        "SBGN activity flow: rectangle = biological activity, tag = entity class "
+        "(mt:prot macromolecule, pert perturbation),\nopen arrowhead = positive influence "
+        "(sign tested on the published kinetics).",
+        ha="center",
+        va="top",
+        fontsize=fontsize,
+        color=MUTED,
+        transform=axis.transAxes,
+    )
 
 
 # ---------------------------------------------------------------------------------------------
@@ -280,13 +468,13 @@ def _layers(diagram):
 
     successors: dict[str, set[str]] = {}
     indegree: dict[str, int] = {}
-    for arc in diagram['arcs']:
-        successors.setdefault(arc['source'], set()).add(arc['target'])
-        indegree[arc['target']] = indegree.get(arc['target'], 0) + 1
-        indegree.setdefault(arc['source'], indegree.get(arc['source'], 0))
-    ids = [node['id'] for node in diagram['nodes']] + [p['id'] for p in diagram['processes']]
-    roots = [node['id'] for node in diagram['nodes'] if node['class'] == 'perturbation']
-    roots += [p['id'] for p in diagram['processes'] if p['n_reactants'] == 0]
+    for arc in diagram["arcs"]:
+        successors.setdefault(arc["source"], set()).add(arc["target"])
+        indegree[arc["target"]] = indegree.get(arc["target"], 0) + 1
+        indegree.setdefault(arc["source"], indegree.get(arc["source"], 0))
+    ids = [node["id"] for node in diagram["nodes"]] + [p["id"] for p in diagram["processes"]]
+    roots = [node["id"] for node in diagram["nodes"] if node["class"] == "perturbation"]
+    roots += [p["id"] for p in diagram["processes"] if p["n_reactants"] == 0]
     roots += [i for i in ids if not indegree.get(i)]
     layer = {}
     queue = deque()
@@ -313,9 +501,9 @@ def _order(diagram, layer, sweeps=12):
     everything in between.
     """
     neighbours: dict[str, set[str]] = {}
-    for arc in diagram['arcs']:
-        neighbours.setdefault(arc['source'], set()).add(arc['target'])
-        neighbours.setdefault(arc['target'], set()).add(arc['source'])
+    for arc in diagram["arcs"]:
+        neighbours.setdefault(arc["source"], set()).add(arc["target"])
+        neighbours.setdefault(arc["target"], set()).add(arc["source"])
     by_layer: dict[float, list[str]] = {}
     for node, index in sorted(layer.items()):
         by_layer.setdefault(index, []).append(node)
@@ -337,7 +525,7 @@ def _order(diagram, layer, sweeps=12):
 
 def _pools(diagram):
     """The entity pools that claim a row. A source or sink is punctuation, not an entity."""
-    return {node['id'] for node in diagram['nodes'] if node['class'] not in ('source', 'sink')}
+    return {node["id"] for node in diagram["nodes"] if node["class"] not in ("source", "sink")}
 
 
 def _conversions(diagram):
@@ -348,16 +536,23 @@ def _conversions(diagram):
     than off the names, because an agent's identifiers carry no ontology.
     """
     pools = _pools(diagram)
-    single = {process['id'] for process in diagram['processes']
-              if process['n_reactants'] == 1 and process['n_products'] == 1}
+    single = {
+        process["id"]
+        for process in diagram["processes"]
+        if process["n_reactants"] == 1 and process["n_products"] == 1
+    }
     ends: dict[str, tuple[set, set]] = {}
-    for arc in diagram['arcs']:
-        if arc['target'] in single and arc['kind'] == 'consumption' and arc['source'] in pools:
-            ends.setdefault(arc['target'], (set(), set()))[0].add(arc['source'])
-        if arc['source'] in single and arc['kind'] == 'production' and arc['target'] in pools:
-            ends.setdefault(arc['source'], (set(), set()))[1].add(arc['target'])
-    return [(before, after) for consumed, produced in ends.values()
-            for before in consumed for after in produced]
+    for arc in diagram["arcs"]:
+        if arc["target"] in single and arc["kind"] == "consumption" and arc["source"] in pools:
+            ends.setdefault(arc["target"], (set(), set()))[0].add(arc["source"])
+        if arc["source"] in single and arc["kind"] == "production" and arc["target"] in pools:
+            ends.setdefault(arc["source"], (set(), set()))[1].add(arc["target"])
+    return [
+        (before, after)
+        for consumed, produced in ends.values()
+        for before in consumed
+        for after in produced
+    ]
 
 
 def _combos(diagrams):
@@ -370,15 +565,15 @@ def _combos(diagrams):
     pools = {node for diagram in diagrams for node in _pools(diagram)}
     parts = {}
     for diagram in diagrams:
-        for node in diagram['nodes']:
-            if node['class'] != 'complex':
+        for node in diagram["nodes"]:
+            if node["class"] != "complex":
                 continue
-            pieces = node['id'].split('_')
-            found = {'_'.join(pieces[:cut]) for cut in range(1, len(pieces))}
-            found |= {'_'.join(pieces[cut:]) for cut in range(1, len(pieces))}
+            pieces = node["id"].split("_")
+            found = {"_".join(pieces[:cut]) for cut in range(1, len(pieces))}
+            found |= {"_".join(pieces[cut:]) for cut in range(1, len(pieces))}
             made = sorted(found & pools)
             if made:
-                parts[node['id']] = made
+                parts[node["id"]] = made
     return parts
 
 
@@ -411,23 +606,32 @@ def motifs(diagram, anchors):
 
     found = []
     if any(len(forward.get(node, ())) and cycles(node) for node in sorted(pools)):
-        found.append('a state cycle')
-    made_from_source = {arc['target'] for arc in diagram['arcs']
-                        if arc['kind'] == 'production' and arc['target'] in pools
-                        and not any(other['kind'] == 'consumption' and other['source'] in pools
-                                    and other['target'] == arc['source']
-                                    for other in diagram['arcs'])}
-    modulating = {arc['source'] for arc in diagram['arcs']
-                  if arc['source'] in pools
-                  and arc['kind'] not in ('consumption', 'production')}
+        found.append("a state cycle")
+    made_from_source = {
+        arc["target"]
+        for arc in diagram["arcs"]
+        if arc["kind"] == "production"
+        and arc["target"] in pools
+        and not any(
+            other["kind"] == "consumption"
+            and other["source"] in pools
+            and other["target"] == arc["source"]
+            for other in diagram["arcs"]
+        )
+    }
+    modulating = {
+        arc["source"]
+        for arc in diagram["arcs"]
+        if arc["source"] in pools and arc["kind"] not in ("consumption", "production")
+    }
     if made_from_source & modulating:
-        found.append('a synthesised regulator')
+        found.append("a synthesised regulator")
     if combos:
         found.append(f"{len(combos)} complex{'es' if len(combos) > 1 else ''}")
     measured = {name for names in anchors.values() for name in names}
     off = {node for node in pools if node not in measured and node not in combos}
     if off:
-        found.append(f'{len(off)} states off the readouts')
+        found.append(f"{len(off)} states off the readouts")
     return found
 
 
@@ -444,30 +648,49 @@ def readout_mechanics(diagram, anchors):
     forward: dict[str, set[str]] = {}
     for before, after in conversions:
         forward.setdefault(before, set()).add(after)
-    made_from_source = {arc['target'] for arc in diagram['arcs']
-                        if arc['kind'] == 'production' and arc['target'] in pools
-                        and not any(other['kind'] == 'consumption' and other['source'] in pools
-                                    and other['target'] == arc['source']
-                                    for other in diagram['arcs'])}
-    regulators = {arc['source'] for arc in diagram['arcs']
-                  if arc['source'] in made_from_source
-                  and arc['kind'] not in ('consumption', 'production')}
+    made_from_source = {
+        arc["target"]
+        for arc in diagram["arcs"]
+        if arc["kind"] == "production"
+        and arc["target"] in pools
+        and not any(
+            other["kind"] == "consumption"
+            and other["source"] in pools
+            and other["target"] == arc["source"]
+            for other in diagram["arcs"]
+        )
+    }
+    regulators = {
+        arc["source"]
+        for arc in diagram["arcs"]
+        if arc["source"] in made_from_source and arc["kind"] not in ("consumption", "production")
+    }
     out = {}
     for readout, species in anchors.items():
-        group = {node for node in pools
-                 if any(node in moiety and moiety[node] == moiety.get(name) for name in species)}
-        touching = {arc['target'] if arc['kind'] == 'consumption' else arc['source']
-                    for arc in diagram['arcs']
-                    if arc['kind'] in ('consumption', 'production')
-                    and (arc['source'] in group or arc['target'] in group)}
+        group = {
+            node
+            for node in pools
+            if any(node in moiety and moiety[node] == moiety.get(name) for name in species)
+        }
+        touching = {
+            arc["target"] if arc["kind"] == "consumption" else arc["source"]
+            for arc in diagram["arcs"]
+            if arc["kind"] in ("consumption", "production")
+            and (arc["source"] in group or arc["target"] in group)
+        }
         found = []
         if any(_reaches(forward, node, node, group) for node in sorted(group)):
-            found.append('cycle')
-        ruled = {arc['target'] for arc in diagram['arcs']
-                 if arc['source'] in regulators and arc['kind'] not in ('consumption', 'production')}
-        if any(arc['source'] in ruled and arc['target'] in group and arc['kind'] == 'production'
-               for arc in diagram['arcs']):
-            found.append('regulated')
+            found.append("cycle")
+        ruled = {
+            arc["target"]
+            for arc in diagram["arcs"]
+            if arc["source"] in regulators and arc["kind"] not in ("consumption", "production")
+        }
+        if any(
+            arc["source"] in ruled and arc["target"] in group and arc["kind"] == "production"
+            for arc in diagram["arcs"]
+        ):
+            found.append("regulated")
         out[readout] = (len(touching), found)
     return out
 
@@ -532,8 +755,9 @@ def _base_first(members, conversions):
     picked by a NAMING heuristic, recorded here as one: a state's id usually contains the id of the
     thing it is a state of (``pAkt`` contains ``Akt``, ``aS6K`` contains ``S6K``).
     """
-    contains = {node: sum(1 for other in members if other != node and other in node)
-                for node in members}
+    contains = {
+        node: sum(1 for other in members if other != node and other in node) for node in members
+    }
     base = min(members, key=lambda node: (contains[node], len(node), node))
     steps, frontier = {base: 0}, [base]
     while frontier:
@@ -566,8 +790,10 @@ def _pack(sequences, shared):
     cuts = [[sequence.index(node) for node in syncs] for sequence in sequences]
     starts = [0] * len(sequences)
     for step in range(len(syncs) + 1):
-        runs = [sequence[start:(cut[step] if step < len(syncs) else len(sequence))]
-                for sequence, start, cut in zip(sequences, starts, cuts, strict=True)]
+        runs = [
+            sequence[start : (cut[step] if step < len(syncs) else len(sequence))]
+            for sequence, start, cut in zip(sequences, starts, cuts, strict=True)
+        ]
         for offset, run in zip(offsets, runs, strict=True):
             for index, node in enumerate(run):
                 offset[node] = at + index
@@ -606,23 +832,35 @@ def entity_rows(diagrams, anchors):
     for diagram in diagrams:
         pools = {node for node in _pools(diagram) if node in moiety}
         near: dict[str, set[str]] = {moiety[node]: set() for node in pools}
-        for arc in diagram['arcs']:
-            ends = [end for end in (arc['source'], arc['target']) if end in pools]
+        for arc in diagram["arcs"]:
+            ends = [end for end in (arc["source"], arc["target"]) if end in pools]
             if len(ends) == 2 and moiety[ends[0]] != moiety[ends[1]]:
                 near[moiety[ends[0]]].add(moiety[ends[1]])
         # Through the processes too: a pool reaches another by consuming and producing around one.
         traded: dict[str, set[str]] = {}
         regulates: dict[str, set[str]] = {}
-        for process in {p['id'] for p in diagram['processes']}:
-            touching = {moiety[arc['source']] for arc in diagram['arcs']
-                        if arc['target'] == process and arc['kind'] == 'consumption'
-                        and arc['source'] in pools}
-            made = {moiety[arc['target']] for arc in diagram['arcs']
-                    if arc['source'] == process and arc['kind'] == 'production'
-                    and arc['target'] in pools}
-            modulating = {moiety[arc['source']] for arc in diagram['arcs']
-                          if arc['target'] == process and arc['source'] in pools
-                          and arc['kind'] not in ('consumption', 'production')}
+        for process in {p["id"] for p in diagram["processes"]}:
+            touching = {
+                moiety[arc["source"]]
+                for arc in diagram["arcs"]
+                if arc["target"] == process
+                and arc["kind"] == "consumption"
+                and arc["source"] in pools
+            }
+            made = {
+                moiety[arc["target"]]
+                for arc in diagram["arcs"]
+                if arc["source"] == process
+                and arc["kind"] == "production"
+                and arc["target"] in pools
+            }
+            modulating = {
+                moiety[arc["source"]]
+                for arc in diagram["arcs"]
+                if arc["target"] == process
+                and arc["source"] in pools
+                and arc["kind"] not in ("consumption", "production")
+            }
             for group in touching:
                 near.setdefault(group, set()).update(made - {group})
                 traded.setdefault(group, set()).update(made - {group})
@@ -640,8 +878,11 @@ def entity_rows(diagrams, anchors):
             for other in ruled:
                 if other not in traded.get(group, set()) and group not in traded.get(other, set()):
                     regulators.add((group, other))
-        roots = [moiety[node['id']] for node in diagram['nodes']
-                 if node['class'] == 'perturbation' and node['id'] in moiety]
+        roots = [
+            moiety[node["id"]]
+            for node in diagram["nodes"]
+            if node["class"] == "perturbation" and node["id"] in moiety
+        ]
         seen = {group: 0 for group in roots}
         queue = deque(roots)
         while queue:
@@ -671,12 +912,17 @@ def entity_rows(diagrams, anchors):
             continue
         after.setdefault(other, set()).add(group)
         after.get(group, set()).discard(other)
-    middle = {group: sum(reach[group]) / len(reach[group]) if reach.get(group) else 0.0
-              for group in blocks}
+    middle = {
+        group: sum(reach[group]) / len(reach[group]) if reach.get(group) else 0.0
+        for group in blocks
+    }
     sequence, placed = [], set()
     while len(sequence) < len(blocks):
-        ready = [group for group in blocks if group not in placed
-                 and not (after.get(group, set()) - placed)]
+        ready = [
+            group
+            for group in blocks
+            if group not in placed and not (after.get(group, set()) - placed)
+        ]
         if not ready:  # a disagreement the maps cannot settle; fall back to the averages
             ready = [group for group in blocks if group not in placed]
         chosen = min(ready, key=lambda group: (middle[group], group))
@@ -686,13 +932,14 @@ def entity_rows(diagrams, anchors):
     # Beside the column, not in it: a moiety that REGULATES another and is only ever synthesised
     # from a source — never converted from anything on the map — is not part of the material
     # cascade at all, so standing it in the cascade's own column would misread it as a step.
-    aside = {group for group, _other in regulators
-             if group in synthesised and group not in converted}
+    aside = {
+        group for group, _other in regulators if group in synthesised and group not in converted
+    }
     for at, group in enumerate(sequence):
-        present = [[node for node in ranked[group] if node in _pools(diagram)]
-                   for diagram in diagrams]
-        shared = {node for node in ranked[group]
-                  if sum(node in run for run in present) > 1}
+        present = [
+            [node for node in ranked[group] if node in _pools(diagram)] for diagram in diagrams
+        ]
+        shared = {node for node in ranked[group] if sum(node in run for run in present) > 1}
         offsets, width = _pack([run for run in present if run] or [[]], shared)
         combined: dict[str, int] = {}
         for offset in offsets:
@@ -750,47 +997,52 @@ def _place(diagram, grid, across=None, lean=0.30, offset=0.30):
     touching: dict[str, list[float]] = {}
     modulated: dict[str, list[float]] = {}
     attached: dict[str, list[str]] = {}
-    for arc in diagram['arcs']:
-        for near, other in ((arc['source'], arc['target']), (arc['target'], arc['source'])):
+    for arc in diagram["arcs"]:
+        for near, other in ((arc["source"], arc["target"]), (arc["target"], arc["source"])):
             if near not in pools and other in pools and other in columns:
                 # Only what a process CONSUMES and MAKES decides which rows it sits between. A
                 # modulator reaching in from another row must not drag the square off the step it
                 # belongs to — the S6 conversion belongs on the S6 row, not halfway to its kinase.
-                where = (touching if arc['kind'] in ('consumption', 'production') else modulated)
+                where = touching if arc["kind"] in ("consumption", "production") else modulated
                 where.setdefault(near, []).append(columns[other])
             elif near not in pools and other not in pools:
                 attached.setdefault(near, []).append(other)
     default = sum(columns.values()) / len(columns) if columns else 0.0
     sideways = _sides(diagram, pools)
-    for process in {p['id'] for p in diagram['processes']}:
+    for process in {p["id"] for p in diagram["processes"]}:
         near = touching.get(process) or modulated.get(process, ())
         columns[process] = (min(near) + max(near)) / 2 if near else default
         if across and near:
             before, after = sideways.get(process, (None, None))
-            drift = (0.0 if before is None or after is None else
-                     across.get(after, 0.0) - across.get(before, 0.0))
+            drift = (
+                0.0
+                if before is None or after is None
+                else across.get(after, 0.0) - across.get(before, 0.0)
+            )
             # The wider the reach, the further out of the row it goes: a square sitting beside a
             # long arc would otherwise have that arc pass straight through its own row.
             reach = 1.0 + 0.35 * max(0.0, abs(drift) - 1.0)
             step = (lean if len(set(near)) > 1 else offset) * min(reach, 2.0)
             columns[process] -= step * (1 if drift > 0 else -1 if drift < 0 else 0)
-    for node in diagram['nodes']:  # the sources and sinks, on their process's layer
-        if node['id'] not in columns:
-            near = [columns[other] for other in attached.get(node['id'], ()) if other in columns]
-            columns[node['id']] = sum(near) / len(near) if near else default
+    for node in diagram["nodes"]:  # the sources and sinks, on their process's layer
+        if node["id"] not in columns:
+            near = [columns[other] for other in attached.get(node["id"], ()) if other in columns]
+            columns[node["id"]] = sum(near) / len(near) if near else default
     return columns
 
 
 def _sides(diagram, pools):
     """``process -> (a pool it consumes, a pool it produces)``, for reading its direction."""
     consumed, produced = {}, {}
-    for arc in diagram['arcs']:
-        if arc['kind'] == 'consumption' and arc['source'] in pools:
-            consumed.setdefault(arc['target'], arc['source'])
-        if arc['kind'] == 'production' and arc['target'] in pools:
-            produced.setdefault(arc['source'], arc['target'])
-    return {process: (consumed.get(process), produced.get(process))
-            for process in {p['id'] for p in diagram['processes']}}
+    for arc in diagram["arcs"]:
+        if arc["kind"] == "consumption" and arc["source"] in pools:
+            consumed.setdefault(arc["target"], arc["source"])
+        if arc["kind"] == "production" and arc["target"] in pools:
+            produced.setdefault(arc["source"], arc["target"])
+    return {
+        process: (consumed.get(process), produced.get(process))
+        for process in {p["id"] for p in diagram["processes"]}
+    }
 
 
 def _geometry(diagram, grid, slots, *, entity, dx, dy, flow):
@@ -800,22 +1052,34 @@ def _geometry(diagram, grid, slots, *, entity, dx, dy, flow):
     is only known once the pools have their sideways slots.
     """
     width, height = entity
-    horizontal = flow == 'horizontal'
+    horizontal = flow == "horizontal"
     columns = _place(diagram, grid)
     across = _sideways(diagram, columns, slots)
     columns = _place(diagram, grid, across=across)
     across = _sideways(diagram, columns, slots)
-    centre = {node: ((columns[node] * dy, across[node] * dx) if horizontal
-                     else (across[node] * dx, -columns[node] * dy)) for node in across}
+    centre = {
+        node: (
+            (columns[node] * dy, across[node] * dx)
+            if horizontal
+            else (across[node] * dx, -columns[node] * dy)
+        )
+        for node in across
+    }
     reach = [columns[node] for node in across] or [0.0]
     first, last = min(reach), max(reach)
     sides = [value * dx for value in across.values()] or [0.0]
     left, right = min(sides), max(sides)
     if horizontal:
-        return (centre, (first * dy - width / 2 - 0.3, last * dy + width / 2 + 0.3),
-                (left - height / 2 - 0.42, right + height / 2 + 0.22))
-    return (centre, (left - width / 2 - 0.22, right + width / 2 + 0.22),
-            (-last * dy - height / 2 - 0.42, -first * dy + height / 2 + 0.22))
+        return (
+            centre,
+            (first * dy - width / 2 - 0.3, last * dy + width / 2 + 0.3),
+            (left - height / 2 - 0.42, right + height / 2 + 0.22),
+        )
+    return (
+        centre,
+        (left - width / 2 - 0.22, right + width / 2 + 0.22),
+        (-last * dy - height / 2 - 0.42, -first * dy + height / 2 + 0.22),
+    )
 
 
 def _sideways(diagram, columns, slots):
@@ -828,11 +1092,11 @@ def _sideways(diagram, columns, slots):
     across = {node: slots.get(node, 0.0) for node in pools if node in columns}
     joined: dict[str, list[str]] = {}
     near: dict[str, list[str]] = {}
-    for arc in diagram['arcs']:
-        for node, other in ((arc['source'], arc['target']), (arc['target'], arc['source'])):
+    for arc in diagram["arcs"]:
+        for node, other in ((arc["source"], arc["target"]), (arc["target"], arc["source"])):
             if node not in across and other in columns:
                 near.setdefault(node, []).append(other)
-                if arc['kind'] in ('consumption', 'production') and other in pools:
+                if arc["kind"] in ("consumption", "production") and other in pools:
                     joined.setdefault(node, []).append(other)
     for _pass in range(2):
         for node in columns:
@@ -859,22 +1123,47 @@ def _sideways(diagram, columns, slots):
     return across
 
 
-def process_description_limits(diagram, *, entity=(1.25, 0.44), dx=1.55, dy=1.05,
-                               flow='vertical', grid=None, slots=None, **_ignored):
+def process_description_limits(
+    diagram,
+    *,
+    entity=(1.25, 0.44),
+    dx=1.55,
+    dy=1.05,
+    flow="vertical",
+    grid=None,
+    slots=None,
+    **_ignored,
+):
     """``(xlim, ylim)`` the map needs, without drawing it.
 
     A caller that lays out a page has to know the shape of a diagram BEFORE it allocates the axes:
     a cascade is long and thin, and two cascades are thin in different proportions, so giving both
     the same box wastes most of the page on white.
     """
-    _centre, xlim, ylim = _geometry(diagram, grid or {}, slots or {}, entity=entity, dx=dx, dy=dy,
-                                    flow=flow)
+    _centre, xlim, ylim = _geometry(
+        diagram, grid or {}, slots or {}, entity=entity, dx=dx, dy=dy, flow=flow
+    )
     return xlim, ylim
 
 
-def process_description(axis, diagram, *, entity=(1.25, 0.44), process=0.22, dx=1.55, dy=1.05,
-                        fontsize=8.0, label_processes=False, flow='vertical', highlight=None,
-                        grid=None, slots=None, along=None, curve=0.0, pad=0.0):
+def process_description(
+    axis,
+    diagram,
+    *,
+    entity=(1.25, 0.44),
+    process=0.22,
+    dx=1.55,
+    dy=1.05,
+    fontsize=8.0,
+    label_processes=False,
+    flow="vertical",
+    highlight=None,
+    grid=None,
+    slots=None,
+    along=None,
+    curve=0.0,
+    pad=0.0,
+):
     """Draw an SBGN Process Description map, inputs first.
 
     ``diagram`` is the manifest's portable description: ``nodes`` (id/label/class), ``processes``
@@ -901,21 +1190,22 @@ def process_description(axis, diagram, *, entity=(1.25, 0.44), process=0.22, dx=
     """
     highlight = highlight or {}
     width, height = entity
-    centre, xlim, ylim = _geometry(diagram, grid or {}, slots or {}, entity=entity, dx=dx, dy=dy,
-                                   flow=flow)
-    classes = {node['id']: node['class'] for node in diagram['nodes']}
-    labels = {node['id']: node['label'] for node in diagram['nodes']}
-    reversible = {p['id']: p['reversible'] for p in diagram['processes']}
-    horizontal = flow == 'horizontal'
-    axis.set_aspect('equal')
-    axis.axis('off')
+    centre, xlim, ylim = _geometry(
+        diagram, grid or {}, slots or {}, entity=entity, dx=dx, dy=dy, flow=flow
+    )
+    classes = {node["id"]: node["class"] for node in diagram["nodes"]}
+    labels = {node["id"]: node["label"] for node in diagram["nodes"]}
+    reversible = {p["id"]: p["reversible"] for p in diagram["processes"]}
+    horizontal = flow == "horizontal"
+    axis.set_aspect("equal")
+    axis.axis("off")
 
     def extent(node):
         """Half-width and half-height of a glyph: a process is a small square and a source/sink a
         small circle, so an arc must not stop where a full entity box would end."""
         if node not in classes:
             return process / 2, process / 2
-        if classes[node] in ('source', 'sink'):
+        if classes[node] in ("source", "sink"):
             return height / 2, height / 2
         return width / 2, height / 2
 
@@ -929,49 +1219,81 @@ def process_description(axis, diagram, *, entity=(1.25, 0.44), process=0.22, dx=
             return (x + dxa * half_h / (abs(dya) or 1), y + math.copysign(half_h, dya))
         return (x + math.copysign(half_w, dxa), y + dya * half_w / (abs(dxa) or 1))
 
-    for arc in diagram['arcs']:
-        source, target = arc['source'], arc['target']
+    for arc in diagram["arcs"]:
+        source, target = arc["source"], arc["target"]
         if source not in centre or target not in centre:
             continue
         start = port(source, centre[target])
         end = port(target, centre[source])
-        kind = arc['kind']
-        if kind == 'consumption' and reversible.get(target):
-            kind = 'production'  # a reversible process produces at both ends
-        _terminator(axis, start, end, kind, color=MUTED if kind == 'consumption' else INK,
-                    scale=11, curve=curve, pad=pad)
+        kind = arc["kind"]
+        if kind == "consumption" and reversible.get(target):
+            kind = "production"  # a reversible process produces at both ends
+        _terminator(
+            axis,
+            start,
+            end,
+            kind,
+            color=MUTED if kind == "consumption" else INK,
+            scale=11,
+            curve=curve,
+            pad=pad,
+        )
     for pid, rev in reversible.items():
         if pid not in centre:
             continue
         x, y = centre[pid]
-        _rectangle(axis, x, y, process, process, facecolor='white', edgecolor=INK, linewidth=1.3,
-                   zorder=4)
+        _rectangle(
+            axis, x, y, process, process, facecolor="white", edgecolor=INK, linewidth=1.3, zorder=4
+        )
         if label_processes:
-            axis.text(x, y - process, pid, ha='center', va='top', fontsize=6.0, color=MUTED)
-    for node in diagram['nodes']:
-        if node['id'] not in centre:
+            axis.text(x, y - process, pid, ha="center", va="top", fontsize=6.0, color=MUTED)
+    for node in diagram["nodes"]:
+        if node["id"] not in centre:
             continue
-        x, y = centre[node['id']]
-        klass = classes[node['id']]
-        half_w, half_h = extent(node['id'])
-        accent, observable = highlight.get(node['id'], (None, None))
+        x, y = centre[node["id"]]
+        klass = classes[node["id"]]
+        half_w, half_h = extent(node["id"])
+        accent, observable = highlight.get(node["id"], (None, None))
         # A highlighted pool drops the class fill: the shape already gives the class, and a tinted
         # box under a coloured outline would put a third colour on one glyph.
-        ENTITY_GLYPH.get(klass, _rounded)(axis, x, y, half_w * 2, half_h * 2,
-                                          facecolor='#FFFFFF' if accent
-                                          else FILLS.get(klass, '#FFFFFF'),
-                                          edgecolor=accent or EDGES.get(klass, INK),
-                                          linewidth=2.0 if accent else 1.3, zorder=5)
-        if labels[node['id']]:
+        ENTITY_GLYPH.get(klass, _rounded)(
+            axis,
+            x,
+            y,
+            half_w * 2,
+            half_h * 2,
+            facecolor="#FFFFFF" if accent else FILLS.get(klass, "#FFFFFF"),
+            edgecolor=accent or EDGES.get(klass, INK),
+            linewidth=2.0 if accent else 1.3,
+            zorder=5,
+        )
+        if labels[node["id"]]:
             # A pool's id is whatever the model called it, and a complex's is two ids joined. The
             # glyph cannot grow — the columns are a shared grid — so a long name shrinks to fit
             # rather than running over its neighbours.
-            name = labels[node['id']]
-            axis.text(x, y, name, ha='center', va='center', color=INK, zorder=6,
-                      fontsize=fontsize * max(0.68, min(1.0, 7.5 / len(name))))
+            name = labels[node["id"]]
+            axis.text(
+                x,
+                y,
+                name,
+                ha="center",
+                va="center",
+                color=INK,
+                zorder=6,
+                fontsize=fontsize * max(0.68, min(1.0, 7.5 / len(name))),
+            )
         if observable:
-            axis.text(x, y - half_h - 0.04, observable, ha='center', va='top',
-                      fontsize=fontsize - 0.6, fontweight='bold', color=accent, zorder=6)
+            axis.text(
+                x,
+                y - half_h - 0.04,
+                observable,
+                ha="center",
+                va="top",
+                fontsize=fontsize - 0.6,
+                fontweight="bold",
+                color=accent,
+                zorder=6,
+            )
     if along:  # the flow's own axis, shared so two maps line up
         xlim, ylim = (along, ylim) if horizontal else (xlim, along)
     axis.set_xlim(*xlim)
@@ -979,7 +1301,15 @@ def process_description(axis, diagram, *, entity=(1.25, 0.44), process=0.22, dx=
 
 
 def process_description_key(axis, x, y, *, fontsize=7.4):
-    axis.text(x, y, 'SBGN process description: rounded = macromolecule, cut corners = complex, '
-              'concave hexagon = perturbation, small square = process;\nplain line = consumption, '
-              'filled arrowhead = production, open arrowhead = stimulation.', ha='center',
-              va='top', fontsize=fontsize, color=MUTED, transform=axis.transAxes)
+    axis.text(
+        x,
+        y,
+        "SBGN process description: rounded = macromolecule, cut corners = complex, "
+        "concave hexagon = perturbation, small square = process;\nplain line = consumption, "
+        "filled arrowhead = production, open arrowhead = stimulation.",
+        ha="center",
+        va="top",
+        fontsize=fontsize,
+        color=MUTED,
+        transform=axis.transAxes,
+    )

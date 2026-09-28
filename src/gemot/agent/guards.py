@@ -46,7 +46,7 @@ _TURN_NOTICE_BROKEN = False
 #      EXCLUDED as such rather than left as an ambiguous, silent early "completion".
 # The nudge fires ONLY while zero tools have executed, so it can never interfere with a genuine
 # finish (which always comes AFTER make_changes has run).
-_MAX_IDLE_MODEL_STEPS = 3   # consecutive no-tool turns to push back on before giving up
+_MAX_IDLE_MODEL_STEPS = 3  # consecutive no-tool turns to push back on before giving up
 
 
 #: Effort ladder for a reasoning runaway. Each retry steps DOWN one rung; the run keeps its
@@ -99,8 +99,9 @@ def _is_reasoning_runaway(result: Any) -> bool:
         if getattr(m, "tool_calls", None):
             return False
         meta = getattr(m, "response_metadata", None) or {}
-        return (meta.get("finish_reason") == "length"
-                and _content_is_empty(getattr(m, "content", None)))
+        return meta.get("finish_reason") == "length" and _content_is_empty(
+            getattr(m, "content", None)
+        )
     return False
 
 
@@ -127,8 +128,9 @@ def _content_is_empty(content: Any) -> bool:
     return False
 
 
-def _reasoning_runaway_guard(stats: dict[str, Any], *,
-                             ladder: "tuple[str, ...]" = _RUNAWAY_EFFORT_LADDER):
+def _reasoning_runaway_guard(
+    stats: dict[str, Any], *, ladder: "tuple[str, ...]" = _RUNAWAY_EFFORT_LADDER
+):
     """Retry a truncated-mid-thought turn at reduced reasoning effort, then restore.
 
     Only the offending CALL is retried, and only while it keeps coming back empty; the request
@@ -162,8 +164,10 @@ def _reasoning_runaway_guard(stats: dict[str, Any], *,
         if rung >= len(ladder):
             return None  # empty at every effort: hand it back honestly rather than loop
         effort = ladder[rung]
-        print(f"[reasoning guard] the model spent its whole completion budget thinking "
-              f"and returned nothing — retrying this call at reasoning_effort={effort}")
+        print(
+            f"[reasoning guard] the model spent its whole completion budget thinking "
+            f"and returned nothing — retrying this call at reasoning_effort={effort}"
+        )
         try:
             return request.override(model_settings=_retry_settings(request, effort))
         except Exception as exc:  # pragma: no cover - older/newer ModelRequest shapes
@@ -186,10 +190,11 @@ def _reasoning_runaway_guard(stats: dict[str, Any], *,
         guard nudges, so swallowing the retry failure keeps the un-guarded behaviour as the
         floor. Counted so an endpoint that rejects the parameter is visible rather than silent.
         """
-        stats["reasoning_runaway_retry_errors"] = (
-            stats.get("reasoning_runaway_retry_errors", 0) + 1)
-        print(f"[reasoning guard] retry at rung {rung} failed ({type(exc).__name__}: {exc}); "
-              "keeping the original truncated turn and letting the dispatch guard handle it")
+        stats["reasoning_runaway_retry_errors"] = stats.get("reasoning_runaway_retry_errors", 0) + 1
+        print(
+            f"[reasoning guard] retry at rung {rung} failed ({type(exc).__name__}: {exc}); "
+            "keeping the original truncated turn and letting the dispatch guard handle it"
+        )
         return original
 
     class _ReasoningRunawayGuard(AgentMiddleware):
@@ -231,21 +236,28 @@ def new_guard_stats() -> dict[str, Any]:
     """
     return {
         # tool-dispatch guard
-        "tools_executed": 0, "dropped_dup_tool_calls": 0, "idle_nudges": 0,
+        "tools_executed": 0,
+        "dropped_dup_tool_calls": 0,
+        "idle_nudges": 0,
         "gave_up_no_tools": False,
         # task-arg guard
-        "unexpected_task_kwargs": [], "task_arg_rejections": 0,
+        "unexpected_task_kwargs": [],
+        "task_arg_rejections": 0,
         # empty-report guard
-        "empty_subagent_reports": 0, "empty_subagent_retries": 0, "empty_subagent_markers": 0,
+        "empty_subagent_reports": 0,
+        "empty_subagent_retries": 0,
+        "empty_subagent_markers": 0,
         # reasoning-runaway guard
-        "reasoning_runaways": 0, "reasoning_runaway_recovered": 0,
+        "reasoning_runaways": 0,
+        "reasoning_runaway_recovered": 0,
         "reasoning_runaway_retry_errors": 0,
         # driver-side: how often the stall watchdog could not read the graph state (it then
         # falls back to the run-default fit window, so a non-zero count means some step was
         # sized by the default rather than by its pending fit).
         "unreadable_graph_state": 0,
         # panel composition, not a counter
-        "subagent_names": [], "general_purpose_subagent": None,
+        "subagent_names": [],
+        "general_purpose_subagent": None,
     }
 
 
@@ -293,12 +305,16 @@ def _tool_dispatch_guard(stats: dict[str, Any], *, max_idle_steps: int = _MAX_ID
         # Degenerate: nothing has fired yet and the model answered with text only.
         if stats["idle_nudges"] < max_idle_steps:
             stats["idle_nudges"] += 1
-            print(f"[tool-dispatch guard] no tool has fired yet and the model replied with text "
-                  f"only — pushing back ({stats['idle_nudges']}/{max_idle_steps})")
+            print(
+                f"[tool-dispatch guard] no tool has fired yet and the model replied with text "
+                f"only — pushing back ({stats['idle_nudges']}/{max_idle_steps})"
+            )
             return {"messages": [HumanMessage(content=_IDLE_NUDGE)], "jump_to": "model"}
         stats["gave_up_no_tools"] = True
-        print("[tool-dispatch guard] the model never dispatched a tool after "
-              f"{max_idle_steps} push-backs — ending the run (no_tools_executed)")
+        print(
+            "[tool-dispatch guard] the model never dispatched a tool after "
+            f"{max_idle_steps} push-backs — ending the run (no_tools_executed)"
+        )
         return {"jump_to": "end"}
 
     class _ToolDispatchGuard(AgentMiddleware):
@@ -339,7 +355,7 @@ def _tool_dispatch_guard(stats: dict[str, Any], *, max_idle_steps: int = _MAX_ID
 # bouncing such a call back to the model with a corrective error, so the model re-issues it with
 # everything in `description` (this protects the analysts' `prompt=` drops too).
 _TASK_ALLOWED_ARGS = frozenset({"description", "subagent_type"})
-_MAX_TASK_ARG_REJECTIONS = 3   # bounded push-back on unexpected task kwargs per run, then relent
+_MAX_TASK_ARG_REJECTIONS = 3  # bounded push-back on unexpected task kwargs per run, then relent
 
 
 def _unexpected_task_kwargs(args: "dict | None") -> "list[str]":
@@ -380,16 +396,22 @@ def _task_arg_guard(stats: dict[str, Any], *, max_rejections: int = _MAX_TASK_AR
         if not bad:
             return None
         stats["unexpected_task_kwargs"] = sorted(
-            set(stats.get("unexpected_task_kwargs") or []) | set(bad))
+            set(stats.get("unexpected_task_kwargs") or []) | set(bad)
+        )
         if stats.get("task_arg_rejections", 0) >= max_rejections:
-            print(f"[task-arg guard] unexpected task kwargs {bad} — relenting after "
-                  f"{max_rejections} rejections; dispatching (the extras are dropped).")
+            print(
+                f"[task-arg guard] unexpected task kwargs {bad} — relenting after "
+                f"{max_rejections} rejections; dispatching (the extras are dropped)."
+            )
             return None
         stats["task_arg_rejections"] = stats.get("task_arg_rejections", 0) + 1
-        print(f"[task-arg guard] rejecting task(...) with unexpected kwargs {bad} "
-              f"({stats['task_arg_rejections']}/{max_rejections})")
-        return ToolMessage(content=_task_arg_reject_message(bad),
-                           tool_call_id=tc.get("id") or "", status="error")
+        print(
+            f"[task-arg guard] rejecting task(...) with unexpected kwargs {bad} "
+            f"({stats['task_arg_rejections']}/{max_rejections})"
+        )
+        return ToolMessage(
+            content=_task_arg_reject_message(bad), tool_call_id=tc.get("id") or "", status="error"
+        )
 
     class _TaskArgGuard(AgentMiddleware):
         def wrap_tool_call(self, request, handler):
@@ -415,7 +437,7 @@ def _task_arg_guard(stats: dict[str, Any], *, max_rejections: int = _MAX_TASK_AR
 # return this middleware re-dispatches the subagent ONCE with a corrective nudge (the deepagents
 # `execute` handler is documented as re-invokable for exactly this retry pattern); if the retry is
 # ALSO blank it substitutes a visible marker, so the loss is legible rather than a silent "".
-_MAX_EMPTY_REPORT_RETRIES = 1   # re-dispatch a subagent that returned an empty report at most once
+_MAX_EMPTY_REPORT_RETRIES = 1  # re-dispatch a subagent that returned an empty report at most once
 
 
 def _report_text(content: Any) -> str:
@@ -476,8 +498,10 @@ def _empty_report_guard(stats: dict[str, Any], *, retries: int = _MAX_EMPTY_REPO
         """``result`` with the blank ToolMessage ``tm`` swapped for the visible marker, preserving
         the ``Command`` wrapper and its other state updates and the original ``tool_call_id``."""
         stats["empty_subagent_markers"] = stats.get("empty_subagent_markers", 0) + 1
-        print("[empty-report guard] report still empty — substituting the visible marker "
-              f"{prompts.SUBAGENT_EMPTY_REPORT_MARKER!r}")
+        print(
+            "[empty-report guard] report still empty — substituting the visible marker "
+            f"{prompts.SUBAGENT_EMPTY_REPORT_MARKER!r}"
+        )
         marked = ToolMessage(prompts.SUBAGENT_EMPTY_REPORT_MARKER, tool_call_id=tm.tool_call_id)
         if isinstance(result, Command):
             update = dict(result.update)
@@ -514,8 +538,10 @@ def _empty_report_guard(stats: dict[str, Any], *, retries: int = _MAX_EMPTY_REPO
             if retries > 0:
                 stats["empty_subagent_retries"] = stats.get("empty_subagent_retries", 0) + 1
                 tc = request.tool_call
-                print(f"[empty-report guard] re-dispatching {(tc.get('args') or {}).get('subagent_type')!r} "
-                      "once with a corrective nudge")
+                print(
+                    f"[empty-report guard] re-dispatching {(tc.get('args') or {}).get('subagent_type')!r} "
+                    "once with a corrective nudge"
+                )
                 result = handler(request.override(tool_call=_nudged(tc)))
                 tm = _tool_message(result)
                 if tm is None or not _is_blank_report(tm.content):
@@ -530,8 +556,10 @@ def _empty_report_guard(stats: dict[str, Any], *, retries: int = _MAX_EMPTY_REPO
             if retries > 0:
                 stats["empty_subagent_retries"] = stats.get("empty_subagent_retries", 0) + 1
                 tc = request.tool_call
-                print(f"[empty-report guard] re-dispatching {(tc.get('args') or {}).get('subagent_type')!r} "
-                      "once with a corrective nudge")
+                print(
+                    f"[empty-report guard] re-dispatching {(tc.get('args') or {}).get('subagent_type')!r} "
+                    "once with a corrective nudge"
+                )
                 result = await handler(request.override(tool_call=_nudged(tc)))
                 tm = _tool_message(result)
                 if tm is None or not _is_blank_report(tm.content):
@@ -637,10 +665,12 @@ def _subagent_turn_limit(max_turns: int):
             global _TURN_NOTICE_BROKEN
             if not _TURN_NOTICE_BROKEN:
                 _TURN_NOTICE_BROKEN = True
-                print(f"[agent] WARNING: could not append the turn-budget notice to the request "
-                      f"({type(exc).__name__}: {exc}). Delegations will run to their hard cap "
-                      f"with no countdown; `_augment` needs updating for this request shape. "
-                      f"NOT falling back to the system prompt — that destroys the prefix cache.")
+                print(
+                    f"[agent] WARNING: could not append the turn-budget notice to the request "
+                    f"({type(exc).__name__}: {exc}). Delegations will run to their hard cap "
+                    f"with no countdown; `_augment` needs updating for this request shape. "
+                    f"NOT falling back to the system prompt — that destroys the prefix cache."
+                )
             return request
 
     def _check(state):
@@ -671,5 +701,3 @@ def _subagent_turn_limit(max_turns: int):
             return _check(state)
 
     return _SubagentTurnLimit()
-
-

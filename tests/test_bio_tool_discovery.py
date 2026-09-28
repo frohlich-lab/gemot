@@ -28,7 +28,7 @@ def test_discovery_is_the_curated_allowlist(monkeypatch):
     literature = B.LITERATURE_BIO_TOOLS[0]
     servers = {
         "a": [_tool(curated), _tool(literature), _tool("describe_problem"), _tool("unrelated")],
-        "b": [_tool(curated)],            # duplicate of a's
+        "b": [_tool(curated)],  # duplicate of a's
         "dead": RuntimeError("tools/list failed"),
     }
 
@@ -39,8 +39,11 @@ def test_discovery_is_the_curated_allowlist(monkeypatch):
         return out
 
     monkeypatch.setattr(lmt, "load_mcp_tools", _fake_load)
-    got = asyncio.run(B.discover_bio_tools(["a", "b", "dead"], literature=False,
-                                           exclude_names={"describe_problem"}))
+    got = asyncio.run(
+        B.discover_bio_tools(
+            ["a", "b", "dead"], literature=False, exclude_names={"describe_problem"}
+        )
+    )
     assert [t.name for t in got] == [curated]
     got = asyncio.run(B.discover_bio_tools(["a"], literature=True))
     assert sorted(t.name for t in got) == sorted([curated, literature])
@@ -56,8 +59,10 @@ def test_a_server_exposing_nothing_curated_leaves_the_biocurator_dumb(monkeypatc
     from petab_harness.agent import biocurator as B
 
     async def _fake_load(session):
-        return [StructuredTool.from_function(func=(lambda: ""), name=f"renamed_{i}",
-                                             description="x") for i in range(20)]
+        return [
+            StructuredTool.from_function(func=(lambda: ""), name=f"renamed_{i}", description="x")
+            for i in range(20)
+        ]
 
     monkeypatch.setattr(lmt, "load_mcp_tools", _fake_load)
     assert asyncio.run(B.discover_bio_tools(["a"], literature=True)) == []

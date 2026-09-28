@@ -83,7 +83,7 @@ def _opener_capturing(captured: list):
 
     @contextlib.asynccontextmanager
     async def _o(u):
-        captured.append(asyncio.current_task())   # this coroutine runs inside the holder task
+        captured.append(asyncio.current_task())  # this coroutine runs inside the holder task
         yield _FakeSession(u)
 
     return _o
@@ -116,8 +116,9 @@ def test_one_connect_failure_is_skipped_others_kept_no_raise():
 
     async def go():
         # A connect failure must NOT propagate out of the context manager.
-        async with bio.open_bio_sessions(["bad", "good"], opener=mixed, retries=0,
-                                         log=lambda *_: None) as s:
+        async with bio.open_bio_sessions(
+            ["bad", "good"], opener=mixed, retries=0, log=lambda *_: None
+        ) as s:
             return [x.name for x in s]
 
     assert _run(go()) == ["good"]
@@ -128,9 +129,15 @@ def test_connect_hang_is_skipped_and_time_bounded():
         t0 = time.monotonic()
         # Explicit small teardown_grace so a hung holder can't let teardown dominate the wall time
         # (the default is 5s) — keeps the bound robust on a loaded CI runner.
-        async with bio.open_bio_sessions(["h"], opener=_opener_hang("h"), connect_timeout=0.2,
-                                         retries=1, backoff=0.05, teardown_grace=0.2,
-                                         log=lambda *_: None) as s:
+        async with bio.open_bio_sessions(
+            ["h"],
+            opener=_opener_hang("h"),
+            connect_timeout=0.2,
+            retries=1,
+            backoff=0.05,
+            teardown_grace=0.2,
+            log=lambda *_: None,
+        ) as s:
             sessions = list(s)
         return sessions, time.monotonic() - t0
 
@@ -149,8 +156,9 @@ def test_connect_retries_then_succeeds():
         return _opener_connect_error(u)(u) if state["n"] == 1 else _opener_ok("retried")(u)
 
     async def go():
-        async with bio.open_bio_sessions(["r"], opener=flaky, retries=2, backoff=0.01,
-                                         log=lambda *_: None) as s:
+        async with bio.open_bio_sessions(
+            ["r"], opener=flaky, retries=2, backoff=0.01, log=lambda *_: None
+        ) as s:
             return [x.name for x in s]
 
     assert _run(go()) == ["retried"]
@@ -161,8 +169,9 @@ def test_session_close_failure_never_propagates_out_of_context_manager():
     # The one residual path that could regress a SUCCESSFUL run to degraded: a bio session that
     # dies while being torn down. open_bio_sessions.__aexit__ must swallow it.
     async def go():
-        async with bio.open_bio_sessions(["c"], opener=_opener_crash_at_close("c"),
-                                         log=lambda *_: None) as s:
+        async with bio.open_bio_sessions(
+            ["c"], opener=_opener_crash_at_close("c"), log=lambda *_: None
+        ) as s:
             assert len(s) == 1
         return "exited-cleanly"
 
@@ -177,14 +186,15 @@ def test_run_body_survives_a_bio_session_dying_mid_run():
 
     async def go():
         progress = []
-        async with bio.open_bio_sessions(["c"], opener=_opener_capturing(captured),
-                                         teardown_grace=0.2, log=lambda *_: None) as s:
+        async with bio.open_bio_sessions(
+            ["c"], opener=_opener_capturing(captured), teardown_grace=0.2, log=lambda *_: None
+        ) as s:
             assert len(s) == 1 and captured, "session not handed out / holder not captured"
-            captured[0].cancel()             # kill the live bio holder MID-RUN
+            captured[0].cancel()  # kill the live bio holder MID-RUN
             for i in range(3):
-                await asyncio.sleep(0)        # the run body keeps working after the holder dies
+                await asyncio.sleep(0)  # the run body keeps working after the holder dies
                 progress.append(i)
-            assert captured[0].done()         # the holder died; the body did not
+            assert captured[0].done()  # the holder died; the body did not
         return progress
 
     assert _run(go()) == [0, 1, 2]
@@ -195,10 +205,11 @@ def test_run_body_completes_despite_a_bio_session_failing_at_teardown():
     # also leave the body's result intact and not propagate out of the context manager.
     async def go():
         progress = []
-        async with bio.open_bio_sessions(["c"], opener=_opener_crash_at_close("c"),
-                                         log=lambda *_: None):
+        async with bio.open_bio_sessions(
+            ["c"], opener=_opener_crash_at_close("c"), log=lambda *_: None
+        ):
             for i in range(3):
-                await asyncio.sleep(0)   # simulate the run doing real work
+                await asyncio.sleep(0)  # simulate the run doing real work
                 progress.append(i)
         return progress
 
@@ -211,8 +222,9 @@ def test_runner_connect_failure_is_contained():
         holder = {"session": None, "error": None}
         ready, shutdown = asyncio.Event(), asyncio.Event()
         # Must return normally (swallowed), with the error reported via holder for the supervisor.
-        await bio._bio_session_runner("x", holder, ready, shutdown, _opener_connect_error("x"),
-                                      lambda *_: None)
+        await bio._bio_session_runner(
+            "x", holder, ready, shutdown, _opener_connect_error("x"), lambda *_: None
+        )
         return ready.is_set(), holder["session"], holder["error"]
 
     ready_set, session, error = _run(go())
@@ -230,13 +242,14 @@ def test_runner_live_failure_is_swallowed():
         holder = {"session": None, "error": None}
         ready, shutdown = asyncio.Event(), asyncio.Event()
         task = asyncio.create_task(
-            bio._bio_session_runner("c", holder, ready, shutdown, _opener_crash_at_close("c"),
-                                    logs.append)
+            bio._bio_session_runner(
+                "c", holder, ready, shutdown, _opener_crash_at_close("c"), logs.append
+            )
         )
         await asyncio.wait_for(ready.wait(), timeout=1)
-        assert holder["session"] is not None       # session was handed out
-        shutdown.set()                              # let it exit -> the close raises inside it
-        await asyncio.wait_for(task, timeout=1)     # must NOT raise
+        assert holder["session"] is not None  # session was handed out
+        shutdown.set()  # let it exit -> the close raises inside it
+        await asyncio.wait_for(task, timeout=1)  # must NOT raise
         return task.exception() is None
 
     assert _run(go()) is True
@@ -251,7 +264,7 @@ def test_runner_normal_path_returns_on_shutdown():
             bio._bio_session_runner("ok", holder, ready, shutdown, _opener_ok(), lambda *_: None)
         )
         await asyncio.wait_for(ready.wait(), timeout=1)
-        assert not task.done()                      # parked, holding the session open
+        assert not task.done()  # parked, holding the session open
         shutdown.set()
         await asyncio.wait_for(task, timeout=1)
         return holder["session"].name, task.exception() is None

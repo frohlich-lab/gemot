@@ -201,22 +201,23 @@ filterwarnings = ["ignore::DeprecationWarning"]
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.format]
+# Byte-identical copies of the scripts the cluster jobs ran; paper/neural_heldout/README.md
+# records their sha256.
+exclude = ["paper/neural_heldout/evaluator/*.py"]
+
 [tool.ruff.lint]
 # Deliberately NARROW. This linter was configured onto a ~53k-line codebase that had never run
 # one, so the rule set is what the code ALREADY satisfies (plus the ~20 real defects fixed in the
 # same change) rather than what a greenfield project would pick. Widening is a separate change per
 # family, each with its own diff -- see docs/STYLE_GUIDE.md for the ones deliberately left out
-# (`I`, `UP`, `BLE`, and `ruff format`, which would destroy load-bearing manual alignment).
+# (`I`, `UP`, `BLE`).
 select = ["E", "F", "W"]
 ignore = [
     # Line length is a ~100-col TARGET, not a gate. ~640 lines in `src/` exceed it and nearly all
     # of them are the rationale comments that carry this repo's institutional memory; reflowing
     # them would churn `git blame` across every module to buy nothing. Write to 100 anyway.
     "E501",
-    # `p = m.createParameter(); p.setId(sid); p.setConstant(True)` -- semicolon-joined statements
-    # are a deliberate idiom here for a run of trivial setter calls on one object (libsbml
-    # construction, matplotlib axis setup, PEtab row assembly). 19 sites, all intentional.
-    "E702",
 ]
 
 [tool.ruff.lint.per-file-ignores]

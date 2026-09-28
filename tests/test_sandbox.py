@@ -16,8 +16,9 @@ import pytest
 
 from petab_harness.agent import sandbox as S  # noqa: E402
 
-requires_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None,
-                                    reason="bubblewrap not installed on this node")
+requires_bwrap = pytest.mark.skipif(
+    shutil.which("bwrap") is None, reason="bubblewrap not installed on this node"
+)
 
 
 def _sandbox(tmp_path: Path, timeout: float = 60.0):
@@ -27,8 +28,9 @@ def _sandbox(tmp_path: Path, timeout: float = 60.0):
     (tmp_path / "ex" / "run.py").write_text("TRUE_ANT = 'secret'\n")
     S.sandbox_preflight(work, n_cpus=2)
     audit = S.new_shell_audit()
-    backend = S.sandbox_backend_class()(work, env_prefix=S.default_env_prefix(), n_cpus=2,
-                                         timeout=timeout, audit=audit)
+    backend = S.sandbox_backend_class()(
+        work, env_prefix=S.default_env_prefix(), n_cpus=2, timeout=timeout, audit=audit
+    )
     return work, backend, audit
 
 
@@ -53,6 +55,7 @@ def test_shell_sees_the_workspace_and_env_and_nothing_else(tmp_path):
     """The example directory above the workspace holds the answer; the repo holds the harness;
     $HOME holds credentials. None of them may exist inside the sandbox."""
     import os
+
     work, backend, _ = _sandbox(tmp_path)
     (work / "hello.txt").write_text("hi\n")
     assert "hi" in backend.execute("cat hello.txt && pwd").output
@@ -67,7 +70,9 @@ def test_shell_sees_the_workspace_and_env_and_nothing_else(tmp_path):
     # the harness itself (an editable install pointing at src/) is therefore not importable...
     assert backend.execute("python -c 'import petab_harness'").exit_code != 0
     # ...while the scientific stack is
-    assert backend.execute("python -c 'import amici, pypesto, petab, scipy, sklearn'").exit_code == 0
+    assert (
+        backend.execute("python -c 'import amici, pypesto, petab, scipy, sklearn'").exit_code == 0
+    )
     # and the environment is read-only
     assert backend.execute(f"touch {S.default_env_prefix()}/bin/_probe").exit_code != 0
 
@@ -76,7 +81,8 @@ def test_shell_sees_the_workspace_and_env_and_nothing_else(tmp_path):
 def test_shell_has_no_network(tmp_path):
     _, backend, _ = _sandbox(tmp_path)
     res = backend.execute(
-        "python -c \"import socket; socket.create_connection(('1.1.1.1', 53), timeout=3)\"")
+        "python -c \"import socket; socket.create_connection(('1.1.1.1', 53), timeout=3)\""
+    )
     assert res.exit_code != 0
 
 
@@ -97,6 +103,7 @@ def test_shell_audit_counts_commands_failures_and_timeouts(tmp_path):
     assert backend.execute("echo ok").exit_code == 0
     assert backend.execute("exit 3").exit_code == 3
     import time
+
     t0 = time.monotonic()
     res = backend.execute("sleep 30", timeout=1)
     # ...and the kill reaches the sandboxed command itself: a killed bwrap whose command lived
@@ -121,8 +128,9 @@ def test_file_tools_are_confined_to_the_mounted_workspace(tmp_path):
     work.mkdir(parents=True)
     (example_dir / "run.py").write_text("TRUE_ANT = 'secret'\n")
     (work / "problem.yaml").write_text("format_version: 1\n")
-    backend = S.sandbox_backend_class()(work, env_prefix=S.default_env_prefix(), n_cpus=1, timeout=10,
-                                         audit=S.new_shell_audit())
+    backend = S.sandbox_backend_class()(
+        work, env_prefix=S.default_env_prefix(), n_cpus=1, timeout=10, audit=S.new_shell_audit()
+    )
     ok = backend.read("/problem.yaml")
     assert ok.error is None and "format_version" in str(ok.file_data)
     for escape in ("/../run.py", str(example_dir / "run.py")):

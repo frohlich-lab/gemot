@@ -72,6 +72,7 @@ def test_a_tool_that_cannot_fit_gets_the_short_budget_not_the_run_default():
     wedged one cost a whole multistart of wall clock and left no trace. It is sized on what the
     tool can do now, not on whether it happened to carry `n_starts`."""
     from petab_harness.runner.clock import NON_FIT_CALL_TIMEOUT_S
+
     s = _wrapped()
     asyncio.run(s.call_tool("get_fit_summary", {}))
     assert s.timeout_of() == timedelta(seconds=NON_FIT_CALL_TIMEOUT_S)
@@ -95,8 +96,9 @@ def test_asking_for_fewer_starts_does_not_shrink_the_window():
 
 def test_an_explicit_caller_timeout_is_never_overridden():
     s = _wrapped()
-    asyncio.run(s.call_tool("make_changes", {"n_starts": 400},
-                            read_timeout_seconds=timedelta(seconds=7)))
+    asyncio.run(
+        s.call_tool("make_changes", {"n_starts": 400}, read_timeout_seconds=timedelta(seconds=7))
+    )
     assert s.timeout_of() == timedelta(seconds=7)
 
 
@@ -134,8 +136,15 @@ def test_the_scripted_path_gets_the_scenario_floor_without_Scenario_exposing_it(
     from petab_harness.scenario import build_true_model
 
     s = _wrapped()
-    asyncio.run(build_true_model(_make_call(s), antimony="A -> B; k*A",
-                                 justification="j", n_starts=DEFAULT, min_n_starts=400))
+    asyncio.run(
+        build_true_model(
+            _make_call(s),
+            antimony="A -> B; k*A",
+            justification="j",
+            n_starts=DEFAULT,
+            min_n_starts=400,
+        )
+    )
     assert s.calls[0][0][0] == "make_changes"
     # `fit_time_budget_for`, not `fit_time_budget`: the production path CLAMPS at
     # FIT_BUDGET_CEILING_S and the raw form does not, so comparing against the raw form only
@@ -179,8 +188,10 @@ def test_batched_fits_are_summed_not_maxed():
     """ToolNode runs a message's tool calls concurrently against ONE pyPESTO worker pool, so two
     fits in a batch contend rather than overlap for free — the step's wall clock is the summed
     wave count, and max() would fire the watchdog mid-batch on a healthy run."""
-    state = _state({"name": "make_changes", "args": {"n_starts": 120}},
-                   {"name": "make_changes", "args": {"n_starts": 400}})
+    state = _state(
+        {"name": "make_changes", "args": {"n_starts": 120}},
+        {"name": "make_changes", "args": {"n_starts": 400}},
+    )
     assert _pending_fit_starts(state, DEFAULT) == 520
 
 
@@ -205,31 +216,39 @@ def test_the_watchdog_reads_a_string_typed_n_starts_too():
 def test_asking_for_fewer_starts_does_not_shrink_the_watchdog_window_either():
     """Mirrors the transport rule — the floor lives in fit_time_budget_for, so both agree."""
     state = _state({"name": "make_changes", "args": {"n_starts": 5}})
-    assert fit_time_budget_for(_pending_fit_starts(state, DEFAULT), DEFAULT) == \
-        fit_time_budget(DEFAULT)
+    assert fit_time_budget_for(_pending_fit_starts(state, DEFAULT), DEFAULT) == fit_time_budget(
+        DEFAULT
+    )
 
 
 def test_one_unparseable_argument_does_not_discard_a_siblings_real_count():
     """Coercion is per call: a junk n_starts on one tool call must not drop the window back to
     the default while a real 400-start fit is pending alongside it."""
-    state = _state({"name": "make_changes", "args": {"n_starts": "many"}},
-                   {"name": "make_changes", "args": {"n_starts": 400}})
+    state = _state(
+        {"name": "make_changes", "args": {"n_starts": "many"}},
+        {"name": "make_changes", "args": {"n_starts": 400}},
+    )
     assert _pending_fit_starts(state, DEFAULT) == 400
 
 
 def test_an_unrecognised_state_degrades_rather_than_raising():
     """A langgraph/deepagents version bump must cost precision, not the run."""
-    for state in (None, {}, {"messages": []}, {"messages": [object()]}, "nonsense",
-                  _state({"name": "make_changes", "args": {"n_starts": "many"}}),
-                  _state({"args": {"n_starts": 400}})):
+    for state in (
+        None,
+        {},
+        {"messages": []},
+        {"messages": [object()]},
+        "nonsense",
+        _state({"name": "make_changes", "args": {"n_starts": "many"}}),
+        _state({"args": {"n_starts": 400}}),
+    ):
         assert _pending_fit_starts(state, DEFAULT) is None
 
 
 def test_a_serialized_message_is_still_read():
     """langgraph may hand back messages as plain dicts rather than AIMessage objects; that must
     read as a pending fit, not as an unrecognised state that silently disarms the window."""
-    state = {"messages": [{"tool_calls": [{"name": "make_changes",
-                                           "args": {"n_starts": 300}}]}]}
+    state = {"messages": [{"tool_calls": [{"name": "make_changes", "args": {"n_starts": 300}}]}]}
     assert _pending_fit_starts(state, DEFAULT) == 300
 
 
@@ -250,7 +269,7 @@ def test_a_hallucinated_n_starts_cannot_buy_an_unbounded_window():
     budget would compute a ~115-day timeout and switch both timeouts off for that call."""
     capped = fit_time_budget_for(10**9, DEFAULT)
     assert capped <= FIT_BUDGET_CEILING_S
-    assert capped < fit_time_budget(10**9)      # the clamp actually bit
+    assert capped < fit_time_budget(10**9)  # the clamp actually bit
     s = _wrapped()
     asyncio.run(s.call_tool("make_changes", {"n_starts": 10**9}))
     assert s.timeout_of() == timedelta(seconds=capped)
@@ -307,8 +326,10 @@ def test_a_json_string_args_container_does_not_discard_a_valid_sibling():
     """`args` arriving as a JSON string (a real provider/serialization variant) makes
     `args.get` raise AttributeError. If that escapes the per-call guard it takes the WHOLE
     emission with it, so a genuine 400-start fit pending alongside collapses to the default."""
-    state = _state({"name": "make_changes", "args": '{"n_starts": 400}'},
-                   {"name": "make_changes", "args": {"n_starts": 400}})
+    state = _state(
+        {"name": "make_changes", "args": '{"n_starts": 400}'},
+        {"name": "make_changes", "args": {"n_starts": 400}},
+    )
     assert _pending_fit_starts(state, DEFAULT) == 400
 
 
@@ -330,8 +351,7 @@ def test_an_unreadable_state_is_counted_where_a_sweep_can_see_it():
 
 def test_a_healthy_state_records_nothing():
     stats: dict = {}
-    _pending_fit_starts(_state({"name": "make_changes", "args": {"n_starts": 300}}),
-                        DEFAULT, stats)
+    _pending_fit_starts(_state({"name": "make_changes", "args": {"n_starts": 300}}), DEFAULT, stats)
     _pending_fit_starts(_state(), DEFAULT, stats)
     assert "unreadable_graph_state" not in stats
 
@@ -423,7 +443,7 @@ def test_a_second_batched_fit_is_sized_for_its_wait_on_the_server_lock():
 
     async def drive():
         first = _aio.create_task(s.call_tool("make_changes", {"n_starts": 400}))
-        await _aio.sleep(0)                       # let it arm and register in flight
+        await _aio.sleep(0)  # let it arm and register in flight
         second = _aio.create_task(s.call_tool("make_changes", {"n_starts": 400}))
         await _aio.sleep(0)
         gate.set()
@@ -448,7 +468,7 @@ def test_a_pending_fit_survives_a_middleware_message_landing_after_it():
     the window to the floor — bachmann task 9 again, and invisible, because the state SHAPE is
     fine so `unreadable_graph_state` never fires."""
     ai = _Msg([{"name": "make_changes", "args": {"n_starts": 300}}])
-    nudge = _Msg([])                                   # a guard/compaction emission
+    nudge = _Msg([])  # a guard/compaction emission
     assert _pending_fit_starts({"messages": [ai, nudge]}, DEFAULT) == 300
 
 
@@ -456,7 +476,7 @@ def test_the_scan_stops_at_a_tool_result_so_a_finished_fit_does_not_re_arm():
     """Once results are back the fit is over, however many messages follow it."""
     ai = _Msg([{"name": "make_changes", "args": {"n_starts": 300}}])
     result = _Msg([])
-    result.type = "tool"          # a ToolMessage: results are back, the fit is over
+    result.type = "tool"  # a ToolMessage: results are back, the fit is over
     assert _pending_fit_starts({"messages": [ai, result]}, DEFAULT) is None
     assert _pending_fit_starts({"messages": [ai, {"type": "tool"}]}, DEFAULT) is None
 
@@ -467,6 +487,10 @@ def test_a_fit_timeout_abort_scores_as_infrastructure_not_as_a_failed_model():
     fit timeout enters the success/dBIC aggregation as a genuine modelling failure."""
     from petab_harness.experiments import _is_infra_abort
 
-    assert _is_infra_abort({"stop_reason": "fit call timed out: Timed out while waiting for "
-                                           "response to CallToolRequest. Waited 7560.0 seconds."})
+    assert _is_infra_abort(
+        {
+            "stop_reason": "fit call timed out: Timed out while waiting for "
+            "response to CallToolRequest. Waited 7560.0 seconds."
+        }
+    )
     assert not _is_infra_abort({"stop_reason": "completed"})

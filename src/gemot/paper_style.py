@@ -9,6 +9,7 @@ metric-compatible with it -- every glyph has Arial's advance width, so text set 
 exactly the space of the other -- and is OFL-licensed, so it ships in ``paper/fonts/``. Arial is
 listed first: where it is installed it wins, and the layout does not move either way.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -43,12 +44,23 @@ def rc() -> dict:
     """The rcParams every figure applies before drawing."""
     register_fonts()
     # The inks are figure 3's, which set them first; figure 4 reads as its companion panel.
-    return {"font.family": "sans-serif", "font.sans-serif": FONT_FAMILY,
-            "figure.facecolor": SURFACE, "axes.facecolor": SURFACE,
-            "savefig.facecolor": SURFACE, "pdf.fonttype": 42, "ps.fonttype": 42,
-            "axes.edgecolor": "#69737B", "axes.labelcolor": "#26343E", "axes.linewidth": 0.6,
-            "xtick.color": "#43515C", "ytick.color": "#43515C", "text.color": "#26343E",
-            "xtick.major.width": 0.6, "ytick.major.width": 0.6}
+    return {
+        "font.family": "sans-serif",
+        "font.sans-serif": FONT_FAMILY,
+        "figure.facecolor": SURFACE,
+        "axes.facecolor": SURFACE,
+        "savefig.facecolor": SURFACE,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "axes.edgecolor": "#69737B",
+        "axes.labelcolor": "#26343E",
+        "axes.linewidth": 0.6,
+        "xtick.color": "#43515C",
+        "ytick.color": "#43515C",
+        "text.color": "#26343E",
+        "xtick.major.width": 0.6,
+        "ytick.major.width": 0.6,
+    }
 
 
 def small_text(fig, floor: float = MIN_FONT) -> list[tuple[float, str]]:

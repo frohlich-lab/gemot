@@ -28,37 +28,57 @@ import numpy as np
 import sympy as sp
 
 
-def regress(features: np.ndarray, derivatives: np.ndarray, placeholders: list[str], settings: dict) -> list[dict]:
+def regress(
+    features: np.ndarray, derivatives: np.ndarray, placeholders: list[str], settings: dict
+) -> list[dict]:
     """One PySR run per output column: ``[{selected, r2, front}]`` with expressions as strings and
     ``front`` as ``[[complexity, expression, r2], ...]`` cheapest first."""
     workers = int(settings.get("workers") or 1)
     n_columns = int(derivatives.shape[1])
     if workers > 1 and n_columns > 1:
         # Before PySR is imported: importing it starts Julia, and a forked Julia is not fork-safe.
-        return _regress_parallel(features, derivatives, placeholders, settings, min(workers, n_columns))
+        return _regress_parallel(
+            features, derivatives, placeholders, settings, min(workers, n_columns)
+        )
     regressor = pysr_class()
     if regressor is None:
-        raise ImportError("PySR is not installed here (it needs a Julia toolchain); the field was sampled "
-                          "but not regressed. `pip install pysr` in the interpreter the distillation names.")
+        raise ImportError(
+            "PySR is not installed here (it needs a Julia toolchain); the field was sampled "
+            "but not regressed. `pip install pysr` in the interpreter the distillation names."
+        )
     out: list[dict] = []
     for column in range(n_columns):
         model = regressor(
-            niterations=int(settings["niterations"]), population_size=int(settings["population_size"]),
-            maxsize=int(settings["maxsize"]), parsimony=float(settings["parsimony"]),
-            binary_operators=list(settings["binary_operators"]), unary_operators=list(settings["unary_operators"]),
-            extra_sympy_mappings=_sympy_mappings(), random_state=int(settings["seed"]),
+            niterations=int(settings["niterations"]),
+            population_size=int(settings["population_size"]),
+            maxsize=int(settings["maxsize"]),
+            parsimony=float(settings["parsimony"]),
+            binary_operators=list(settings["binary_operators"]),
+            unary_operators=list(settings["unary_operators"]),
+            extra_sympy_mappings=_sympy_mappings(),
+            random_state=int(settings["seed"]),
             # Not deterministic: PySR's deterministic mode forces a serial search, and reproducibility
             # comes from replication over seeds instead.
-            deterministic=False, parallelism=settings.get("parallelism", "multithreading"),
-            procs=int(settings.get("procs") or 0), progress=False, verbosity=0,
+            deterministic=False,
+            parallelism=settings.get("parallelism", "multithreading"),
+            procs=int(settings.get("procs") or 0),
+            progress=False,
+            verbosity=0,
             # PySR's hall-of-fame files go next to the inputs, not into the working directory.
-            output_directory=settings.get("output_directory"))
+            output_directory=settings.get("output_directory"),
+        )
         target = derivatives[:, column]
         model.fit(features, target, variable_names=list(placeholders))
-        out.append({"selected": str(selected_expression(model, settings.get("selection", "best"))),
-                    "r2": r_squared(model.predict(features), target),
-                    "front": [[complexity, str(expression), value]
-                              for complexity, expression, value in pareto_front(model, features, target)]})
+        out.append(
+            {
+                "selected": str(selected_expression(model, settings.get("selection", "best"))),
+                "r2": r_squared(model.predict(features), target),
+                "front": [
+                    [complexity, str(expression), value]
+                    for complexity, expression, value in pareto_front(model, features, target)
+                ],
+            }
+        )
     return out
 
 
@@ -66,7 +86,10 @@ def _regress_parallel(features, derivatives, placeholders, settings, workers: in
     from concurrent.futures import ProcessPoolExecutor  # noqa: PLC0415
 
     serial = {**settings, "workers": 1, "parallelism": "serial", "procs": 0}
-    payloads = [(features, derivatives[:, i:i + 1], placeholders, serial) for i in range(derivatives.shape[1])]
+    payloads = [
+        (features, derivatives[:, i : i + 1], placeholders, serial)
+        for i in range(derivatives.shape[1])
+    ]
     with ProcessPoolExecutor(max_workers=workers) as pool:
         return [result[0] for result in pool.map(_one, payloads)]  # map keeps column order
 
@@ -133,7 +156,9 @@ def main(argv: list[str]) -> int:
     arrays = np.load(argv[1])
     with open(argv[2]) as handle:
         settings = json.load(handle)
-    result = regress(arrays["features"], arrays["derivatives"], list(settings["placeholders"]), settings)
+    result = regress(
+        arrays["features"], arrays["derivatives"], list(settings["placeholders"]), settings
+    )
     with open(argv[3], "w") as handle:
         json.dump(result, handle)
     return 0

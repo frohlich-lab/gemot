@@ -33,7 +33,10 @@ class _FakeTool:
 # --------------------------------------------------------------------- the declared roster
 def test_subagent_names_are_exactly_the_four_personas():
     assert agent.SUBAGENT_NAMES == (
-        "mathematician", "systems_scientist", "signal_engineer", "biocurator",
+        "mathematician",
+        "systems_scientist",
+        "signal_engineer",
+        "biocurator",
     )
     assert "general-purpose" not in agent.SUBAGENT_NAMES
 
@@ -86,8 +89,10 @@ def test_create_deep_agent_does_not_add_the_general_purpose_subagent(monkeypatch
     da_graph.create_deep_agent(
         model=llm,
         tools=[],
-        subagents=[{"name": name, "description": f"{name} stub", prompt_key: "stub",
-                    "tools": []} for name in agent.SUBAGENT_NAMES],
+        subagents=[
+            {"name": name, "description": f"{name} stub", prompt_key: "stub", "tools": []}
+            for name in agent.SUBAGENT_NAMES
+        ],
     )
 
     assert captured["names"] == list(agent.SUBAGENT_NAMES)
@@ -109,7 +114,9 @@ def _arm_on(script: str) -> str:
     out = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script)],
         env={**os.environ, "PETAB_DIFF_EDITS": "1"},
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert out.returncode == 0, out.stderr[-2000:]
     return out.stdout.strip()
@@ -118,21 +125,25 @@ def _arm_on(script: str) -> str:
 def test_arm_on_every_subagent_tool_is_resolvable():
     """Each spec's tools must be a SUBSET of ALLOWED_TOOLS, or `_select_tools` drops them before
     `_build_subagents` can resolve them — silently, with only a stdout print."""
-    assert _arm_on("""
+    assert (
+        _arm_on("""
         from petab_harness import agent
         from petab_harness.agent.tools import ALLOWED_TOOLS
         for spec in agent.ACTIVE_SPECS:
             missing = [t for t in spec["tools"] if t not in ALLOWED_TOOLS]
             assert not missing, (spec["name"], missing)
         print("ok")
-    """) == "ok"
+    """)
+        == "ok"
+    )
 
 
 def test_arm_on_the_lead_holds_get_model_and_the_roster_is_unchanged():
     """diff_edits changes only the LEAD's surface: `get_model` (the raw committed text patches
     are quoted from) joins its toolset and ALLOWED_TOOLS, no subagent joins or leaves, and
     ALLOWED_TOOLS still agrees with the panel-facing descriptions (both arm-dependent)."""
-    assert _arm_on("""
+    assert (
+        _arm_on("""
         from petab_harness import agent
         from petab_harness.agent.tools import ALLOWED_TOOLS, ORCHESTRATOR_TOOLS
         from petab_harness import prompts as P
@@ -147,4 +158,6 @@ def test_arm_on_the_lead_holds_get_model_and_the_roster_is_unchanged():
         for spec in agent.ANALYSTS:
             assert "get_model" not in spec["tools"], spec["name"]
         print("ok")
-    """) == "ok"
+    """)
+        == "ok"
+    )

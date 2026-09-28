@@ -65,28 +65,43 @@ class Prepared:
     config: T.TrainConfig = field(repr=False)
 
 
-def prepare(result: T.TrainResult, held_out, directory: Path | str, *,
-            training: P.Problem) -> Prepared | dict:
+def prepare(
+    result: T.TrainResult, held_out, directory: Path | str, *, training: P.Problem
+) -> Prepared | dict:
     """``held_out`` staged against ``result``'s design, ready to score any field of that shape.
     Returns the failure payload instead if the tables cannot be reconciled."""
     directory = Path(directory)
     n = int(len(held_out.measurement_df))
     if held_out.parameter_df is not None:
-        return {"status": STATUS_NO_TRANSFER, "mode": MODE_TRANSFER, "n": n,
-                "reason": "a transfer set re-estimates the model's parameters on the held-out "
-                          "system; a field's parameters are its weights, and there are too few "
-                          "held-out points to re-estimate them. Freezing them and refitting the "
-                          "starts and sigmas answers a different question from the one the "
-                          "reference bar answers, so no number is reported"}
+        return {
+            "status": STATUS_NO_TRANSFER,
+            "mode": MODE_TRANSFER,
+            "n": n,
+            "reason": "a transfer set re-estimates the model's parameters on the held-out "
+            "system; a field's parameters are its weights, and there are too few "
+            "held-out points to re-estimate them. Freezing them and refitting the "
+            "starts and sigmas answers a different question from the one the "
+            "reference bar answers, so no number is reported",
+        }
     try:
         problem = _held_out_problem(training, held_out, directory / "v1")
-        staged = S.stage(problem, directory / "staged", design=result.staged,
-                         shared_initial_conditions=result.config.shared_initial_conditions)
+        staged = S.stage(
+            problem,
+            directory / "staged",
+            design=result.staged,
+            shared_initial_conditions=result.config.shared_initial_conditions,
+        )
     except (P.ProblemError, ValueError) as why:
         return {"status": STATUS_TABLE_MISMATCH, "mode": MODE_FIXED, "n": n, "reason": str(why)}
     imported = T._import(staged)
-    return Prepared(mode=MODE_FIXED, n=n, staged=staged, imported=imported,
-                    ids=list(imported.parameter_ids), config=result.config)
+    return Prepared(
+        mode=MODE_FIXED,
+        n=n,
+        staged=staged,
+        imported=imported,
+        ids=list(imported.parameter_ids),
+        config=result.config,
+    )
 
 
 def score_prepared(prepared: Prepared, networks, parameters: dict[str, float]) -> dict:
@@ -101,19 +116,31 @@ def score_prepared(prepared: Prepared, networks, parameters: dict[str, float]) -
     unknown = [pid for pid in ids if pid not in parameters]
 
     if not unknown:
-        fitted = imported.update_parameters(jnp.asarray([known[pid] for pid in ids])) if ids else imported
+        fitted = (
+            imported.update_parameters(jnp.asarray([known[pid] for pid in ids]))
+            if ids
+            else imported
+        )
         llh, _ = run_simulations(fitted, **T._solver(prepared.config))
         nll = -float(llh)
         if not math.isfinite(nll):
-            return {"status": STATUS_NON_FINITE, "mode": MODE_FIXED, "n": n,
-                    "reason": "the field could not be integrated on the held-out conditions"}
+            return {
+                "status": STATUS_NON_FINITE,
+                "mode": MODE_FIXED,
+                "n": n,
+                "reason": "the field could not be integrated on the held-out conditions",
+            }
         return {"status": STATUS_OK, "mode": MODE_FIXED, "nll": nll, "n": n}
 
-    return {"status": STATUS_NO_TRANSFER, "mode": MODE_FIXED, "n": n,
-            "reason": f"fixed-theta needs every scalar the held-out problem estimates to be one "
-                      f"the training run fitted; {unknown} are not. Shared starts or a t=0 datum "
-                      f"would pin them. Refitting them instead would be a transfer, which a field "
-                      f"cannot answer"}
+    return {
+        "status": STATUS_NO_TRANSFER,
+        "mode": MODE_FIXED,
+        "n": n,
+        "reason": f"fixed-theta needs every scalar the held-out problem estimates to be one "
+        f"the training run fitted; {unknown} are not. Shared starts or a t=0 datum "
+        f"would pin them. Refitting them instead would be a transfer, which a field "
+        f"cannot answer",
+    }
 
 
 def score(result: T.TrainResult, held_out, directory: Path | str, *, training: P.Problem) -> dict:
@@ -146,12 +173,18 @@ def _held_out_problem(training: P.Problem, held_out, directory: Path) -> P.Probl
             raise P.ProblemError(
                 f"the held-out condition table has columns {sorted(map(str, theirs.columns))} against "
                 f"the training table's {sorted(map(str, mine.columns))}; a condition column is an input, "
-                "so the two tables describe different fields")
-        conditions = theirs[list(mine.columns)] if held_out.parameter_df is not None else pd.concat(
-            [mine, theirs[list(mine.columns)]])
+                "so the two tables describe different fields"
+            )
+        conditions = (
+            theirs[list(mine.columns)]
+            if held_out.parameter_df is not None
+            else pd.concat([mine, theirs[list(mine.columns)]])
+        )
     petab.write_condition_df(conditions, str(directory / "conditions.tsv"))
-    petab.write_parameter_df(held_out.parameter_df if held_out.parameter_df is not None else source.parameter_df,
-                             str(directory / "parameters.tsv"))
+    petab.write_parameter_df(
+        held_out.parameter_df if held_out.parameter_df is not None else source.parameter_df,
+        str(directory / "parameters.tsv"),
+    )
     document = load_yaml(str(training.source))
     model = training.source.parent / document["problems"][0]["sbml_files"][0]
     shutil.copy(model, directory / "model.xml")
@@ -161,7 +194,8 @@ def _held_out_problem(training: P.Problem, held_out, directory: Path) -> P.Probl
     (directory / "problem.yaml").write_text(
         "format_version: 1\nparameter_file: parameters.tsv\nproblems:\n- sbml_files: [model.xml]\n"
         "  condition_files: [conditions.tsv]\n  measurement_files: [measurements.tsv]\n"
-        "  observable_files: [observables.tsv]\n")
+        "  observable_files: [observables.tsv]\n"
+    )
     return P.load(directory, name=f"{training.name}_held_out", dosed=training.dosed)
 
 

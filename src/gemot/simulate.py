@@ -56,8 +56,14 @@ def measurement_skeleton(
     for cond_id, times in timepoints.items():
         for obs_id in observables:
             for t in times:
-                rows.append({OBSERVABLE_ID: obs_id, SIMULATION_CONDITION_ID: cond_id,
-                             TIME: float(t), MEASUREMENT: 0.0})
+                rows.append(
+                    {
+                        OBSERVABLE_ID: obs_id,
+                        SIMULATION_CONDITION_ID: cond_id,
+                        TIME: float(t),
+                        MEASUREMENT: 0.0,
+                    }
+                )
     return pd.DataFrame(rows)
 
 
@@ -84,8 +90,8 @@ def simulate_true(
     if parameter_df.index.name != PARAMETER_ID and PARAMETER_ID in parameter_df.columns:
         parameter_df = parameter_df.set_index(PARAMETER_ID)
     problem, amici_model = _import_and_problem(
-        model_ant, parameter_df, condition_df, observable_df, measurement_df,
-        build_dir, model_name)
+        model_ant, parameter_df, condition_df, observable_df, measurement_df, build_dir, model_name
+    )
 
     params: dict[str, float] = {}
     for pid in parameter_df.index:
@@ -98,11 +104,14 @@ def simulate_true(
 
     with warnings.catch_warnings():
         warnings.filterwarnings(
-            "ignore", message="The following problem parameters were not used",
+            "ignore",
+            message="The following problem parameters were not used",
             category=RuntimeWarning,
         )
         result = simulate_petab(
-            problem, amici_model=amici_model, problem_parameters=params,
+            problem,
+            amici_model=amici_model,
+            problem_parameters=params,
             scaled_parameters=False,
         )
     simdf = rdatas_to_simulation_df(result[RDATAS], amici_model, problem.measurement_df)
@@ -120,15 +129,16 @@ def simulate_true(
     while rep in measurement_df.columns or rep in simdf.columns:  # avoid clobbering columns
         rep += "_"
     measurement_df = measurement_df.assign(
-        **{rep: measurement_df.groupby(keys, sort=False).cumcount()})
+        **{rep: measurement_df.groupby(keys, sort=False).cumcount()}
+    )
     simdf = simdf.assign(**{rep: simdf.groupby(keys, sort=False).cumcount()})
-    merged = measurement_df.merge(
-        simdf[keys + [rep, SIMULATION]], on=keys + [rep], how="left")
+    merged = measurement_df.merge(simdf[keys + [rep, SIMULATION]], on=keys + [rep], how="left")
     return merged
 
 
-def _import_and_problem(model_ant, parameter_df, condition_df, observable_df,
-                        measurement_df, build_dir, model_name):
+def _import_and_problem(
+    model_ant, parameter_df, condition_df, observable_df, measurement_df, build_dir, model_name
+):
     """Build a petab Problem + a compiled AMICI model (shared by simulate/fit)."""
     from amici.importers.petab.v1 import import_petab_problem
     from petab.v1 import Problem
@@ -144,8 +154,10 @@ def _import_and_problem(model_ant, parameter_df, condition_df, observable_df,
         condition_df = condition_df.set_index("conditionId")
     problem = Problem(
         model=SbmlModel.from_antimony(model_ant),
-        condition_df=condition_df, observable_df=observable_df,
-        measurement_df=measurement_df.copy(), parameter_df=parameter_df,
+        condition_df=condition_df,
+        observable_df=observable_df,
+        measurement_df=measurement_df.copy(),
+        parameter_df=parameter_df,
     )
     build_dir = Path(build_dir)
     build_dir.mkdir(parents=True, exist_ok=True)
@@ -210,8 +222,9 @@ def fit_reference(
     # (the one example that ships priors) read ΔBIC ≈ −8 instead of ≈ 0. The priors still ship
     # VERBATIM in the problem (faithful) and still regularize the candidate's own fit; they just
     # don't enter the reference bar.
-    pdf = pdf.drop(columns=[c for c in ("objectivePriorType", "objectivePriorParameters")
-                            if c in pdf.columns])
+    pdf = pdf.drop(
+        columns=[c for c in ("objectivePriorType", "objectivePriorParameters") if c in pdf.columns]
+    )
     odf = observable_df
     if odf.index.name != OID and OID in odf.columns:
         odf = odf.set_index(OID)
@@ -221,13 +234,16 @@ def fit_reference(
 
     problem = Problem(
         model=SbmlModel.from_antimony(model_ant),
-        condition_df=cdf, observable_df=odf,
-        measurement_df=measurement_df.copy(), parameter_df=pdf,
+        condition_df=cdf,
+        observable_df=odf,
+        measurement_df=measurement_df.copy(),
+        parameter_df=pdf,
     )
     build_dir = Path(build_dir)
     build_dir.mkdir(parents=True, exist_ok=True)
     importer = pypesto.petab.PetabImporter(
-        problem, output_folder=str(build_dir), model_name=model_name)
+        problem, output_folder=str(build_dir), model_name=model_name
+    )
     pp = importer.create_problem()
     # Cap each start's wall time exactly as the server's candidate fit does, so the reference and
     # candidate optimizers agree and ΔBIC parity holds, and parallelise the multistart the same way
@@ -237,10 +253,15 @@ def fit_reference(
     # Same reason: the integration tolerance is part of what the two optimizers have to agree on.
     apply_amici_solver_defaults(pp)
     optimizer = pypesto.optimize.FidesOptimizer(
-        verbose=_logging.ERROR, options=fides_maxtime_options())
+        verbose=_logging.ERROR, options=fides_maxtime_options()
+    )
     result = pypesto.optimize.minimize(
-        pp, optimizer=optimizer, n_starts=n_starts, engine=fit_engine(n_starts, n_workers),
-        progress_bar=False)
+        pp,
+        optimizer=optimizer,
+        n_starts=n_starts,
+        engine=fit_engine(n_starts, n_workers),
+        progress_bar=False,
+    )
     best = result.optimize_result.list[0]
     nll = float(best["fval"])
     # ``best["x"]`` / ``pp.x_names`` span ALL parameters (free + fixed, with fixed ones filled
@@ -260,8 +281,12 @@ def fit_reference(
         # intended optimum actually enters the reference. pp.objective takes FREE-space coords, so
         # reduce the full nominal vector with pp.get_reduced_vector (the API that matches the
         # objective's expected ordering — see identifiability._compute_fim) rather than raw slicing.
-        x_full = np.array([scale(float(pdf.loc[name, NOMINAL_VALUE]),
-                                 pdf.loc[name, PARAMETER_SCALE]) for name in pp.x_names])
+        x_full = np.array(
+            [
+                scale(float(pdf.loc[name, NOMINAL_VALUE]), pdf.loc[name, PARAMETER_SCALE])
+                for name in pp.x_names
+            ]
+        )
         fval_nom = float(pp.objective(pp.get_reduced_vector(x_full)))
         if np.isfinite(fval_nom) and fval_nom < nll:
             nll = fval_nom
@@ -293,7 +318,8 @@ def _effective_reference_sigmas(problem, raw: dict) -> dict:
     for pid, value in (raw or {}).items():
         try:
             effective = _reconcile.sigma_effective_value(
-                problem, pid, float(value), fitted_values=raw)
+                problem, pid, float(value), fitted_values=raw
+            )
         except Exception:  # noqa: BLE001 - advisory extra
             effective = None
         if effective is not None:
@@ -327,8 +353,15 @@ def write_reference(
     import json
 
     fitted, nll = fit_reference(
-        model_ant, parameter_df, condition_df, observable_df, measurement_df,
-        build_dir=build_dir, model_name=model_name, n_starts=n_starts, seed=seed,
+        model_ant,
+        parameter_df,
+        condition_df,
+        observable_df,
+        measurement_df,
+        build_dir=build_dir,
+        model_name=model_name,
+        n_starts=n_starts,
+        seed=seed,
         seed_at_nominal=seed_at_nominal,
     )
     ref = {"nll": float(nll), "k": int(len(fitted)), "n": int(len(measurement_df))}
@@ -344,13 +377,18 @@ def write_reference(
         import petab.v1 as _petab
 
         _problem = _petab.Problem(
-            model=None, condition_df=condition_df, observable_df=observable_df,
-            measurement_df=measurement_df, parameter_df=parameter_df)
+            model=None,
+            condition_df=condition_df,
+            observable_df=observable_df,
+            measurement_df=measurement_df,
+            parameter_df=parameter_df,
+        )
         from petab_mcp import reconcile as _reconcile
 
         sigma_ids = _reconcile.plausibility_sigma_ids(_problem)
-        ref["noise_sigma"] = {pid: float(value) for pid, value in fitted.items()
-                              if pid in sigma_ids}
+        ref["noise_sigma"] = {
+            pid: float(value) for pid, value in fitted.items() if pid in sigma_ids
+        }
         ref["noise_sigma_effective"] = _effective_reference_sigmas(_problem, ref["noise_sigma"])
     except Exception as exc:  # noqa: BLE001 - advisory extra; never lose the nll/k/n bar
         print(f"[reference] could not record reference noise sigmas ({type(exc).__name__}: {exc})")
@@ -402,8 +440,10 @@ def write_reference_from_problem(
     after this fit (``petab_harness.benchmark._transfer_reference``).
     """
     if held_out is not None and held_out.parameter_df is not None:
-        raise ValueError("write_reference_from_problem: a transfer set is REFIT, not scored at the "
-                         "reference's fitted point (petab_harness.benchmark._transfer_reference)")
+        raise ValueError(
+            "write_reference_from_problem: a transfer set is REFIT, not scored at the "
+            "reference's fitted point (petab_harness.benchmark._transfer_reference)"
+        )
     import json
     import logging as _logging
 
@@ -421,29 +461,40 @@ def write_reference_from_problem(
     pdf = problem.parameter_df
     if pdf.index.name != PARAMETER_ID and PARAMETER_ID in pdf.columns:
         pdf = pdf.set_index(PARAMETER_ID)
-    pdf = pdf.drop(columns=[c for c in ("objectivePriorType", "objectivePriorParameters")
-                            if c in pdf.columns])
+    pdf = pdf.drop(
+        columns=[c for c in ("objectivePriorType", "objectivePriorParameters") if c in pdf.columns]
+    )
     problem.parameter_df = pdf
 
     build_dir = Path(build_dir)
     build_dir.mkdir(parents=True, exist_ok=True)
     importer = pypesto.petab.PetabImporter(
-        problem, output_folder=str(build_dir), model_name=model_name)
+        problem, output_folder=str(build_dir), model_name=model_name
+    )
     pp = importer.create_problem()
     apply_amici_solver_defaults(pp)
     optimizer = pypesto.optimize.FidesOptimizer(
-        verbose=_logging.ERROR, options=fides_maxtime_options(per_start_timeout))
+        verbose=_logging.ERROR, options=fides_maxtime_options(per_start_timeout)
+    )
     result = pypesto.optimize.minimize(
-        pp, optimizer=optimizer, n_starts=n_starts, engine=fit_engine(n_starts, n_workers),
-        progress_bar=False)
+        pp,
+        optimizer=optimizer,
+        n_starts=n_starts,
+        engine=fit_engine(n_starts, n_workers),
+        progress_bar=False,
+    )
     nll = float(result.optimize_result.list[0]["fval"])
 
     # The vector the recorded nll belongs to, so the reference noise sigmas below are read off the
     # SAME fit (not the multistart best when the published optimum won, or vice versa).
     x_full_used = None
     if seed_at_nominal:
-        x_full = np.array([scale(float(pdf.loc[name, NOMINAL_VALUE]),
-                                 pdf.loc[name, PARAMETER_SCALE]) for name in pp.x_names])
+        x_full = np.array(
+            [
+                scale(float(pdf.loc[name, NOMINAL_VALUE]), pdf.loc[name, PARAMETER_SCALE])
+                for name in pp.x_names
+            ]
+        )
         fval_nom = float(pp.objective(pp.get_reduced_vector(x_full)))
         if np.isfinite(fval_nom) and fval_nom < nll:
             nll = fval_nom
@@ -490,20 +541,29 @@ def write_reference_from_problem(
         # withholds the difference instead of computing one against a number that isn't there.
         try:
             ref["validation"] = _reference_validation(
-                problem, pp, result, x_full_used, held_out,
-                build_dir=build_dir, model_name=model_name)
+                problem,
+                pp,
+                result,
+                x_full_used,
+                held_out,
+                build_dir=build_dir,
+                model_name=model_name,
+            )
         except Exception as exc:  # noqa: BLE001 - advisory extra; the reference bar must be written
             # `runner.scoring._validation_fields` carries this status into result.json as
             # `reference_status`, and `metrics` into the `val_reference_status` column — so the
             # failure is visible per-run, not only to whoever opens reference.json.
-            ref["validation"] = {"status": "error",
-                                 "reason": f"{type(exc).__name__}: {exc}"}
-            print(f"[reference] could not score the held-out validation set "
-                  f"({type(exc).__name__}: {exc}); the nll/k/n bar is still written, but no "
-                  f"held-out bar — re-run --refit once the cause is fixed")
+            ref["validation"] = {"status": "error", "reason": f"{type(exc).__name__}: {exc}"}
+            print(
+                f"[reference] could not score the held-out validation set "
+                f"({type(exc).__name__}: {exc}); the nll/k/n bar is still written, but no "
+                f"held-out bar — re-run --refit once the cause is fixed"
+            )
         else:
-            print(f"[reference] held-out validation: nll={ref['validation'].get('nll')} "
-                  f"n={ref['validation'].get('n')} status={ref['validation'].get('status')}")
+            print(
+                f"[reference] held-out validation: nll={ref['validation'].get('nll')} "
+                f"n={ref['validation'].get('n')} status={ref['validation'].get('status')}"
+            )
     Path(path).write_text(json.dumps(ref, indent=2) + "\n")
     return ref
 
@@ -531,17 +591,22 @@ def _recorded_vector(result, x_full_used, pp):
     """
     import numpy as np
 
-    x = (np.asarray(x_full_used, dtype=float) if x_full_used is not None
-         else np.asarray(result.optimize_result.list[0]["x"], dtype=float))
+    x = (
+        np.asarray(x_full_used, dtype=float)
+        if x_full_used is not None
+        else np.asarray(result.optimize_result.list[0]["x"], dtype=float)
+    )
     if x.shape != (len(pp.x_names),):
         raise ValueError(
             f"the recorded reference vector has shape {x.shape} for {len(pp.x_names)} parameters; "
-            "it must be the FULL vector (fixed parameters included), in pp.x_names order")
+            "it must be the FULL vector (fixed parameters included), in pp.x_names order"
+        )
     return x
 
 
-def _reference_validation(problem, pp, result, x_full_used, held_out, *,
-                          build_dir, model_name) -> dict:
+def _reference_validation(
+    problem, pp, result, x_full_used, held_out, *, build_dir, model_name
+) -> dict:
     """Score the reference fit against HELD-OUT measurements, at the vector its ``nll`` came from.
 
     Which vector that is matters and is easy to get wrong; :func:`_recorded_vector` owns that
@@ -557,9 +622,14 @@ def _reference_validation(problem, pp, result, x_full_used, held_out, *,
 
     x = _recorded_vector(result, x_full_used, pp)
     return validation_data.score_problem(
-        problem, held_out.measurement_df, build_dir=build_dir, model_name=model_name,
-        x_full=[float(v) for v in x], x_names=[str(n) for n in pp.x_names],
-        condition_df=held_out.condition_df)
+        problem,
+        held_out.measurement_df,
+        build_dir=build_dir,
+        model_name=model_name,
+        x_full=[float(v) for v in x],
+        x_names=[str(n) for n in pp.x_names],
+        condition_df=held_out.condition_df,
+    )
 
 
 def _reference_noise_sigmas(problem, pp, result, pdf, x_full_used=None) -> dict:

@@ -70,14 +70,23 @@ class Proposal:
             raise RouteError(f"{self.model_name}: an empty Antimony string is not a proposal")
 
     def as_dict(self) -> dict:
-        return {"antimony": self.antimony, "state_names": list(self.state_names),
-                "model_name": self.model_name, "n_constants": self.n_constants,
-                "record": dict(self.record)}
+        return {
+            "antimony": self.antimony,
+            "state_names": list(self.state_names),
+            "model_name": self.model_name,
+            "n_constants": self.n_constants,
+            "record": dict(self.record),
+        }
 
     @classmethod
     def from_dict(cls, d: dict) -> "Proposal":
-        return cls(d["antimony"], tuple(d["state_names"]), d["model_name"], int(d["n_constants"]),
-                   dict(d.get("record") or {}))
+        return cls(
+            d["antimony"],
+            tuple(d["state_names"]),
+            d["model_name"],
+            int(d["n_constants"]),
+            dict(d.get("record") or {}),
+        )
 
 
 @dataclass(frozen=True)
@@ -98,15 +107,21 @@ class Outcome:
             raise RouteError(f"{self.problem}: an Outcome carries proposals OR a refusal")
 
     def as_dict(self) -> dict:
-        return {"method": METHOD, "problem": self.problem,
-                "proposals": [p.as_dict() for p in self.proposals],
-                "refusal": None if self.refusal is None else {"reason": self.refusal.reason}}
+        return {
+            "method": METHOD,
+            "problem": self.problem,
+            "proposals": [p.as_dict() for p in self.proposals],
+            "refusal": None if self.refusal is None else {"reason": self.refusal.reason},
+        }
 
     @classmethod
     def from_dict(cls, d: dict) -> "Outcome":
         refusal = d.get("refusal")
-        return cls(d["problem"], tuple(Proposal.from_dict(p) for p in d.get("proposals", ())),
-                   None if refusal is None else Refusal(refusal["reason"]))
+        return cls(
+            d["problem"],
+            tuple(Proposal.from_dict(p) for p in d.get("proposals", ())),
+            None if refusal is None else Refusal(refusal["reason"]),
+        )
 
 
 def problem_name(problem_dir: Path | str) -> str:
@@ -136,12 +151,16 @@ def refuse_settled(yaml_path: Path) -> str | None:
     positive = sorted({t for t in times if not math.isinf(t) and t > 0})
     floor = None
     if len(positive) >= 2:
-        ratio, upper = max(((positive[i + 1] / positive[i], positive[i + 1])
-                            for i in range(len(positive) - 1)), key=lambda g: g[0])
+        ratio, upper = max(
+            ((positive[i + 1] / positive[i], positive[i + 1]) for i in range(len(positive) - 1)),
+            key=lambda g: g[0],
+        )
         floor = upper if ratio > SETTLED_GAP_RATIO else None
     if all(math.isinf(t) or (floor is not None and t >= floor) for t in times):
-        return (f"all {len(times)} measurements are at steady state; there is no trajectory for a "
-                "neural vector field to fit")
+        return (
+            f"all {len(times)} measurements are at steady state; there is no trajectory for a "
+            "neural vector field to fit"
+        )
     return None
 
 
@@ -168,56 +187,106 @@ def _distil_reserve(seconds: float | None) -> float:
     value = float(seconds)
     if not math.isfinite(value) or value <= 0.0:
         raise RouteError(f"the clock must be finite and positive, got {seconds}")
-    return min(0.5 * value, max(_DISTIL_RESERVE_MIN, min(_DISTIL_RESERVE_MAX,
-                                                           _DISTIL_RESERVE_FRACTION * value)))
+    return min(
+        0.5 * value,
+        max(_DISTIL_RESERVE_MIN, min(_DISTIL_RESERVE_MAX, _DISTIL_RESERVE_FRACTION * value)),
+    )
 
 
-def _run_in_interpreter(problem_dir: Path, problem: str, config: Config, *, work_dir,
-                        seconds: float | None, local_reason: str) -> Outcome | None:
+def _run_in_interpreter(
+    problem_dir: Path,
+    problem: str,
+    config: Config,
+    *,
+    work_dir,
+    seconds: float | None,
+    local_reason: str,
+) -> Outcome | None:
     """Run the whole route in :attr:`Config.interpreter`; ``None`` when none is named."""
     if not config.interpreter:
         return None
     if not Path(config.interpreter).is_file():
-        return Outcome(problem, refusal=Refusal(
-            f"interpreter {config.interpreter!r} is not a file; not attempted. Locally: {local_reason}"))
+        return Outcome(
+            problem,
+            refusal=Refusal(
+                f"interpreter {config.interpreter!r} is not a file; not attempted. Locally: {local_reason}"
+            ),
+        )
     scratch = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="neural_ode_"))
     scratch.mkdir(parents=True, exist_ok=True)
     payload = scratch / "neural_proposals.json"
     env = dict(os.environ)
     root = str(Path(__file__).resolve().parents[2])
     env["PYTHONPATH"] = root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-    if config.threads and int(config.threads) > 1:   # unset, the inherited one-thread pinning stands
+    if config.threads and int(config.threads) > 1:  # unset, the inherited one-thread pinning stands
         threads = str(int(config.threads))
-        for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
-                     "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+        for name in (
+            "OMP_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "NUMEXPR_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS",
+        ):
             env[name] = threads
-        env["XLA_FLAGS"] = (env.get("XLA_FLAGS", "") + " --xla_cpu_multi_thread_eigen=true"
-                            f" --xla_force_host_platform_device_count={threads}").strip()
-    command = [config.interpreter, "-m", "petab_harness.neural_ode.worker", str(problem_dir),
-               "--out", str(payload), "--config", str(config.dump(scratch / "config.json")),
-               "--work", str(scratch / "work")]
+        env["XLA_FLAGS"] = (
+            env.get("XLA_FLAGS", "") + " --xla_cpu_multi_thread_eigen=true"
+            f" --xla_force_host_platform_device_count={threads}"
+        ).strip()
+    command = [
+        config.interpreter,
+        "-m",
+        "petab_harness.neural_ode.worker",
+        str(problem_dir),
+        "--out",
+        str(payload),
+        "--config",
+        str(config.dump(scratch / "config.json")),
+        "--work",
+        str(scratch / "work"),
+    ]
     if seconds is not None:
         command += ["--seconds", str(_worker_seconds(seconds))]
     try:
-        completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=seconds)
+        completed = subprocess.run(
+            command, env=env, capture_output=True, text=True, timeout=seconds
+        )
     except subprocess.TimeoutExpired:
-        return Outcome(problem, refusal=Refusal(
-            f"the JAX worker was killed after {round(seconds)}s; a partial training is not a proposal"))
+        return Outcome(
+            problem,
+            refusal=Refusal(
+                f"the JAX worker was killed after {round(seconds)}s; a partial training is not a proposal"
+            ),
+        )
     if not payload.is_file():
         tail = " | ".join((completed.stderr or completed.stdout or "").strip().splitlines()[-8:])
-        return Outcome(problem, refusal=Refusal(
-            f"the JAX worker exited {completed.returncode} without a payload. Last output: {tail}"))
+        return Outcome(
+            problem,
+            refusal=Refusal(
+                f"the JAX worker exited {completed.returncode} without a payload. Last output: {tail}"
+            ),
+        )
     document = json.loads(payload.read_text())
     if not document.get("ok"):
-        return Outcome(problem, refusal=Refusal(f"the JAX worker reported: {document.get('reason')}"))
+        return Outcome(
+            problem, refusal=Refusal(f"the JAX worker reported: {document.get('reason')}")
+        )
     outcome = Outcome.from_dict(document["outcome"])
     stamp = {"jax_interpreter": document.get("interpreter"), "ran_out_of_process": True}
-    return replace(outcome, proposals=tuple(replace(p, record={**p.record, **stamp})
-                                            for p in outcome.proposals))
+    return replace(
+        outcome,
+        proposals=tuple(replace(p, record={**p.record, **stamp}) for p in outcome.proposals),
+    )
 
 
-def propose(problem_dir: Path | str, config: Config | None = None, *, work_dir=None,
-            seconds: float | None = None, train_config=None, distil_config=None) -> Outcome:
+def propose(
+    problem_dir: Path | str,
+    config: Config | None = None,
+    *,
+    work_dir=None,
+    seconds: float | None = None,
+    train_config=None,
+    distil_config=None,
+) -> Outcome:
     """Train a neural ODE on a PEtab v1 problem, distil it, return the distilled models.
 
     ``seconds`` overrides :attr:`Config.seconds` as the clock for the whole route. Refuses on
@@ -243,9 +312,17 @@ def propose(problem_dir: Path | str, config: Config | None = None, *, work_dir=N
         P, T, D = _modules()
     except ImportError as exc:
         unavailable = f"the JAX stack is not importable here: {exc}"
-        delegated = _run_in_interpreter(problem_dir, problem, config, work_dir=work_dir,
-                                        seconds=seconds, local_reason=unavailable)
-        return delegated if delegated is not None else Outcome(problem, refusal=Refusal(unavailable))
+        delegated = _run_in_interpreter(
+            problem_dir,
+            problem,
+            config,
+            work_dir=work_dir,
+            seconds=seconds,
+            local_reason=unavailable,
+        )
+        return (
+            delegated if delegated is not None else Outcome(problem, refusal=Refusal(unavailable))
+        )
 
     try:
         node_problem = P.load(yaml_path, name=problem, dosed=tuple(config.dosed))
@@ -255,8 +332,9 @@ def propose(problem_dir: Path | str, config: Config | None = None, *, work_dir=N
     distil_config = config.distil_config(D, distil_config)
     scratch = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="neural_ode_"))
     try:
-        result, distilled, policy = _default_field(T, D, node_problem, train_config, distil_config,
-                                                   scratch)
+        result, distilled, policy = _default_field(
+            T, D, node_problem, train_config, distil_config, scratch
+        )
     except LadderFailure as failure:
         return Outcome(problem, refusal=Refusal(str(failure)))
 
@@ -265,20 +343,38 @@ def propose(problem_dir: Path | str, config: Config | None = None, *, work_dir=N
         return Outcome(problem, refusal=Refusal("distillation produced no Antimony model"))
     common = {
         "method": METHOD,
-        "train_config": result.config.key(), "train_settings": dataclasses.asdict(result.config),
-        "distil_config": distilled.config.key(), "distil_settings": dataclasses.asdict(distilled.config),
-        "tuning": policy, "field_nll": float(result.nll),
+        "train_config": result.config.key(),
+        "train_settings": dataclasses.asdict(result.config),
+        "distil_config": distilled.config.key(),
+        "distil_settings": dataclasses.asdict(distilled.config),
+        "tuning": policy,
+        "field_nll": float(result.nll),
         "n_network_weights": int(result.n_network_weights),
         "n_ode_parameters": int(result.n_ode_parameters),
-        "stage_objectives": list(result.stage_objectives), "training_notes": list(result.notes),
-        "problem_warnings": list(node_problem.warnings), "warnings": list(distilled.warnings),
+        "stage_objectives": list(result.stage_objectives),
+        "training_notes": list(result.notes),
+        "problem_warnings": list(node_problem.warnings),
+        "warnings": list(distilled.warnings),
         "field_r2_is_not_a_likelihood": "agreement with the trained field, not the measurements",
     }
     proposals = tuple(
-        Proposal(antimony, tuple(distilled.state_names), f"{problem}_node_{tag}", int(n_constants),
-                 _json_native({**common, "tag": tag, "complexity_budget": budget,
-                               "field_r2": field_r2, "expressions": [str(e) for e in expressions]}))
-        for tag, budget, antimony, expressions, n_constants, field_r2 in entries)
+        Proposal(
+            antimony,
+            tuple(distilled.state_names),
+            f"{problem}_node_{tag}",
+            int(n_constants),
+            _json_native(
+                {
+                    **common,
+                    "tag": tag,
+                    "complexity_budget": budget,
+                    "field_r2": field_r2,
+                    "expressions": [str(e) for e in expressions],
+                }
+            ),
+        )
+        for tag, budget, antimony, expressions, n_constants, field_r2 in entries
+    )
     return Outcome(problem, proposals=proposals)
 
 
@@ -300,8 +396,10 @@ def _default_field(T, D, node_problem, train_config, distil_config, scratch):
     T.save_bundle(result, Path(scratch) / "field" / train_config.key())
     distilled = D.distil(node_problem, result, distil_config)
     if not distilled.pysr_available:
-        raise LadderFailure(f"PySR is not available; placeholders are not a proposal. Warnings: "
-                            f"{list(distilled.warnings)}")
+        raise LadderFailure(
+            f"PySR is not available; placeholders are not a proposal. Warnings: "
+            f"{list(distilled.warnings)}"
+        )
     return result, distilled, None
 
 
@@ -310,9 +408,27 @@ def _entries(distilled, keep_candidates: bool):
     set first, then every point of the complexity front if kept."""
     entries = []
     if distilled.antimony:
-        entries.append(("selected", None, distilled.antimony, distilled.expressions,
-                        distilled.n_constants, distilled.field_r2))
+        entries.append(
+            (
+                "selected",
+                None,
+                distilled.antimony,
+                distilled.expressions,
+                distilled.n_constants,
+                distilled.field_r2,
+            )
+        )
     if keep_candidates:
-        entries += [(f"c{c.complexity_budget}", c.complexity_budget, c.antimony, c.expressions,
-                     c.n_constants, c.field_r2) for c in distilled.candidates if c.antimony]
+        entries += [
+            (
+                f"c{c.complexity_budget}",
+                c.complexity_budget,
+                c.antimony,
+                c.expressions,
+                c.n_constants,
+                c.field_r2,
+            )
+            for c in distilled.candidates
+            if c.antimony
+        ]
     return entries

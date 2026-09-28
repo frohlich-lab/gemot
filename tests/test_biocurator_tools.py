@@ -46,6 +46,7 @@ async def _discover_tool_names(urls: "list[str]") -> "set[str]":
 
     names: "set[str]" = set()
     for url in urls:
+
         async def _one(u=url):
             async with streamablehttp_client(u) as (read, write, _):
                 async with ClientSession(read, write) as session:

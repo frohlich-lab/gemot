@@ -94,8 +94,7 @@ def broken_model():
     from petab.v1.models.sbml_model import SbmlModel
 
     return SbmlModel.from_antimony(
-        "model conversion_reaction\n species A = 1;\n k1 = 0.5;\n"
-        " r1: A => ; k1 * A;\nend",
+        "model conversion_reaction\n species A = 1;\n k1 = 0.5;\n r1: A => ; k1 * A;\nend",
         model_id="conversion_reaction",
     )
 
@@ -133,6 +132,7 @@ def _private_tempdir_per_worker(tmp_path_factory):
     caller of the default at once rather than one test helper at a time.
     """
     import tempfile
+
     previous = tempfile.tempdir
     tempfile.tempdir = str(tmp_path_factory.mktemp("tmpdir"))
     try:
@@ -193,8 +193,13 @@ def empty_yaml(tmp_path) -> str:
     """A PEtab problem that ships WITHOUT a model (empty SBML, no model.ant)."""
     work = tmp_path / "empty"
     work.mkdir()
-    for name in ("problem.yaml", "conditions.tsv", "measurements.tsv",
-                 "observables.tsv", "parameters.tsv"):
+    for name in (
+        "problem.yaml",
+        "conditions.tsv",
+        "measurements.tsv",
+        "observables.tsv",
+        "parameters.tsv",
+    ):
         shutil.copy(DATA_DIR / name, work / name)
     _write_empty_sbml(work / "conversion_reaction.xml")
     return str(work / "problem.yaml")
@@ -211,5 +216,3 @@ def empty_session(empty_yaml, tmp_path):
         provenance_dir=str(tmp_path / "prov"),
         resolver=StubReferenceResolver(),
     )
-
-

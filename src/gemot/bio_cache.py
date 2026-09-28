@@ -77,6 +77,7 @@ def cache_dir() -> "Path | None":
         # directory that is silently unshared -- which defeats the entire point, since the value
         # here is that task 2 reads what task 1 wrote.
         from .paths import repo_root
+
         base = repo_root() / "slurm" / "bio_cache"
     return base / _CACHE_SCHEMA
 
@@ -135,13 +136,18 @@ class BioCache:
         path = self._path(key)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"result": result, "url": self.url, "tool": name,
-                       "arguments": arguments, "stored_at": time.time()}
+            payload = {
+                "result": result,
+                "url": self.url,
+                "tool": name,
+                "arguments": arguments,
+                "stored_at": time.time(),
+            }
             # Temp file in the SAME directory so `os.replace` is a rename within one filesystem,
             # which is the part that makes it atomic against the other array tasks.
             fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
             try:
-                with os.fdopen(fd, "wb") as fh:      # closes fd on success AND on error
+                with os.fdopen(fd, "wb") as fh:  # closes fd on success AND on error
                     pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
                 os.replace(tmp, path)
             except BaseException:
@@ -155,14 +161,25 @@ class BioCache:
 
     def stats(self) -> dict[str, Any]:
         total = self.hits + self.misses
-        return {"url": self.url, "enabled": self.enabled, "hits": self.hits,
-                "misses": self.misses, "writes": self.writes, "errors": self.errors,
-                "bypasses": self.bypasses,
-                "hit_rate": round(self.hits / total, 3) if total else None}
+        return {
+            "url": self.url,
+            "enabled": self.enabled,
+            "hits": self.hits,
+            "misses": self.misses,
+            "writes": self.writes,
+            "errors": self.errors,
+            "bypasses": self.bypasses,
+            "hit_rate": round(self.hits / total, 3) if total else None,
+        }
 
 
-def wrap_session(session: Any, url: str, *, directory: "Path | None" = ...,
-                 log: Callable[[str], Any] | None = None) -> BioCache:
+def wrap_session(
+    session: Any,
+    url: str,
+    *,
+    directory: "Path | None" = ...,
+    log: Callable[[str], Any] | None = None,
+) -> BioCache:
     """Shadow ``session.call_tool`` with a read-through cache. Returns the cache for its stats.
 
     Shadowing the method rather than wrapping the object keeps every existing consumer working

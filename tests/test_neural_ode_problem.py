@@ -54,23 +54,40 @@ problems:
   measurement_files: [measurements.tsv]
   observable_files: [observables.tsv]
 """
-_EMPTY_SBML = ('<?xml version="1.0" encoding="UTF-8"?>\n<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" '
-               'level="3" version="2"><model id="empty"/></sbml>\n')
+_EMPTY_SBML = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" '
+    'level="3" version="2"><model id="empty"/></sbml>\n'
+)
 
 
-def write_problem(directory: Path, *, preequilibration: bool = False, protocol: bool = False,
-                  partial_preequilibration: bool = False, version: int = 1, log10: bool = False,
-                  estimate_sigma: bool = False) -> Path:
+def write_problem(
+    directory: Path,
+    *,
+    preequilibration: bool = False,
+    protocol: bool = False,
+    partial_preequilibration: bool = False,
+    version: int = 1,
+    log10: bool = False,
+    estimate_sigma: bool = False,
+) -> Path:
     """A zero-shot v1 problem: two observed states (one behind a scale factor), a dosed substrate
     ``S`` the convention cannot see, a dosed ``init_E``, a clamped ``drug`` and an empty model."""
     directory.mkdir(parents=True, exist_ok=True)
     preeq = preequilibration or partial_preequilibration
-    (directory / "measurements.tsv").write_text(_MEASUREMENTS.format(
-        preeq="\tpreequilibrationConditionId" if preeq else "",
-        preeq_lo="\tc_basal" if preeq else "", preeq_hi="\t" if partial_preequilibration else ("\tc_basal" if preeq else ""),
-        sigma_q="sigma_Q" if estimate_sigma else "0.2"))
-    (directory / "observables.tsv").write_text(_OBSERVABLES.format(transformation="log10" if log10 else "lin"))
-    (directory / "conditions.tsv").write_text(_CONDITIONS.format(extra="c_basal\t0.0\t1.0\t0.0\n" if preeq else ""))
+    (directory / "measurements.tsv").write_text(
+        _MEASUREMENTS.format(
+            preeq="\tpreequilibrationConditionId" if preeq else "",
+            preeq_lo="\tc_basal" if preeq else "",
+            preeq_hi="\t" if partial_preequilibration else ("\tc_basal" if preeq else ""),
+            sigma_q="sigma_Q" if estimate_sigma else "0.2",
+        )
+    )
+    (directory / "observables.tsv").write_text(
+        _OBSERVABLES.format(transformation="log10" if log10 else "lin")
+    )
+    (directory / "conditions.tsv").write_text(
+        _CONDITIONS.format(extra="c_basal\t0.0\t1.0\t0.0\n" if preeq else "")
+    )
     (directory / "parameters.tsv").write_text(_ESTIMATED_SIGMAS if estimate_sigma else _PARAMETERS)
     (directory / "model.xml").write_text(_EMPTY_SBML)
     if protocol:
@@ -165,10 +182,12 @@ def test_a_function_in_a_noise_formula_is_not_a_noise_parameter(tmp_path):
     yaml_path = write_problem(tmp_path / "toy")
     observables = (yaml_path.parent / "observables.tsv").read_text()
     (yaml_path.parent / "observables.tsv").write_text(
-        observables.replace("obs_P\tP\tsigma_P", "obs_P\tP\tsigma_P * exp(-decay_P * time)"))
+        observables.replace("obs_P\tP\tsigma_P", "obs_P\tP\tsigma_P * exp(-decay_P * time)")
+    )
     parameters = (yaml_path.parent / "parameters.tsv").read_text()
     (yaml_path.parent / "parameters.tsv").write_text(
-        parameters + "decay_P\tlin\t0.0\t10.0\t0.1\t1\n")
+        parameters + "decay_P\tlin\t0.0\t10.0\t0.1\t1\n"
+    )
 
     problem = P.load(yaml_path, dosed=("S",))
     assert "exp" not in problem.noise_parameters, problem.noise_parameters

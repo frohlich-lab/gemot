@@ -12,6 +12,8 @@ from __future__ import annotations
 # unreachable server is skipped, and a transport failure at ANY point (connect OR live session)
 # degrades the biocurator to "dumb" instead of aborting the run (issue #86). See the biocurator
 # design in agent.py and the isolation rationale in bio_sessions.py.
-_BIOCONTEXT_MCP_URL = "https://biocontext-kb.fastmcp.app/mcp"    # BioContextAI Knowledgebase (hosted; fair-use)
-_OMNIPATH_MCP_URL = "https://explore.omnipathdb.org/api/mcp"     # OmniPath MCP (saezlab/omnipath-next)
+_BIOCONTEXT_MCP_URL = (
+    "https://biocontext-kb.fastmcp.app/mcp"  # BioContextAI Knowledgebase (hosted; fair-use)
+)
+_OMNIPATH_MCP_URL = "https://explore.omnipathdb.org/api/mcp"  # OmniPath MCP (saezlab/omnipath-next)
 BIO_MCP_URLS = (_BIOCONTEXT_MCP_URL, _OMNIPATH_MCP_URL)

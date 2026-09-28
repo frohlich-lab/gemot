@@ -63,8 +63,8 @@ class JudgeContext:
     structure: dict[str, Any]
     new_species: list[str]
     delta: float
-    n: int            # number of data points
-    k: int            # number of estimated (fitted) parameters
+    n: int  # number of data points
+    k: int  # number of estimated (fitted) parameters
     chi2: float | None
 
 
@@ -126,8 +126,14 @@ async def build_true_model(
     if changes and change_justification.strip():
         justification = f"{justification} Bounds: {change_justification}"
 
-    res = await call("make_changes", antimony=antimony, justification=justification,
-                     references=references, parameters=changes or None, n_starts=n_starts)
+    res = await call(
+        "make_changes",
+        antimony=antimony,
+        justification=justification,
+        references=references,
+        parameters=changes or None,
+        n_starts=n_starts,
+    )
     if not isinstance(res, dict):
         print(f"[scripted] make_changes returned: {res}")
     elif not res.get("applied"):
@@ -137,8 +143,10 @@ async def build_true_model(
     elif not res.get("committed"):
         print(f"[scripted] no version created: {res.get('message')}")
     else:
-        print(f"[scripted] built model v{res.get('version')}; "
-              f"nll={res.get('neg_log_likelihood')} fitted={res.get('fitted_parameters')}")
+        print(
+            f"[scripted] built model v{res.get('version')}; "
+            f"nll={res.get('neg_log_likelihood')} fitted={res.get('fitted_parameters')}"
+        )
 
 
 async def topology_diagnostics(ctx: "JudgeContext") -> tuple[list[str], dict]:
@@ -298,7 +306,7 @@ def _parse(rate_law: str | None):
         name = m.group(0)
         # Leave function calls (name immediately followed by '(') to sympy, so pow(...),
         # exp(...) etc. keep their meaning; bind everything else as a bare Symbol.
-        if text[m.end():].lstrip().startswith("("):
+        if text[m.end() :].lstrip().startswith("("):
             continue
         locals_[name] = sympy.Symbol(name)
     try:
@@ -307,8 +315,7 @@ def _parse(rate_law: str | None):
         return None
     # Rewrite any pow(a, b) function calls (some libsbml versions emit these) to a**b.
     pow_fn = sympy.Function("pow")
-    expr = expr.replace(lambda n: getattr(n, "func", None) == pow_fn,
-                        lambda n: sympy.Pow(*n.args))
+    expr = expr.replace(lambda n: getattr(n, "func", None) == pow_fn, lambda n: sympy.Pow(*n.args))
     return expr
 
 

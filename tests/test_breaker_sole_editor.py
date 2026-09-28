@@ -8,6 +8,7 @@ Both were silent: the runs "completed" and simply scored nothing.
    fails validation on the CLIENT (the pydantic error is titled `call[make_changes]`, raised
    against the published tool schema), so the request never reached the server.
 """
+
 import asyncio
 
 import pytest
@@ -47,6 +48,7 @@ class _FakeTool:
 
 # ------------------------------------------------------- the sole editor is never disabled
 
+
 def test_make_changes_is_never_disabled_however_often_it_fails():
     state = _new_breaker_state()
     for _ in range(_TOOL_ERROR_DISABLE_THRESHOLD + 5):
@@ -60,8 +62,10 @@ def test_make_changes_is_never_disabled_however_often_it_fails():
 def test_an_ordinary_tool_is_still_disabled():
     """The guard is scoped — the breaker must keep working for everything else."""
     state = _new_breaker_state()
-    tripped = [_record_error(state, "get_uniprot_protein_info", "same error")
-               for _ in range(_TOOL_ERROR_DISABLE_THRESHOLD)]
+    tripped = [
+        _record_error(state, "get_uniprot_protein_info", "same error")
+        for _ in range(_TOOL_ERROR_DISABLE_THRESHOLD)
+    ]
     assert tripped[-1] is True
     assert "get_uniprot_protein_info" in state["disabled"]
 
@@ -78,7 +82,7 @@ def test_a_repeated_sole_editor_failure_escalates_the_message():
     for i in range(_TOOL_ERROR_DISABLE_THRESHOLD - 1):
         content, _ = asyncio.run(_call())
         assert "bad shape" in content, "the original error must still reach the model"
-        assert "identical failure" not in content, f"escalated too early, on call {i+1}"
+        assert "identical failure" not in content, f"escalated too early, on call {i + 1}"
 
     content, _ = asyncio.run(_call())
     assert "identical failure" in content and "SHAPE" in content
@@ -95,6 +99,7 @@ def test_a_sole_editor_failure_is_returned_to_the_model_never_raised():
     -side pydantic validation errors are worse still: not ToolException subclasses at all, so they
     never reach that callback. `make_changes` is the sole editor; losing the run loses everything.
     """
+
     class _NotAToolException(Exception):
         pass
 
@@ -132,6 +137,7 @@ def test_a_schema_without_properties_does_not_abort_run_setup():
     tool published as `{"type": "object"}` — and getattr's default only swallows AttributeError.
     This runs for EVERY tool at wrap time, including hosted bio tools whose schemas are not ours,
     so an unguarded read would kill the run before the agent starts."""
+
     class _Exploding:
         name = "zeroarg"
 
@@ -145,13 +151,13 @@ def test_a_schema_without_properties_does_not_abort_run_setup():
 def test_a_json_string_where_an_array_is_required_is_parsed():
     """Verbatim shape from xiaomi/mimo-v2.5 in the sweep."""
     out = _coerce_json_string_args(
-        {"justification": "j",
-         "parameters": '[{"parameter_id": "V_init", "lower_bound": 1, "scale": "log10"}]'},
+        {
+            "justification": "j",
+            "parameters": '[{"parameter_id": "V_init", "lower_bound": 1, "scale": "log10"}]',
+        },
         {"parameters": "array"},
     )
-    assert out["parameters"] == [
-        {"parameter_id": "V_init", "lower_bound": 1, "scale": "log10"}
-    ]
+    assert out["parameters"] == [{"parameter_id": "V_init", "lower_bound": 1, "scale": "log10"}]
 
 
 def test_string_arguments_are_never_touched():
@@ -169,8 +175,7 @@ def test_unparseable_or_wrongly_shaped_strings_pass_through_untouched():
     it would only trade a client-side failure for a server round trip that fails anyway, and add
     a streak increment on the tool that is never allowed to be disabled.
     """
-    for value in ("[not valid json", '"just a string"', "[1, 2", "42",
-                  '{"parameter_id": "k1"}'):
+    for value in ("[not valid json", '"just a string"', "[1, 2", "42", '{"parameter_id": "k1"}'):
         args = {"parameters": value}
         assert _coerce_json_string_args(args, {"parameters": "array"}) == args
 
@@ -179,8 +184,9 @@ def test_the_wrapper_hands_the_coerced_value_to_the_tool():
     state = _new_breaker_state()
     tool = _FakeTool("make_changes", args=_ARGS_SCHEMA)
     _wrap_tools_with_circuit_breaker([tool], state)
-    asyncio.run(tool.coroutine(runtime=None, justification="j",
-                               parameters='[{"parameter_id": "k1"}]'))
+    asyncio.run(
+        tool.coroutine(runtime=None, justification="j", parameters='[{"parameter_id": "k1"}]')
+    )
     assert tool.calls[-1]["parameters"] == [{"parameter_id": "k1"}]
 
 
@@ -188,14 +194,16 @@ def test_escalation_survives_an_exception_that_is_not_string_constructible():
     """The real exception here is langchain-mcp-adapters' `_MCPToolExecutionError`, whose
     __init__ takes a list of content blocks. Rebuilding `type(exc)(str)` yielded an object whose
     message was "string indices must be integers" — losing the escalation AND the original."""
+
     class _BlockCarrying(Exception):
         def __init__(self, blocks):
             self.blocks = blocks
             super().__init__("".join(b["text"] for b in blocks))  # explodes on a str
 
     state = _new_breaker_state()
-    tool = _FakeTool("make_changes",
-                     fail_with=_BlockCarrying([{"type": "text", "text": "server said no"}]))
+    tool = _FakeTool(
+        "make_changes", fail_with=_BlockCarrying([{"type": "text", "text": "server said no"}])
+    )
     _wrap_tools_with_circuit_breaker([tool], state)
 
     async def _call():
@@ -221,8 +229,10 @@ def test_a_never_disabled_tool_still_records_the_streak_for_triage():
 
 # ------------------------------------------- repeated operation rejections (applied: false)
 
+
 def _rejection(msg="make_changes: entry 0 is missing a string 'parameter_id'."):
     import json as _json
+
     return ([{"type": "text", "text": _json.dumps({"applied": False, "error": msg})}], None)
 
 
@@ -234,7 +244,7 @@ def test_a_repeated_identical_rejection_eventually_escalates():
 
     state = _new_breaker_state()
     tool = _FakeTool("make_changes")
-    tool.coroutine = (lambda *_a, **_k: None)  # replaced below
+    tool.coroutine = lambda *_a, **_k: None  # replaced below
 
     async def _run(runtime=None, **arguments):
         return _rejection()
@@ -277,6 +287,7 @@ def test_a_success_clears_the_rejection_streak():
 
 # ------------------------------------------- call-level outcomes for result.json
 
+
 def test_call_outcomes_counts_what_edit_rejects_cannot_see():
     """`edit_rejects` (runner/clock.py) tallies only calls that REACH `session.call_tool` and
     return a parseable payload. A mimo-v2.5 run that made 134 failing make_changes calls therefore
@@ -285,19 +296,29 @@ def test_call_outcomes_counts_what_edit_rejects_cannot_see():
     so the three server-less failure modes are visible.
     """
     from petab_harness.agent.circuit_breaker import (
-        _CALL_CLIENT_INVALID, _CALL_DISABLED, _CALL_OK, _CALL_SERVER_REJECTED, _CALL_TOOL_ERROR,
-        _note_call, call_outcomes,
+        _CALL_CLIENT_INVALID,
+        _CALL_DISABLED,
+        _CALL_OK,
+        _CALL_SERVER_REJECTED,
+        _CALL_TOOL_ERROR,
+        _note_call,
+        call_outcomes,
     )
 
     state = _new_breaker_state()
-    for outcome, n in ((_CALL_OK, 2), (_CALL_CLIENT_INVALID, 5),
-                       (_CALL_SERVER_REJECTED, 2), (_CALL_TOOL_ERROR, 1), (_CALL_DISABLED, 10)):
+    for outcome, n in (
+        (_CALL_OK, 2),
+        (_CALL_CLIENT_INVALID, 5),
+        (_CALL_SERVER_REJECTED, 2),
+        (_CALL_TOOL_ERROR, 1),
+        (_CALL_DISABLED, 10),
+    ):
         for _ in range(n):
             _note_call(state, "make_changes", outcome)
 
     out = call_outcomes(state, "make_changes")
     assert out["attempted"] == 20
-    assert out["failed"] == 18                      # everything that is not `ok`
+    assert out["failed"] == 18  # everything that is not `ok`
     assert out["fail_rate"] == 0.9
     assert out["by_outcome"][_CALL_CLIENT_INVALID] == 5, (
         "argument-shape failures never reach the server and must still be counted"
@@ -381,6 +402,7 @@ def test_a_verdict_payload_is_not_a_breaker_error():
     assert _result_error(None, {"structured_content": failure}) == "server exploded"
     # The text-content fallback path applies the same rule.
     import json as _j
+
     assert _result_error([{"type": "text", "text": _j.dumps(verdict)}], None) is None
     assert _result_error([{"type": "text", "text": _j.dumps(failure)}], None) == "server exploded"
 
@@ -405,8 +427,7 @@ def test_a_never_disabled_tool_still_escalates_on_the_RESULT_path():
     import json as _j
 
     payload = _j.dumps({"ok": False, "error": "make_changes: `old_string` not found"})
-    tool = _FakeTool("make_changes", args=_ARGS_SCHEMA,
-                     record=None, fail_with=None)
+    tool = _FakeTool("make_changes", args=_ARGS_SCHEMA, record=None, fail_with=None)
 
     async def _always_error(runtime=None, **kw):
         return ([{"type": "text", "text": payload}], {"structured_content": _j.loads(payload)})
@@ -414,9 +435,11 @@ def test_a_never_disabled_tool_still_escalates_on_the_RESULT_path():
     tool.coroutine = _always_error
     state = _new_breaker_state()
     _wrap_tools_with_circuit_breaker([tool], state)
-    outs = [asyncio.run(tool.coroutine(runtime=None, justification="j"))
-            for _ in range(_TOOL_ERROR_DISABLE_THRESHOLD)]
-    assert "make_changes" not in state["disabled"]         # never cut...
+    outs = [
+        asyncio.run(tool.coroutine(runtime=None, justification="j"))
+        for _ in range(_TOOL_ERROR_DISABLE_THRESHOLD)
+    ]
+    assert "make_changes" not in state["disabled"]  # never cut...
     text = "".join(b["text"] for b in outs[-1][0] if isinstance(b, dict))
-    assert "REPEATING THIS CALL WILL FAIL AGAIN" in text   # ...but the wording escalates
-    assert "old_string` not found" in text                 # original error still reaches it
+    assert "REPEATING THIS CALL WILL FAIL AGAIN" in text  # ...but the wording escalates
+    assert "old_string` not found" in text  # original error still reaches it

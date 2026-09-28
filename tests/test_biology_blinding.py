@@ -1,4 +1,5 @@
 """The anonymous arm must hide supplied identities without changing the numerical objective."""
+
 from __future__ import annotations
 
 import asyncio
@@ -12,7 +13,13 @@ import pandas as pd
 import petab.v1 as petab
 import pytest
 
-from petab_harness.biology_blinding import AnonymousSession, BlindNames, prepare, private_dir, read_names
+from petab_harness.biology_blinding import (
+    AnonymousSession,
+    BlindNames,
+    prepare,
+    private_dir,
+    read_names,
+)
 
 TOY = Path(__file__).parent / "data/toy_v1"
 
@@ -48,14 +55,20 @@ def test_metadata_formulas_overrides_and_source_are_blinded(tmp_path):
     anonymous = petab.Problem.from_yaml(str(work / "problem.yaml"))
     alias = names.forward["obs_B"]
     assert anonymous.observable_df.loc[alias, "observableFormula"] == (
-        f"observableParameter1_{alias} * {names.forward['B']}")
+        f"observableParameter1_{alias} * {names.forward['B']}"
+    )
     assert anonymous.observable_df.loc[alias, "noiseFormula"] == f"noiseParameter1_{alias}"
-    assert anonymous.measurement_df["noiseParameters"].unique().tolist() == [names.forward["sigma_B"]]
+    assert anonymous.measurement_df["noiseParameters"].unique().tolist() == [
+        names.forward["sigma_B"]
+    ]
     assert anonymous.measurement_df["measurement"].tolist() == measurements["measurement"].tolist()
     assert anonymous.measurement_df["time"].tolist() == measurements["time"].tolist()
     for p in work.iterdir():
         content = p.read_text()
-        assert not any(s in content for s in ("EGFR", "U2OS", "PMID", "sigma_B", "obs_B", "conversion_reaction"))
+        assert not any(
+            s in content
+            for s in ("EGFR", "U2OS", "PMID", "sigma_B", "obs_B", "conversion_reaction")
+        )
     assert not (work / "model.ant").exists()
     assert not (work / "reference.json").exists()
     assert "sboTerm" not in (work / "model.xml").read_text()
@@ -65,8 +78,14 @@ def test_metadata_formulas_overrides_and_source_are_blinded(tmp_path):
 
 def test_aliases_do_not_capture_existing_identifiers_or_change_numeric_enums():
     names = BlindNames(reserved={"parameter_001", "input_001"})
-    table = pd.DataFrame({"parameterId": ["normal", "log10"], "parameterScale": ["log10", "lin"],
-                          "objectivePriorType": ["normal", "normal"], "nominalValue": [1.0, 2.0]})
+    table = pd.DataFrame(
+        {
+            "parameterId": ["normal", "log10"],
+            "parameterScale": ["log10", "lin"],
+            "objectivePriorType": ["normal", "normal"],
+            "nominalValue": [1.0, 2.0],
+        }
+    )
     result = names.table("parameters", table)
     assert result.parameterId.tolist() == ["parameter_002", "parameter_003"]
     assert result.parameterScale.tolist() == table.parameterScale.tolist()
@@ -83,12 +102,20 @@ def test_held_out_data_stays_private_and_uses_training_aliases(tmp_path):
     conditions = pd.DataFrame({"conditionId": ["unseen_EGFR_treatment"], "k1": [0.2]})
     conditions.to_csv(validation / "conditions.tsv", sep="\t", index=False)
     pd.DataFrame({"conditionId": ["unseen_EGFR_treatment"], "unitId": ["patient_EGFR"]}).to_csv(
-        validation / "units.tsv", sep="\t", index=False)
+        validation / "units.tsv", sep="\t", index=False
+    )
     baseline = tmp_path / "baseline"
     work = tmp_path / "anonymous"
     training_names = prepare(TOY / "problem.yaml", baseline)
     names = prepare(TOY / "problem.yaml", work, validation)
-    for name in ("problem.yaml", "measurements.tsv", "observables.tsv", "parameters.tsv", "conditions.tsv", "model.xml"):
+    for name in (
+        "problem.yaml",
+        "measurements.tsv",
+        "observables.tsv",
+        "parameters.tsv",
+        "conditions.tsv",
+        "model.xml",
+    ):
         assert (baseline / name).read_bytes() == (work / name).read_bytes()
     assert all(names.forward[k] == v for k, v in training_names.forward.items())
     assert not private_dir(work).is_relative_to(work)
@@ -110,12 +137,21 @@ def test_judge_translates_model_arguments_and_noise_keys():
 
     async def call(name, **kwargs):
         received.append((name, kwargs))
-        return {"noise_sigma_report": {"parameter_001": {"fitted": 0.1}},
-                "antimony": "r: entity_001 => ; parameter_002 * entity_001;", "n": 6}
+        return {
+            "noise_sigma_report": {"parameter_001": {"fitted": 0.1}},
+            "antimony": "r: entity_001 => ; parameter_002 * entity_001;",
+            "n": 6,
+        }
 
-    result = asyncio.run(names.judge_call(call)(
-        "make_changes", antimony="r: B => ; k1 * B;", n_starts=1))
-    assert received == [("make_changes", {"antimony": "r: entity_001 => ; parameter_002 * entity_001;", "n_starts": 1})]
+    result = asyncio.run(
+        names.judge_call(call)("make_changes", antimony="r: B => ; k1 * B;", n_starts=1)
+    )
+    assert received == [
+        (
+            "make_changes",
+            {"antimony": "r: entity_001 => ; parameter_002 * entity_001;", "n_starts": 1},
+        )
+    ]
     assert result["noise_sigma_report"] == {"sigma_B": {"fitted": 0.1}}
     assert result["antimony"] == "r: B => ; k1 * B;"
     assert result["n"] == 6
@@ -129,8 +165,10 @@ def test_agent_payloads_hide_example_paths_and_keep_transport_error_codes():
         async def call_tool(self, name, *args, **kwargs):
             if name == "error":
                 raise McpError(ErrorData(code=408, message="Timeout at /runs/Alkan/work"))
-            return CallToolResult(content=[TextContent(type="text", text="/runs/Alkan/work/model.xml")],
-                                  structuredContent={"path": "examples/Alkan/work", "nll": 12.5})
+            return CallToolResult(
+                content=[TextContent(type="text", text="/runs/Alkan/work/model.xml")],
+                structuredContent={"path": "examples/Alkan/work", "nll": 12.5},
+            )
 
     async def check():
         session = AnonymousSession(Session(), Path("/runs/Alkan"))
@@ -164,15 +202,23 @@ def test_anonymous_sbml_preserves_training_and_held_out_likelihood(tmp_path, ami
     shutil.copytree(TOY, original)
     values = []
     heldout_values = []
-    for label, yaml in (("original", original / "problem.yaml"), ("anonymous", work / "problem.yaml")):
-        session = PetabSession(yaml, provenance_dir=tmp_path / label / "provenance",
-                               resolver=StubReferenceResolver())
+    for label, yaml in (
+        ("original", original / "problem.yaml"),
+        ("anonymous", work / "problem.yaml"),
+    ):
+        session = PetabSession(
+            yaml, provenance_dir=tmp_path / label / "provenance", resolver=StubReferenceResolver()
+        )
         engine = AmiciEngine(session, build_root=str(amici_build_root))
         score_at_nominal(session, engine)
         values.append(fit_summary(session, engine))
         heldout = validation if label == "original" else private_dir(work) / "validation"
-        heldout_values.append(score_session(session, engine, read_held_out(heldout / "measurements.tsv")))
-    assert values[0]["neg_log_likelihood"] == pytest.approx(values[1]["neg_log_likelihood"], abs=1e-9)
+        heldout_values.append(
+            score_session(session, engine, read_held_out(heldout / "measurements.tsv"))
+        )
+    assert values[0]["neg_log_likelihood"] == pytest.approx(
+        values[1]["neg_log_likelihood"], abs=1e-9
+    )
     assert values[0]["bic"] == pytest.approx(values[1]["bic"], abs=1e-9)
     assert heldout_values[0]["status"] == heldout_values[1]["status"] == "ok"
     assert heldout_values[0]["nll"] == pytest.approx(heldout_values[1]["nll"], abs=1e-9)
@@ -180,7 +226,7 @@ def test_anonymous_sbml_preserves_training_and_held_out_likelihood(tmp_path, ami
 
 def test_blind_arm_replaces_scenario_context_and_closes_knowledge_tools():
     # The roster, tool curation and prompts are resolved at import, as for other arms.
-    script = r'''
+    script = r"""
 import asyncio
 from pathlib import Path
 import sys
@@ -236,9 +282,13 @@ with pytest.MonkeyPatch.context() as patch:
                                          "task": composed + " EGFR in U2OS cells"})
 assert graph.inputs[0]["messages"][0]["content"] == composed
 assert "biolog" not in prompts.FINISH_DESCRIPTION
-'''
-    result = subprocess.run([sys.executable, "-c", script], text=True, capture_output=True,
-                            env={**os.environ, "PETAB_BIOLOGY_BLIND": "1", "PETAB_BIO_LITERATURE": "1"})
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        text=True,
+        capture_output=True,
+        env={**os.environ, "PETAB_BIOLOGY_BLIND": "1", "PETAB_BIO_LITERATURE": "1"},
+    )
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -255,6 +305,7 @@ def test_cleanup_and_run_provenance_use_the_anonymous_view(tmp_path, monkeypatch
     assert "conversion_reaction" not in (work / "model.xml").read_text()
     from petab_harness.runner.cli import build_parser
     from petab_harness.runner.provenance import _base_meta
+
     meta = _base_meta(scenario, build_parser(scenario).parse_args(["--driver", "scripted"]))
     assert meta["ablations"]["biology_blind"] is True
     assert meta["biology_blinding"]["identifiers"] == read_names(work).forward
@@ -273,7 +324,8 @@ def _with_protocol(tmp_path, formula):
     conditions["dose_rate"] = 0.0
     conditions.to_csv(source / "conditions.tsv", sep="\t", index=False)
     (source / "inputs.tsv").write_text(
-        f"inputId\tformula\tconditionInputs\nStimulus_EGF\t{formula}\tdose_rate\n")
+        f"inputId\tformula\tconditionInputs\nStimulus_EGF\t{formula}\tdose_rate\n"
+    )
     return source
 
 
@@ -311,8 +363,14 @@ def test_a_protocol_may_not_read_a_model_parameter_through_its_alias(tmp_path):
         prepare(source / "problem.yaml", tmp_path / "anonymous")
 
 
-@pytest.mark.parametrize("protocol", [("stimulus_001", "k1*time"), ("EGF", "input_001*time"),
-                                      ("stimulus_001", "parameter_004 + input_001")])
+@pytest.mark.parametrize(
+    "protocol",
+    [
+        ("stimulus_001", "k1*time"),
+        ("EGF", "input_001*time"),
+        ("stimulus_001", "parameter_004 + input_001"),
+    ],
+)
 def test_the_blind_task_refuses_a_rule_that_is_not_anonymous(protocol):
     from petab_harness import prompts
 

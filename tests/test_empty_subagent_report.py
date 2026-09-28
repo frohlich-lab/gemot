@@ -113,13 +113,18 @@ def test_empty_report_is_re_dispatched_and_recovers():
     stats = _fresh_stats()
     mw = agent._empty_report_guard(stats)
     handler = _ScriptedHandler(_cmd(""), _cmd("Residuals structured at late times."))
-    req = _FakeRequest("task", {"description": "analyse residuals", "subagent_type": "signal_engineer"})
+    req = _FakeRequest(
+        "task", {"description": "analyse residuals", "subagent_type": "signal_engineer"}
+    )
 
     out = mw.wrap_tool_call(req, handler)
 
-    assert _content_of(out) == "Residuals structured at late times."   # the recovered report
-    assert stats == {"empty_subagent_reports": 1, "empty_subagent_retries": 1,
-                     "empty_subagent_markers": 0}
+    assert _content_of(out) == "Residuals structured at late times."  # the recovered report
+    assert stats == {
+        "empty_subagent_reports": 1,
+        "empty_subagent_retries": 1,
+        "empty_subagent_markers": 0,
+    }
     # the re-dispatch carried the corrective nudge appended to the original description
     assert len(handler.descriptions) == 2
     assert handler.descriptions[0] == "analyse residuals"
@@ -131,14 +136,17 @@ def test_empty_report_is_re_dispatched_and_recovers():
 def test_retry_also_blank_gets_the_visible_marker():
     stats = _fresh_stats()
     mw = agent._empty_report_guard(stats)
-    handler = _ScriptedHandler(_cmd("   "), _cmd("\n\n"))   # blank both times
+    handler = _ScriptedHandler(_cmd("   "), _cmd("\n\n"))  # blank both times
     req = _FakeRequest("task", {"description": "d", "subagent_type": "mathematician"})
 
     out = mw.wrap_tool_call(req, handler)
 
     assert _content_of(out) == _MARKER
-    assert stats == {"empty_subagent_reports": 1, "empty_subagent_retries": 1,
-                     "empty_subagent_markers": 1}
+    assert stats == {
+        "empty_subagent_reports": 1,
+        "empty_subagent_retries": 1,
+        "empty_subagent_markers": 1,
+    }
 
 
 @requires_langchain
@@ -151,9 +159,12 @@ def test_no_retry_budget_substitutes_the_marker_immediately():
     out = mw.wrap_tool_call(req, handler)
 
     assert _content_of(out) == _MARKER
-    assert len(handler.descriptions) == 1                     # never re-dispatched
-    assert stats == {"empty_subagent_reports": 1, "empty_subagent_retries": 0,
-                     "empty_subagent_markers": 1}
+    assert len(handler.descriptions) == 1  # never re-dispatched
+    assert stats == {
+        "empty_subagent_reports": 1,
+        "empty_subagent_retries": 0,
+        "empty_subagent_markers": 1,
+    }
 
 
 @requires_langchain
@@ -166,8 +177,8 @@ def test_a_real_report_passes_through_untouched():
 
     out = mw.wrap_tool_call(req, handler)
 
-    assert out is result                                       # identical object, no rewrap
-    assert len(handler.descriptions) == 1                      # never re-dispatched
+    assert out is result  # identical object, no rewrap
+    assert len(handler.descriptions) == 1  # never re-dispatched
     assert stats == _fresh_stats()
 
 
@@ -225,7 +236,9 @@ def test_marker_substitution_preserves_the_rest_of_the_command_state():
     stats = _fresh_stats()
     mw = agent._empty_report_guard(stats, retries=0)
     handler = _ScriptedHandler(_cmd("", tool_call_id="call_42", files={"a.py": "x"}))
-    req = _FakeRequest("task", {"description": "d", "subagent_type": "signal_engineer"}, id_="call_42")
+    req = _FakeRequest(
+        "task", {"description": "d", "subagent_type": "signal_engineer"}, id_="call_42"
+    )
 
     out = mw.wrap_tool_call(req, handler)
 
@@ -233,10 +246,10 @@ def test_marker_substitution_preserves_the_rest_of_the_command_state():
     from langgraph.types import Command
 
     assert isinstance(out, Command)
-    assert out.update["files"] == {"a.py": "x"}                # unrelated state preserved
+    assert out.update["files"] == {"a.py": "x"}  # unrelated state preserved
     tm = next(m for m in out.update["messages"] if isinstance(m, ToolMessage))
     assert tm.content == _MARKER
-    assert tm.tool_call_id == "call_42"                        # id preserved for pairing
+    assert tm.tool_call_id == "call_42"  # id preserved for pairing
 
 
 @requires_langchain
@@ -254,8 +267,11 @@ def test_async_paths_recover_then_marker():
     out = asyncio.run(mw.awrap_tool_call(req, ahandler))
     assert _content_of(out) == "recovered async report"
     assert _NUDGE in sync.descriptions[1]
-    assert stats == {"empty_subagent_reports": 1, "empty_subagent_retries": 1,
-                     "empty_subagent_markers": 0}
+    assert stats == {
+        "empty_subagent_reports": 1,
+        "empty_subagent_retries": 1,
+        "empty_subagent_markers": 0,
+    }
 
     # and the async retry that stays blank falls back to the marker
     stats2 = _fresh_stats()
@@ -267,8 +283,11 @@ def test_async_paths_recover_then_marker():
 
     out2 = asyncio.run(mw2.awrap_tool_call(req, ahandler2))
     assert _content_of(out2) == _MARKER
-    assert stats2 == {"empty_subagent_reports": 1, "empty_subagent_retries": 1,
-                      "empty_subagent_markers": 1}
+    assert stats2 == {
+        "empty_subagent_reports": 1,
+        "empty_subagent_retries": 1,
+        "empty_subagent_markers": 1,
+    }
 
 
 @requires_langchain
@@ -305,16 +324,29 @@ def test_end_to_end_against_langchains_real_agent_graph():
         return Command(update={"messages": [ToolMessage(content, tool_call_id="c1")]})
 
     msgs = [
-        AIMessage(content="", tool_calls=[{
-            "name": "task", "id": "c1", "type": "tool_call",
-            "args": {"description": "analyse residuals", "subagent_type": "signal_engineer"}}]),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "task",
+                    "id": "c1",
+                    "type": "tool_call",
+                    "args": {
+                        "description": "analyse residuals",
+                        "subagent_type": "signal_engineer",
+                    },
+                }
+            ],
+        ),
         AIMessage(content="done"),
     ]
     stats = _fresh_stats()
-    graph = create_agent(ToolFakeModel(responses=msgs), tools=[task],
-                         middleware=[agent._empty_report_guard(stats)])
-    out = graph.invoke({"messages": [HumanMessage(content="build a model")]},
-                       config={"recursion_limit": 30})
+    graph = create_agent(
+        ToolFakeModel(responses=msgs), tools=[task], middleware=[agent._empty_report_guard(stats)]
+    )
+    out = graph.invoke(
+        {"messages": [HumanMessage(content="build a model")]}, config={"recursion_limit": 30}
+    )
 
     # the subagent was re-dispatched once, with the nudge appended
     assert len(seen_descriptions) == 2
@@ -322,5 +354,8 @@ def test_end_to_end_against_langchains_real_agent_graph():
     # the recovered report reached the message history; the "" never did
     tool_msgs = [m for m in out["messages"] if isinstance(m, ToolMessage)]
     assert [m.content for m in tool_msgs] == ["Residual structure at late times; add a delay."]
-    assert stats == {"empty_subagent_reports": 1, "empty_subagent_retries": 1,
-                     "empty_subagent_markers": 0}
+    assert stats == {
+        "empty_subagent_reports": 1,
+        "empty_subagent_retries": 1,
+        "empty_subagent_markers": 0,
+    }

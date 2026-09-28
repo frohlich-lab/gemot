@@ -56,6 +56,7 @@ BIOLOGY_BLIND_ENABLED = _ablations.enabled("biology_blind")
 # One effective policy for prompt text, roster, model construction and bio connections.
 BIOCURATOR_ENABLED = _ablations.enabled("biocurator") and not BIOLOGY_BLIND_ENABLED
 
+
 # The petab-model-building skill, INLINED into the analyst persona prompts. Measured: every
 # analyst spawn fetched this same document via get_skill exactly once (mathematician 203/203,
 # signal_engineer 217/217, systems_scientist 115/115 across the 37-run A/B) — a deterministic
@@ -65,12 +66,14 @@ BIOCURATOR_ENABLED = _ablations.enabled("biocurator") and not BIOLOGY_BLIND_ENAB
 # old behaviour minus the tool, and prompt_version hashes whatever was actually inlined.
 def _inline_skill(name: str) -> str:
     from pathlib import Path
+
     f = Path(__file__).resolve().parent.parent / "petab_mcp" / "_skills" / name / "SKILL.md"
     try:
         text = f.read_text(encoding="utf-8")
     except OSError:
         return ""
     return f"\n\n--- PEtab semantics reference (inlined; formerly get_skill('{name}')) ---\n{text}"
+
 
 _PETAB_SKILL_INLINE = _inline_skill("petab-model-building")
 
@@ -150,13 +153,17 @@ _ADEQUATE_IS_NOT_DONE = (
 #: below, both of its consumers are arm-gated, and a non-empty constant no surface composes would
 #: be untracked text.
 _MODEL_EDIT_OPS = (
-    "`{op:'add_reaction', antimony:'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'}`, "
-    "`{op:'remove_reaction', id}`, `{op:'set_rate_law', id, antimony:'k*EGF*EGFR'}`, "
-    "`{op:'set_initial', id, antimony:'5'}`, "
-    "`{op:'set_assignment', id, antimony:'pAkt + pAkt_S6'}` (an `id := expr` rule holding at "
-    "ALL times — how a `readout_*` symbol an observable formula references is defined in terms "
-    "of YOUR states), `{op:'remove_assignment', id}`, `{op:'rename', old, new}`"
-) if DIFF_EDITS_ENABLED else ""
+    (
+        "`{op:'add_reaction', antimony:'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'}`, "
+        "`{op:'remove_reaction', id}`, `{op:'set_rate_law', id, antimony:'k*EGF*EGFR'}`, "
+        "`{op:'set_initial', id, antimony:'5'}`, "
+        "`{op:'set_assignment', id, antimony:'pAkt + pAkt_S6'}` (an `id := expr` rule holding at "
+        "ALL times — how a `readout_*` symbol an observable formula references is defined in terms "
+        "of YOUR states), `{op:'remove_assignment', id}`, `{op:'rename', old, new}`"
+    )
+    if DIFF_EDITS_ENABLED
+    else ""
+)
 
 #: The read-only tools the lead is told it may use ITSELF (everything else it delegates). Rendered
 #: into the prompt below AND spliced into ``ORCHESTRATOR_TOOLS`` (agent/tools.py), so the prompt
@@ -167,73 +174,90 @@ _MODEL_EDIT_OPS = (
 #:   get_fit_diagnosis   — per-observable bias/chi2 + worst-N points, and (sections='parameters')
 #:                         the FIM/multistart geometry saying which params to cut or merge
 #:   list_versions       — scored version history: which structures were tried, and their scores
-LEAD_SELF_READ_TOOLS = ("describe_problem", "get_model_structure", "list_observables",
-                        "get_fit_diagnosis", "list_versions")
+LEAD_SELF_READ_TOOLS = (
+    "describe_problem",
+    "get_model_structure",
+    "list_observables",
+    "get_fit_diagnosis",
+    "list_versions",
+)
 
 
 _FREE_EXPONENTS_GUIDANCE = (
-    " EXPONENTS ARE PARAMETERS. EVERY time you write a cooperative or ligand-gated dependence "
-    "(any Hill or saturating term) — in the first model, in a later edit, or when you sharpen an "
-    "existing rate law — declare its exponent as a named, estimated parameter with its own "
-    "bounds. Never hardcode it as 1 or a literal 2 inside the formula. A hardcoded exponent "
-    "silently FIXES a quantity the fit may need, and it is the one mis-specification no later "
-    "bounds edit can reach: the only repair is re-authoring that rate law. An estimated exponent "
-    "costs exactly one ln(n) of bic and is cheap to TRIM at any point if the data cannot support "
-    "it — pay that price when you introduce the term and take it back later, not the reverse."
-) if FREE_EXPONENTS_ENABLED else ""
+    (
+        " EXPONENTS ARE PARAMETERS. EVERY time you write a cooperative or ligand-gated dependence "
+        "(any Hill or saturating term) — in the first model, in a later edit, or when you sharpen an "
+        "existing rate law — declare its exponent as a named, estimated parameter with its own "
+        "bounds. Never hardcode it as 1 or a literal 2 inside the formula. A hardcoded exponent "
+        "silently FIXES a quantity the fit may need, and it is the one mis-specification no later "
+        "bounds edit can reach: the only repair is re-authoring that rate law. An estimated exponent "
+        "costs exactly one ln(n) of bic and is cheap to TRIM at any point if the data cannot support "
+        "it — pay that price when you introduce the term and take it back later, not the reverse."
+    )
+    if FREE_EXPONENTS_ENABLED
+    else ""
+)
 
 _DIFF_EDITS_GUIDANCE = (
-    " EDIT BY OPERATION, NOT BY RE-AUTHORING. Your FIRST model is authored wholesale "
-    "(`antimony=`). Every LATER change goes through `model_edits`: a BATCH of structured "
-    "operations, each written as ANTIMONY and addressed by ID — " + _MODEL_EDIT_OPS + ". "
-    "You write the model "
-    "language you already know; you just say WHICH reaction, instead of quoting its text. "
-    "EVERY reaction needs an id — an unnamed one cannot be changed later without re-authoring "
-    "the whole model, so authoring is refused until they are all named. "
-    "PUT THE WHOLE CHANGE IN ONE CALL. One call is one fit and one version, so a mechanism plus "
-    "the rate-law change it forces is ONE batch of two operations, not two calls — splitting it "
-    "pays a full multistart per operation and scores intermediate states you never meant to "
-    "test. Operations apply in order, all-or-nothing: a failure names the failing "
-    "`model_edits[i]` and lists the valid reaction ids, and nothing is applied. "
-    "NAME YOUR REACTIONS FOR YOURSELF. The id is how you will address a reaction for the rest "
-    "of the run, so use a meaningful one — `egfr_activation`, `akt_dephos`, `s6_feedback` — not "
-    "`reaction_7`. Numbered ids invite renumbering when you re-author, and a renumbered model is "
-    "one whose history cannot be read. Ids are yours to choose and are stable across the "
-    "server's re-rendering. "
-    "To ROLL BACK AND CHANGE, pass `base_version=N` with `model_edits`: the operations apply to "
-    "that version's stored model — one call forks and changes, and you never retype an earlier "
-    "model from memory. It restores that version's SEARCH SPACE too — its bounds and scales — and "
-    "the point the fit starts from, that version's own best fit, so the fork picks up where "
-    "version N got to instead of from the branch you are abandoning. You never have to remember "
-    "any of it. Parameters your operations newly introduce keep the defaults the reconcile mints, "
-    "and any parameter you name in this call's `parameters` keeps YOUR bound and scale rather "
-    "than the restored one. "
-    "`base_version` is a MODIFIER, never an action: sent on its own it is REJECTED. There is no "
-    "revert-and-stop, because re-committing an earlier version unchanged would spend a fit to "
-    "reproduce a result you already have. Say what you want DIFFERENT about that version in the "
-    "same call; to merely look at it first, use `get_model(version=N)`. "
-    "Wholesale re-authoring (`antimony=`) on a LATER model is for genuinely starting over — "
-    "legitimate when the structure is abandoned, discouraged otherwise: operations preserve the "
-    "working core and keep your reaction ids stable."
-) if DIFF_EDITS_ENABLED else ""
+    (
+        " EDIT BY OPERATION, NOT BY RE-AUTHORING. Your FIRST model is authored wholesale "
+        "(`antimony=`). Every LATER change goes through `model_edits`: a BATCH of structured "
+        "operations, each written as ANTIMONY and addressed by ID — " + _MODEL_EDIT_OPS + ". "
+        "You write the model "
+        "language you already know; you just say WHICH reaction, instead of quoting its text. "
+        "EVERY reaction needs an id — an unnamed one cannot be changed later without re-authoring "
+        "the whole model, so authoring is refused until they are all named. "
+        "PUT THE WHOLE CHANGE IN ONE CALL. One call is one fit and one version, so a mechanism plus "
+        "the rate-law change it forces is ONE batch of two operations, not two calls — splitting it "
+        "pays a full multistart per operation and scores intermediate states you never meant to "
+        "test. Operations apply in order, all-or-nothing: a failure names the failing "
+        "`model_edits[i]` and lists the valid reaction ids, and nothing is applied. "
+        "NAME YOUR REACTIONS FOR YOURSELF. The id is how you will address a reaction for the rest "
+        "of the run, so use a meaningful one — `egfr_activation`, `akt_dephos`, `s6_feedback` — not "
+        "`reaction_7`. Numbered ids invite renumbering when you re-author, and a renumbered model is "
+        "one whose history cannot be read. Ids are yours to choose and are stable across the "
+        "server's re-rendering. "
+        "To ROLL BACK AND CHANGE, pass `base_version=N` with `model_edits`: the operations apply to "
+        "that version's stored model — one call forks and changes, and you never retype an earlier "
+        "model from memory. It restores that version's SEARCH SPACE too — its bounds and scales — and "
+        "the point the fit starts from, that version's own best fit, so the fork picks up where "
+        "version N got to instead of from the branch you are abandoning. You never have to remember "
+        "any of it. Parameters your operations newly introduce keep the defaults the reconcile mints, "
+        "and any parameter you name in this call's `parameters` keeps YOUR bound and scale rather "
+        "than the restored one. "
+        "`base_version` is a MODIFIER, never an action: sent on its own it is REJECTED. There is no "
+        "revert-and-stop, because re-committing an earlier version unchanged would spend a fit to "
+        "reproduce a result you already have. Say what you want DIFFERENT about that version in the "
+        "same call; to merely look at it first, use `get_model(version=N)`. "
+        "Wholesale re-authoring (`antimony=`) on a LATER model is for genuinely starting over — "
+        "legitimate when the structure is abandoned, discouraged otherwise: operations preserve the "
+        "working core and keep your reaction ids stable."
+    )
+    if DIFF_EDITS_ENABLED
+    else ""
+)
 
 _DATA_REGIMES_GUIDANCE = (
-    " Two things help here and they answer different questions. "
-    "`get_data_regimes` answers WHAT THE DATA REQUIRES — read straight off the measurements, no "
-    "model and no fit, so it is valid before you have written anything: whether the response rises "
-    "AND falls (which constant production plus first-order decay cannot do at any rate constants), "
-    "whether a second timescale is distinguishable, how steep the dose-response is, whether a total "
-    "is conserved. READ IT AS THREE OUTCOMES, not as an answer: a non-null `requirement` is "
-    "ESTABLISHED and any model must reproduce it; `support_for_extension: suggestive` means the "
-    "estimate leans toward richer structure without establishing it — a reason to TRY it; and a "
-    "null `requirement`, like `testable: false`, means this DESIGN did not settle the question. "
-    "None of these can ever rule structure OUT: silence is what an underpowered test returns, so it "
-    "is never permission to simplify, and your own mechanistic judgement still governs there. "
-    "`get_skill('independence-audit')` answers HOW TO ENCODE the fix cheaply once you know the "
-    "requirement — and what to do when the data cannot tell you. Reach for both when a fit is "
-    "adequate on chi2 but `residual_structure` still flags an observable: that combination means a "
-    "factorisation is wrong, and no amount of re-fitting will move it."
-) if DATA_REGIMES_ENABLED else ""
+    (
+        " Two things help here and they answer different questions. "
+        "`get_data_regimes` answers WHAT THE DATA REQUIRES — read straight off the measurements, no "
+        "model and no fit, so it is valid before you have written anything: whether the response rises "
+        "AND falls (which constant production plus first-order decay cannot do at any rate constants), "
+        "whether a second timescale is distinguishable, how steep the dose-response is, whether a total "
+        "is conserved. READ IT AS THREE OUTCOMES, not as an answer: a non-null `requirement` is "
+        "ESTABLISHED and any model must reproduce it; `support_for_extension: suggestive` means the "
+        "estimate leans toward richer structure without establishing it — a reason to TRY it; and a "
+        "null `requirement`, like `testable: false`, means this DESIGN did not settle the question. "
+        "None of these can ever rule structure OUT: silence is what an underpowered test returns, so it "
+        "is never permission to simplify, and your own mechanistic judgement still governs there. "
+        "`get_skill('independence-audit')` answers HOW TO ENCODE the fix cheaply once you know the "
+        "requirement — and what to do when the data cannot tell you. Reach for both when a fit is "
+        "adequate on chi2 but `residual_structure` still flags an observable: that combination means a "
+        "factorisation is wrong, and no amount of re-fitting will move it."
+    )
+    if DATA_REGIMES_ENABLED
+    else ""
+)
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are the MODELING LEAD building a mechanistic ODE model for a PEtab v1 problem "
@@ -242,18 +266,25 @@ DEFAULT_SYSTEM_PROMPT = (
     "through these structured MCP tools; the filesystem is EMPTY by design — do NOT use "
     "ls/glob/read to hunt for it, there is nothing on disk to find. Your job is to BUILD, from "
     "scratch, a model that explains the data. You do NOT read the measured data or query the "
-    "fit yourself — you have " + ("four" if BIOCURATOR_ENABLED else "three") +
-    " independent analysts via the `task` tool (pass "
-    "`subagent_type`): `mathematician`, `systems_scientist`, `signal_engineer`" +
-    (", `biocurator`" if BIOCURATOR_ENABLED else "") + ". A "
+    "fit yourself — you have "
+    + ("four" if BIOCURATOR_ENABLED else "three")
+    + " independent analysts via the `task` tool (pass "
+    "`subagent_type`): `mathematician`, `systems_scientist`, `signal_engineer`"
+    + (", `biocurator`" if BIOCURATOR_ENABLED else "")
+    + ". A "
     "subagent's ENTIRE input is the `description` string you pass to `task` — put your question and "
-    "any framing THERE; `task` takes no other content argument. " + (
+    "any framing THERE; `task` takes no other content argument. "
+    + (
         "(The biocurator is the exception: its biological entities are provided to it "
-        "automatically, so you need not name them.) " if BIOCURATOR_ENABLED else "") +
-    "You directly "
+        "automatically, so you need not name them.) "
+        if BIOCURATOR_ENABLED
+        else ""
+    )
+    + "You directly "
     "read only the model, its SCORES (which `make_changes` itself returns — metrics, bic, the noise-sigma "
     "verdict and the residual_structure verdict), and a COMPACT fit diagnosis ("
-    + ", ".join(LEAD_SELF_READ_TOOLS) + ") — "
+    + ", ".join(LEAD_SELF_READ_TOOLS)
+    + ") — "
     "get_fit_diagnosis covers the residual detail and, as " + _PARAMETER_HALF + ", the parameter "
     "identifiability; "
     "for the raw DATA and any DEEP diagnosis (a full residual breakdown, the optimizer/fitting "
@@ -272,13 +303,16 @@ DEFAULT_SYSTEM_PROMPT = (
     "On the first round, delegate to all three analysts to characterise the DATA — its dynamics, "
     "the plausible mechanism, and the signal structure — giving each only the objective facts "
     "(the observables and that measured data exist), NOT your own hypothesis, so their reads stay "
-    "independent. " + (
+    "independent. "
+    + (
         "And for a molecular/biochemical problem, consult the biocurator on this SAME "
         "first round for the KNOWN biology — the interactions, cooperativity, and unmeasured "
         "regulators/intermediates among the entities — and treat what it reports as the mechanism's "
         "expected TOPOLOGY, to be built unless the data contradict it. "
-        if BIOCURATOR_ENABLED else "") +
-    "Do this regardless of how many conditions the problem has: condition count "
+        if BIOCURATOR_ENABLED
+        else ""
+    )
+    + "Do this regardless of how many conditions the problem has: condition count "
     "reflects experimental DESIGN, not mechanistic difficulty, and a single-condition problem can "
     "still be a multi-species, non-monotonic time course that needs the mechanism + numerics reads "
     "as much as any multi-condition one.\n"
@@ -293,7 +327,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "compartments, species (with their initial conditions), parameters, and reactions in "
     "Antimony. `make_changes` is the ONLY way to change anything — a rate-law form, a reaction, "
     "a parameter's bounds or scale — and it ALWAYS fits, so one call is one coherent change "
-    "scored as ONE version. " + (
+    "scored as ONE version. "
+    + (
         # ARM-GATED for the same reason the TOOL_DESCRIPTIONS clause is: shipped ungated, this
         # sentence tells the arm-ON lead that `antimony` is the only model route, 50 lines
         # before _DIFF_EDITS_GUIDANCE tells it to patch instead — two incompatible contracts in
@@ -302,10 +337,11 @@ DEFAULT_SYSTEM_PROMPT = (
         "Give `antimony` to author the FIRST model, `model_edits` (structured operations) to "
         "change it thereafter, `parameters` to retune the search space, or a model route AND "
         "`parameters` when a structural change needs bounds; at least one is required. "
-        if DIFF_EDITS_ENABLED else
-        "Give `antimony` to re-author, `parameters` to retune the search "
-        "space, or BOTH when a structural change needs bounds; at least one is required. ") +
-    "Your step "
+        if DIFF_EDITS_ENABLED
+        else "Give `antimony` to re-author, `parameters` to retune the search "
+        "space, or BOTH when a structural change needs bounds; at least one is required. "
+    )
+    + "Your step "
     "budget is the scarce resource, so put a whole coherent change in one call rather than "
     "dribbling it out. The result IS the fit (`bic`, `neg_log_likelihood`, `k` = `n_estimated` + "
     "`hardcoded_constants`: a numeric literal in your model's math is a parameter too, bar a few "
@@ -326,7 +362,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "construction, so reduced_chi2 ≈ 1 and its p-value are UNINFORMATIVE — often stuck at the "
     "noise floor however wrong the mechanism is. Do NOT "
     "chase chi2_gof_pvalue ≥ 0.05, and do NOT restructure or trade away nll/bic to raise it. "
-    + _SIGMA_CAP_ADVISORY + " Judge whether the "
+    + _SIGMA_CAP_ADVISORY
+    + " Judge whether the "
     "mechanism is RIGHT from the residual STRUCTURE — get_fit_diagnosis's per-observable bias + "
     "worst-fit points, or a signal_engineer time-trend read: SYSTEMATIC (non-random) residuals "
     "mean a mechanism is still missing; clean random scatter means it isn't. INITIAL CONDITIONS "
@@ -361,7 +398,10 @@ DEFAULT_SYSTEM_PROMPT = (
     "you are on: while the residuals are still structured you are underfitting, and the arithmetic "
     "above is for pricing what you keep at the end, not for talking yourself out of a mechanism "
     "the data is asking for."
-    + _FREE_EXPONENTS_GUIDANCE + _DATA_REGIMES_GUIDANCE + _DIFF_EDITS_GUIDANCE + "\n"
+    + _FREE_EXPONENTS_GUIDANCE
+    + _DATA_REGIMES_GUIDANCE
+    + _DIFF_EDITS_GUIDANCE
+    + "\n"
     "3. Read the CURRENT HEAD's metrics (never an earlier version's) after each `make_changes` and decide "
     "what to do next. The DEFAULT is to KEEP ITERATING while the model is still mis-specified — "
     "bic is still improving fit-over-fit by more than a few units, OR get_fit_diagnosis shows a "
@@ -406,12 +446,11 @@ DEFAULT_SYSTEM_PROMPT = (
     "(get_fit_diagnosis bias ≈ 0, no time-trend) AND bic has bottomed out: you cannot lower it "
     "further by adding, dropping, re-forming, or MERGING mechanism. `merge_hints` on your last "
     "fit name pairs the data cannot tell apart, so bic has not bottomed out. "
-    + _MERGE_TAKE_RULE +
-    " Merge ONLY parameters that plausibly ARE the same "
+    + _MERGE_TAKE_RULE
+    + " Merge ONLY parameters that plausibly ARE the same "
     "physical quantity; the hints price IDENTIFIABILITY, not biology, so you supply the biology "
     "(the `finish` description states the rule and what declining one requires of you). Finish "
-    "on the LOWEST-bic such model.\n"
-    + _ADEQUATE_IS_NOT_DONE + "\n"
+    "on the LOWEST-bic such model.\n" + _ADEQUATE_IS_NOT_DONE + "\n"
     "Repeat until you call `finish`. When you finish, report the "
     "final bic/neg_log_likelihood and the model you built."
 )
@@ -714,7 +753,7 @@ BIOCURATOR_PROMPT = (
     "(`TP53`, not `p53` and not a UniProt accession) for every tool that takes one, including the "
     "UniProt and Reactome lookups; pass it as `gene_symbol` and leave `protein_id` and "
     "`protein_name` unset rather than repeating the same name across several fields; and give "
-    "`species` as the plain string `\"9606\"` for human, never as a list. Depart from this only "
+    '`species` as the plain string `"9606"` for human, never as a list. Depart from this only '
     "when the canonical symbol genuinely fails to resolve. "
     "When you search the LITERATURE, rank results by RELEVANCE rather than "
     "by citation count, and query for the SPECIFIC mechanism or interaction you need: the "
@@ -736,8 +775,7 @@ BIOCURATOR_PROMPT = (
     "the like). When a specific question is asked, ANSWER THAT question directly, using the "
     "entities above as context, and do NOT re-run the whole survey — a focused answer is what is "
     "wanted. When the request is open, or you cannot tell that something specific is being asked, "
-    "give the full survey."
-    + _BIOCURATOR_REPORT_CONTRACT
+    "give the full survey." + _BIOCURATOR_REPORT_CONTRACT
 )
 
 BIOCURATOR_DESCRIPTION = (
@@ -799,219 +837,256 @@ def _biocurator_entity_block(names: "list[str]") -> str:
 #     one of the constants at the top of this file, interpolated. Not re-worded here.
 #   * A rule that spans tools is stated in ONE entry and pointed at from the others.
 TOOL_DESCRIPTIONS = {
-    "make_changes": ("THE editor, and it always FITS. Pass `antimony` to author the WHOLE model "
-                     "(builds the first one when model_authored: false" + (
-                         "; on a LATER model it is the start-over route, and EVERY reaction "
-                         "must be named — an unnamed one cannot be changed afterwards). OR "
-                         "`model_edits`: a BATCH of structured operations, each written as "
-                         "Antimony and addressed by ID — " + _MODEL_EDIT_OPS + ". "
-                         "The DEFAULT route for every change after the first: nothing to quote, "
-                         "in order, all-or-nothing, a bad id rejected with the valid ids listed. "
-                         "Put the WHOLE change in ONE call — one call is one fit and one "
-                         "version. With `base_version=N` the operations apply to that version's "
-                         "stored model AND its search space and starting point are restored "
-                         "with it: fork and change in one call. It is a MODIFIER of "
-                         "`model_edits`, never an action on its own — sent alone it is "
-                         "rejected, since re-committing a version unchanged re-fits it to "
-                         "the result it already has. "
-                         if DIFF_EDITS_ENABLED else
-                         ", and re-authors an existing one wholesale — every structural change "
-                         "is a whole-model re-author)") +
-                     ("And/or " if DIFF_EDITS_ENABLED else ", and/or ") +
-                     "`parameters` = [{parameter_id, lower_bound?, "
-                     "upper_bound?, scale?}, ...] to set the estimation BOUNDS/SCALE (never a "
-                     "value). At least ONE is required. " +
-                     ("Give both a model route and `parameters` when a structural change needs "
-                      if DIFF_EDITS_ENABLED else "Give both when a structural change needs ") +
-                     "bounds — they apply atomically, after the reconcile, so an entry may target "
-                     "a parameter this call introduces. One call is one coherent change and ONE "
-                     "version. ALL-OR-NOTHING: a change that cannot be scored is REVERTED, so the "
-                     "working model is always a scored one. The result IS the fit, flat: read "
-                     "`applied` (is the change in place?) then `committed` -> `bic`. "
-                     "`applied: false` -> nothing moved: either rejected outright or reverted "
-                     "because the fit failed; `error`/`issues` says which, act on THAT. "
-                     "`committed: false` with `no_change` -> the change applied but this structure "
-                     "already IS a version, so make a genuinely different change (a version you "
-                     "already have is kept and stays scorable — no need to return to it). "
-                     "REJECTS dropping (or re-estimating) a shipped-fixed "
-                     "constant, an unused condition target, and an observation-model symbol used "
-                     "in a rate law; rejects a 3rd widening of a still-pinned parameter (that is "
-                     "unidentifiability — see " + _PARAMETER_HALF + ", not a bounds problem). "
-                     + _SIGMA_CAP_ADVISORY +
-                     " `n_starts` REPLACES the server default (describe_problem's "
-                     "fit_n_starts_default) rather than adding to it, so omit it unless you want "
-                     "MORE; below it fits LESS hard, and the minimum is 1."),
-    "list_conditions": ("The fixed conditions and what each one perturbs. A condition column sets "
-                        "a model quantity PER CONDITION (a dose, an input level, a switch), so "
-                        "your model must reference it BY NAME — a target the model never uses is "
-                        "a rejected change, and a condition-set initial is an experimental input "
-                        "to reproduce, not a value to fit."),
+    "make_changes": (
+        "THE editor, and it always FITS. Pass `antimony` to author the WHOLE model "
+        "(builds the first one when model_authored: false"
+        + (
+            "; on a LATER model it is the start-over route, and EVERY reaction "
+            "must be named — an unnamed one cannot be changed afterwards). OR "
+            "`model_edits`: a BATCH of structured operations, each written as "
+            "Antimony and addressed by ID — " + _MODEL_EDIT_OPS + ". "
+            "The DEFAULT route for every change after the first: nothing to quote, "
+            "in order, all-or-nothing, a bad id rejected with the valid ids listed. "
+            "Put the WHOLE change in ONE call — one call is one fit and one "
+            "version. With `base_version=N` the operations apply to that version's "
+            "stored model AND its search space and starting point are restored "
+            "with it: fork and change in one call. It is a MODIFIER of "
+            "`model_edits`, never an action on its own — sent alone it is "
+            "rejected, since re-committing a version unchanged re-fits it to "
+            "the result it already has. "
+            if DIFF_EDITS_ENABLED
+            else ", and re-authors an existing one wholesale — every structural change "
+            "is a whole-model re-author)"
+        )
+        + ("And/or " if DIFF_EDITS_ENABLED else ", and/or ")
+        + "`parameters` = [{parameter_id, lower_bound?, "
+        "upper_bound?, scale?}, ...] to set the estimation BOUNDS/SCALE (never a "
+        "value). At least ONE is required. "
+        + (
+            "Give both a model route and `parameters` when a structural change needs "
+            if DIFF_EDITS_ENABLED
+            else "Give both when a structural change needs "
+        )
+        + "bounds — they apply atomically, after the reconcile, so an entry may target "
+        "a parameter this call introduces. One call is one coherent change and ONE "
+        "version. ALL-OR-NOTHING: a change that cannot be scored is REVERTED, so the "
+        "working model is always a scored one. The result IS the fit, flat: read "
+        "`applied` (is the change in place?) then `committed` -> `bic`. "
+        "`applied: false` -> nothing moved: either rejected outright or reverted "
+        "because the fit failed; `error`/`issues` says which, act on THAT. "
+        "`committed: false` with `no_change` -> the change applied but this structure "
+        "already IS a version, so make a genuinely different change (a version you "
+        "already have is kept and stays scorable — no need to return to it). "
+        "REJECTS dropping (or re-estimating) a shipped-fixed "
+        "constant, an unused condition target, and an observation-model symbol used "
+        "in a rate law; rejects a 3rd widening of a still-pinned parameter (that is "
+        "unidentifiability — see "
+        + _PARAMETER_HALF
+        + ", not a bounds problem). "
+        + _SIGMA_CAP_ADVISORY
+        + " `n_starts` REPLACES the server default (describe_problem's "
+        "fit_n_starts_default) rather than adding to it, so omit it unless you want "
+        "MORE; below it fits LESS hard, and the minimum is 1."
+    ),
+    "list_conditions": (
+        "The fixed conditions and what each one perturbs. A condition column sets "
+        "a model quantity PER CONDITION (a dose, an input level, a switch), so "
+        "your model must reference it BY NAME — a target the model never uses is "
+        "a rejected change, and a condition-set initial is an experimental input "
+        "to reproduce, not a value to fit."
+    ),
     "describe_problem": "Orientation: whether a mechanism has been authored (model_authored), table/entity counts, current version, and the multistart count a fit uses by default (fit_n_starts_default). Cheap.",
     "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law) — empty until a model is built.",
-    "get_parameters": ("Parameter table — pass `parameter_ids` and/or `role` to FILTER: on "
-                       "large problems the full table is 100+ rows re-sent in your history "
-                       "every later turn, so ask for the rows you need (e.g. the ids a fit "
-                       "just changed). One row per parameter: id, bounds, scale, nominalValue "
-                       "(the fitted value), estimate flag, plus `role` (kinetic / noise_sigma / "
-                       "observable_scaling / initial_condition / exponent / constant) and `status` "
-                       "(estimated / fixed). Read `role` to keep roles straight: a noise_sigma or "
-                       "observable_scaling parameter belongs to the OBSERVATION model, not the "
-                       "kinetics, and must never appear in a rate law — whether or not it is "
-                       "estimated. Read `status` before adding parameters: every ESTIMATED one "
-                       "counts toward k and inflates bic however tight its bounds, and a symbol "
-                       "you introduce is added estimated. The rows whose `status` is `fixed` are "
-                       "the COMPLETE set of constants you may treat as known. Do NOT assume "
-                       "sigma_* or *_init are "
-                       "fixed — noise sigmas are often estimated, and initial conditions are "
-                       "estimated by DEFAULT (an IC of exactly 1 stays fixed; an IC of exactly 0 "
-                       "gets no row here at all). "
-                       "`in_model: false` marks a parameter the PROBLEM ships that your model "
-                       "does not declare yet — before you author anything that is every shipped "
-                       "kinetic / initial-condition parameter. Those are yours to build on: use "
-                       "the name in your Antimony and the row comes back exactly as shown "
-                       "(bounds, scale, fixed/estimated, any prior), so a shipped constant costs "
-                       "you nothing to adopt and a shipped-FIXED one must stay declared."),
+    "get_parameters": (
+        "Parameter table — pass `parameter_ids` and/or `role` to FILTER: on "
+        "large problems the full table is 100+ rows re-sent in your history "
+        "every later turn, so ask for the rows you need (e.g. the ids a fit "
+        "just changed). One row per parameter: id, bounds, scale, nominalValue "
+        "(the fitted value), estimate flag, plus `role` (kinetic / noise_sigma / "
+        "observable_scaling / initial_condition / exponent / constant) and `status` "
+        "(estimated / fixed). Read `role` to keep roles straight: a noise_sigma or "
+        "observable_scaling parameter belongs to the OBSERVATION model, not the "
+        "kinetics, and must never appear in a rate law — whether or not it is "
+        "estimated. Read `status` before adding parameters: every ESTIMATED one "
+        "counts toward k and inflates bic however tight its bounds, and a symbol "
+        "you introduce is added estimated. The rows whose `status` is `fixed` are "
+        "the COMPLETE set of constants you may treat as known. Do NOT assume "
+        "sigma_* or *_init are "
+        "fixed — noise sigmas are often estimated, and initial conditions are "
+        "estimated by DEFAULT (an IC of exactly 1 stays fixed; an IC of exactly 0 "
+        "gets no row here at all). "
+        "`in_model: false` marks a parameter the PROBLEM ships that your model "
+        "does not declare yet — before you author anything that is every shipped "
+        "kinetic / initial-condition parameter. Those are yours to build on: use "
+        "the name in your Antimony and the row comes back exactly as shown "
+        "(bounds, scale, fixed/estimated, any prior), so a shipped constant costs "
+        "you nothing to adopt and a shipped-FIXED one must stay declared."
+    ),
     # Dropped in the ablation arm so ALLOWED_TOOLS and TOOL_DESCRIPTIONS stay in
     # agreement (test_every_panel_tool_has_a_description asserts it).
-    **({"get_data_regimes": ("What the MEASUREMENTS require of ANY model — from the data alone: no "
-                         "model, no fit, no compile, valid before you have written anything. Per "
-                         "observable, measured against its own noise floor: `shape` (does the "
-                         "response rise AND fall? a pulse cannot come from constant production plus "
-                         "first-order decay at any rate constants, so it REQUIRES a depletable pool, "
-                         "a second state, or feedback), `timescales` (is a second one "
-                         "distinguishable, by BIC), `dose_response` (steepest log-log slope vs a "
-                         "numeric input; above 1 rules out a single mass-action binding step), and "
-                         "`conservation` (is the sum of observables constant while the parts move? "
-                         "imposing it REMOVES a parameter). A non-null `requirement` is ESTABLISHED "
-                         "and any model must reproduce it; `support_for_extension: suggestive` "
-                         "means the estimate leans toward richer structure without establishing "
-                         "it — a reason to TRY it. THESE CAN FORCE STRUCTURE IN, NEVER RULE IT OUT: "
-                         "`testable: false` or a null `requirement` means this design did not "
-                         "settle it, which is NOT permission to simplify.")}
-     if DATA_REGIMES_ENABLED else {}),
+    **(
+        {
+            "get_data_regimes": (
+                "What the MEASUREMENTS require of ANY model — from the data alone: no "
+                "model, no fit, no compile, valid before you have written anything. Per "
+                "observable, measured against its own noise floor: `shape` (does the "
+                "response rise AND fall? a pulse cannot come from constant production plus "
+                "first-order decay at any rate constants, so it REQUIRES a depletable pool, "
+                "a second state, or feedback), `timescales` (is a second one "
+                "distinguishable, by BIC), `dose_response` (steepest log-log slope vs a "
+                "numeric input; above 1 rules out a single mass-action binding step), and "
+                "`conservation` (is the sum of observables constant while the parts move? "
+                "imposing it REMOVES a parameter). A non-null `requirement` is ESTABLISHED "
+                "and any model must reproduce it; `support_for_extension: suggestive` "
+                "means the estimate leans toward richer structure without establishing "
+                "it — a reason to TRY it. THESE CAN FORCE STRUCTURE IN, NEVER RULE IT OUT: "
+                "`testable: false` or a null `requirement` means this design did not "
+                "settle it, which is NOT permission to simplify."
+            )
+        }
+        if DATA_REGIMES_ENABLED
+        else {}
+    ),
     # Dropped in the ablation arm, same agreement rule as get_data_regimes above.
-    **({
-        "get_model": ("The COMMITTED model as raw Antimony text. With `model_edits` you address "
-                      "reactions by ID and never quote text, so reach for `get_model_structure` "
-                      "first — this is for reading the model as written. Pass `version=N` for a PRIOR version's stored text — use THAT "
-                      "before `base_version=N`, not `get_version`, which also returns that "
-                      "version's per-point simulation and optimizer trace. The trailing "
-                      "`const ...;` line is DERIVED (regenerated every render; a parameter is "
-                      "constant unless declared `var`) — read past it; no operation addresses "
-                      "it."),
-    } if DIFF_EDITS_ENABLED else {}),
-    "get_fit_summary": ("Current fit metrics only (neg_log_likelihood, chi2, n_data_points) — a "
-                        "cheap score check. Carries `merge_hints` when the fit has parameter pairs "
-                        "the data cannot separate whose merges the criterion would pay for."),
-    "get_fit_diagnosis": ("The DETAIL behind the verdicts fit already gave you, in TWO sections — "
-                          "`sections`: 'residuals' (the DEFAULT), 'parameters', or 'all' (one call, "
-                          "both). RESIDUALS is the DEFAULT (~2-7 kB, 0.01-0.12 s, no new "
-                          "simulation); PARAMETERS is ~2-8 kB and at most one FIM evaluation at the "
-                          "fitted optimum (0.004-0.16 s across the reference problems) — neither "
-                          "compiles anything, so the SIZE is the cost: ask for it when bic has "
-                          "STALLED and you need to know which parameters to cut, not by reflex, "
-                          "since every payload you request is re-sent in your history on every "
-                          "later turn. "
-                          "RESIDUALS: per-observable weighted chi2 + mean_weighted_residual (bias) "
-                          "+ sign/runs test p-values + worst-N points (measurement vs simulation). "
-                          "Read it for WHERE/HOW the fit is off — not to ask WHETHER it is: the "
-                          "rolled-up residual_structure verdict (replicate_lack_of_fit included) "
-                          "rides on the fit result and is not repeated here. "
-                          "PARAMETERS (`identifiability`, bounded): per-parameter standard "
-                          "error + fold_uncertainty, marginal & partial correlations, near-flat "
-                          "FIM eigen-directions (non-identifiable parameter COMBINATIONS), and "
-                          "multistart spread — with a ranked `candidates` list. Tells you WHICH "
-                          "estimated parameters are superfluous when the model is too complex "
-                          "(high bic / many params), and the remedies IN ORDER: (1) drop the term; "
-                          "(2) take its limiting form (irreversible / quasi-steady-state); "
-                          "(3) MERGE a collinear pair — into the combination the data do "
-                          "constrain (k_cat*E_tot -> one Vmax), or by giving both ONE SHARED "
-                          "value (one symbol replaces two); either way the survivor is "
-                          "interpretable. `merge_candidates` prices the SHARED-VALUE tie and only "
-                          "that one: dnll cheapest first, merge_improves_score for a tie cheaper "
-                          "than the parameter it drops, and move_scaled for how far the tie has to "
-                          "move a parameter (cheap but many decades is not an edit that survives "
-                          "a refit). READ IT rather than guessing a tie from a flat direction's "
-                          "member list, which names members, not which tie is cheap; the fit "
-                          "result's `merge_hints` are the cheapest few of these rows worth taking — "
-                          "each with its "
-                          "parameters, dnll, move_scaled, and dscore (" + _DSCORE_SIGN + ") — so a "
-                          "hint on your last fit means a free parameter is sitting there. "
-                          "Merges are the ENDGAME, not the fix for an underfit: while the residuals "
-                          "are still systematically structured, spend the call on the mechanism and "
-                          "leave these — a tie is a parameter the data cannot separate, never a "
-                          "missing rate law. Once the residuals are clean they are how you "
-                          "finish. " + _MERGE_TAKE_RULE +
-                          " It lists "
-                          "top_n, and prices only same-role, same-scale pairs with neither member "
-                          "at a bound (n_ties_skipped counts the rest), so an absent pair — or an "
-                          "absent hint — may be one it refused rather than a dear one. "
-                          "A LOCAL screen: it separates "
-                          "cheap ties from expensive ones, but one price can be off either way — "
-                          "REFIT and let bic adjudicate each merge; "
-                          "(4) LAST RESORT, for a pure scale degeneracy where "
-                          "every value fits equally well, pin one member to 1.0 by "
-                          "re-authoring the literal into the rate law — NOT via bounds (see "
-                          "PARAMETER MACHINERY) — then REFIT: unchanged nll with bic better by one "
-                          "parameter confirms it, a WORSE fit means revert. If none applies, "
-                          "leave it. Use BEFORE adding parameters. For a full custom breakdown or "
-                          "the optimizer log, delegate to an analyst."),
-    "list_versions": ("Every model version (each a fit snapshot) with its kind, label, and fit "
-                      "metrics (neg_log_likelihood, bic, is_new_best) — how you track which "
-                      "structures you have tried and their scores. Your best-bic version is kept "
-                      "and is what the run is scored on, so you never need to return to it."),
+    **(
+        {
+            "get_model": (
+                "The COMMITTED model as raw Antimony text. With `model_edits` you address "
+                "reactions by ID and never quote text, so reach for `get_model_structure` "
+                "first — this is for reading the model as written. Pass `version=N` for a PRIOR version's stored text — use THAT "
+                "before `base_version=N`, not `get_version`, which also returns that "
+                "version's per-point simulation and optimizer trace. The trailing "
+                "`const ...;` line is DERIVED (regenerated every render; a parameter is "
+                "constant unless declared `var`) — read past it; no operation addresses "
+                "it."
+            ),
+        }
+        if DIFF_EDITS_ENABLED
+        else {}
+    ),
+    "get_fit_summary": (
+        "Current fit metrics only (neg_log_likelihood, chi2, n_data_points) — a "
+        "cheap score check. Carries `merge_hints` when the fit has parameter pairs "
+        "the data cannot separate whose merges the criterion would pay for."
+    ),
+    "get_fit_diagnosis": (
+        "The DETAIL behind the verdicts fit already gave you, in TWO sections — "
+        "`sections`: 'residuals' (the DEFAULT), 'parameters', or 'all' (one call, "
+        "both). RESIDUALS is the DEFAULT (~2-7 kB, 0.01-0.12 s, no new "
+        "simulation); PARAMETERS is ~2-8 kB and at most one FIM evaluation at the "
+        "fitted optimum (0.004-0.16 s across the reference problems) — neither "
+        "compiles anything, so the SIZE is the cost: ask for it when bic has "
+        "STALLED and you need to know which parameters to cut, not by reflex, "
+        "since every payload you request is re-sent in your history on every "
+        "later turn. "
+        "RESIDUALS: per-observable weighted chi2 + mean_weighted_residual (bias) "
+        "+ sign/runs test p-values + worst-N points (measurement vs simulation). "
+        "Read it for WHERE/HOW the fit is off — not to ask WHETHER it is: the "
+        "rolled-up residual_structure verdict (replicate_lack_of_fit included) "
+        "rides on the fit result and is not repeated here. "
+        "PARAMETERS (`identifiability`, bounded): per-parameter standard "
+        "error + fold_uncertainty, marginal & partial correlations, near-flat "
+        "FIM eigen-directions (non-identifiable parameter COMBINATIONS), and "
+        "multistart spread — with a ranked `candidates` list. Tells you WHICH "
+        "estimated parameters are superfluous when the model is too complex "
+        "(high bic / many params), and the remedies IN ORDER: (1) drop the term; "
+        "(2) take its limiting form (irreversible / quasi-steady-state); "
+        "(3) MERGE a collinear pair — into the combination the data do "
+        "constrain (k_cat*E_tot -> one Vmax), or by giving both ONE SHARED "
+        "value (one symbol replaces two); either way the survivor is "
+        "interpretable. `merge_candidates` prices the SHARED-VALUE tie and only "
+        "that one: dnll cheapest first, merge_improves_score for a tie cheaper "
+        "than the parameter it drops, and move_scaled for how far the tie has to "
+        "move a parameter (cheap but many decades is not an edit that survives "
+        "a refit). READ IT rather than guessing a tie from a flat direction's "
+        "member list, which names members, not which tie is cheap; the fit "
+        "result's `merge_hints` are the cheapest few of these rows worth taking — "
+        "each with its "
+        "parameters, dnll, move_scaled, and dscore (" + _DSCORE_SIGN + ") — so a "
+        "hint on your last fit means a free parameter is sitting there. "
+        "Merges are the ENDGAME, not the fix for an underfit: while the residuals "
+        "are still systematically structured, spend the call on the mechanism and "
+        "leave these — a tie is a parameter the data cannot separate, never a "
+        "missing rate law. Once the residuals are clean they are how you "
+        "finish. " + _MERGE_TAKE_RULE + " It lists "
+        "top_n, and prices only same-role, same-scale pairs with neither member "
+        "at a bound (n_ties_skipped counts the rest), so an absent pair — or an "
+        "absent hint — may be one it refused rather than a dear one. "
+        "A LOCAL screen: it separates "
+        "cheap ties from expensive ones, but one price can be off either way — "
+        "REFIT and let bic adjudicate each merge; "
+        "(4) LAST RESORT, for a pure scale degeneracy where "
+        "every value fits equally well, pin one member to 1.0 by "
+        "re-authoring the literal into the rate law — NOT via bounds (see "
+        "PARAMETER MACHINERY) — then REFIT: unchanged nll with bic better by one "
+        "parameter confirms it, a WORSE fit means revert. If none applies, "
+        "leave it. Use BEFORE adding parameters. For a full custom breakdown or "
+        "the optimizer log, delegate to an analyst."
+    ),
+    "list_versions": (
+        "Every model version (each a fit snapshot) with its kind, label, and fit "
+        "metrics (neg_log_likelihood, bic, is_new_best) — how you track which "
+        "structures you have tried and their scores. Your best-bic version is kept "
+        "and is what the run is scored on, so you never need to return to it."
+    ),
     "get_version": "Read a prior version's Antimony model + parameter table, to INSPECT it.",
     "get_fitting_log": "Tail of the pyPESTO/Fides multistart optimizer log (convergence, bound-pinning, ill-conditioning).",
-    "list_observables": ("The observables being fitted: id, formula, noise model, and "
-                         "`observableName` — WHAT each one measures. A formula naming a "
-                         "`readout_*` symbol is a measurement mapping YOUR model must define "
-                         "(`readout_x := <expression of your states>`, or set_assignment); "
-                         "several observables may share one readout (one row per dataset/gel, "
-                         "differing only in shipped scalings), and one rule covers them all."),
-    "get_measurements": ("Measurement data. Default returns a COMPACT SUMMARY (per observable×"
-                         "condition: n, time span, value min/max/mean, preview points) — prefer "
-                         "it, and prefer condition_id/observable_id filters or query_data for a "
-                         "targeted slice. summarize=False returns raw points PAGED "
-                         "{rows, row_count, total_rows, offset, truncated, next_offset?}, "
-                         "max_rows=200 per page: an unpaged dump is 70-80k tokens on the large "
-                         "problems and re-enters your context every later turn, which has ended "
-                         "runs on 'prompt exceeds max length'."),
+    "list_observables": (
+        "The observables being fitted: id, formula, noise model, and "
+        "`observableName` — WHAT each one measures. A formula naming a "
+        "`readout_*` symbol is a measurement mapping YOUR model must define "
+        "(`readout_x := <expression of your states>`, or set_assignment); "
+        "several observables may share one readout (one row per dataset/gel, "
+        "differing only in shipped scalings), and one rule covers them all."
+    ),
+    "get_measurements": (
+        "Measurement data. Default returns a COMPACT SUMMARY (per observable×"
+        "condition: n, time span, value min/max/mean, preview points) — prefer "
+        "it, and prefer condition_id/observable_id filters or query_data for a "
+        "targeted slice. summarize=False returns raw points PAGED "
+        "{rows, row_count, total_rows, offset, truncated, next_offset?}, "
+        "max_rows=200 per page: an unpaged dump is 70-80k tokens on the large "
+        "problems and re-enters your context every later turn, which has ended "
+        "runs on 'prompt exceeds max length'."
+    ),
     "list_data_tables": "List the SQL tables query_data exposes and their columns.",
     # The column names are spelled out because guessing them was the single largest non-editing
     # error class measured (15 of 22 query_data failures in the 2026-08-17 sweep): PEtab is
     # camelCase, and `conditionId` is NOT a measurements column -- that table keys conditions as
     # `simulationConditionId`. No casing convention would have saved the caller; only the schema.
-    "query_data": ("Run a read-only DuckDB SQL query over the data. Column names are PEtab's, "
-                   "camelCase. Tables: measurements (observableId, simulationConditionId, "
-                   "preequilibrationConditionId?, measurement, time, observableParameters, "
-                   "noiseParameters, datasetId, replicateId?), conditions (conditionId + one "
-                   "column per condition-specific quantity), observables (observableId, "
-                   "observableFormula, noiseFormula, observableTransformation, noiseDistribution), "
-                   "parameters (parameterId, parameterScale, lowerBound, upperBound, nominalValue, "
-                   "estimate), simulations (one row per point: measurement, simulation, residual, "
-                   "residual_weighted, noise), simulations_history (those same per-point rows for "
-                   "EVERY committed version, plus a `version` column — the ONLY way to compare "
-                   "model versions point-by-point, e.g. `SELECT observable_id, time, "
-                   "max(CASE WHEN version=3 THEN residual_weighted END) AS v3, "
-                   "max(CASE WHEN version=4 THEN residual_weighted END) AS v4 "
-                   "FROM simulations_history WHERE version IN (3,4) GROUP BY 1,2 "
-                   "ORDER BY abs(v4)-abs(v3) DESC`), optimization_starts, optimization_trace. "
-                   "NOTE the join, and note that BOTH spellings are real, on different tables: "
-                   "`measurements.simulationConditionId = conditions.conditionId`. measurements "
-                   "has no `conditionId`; conditions has no `simulationConditionId`. `residual` "
-                   "lives on simulations, not measurements. Call `list_data_tables` for the exact "
-                   "per-problem columns. Two things that bite: aggregate only NUMERIC columns "
-                   "(`avg(measurement)`, not `avg(observableId)` — a text column raises a "
-                   "Conversion Error), and DuckDB is not SQLite/pandas, so check a function "
-                   "exists before leaning on it. A worked shape: "
-                   "`SELECT m.observableId, m.simulationConditionId, count(*) n, "
-                   "avg(s.residual_weighted) bias FROM measurements m JOIN simulations s USING "
-                   "(observableId, simulationConditionId, time) GROUP BY 1, 2 ORDER BY abs(bias) "
-                   "DESC LIMIT 20`. "
-                   "Prefer aggregations; rows capped at max_rows (default 50). When `truncated` "
-                   "is true the result carries `next_offset` — page with it rather than raising "
-                   "max_rows, since a big page re-enters your context every later turn. Add an "
-                   "explicit ORDER BY when paging or pages can overlap/skip."),
+    "query_data": (
+        "Run a read-only DuckDB SQL query over the data. Column names are PEtab's, "
+        "camelCase. Tables: measurements (observableId, simulationConditionId, "
+        "preequilibrationConditionId?, measurement, time, observableParameters, "
+        "noiseParameters, datasetId, replicateId?), conditions (conditionId + one "
+        "column per condition-specific quantity), observables (observableId, "
+        "observableFormula, noiseFormula, observableTransformation, noiseDistribution), "
+        "parameters (parameterId, parameterScale, lowerBound, upperBound, nominalValue, "
+        "estimate), simulations (one row per point: measurement, simulation, residual, "
+        "residual_weighted, noise), simulations_history (those same per-point rows for "
+        "EVERY committed version, plus a `version` column — the ONLY way to compare "
+        "model versions point-by-point, e.g. `SELECT observable_id, time, "
+        "max(CASE WHEN version=3 THEN residual_weighted END) AS v3, "
+        "max(CASE WHEN version=4 THEN residual_weighted END) AS v4 "
+        "FROM simulations_history WHERE version IN (3,4) GROUP BY 1,2 "
+        "ORDER BY abs(v4)-abs(v3) DESC`), optimization_starts, optimization_trace. "
+        "NOTE the join, and note that BOTH spellings are real, on different tables: "
+        "`measurements.simulationConditionId = conditions.conditionId`. measurements "
+        "has no `conditionId`; conditions has no `simulationConditionId`. `residual` "
+        "lives on simulations, not measurements. Call `list_data_tables` for the exact "
+        "per-problem columns. Two things that bite: aggregate only NUMERIC columns "
+        "(`avg(measurement)`, not `avg(observableId)` — a text column raises a "
+        "Conversion Error), and DuckDB is not SQLite/pandas, so check a function "
+        "exists before leaning on it. A worked shape: "
+        "`SELECT m.observableId, m.simulationConditionId, count(*) n, "
+        "avg(s.residual_weighted) bias FROM measurements m JOIN simulations s USING "
+        "(observableId, simulationConditionId, time) GROUP BY 1, 2 ORDER BY abs(bias) "
+        "DESC LIMIT 20`. "
+        "Prefer aggregations; rows capped at max_rows (default 50). When `truncated` "
+        "is true the result carries `next_offset` — page with it rather than raising "
+        "max_rows, since a big page re-enters your context every later turn. Add an "
+        "explicit ORDER BY when paging or pages can overlap/skip."
+    ),
     "get_skill": "Read a skill in full, by name.",
 }
 
@@ -1054,8 +1129,10 @@ _IDLE_NUDGE = (
 # which is how the pair drifted out of sight of each other. Anything unlisted gets the
 # generic hint.
 _DISABLED_TOOL_HINTS = {
-    "query_data": ("Use `get_measurements` for the raw measurement data, or `list_data_tables` "
-                   "for the available tables and their columns."),
+    "query_data": (
+        "Use `get_measurements` for the raw measurement data, or `list_data_tables` "
+        "for the available tables and their columns."
+    ),
 }
 
 _DISABLED_TOOL_HINT_DEFAULT = (
@@ -1086,8 +1163,8 @@ FINISH_DESCRIPTION = (
     "that did not help needs no call either: the harness keeps your best-bic version regardless of "
     "where you end, so just try a genuinely different structure. Call this ONLY when the residuals "
     "show no systematic structure AND bic has bottomed out — and note which half does the work. "
-    + _ADEQUATE_IS_NOT_DONE +
-    " Judge that structure with the residual_structure verdict "
+    + _ADEQUATE_IS_NOT_DONE
+    + " Judge that structure with the residual_structure verdict "
     "the fit already returned, not with chi2: its sign_test / runs_test read residual SIGNS, and "
     "where design points REPEAT its replicate_lack_of_fit measures each prediction against that "
     "point's own replicate scatter — a flagged point there means no parameter value in your current "
@@ -1097,22 +1174,27 @@ FINISH_DESCRIPTION = (
     "mean finished while `merge_hints` stand on your last fit (or the ARM message names "
     "OUTSTANDING MERGES): each is a pair of parameters the data cannot tell apart, and tying them "
     "into one symbol costs `dnll` in fit and changes the score by its `dscore` — "
-    + _DSCORE_SIGN + ". " + _MERGE_TAKE_RULE +
-    " One more thing answers a standing hint besides taking it: a `move_scaled` of many decades, "
+    + _DSCORE_SIGN
+    + ". "
+    + _MERGE_TAKE_RULE
+    + " One more thing answers a standing hint besides taking it: a `move_scaled` of many decades, "
     "which is a flat direction rather than an edit that survives a refit. "
-    + ("Declining a merge needs a mathematical reason: name the parameters and the distinct "
-       "roles the measured design can distinguish. " if BIOLOGY_BLIND_ENABLED else
-    "And a last one, which is a real answer and not an excuse: the pair is not biologically the "
-    "same quantity. The "
-    "hints price IDENTIFIABILITY, not biology — tying a synthesis rate to a deactivation rate, or "
-    "a medium factor to an off-rate, buys the bic penalty while making the model assert something "
-    "false. Merge only what could plausibly BE one physical quantity (two isoforms' binding rates, "
-    "dephosphorylation of sibling states). This is NOT a blanket exemption, and declining every "
-    "hint on it is not credible: for EACH hint you decline, name the two parameters and the "
-    "distinct physical processes they measure, in the rationale. Where a hint's priced `dscore` is "
-    "large, take it and let the refit adjudicate rather than arguing it away — a large priced "
-    "gain means the distinction you are defending is not in the data. ") +
-    "Finishing takes TWO calls: the "
+    + (
+        "Declining a merge needs a mathematical reason: name the parameters and the distinct "
+        "roles the measured design can distinguish. "
+        if BIOLOGY_BLIND_ENABLED
+        else "And a last one, which is a real answer and not an excuse: the pair is not biologically the "
+        "same quantity. The "
+        "hints price IDENTIFIABILITY, not biology — tying a synthesis rate to a deactivation rate, or "
+        "a medium factor to an off-rate, buys the bic penalty while making the model assert something "
+        "false. Merge only what could plausibly BE one physical quantity (two isoforms' binding rates, "
+        "dephosphorylation of sibling states). This is NOT a blanket exemption, and declining every "
+        "hint on it is not credible: for EACH hint you decline, name the two parameters and the "
+        "distinct physical processes they measure, in the rationale. Where a hint's priced `dscore` is "
+        "large, take it and let the refit adjudicate rather than arguing it away — a large priced "
+        "gain means the distinction you are defending is not in the data. "
+    )
+    + "Finishing takes TWO calls: the "
     "first ARMS it and shows you the "
     "current bic and residual-structure diagnosis; review it, then call `finish` AGAIN to "
     "confirm and end. It is refused when there is no valid fit yet (no model built / "
@@ -1190,9 +1272,7 @@ FINISH_ARMED_TMPL = (
     "{merge_line}{invalid_line} "
     "If systematic structure is flagged, the model's FORM is still missing "
     "something — keep improving BIC instead of finishing. A CLEAN verdict is not the "
-    "other half of that argument. "
-    + _ADEQUATE_IS_NOT_DONE +
-    " If you have genuinely "
+    "other half of that argument. " + _ADEQUATE_IS_NOT_DONE + " If you have genuinely "
     "bottomed out BIC and are satisfied with the residuals, call finish AGAIN to "
     "confirm and end the run."
 )
@@ -1216,8 +1296,7 @@ FINISH_ARMED_WORST_TMPL = (
 # and ended 13 bic short of the two runs that never tried it. Only the PAIR is priced.
 FINISH_ARMED_MERGE_TMPL = (
     " OUTSTANDING MERGES — the data cannot tell these pairs apart:{ties} A bic that has bottomed out "
-    "with merges like these outstanding is NOT a finished model. "
-    + _MERGE_TAKE_RULE
+    "with merges like these outstanding is NOT a finished model. " + _MERGE_TAKE_RULE
 )
 
 #: One tie inside :data:`FINISH_ARMED_MERGE_TMPL`.
@@ -1288,12 +1367,21 @@ SUBAGENT_EMPTY_REPORT_MARKER = "[analyst returned no report]"
 # sweep spanning that edit would pool both versions into one cell with no column to split them on.
 # `{left}`/`{cap}` are filled per turn. The sibling hard-limit wording is in _REPORT_CONTRACT.
 SUBAGENT_TURN_NOTICES = (
-    (10, "NOTE: about {left} of your {cap} turns remain. Start converging — prefer answering "
-         "with what you have over gathering more."),
-    (5,  "WARNING: only {left} of your {cap} turns remain. Stop gathering evidence now and write "
-         "your report from what you already know."),
-    (1,  "FINAL TURN. Reply with your report THIS TURN — do not call another tool. Anything you "
-         "have not written down is lost."),
+    (
+        10,
+        "NOTE: about {left} of your {cap} turns remain. Start converging — prefer answering "
+        "with what you have over gathering more.",
+    ),
+    (
+        5,
+        "WARNING: only {left} of your {cap} turns remain. Stop gathering evidence now and write "
+        "your report from what you already know.",
+    ),
+    (
+        1,
+        "FINAL TURN. Reply with your report THIS TURN — do not call another tool. Anything you "
+        "have not written down is lost.",
+    ),
 )
 
 
@@ -1320,6 +1408,7 @@ SUBAGENT_TURN_NOTICES = (
 #   * a pre-rendered bundle is unparseable, so the completeness guard could only ask "is this
 #     constant a SUBSTRING of the registry", which passes for a string that merely happens to
 #     sit inside a tracked one. With leaves it asks for exact membership.
+
 
 # Bundling: a readable document, because this is PROMPT TEXT — it is registered in Phoenix and
 # read by humans. It must contain nothing a text column would reject.
@@ -1366,15 +1455,24 @@ BIOLOGY_BLIND_SYSTEM_PROMPT = (
     "records a version. Later changes may use model_edits when available; batch related changes "
     "into one call. The server's n_starts is the fitting budget: passing n_starts replaces it. "
     "Inspect the returned score, residuals, bounds and noise report, and consult "
-    + _PARAMETER_HALF + " to distinguish structural misfit from parameter uncertainty. "
+    + _PARAMETER_HALF
+    + " to distinguish structural misfit from parameter uncertainty. "
     "Propose and fit alternative state dimensions, couplings, nonlinearities and output mappings "
     "where the data warrant them. Use numerical evidence to decide which coefficients can be "
     "removed or shared. The lowest complexity-penalized likelihood is the objective. "
-    + _FREE_EXPONENTS_GUIDANCE.replace("cooperative or ligand-gated", "nonlinear or input-dependent")
-    + (" Use get_data_regimes to inspect statistical evidence about the measured signal shapes "
-       "and input dependence. A null or untestable result does not rule out richer structure. "
-       if DATA_REGIMES_ENABLED else "")
-    + _SIGMA_CAP_ADVISORY + " " + _ADEQUATE_IS_NOT_DONE + " "
+    + _FREE_EXPONENTS_GUIDANCE.replace(
+        "cooperative or ligand-gated", "nonlinear or input-dependent"
+    )
+    + (
+        " Use get_data_regimes to inspect statistical evidence about the measured signal shapes "
+        "and input dependence. A null or untestable result does not rule out richer structure. "
+        if DATA_REGIMES_ENABLED
+        else ""
+    )
+    + _SIGMA_CAP_ADVISORY
+    + " "
+    + _ADEQUATE_IS_NOT_DONE
+    + " "
     "Call finish when the search is complete; the judge selects your best fitted version "
     "automatically. " + BIOLOGY_BLIND_SEMANTICS
 )
@@ -1408,38 +1506,43 @@ def biology_blind_task(protocols: "list[tuple[str, str]] | None" = None) -> str:
     if not protocols:
         return BIOLOGY_BLIND_TASK
     for quantity, rule in protocols:
-        names = {m[0] for m in _PROTOCOL_TOKEN.finditer(rule)
-                 if not rule[m.end():].lstrip().startswith("(")}
+        names = {
+            m[0]
+            for m in _PROTOCOL_TOKEN.finditer(rule)
+            if not rule[m.end() :].lstrip().startswith("(")
+        }
         if not _PROTOCOL_QUANTITY.fullmatch(quantity) or not all(
-                name == "time" or re.fullmatch(r"input_\d{3}", name) for name in names):
+            name == "time" or re.fullmatch(r"input_\d{3}", name) for name in names
+        ):
             raise ValueError(f"not an anonymized input protocol: {quantity} := {rule}")
     rules = "; ".join(f"`{quantity} := {rule}`" for quantity, rule in protocols)
     return f"{BIOLOGY_BLIND_TASK}\n\n{BIOLOGY_BLIND_PROTOCOL_NOTE}{rules}."
+
+
 BIOLOGY_BLIND_ANALYSTS = {
     "mathematician": {
         "description": "Equation structure, dynamical systems, identifiability and optimization.",
         "prompt": "You analyze ODE structure and parameter estimation. Inspect the actual equations, "
-                  "data and fitting evidence. Separate limitations of the functional form from "
-                  "optimization failures or unidentifiable coefficients. Return a short report "
-                  "with evidence and one concrete change the lead can test. You cannot edit. "
-                  + BIOLOGY_BLIND_SEMANTICS,
+        "data and fitting evidence. Separate limitations of the functional form from "
+        "optimization failures or unidentifiable coefficients. Return a short report "
+        "with evidence and one concrete change the lead can test. You cannot edit. "
+        + BIOLOGY_BLIND_SEMANTICS,
     },
     "systems_scientist": {
         "description": "State-space structure and input/output dynamics inferred from data.",
         "prompt": "You analyze anonymous input/output systems. Inspect the measurements and model "
-                  "before recommending a state dimension, coupling, feedback or output mapping. "
-                  "Distinguish constraints established by the data from assumptions and identify "
-                  "alternative structures when the evidence is ambiguous. Return a short report "
-                  "and one concrete change the lead can test. You cannot edit. "
-                  + BIOLOGY_BLIND_SEMANTICS,
+        "before recommending a state dimension, coupling, feedback or output mapping. "
+        "Distinguish constraints established by the data from assumptions and identify "
+        "alternative structures when the evidence is ambiguous. Return a short report "
+        "and one concrete change the lead can test. You cannot edit. " + BIOLOGY_BLIND_SEMANTICS,
     },
     "signal_engineer": {
         "description": "Measured signal shapes, time scales, replicates and residual structure.",
         "prompt": "You analyze measurements and residuals as numerical signals. Use your tools to "
-                  "locate systematic timing, shape, amplitude or input-response errors relative "
-                  "to the supplied noise model. Report what is established, what is uncertain, "
-                  "and one concrete diagnostic or change for the lead. You cannot edit. "
-                  + BIOLOGY_BLIND_SEMANTICS,
+        "locate systematic timing, shape, amplitude or input-response errors relative "
+        "to the supplied noise model. Report what is established, what is uncertain, "
+        "and one concrete diagnostic or change for the lead. You cannot edit. "
+        + BIOLOGY_BLIND_SEMANTICS,
     },
 }
 BIOLOGY_BLIND_TOOL_DESCRIPTIONS = {
@@ -1459,9 +1562,9 @@ BIOLOGY_BLIND_TOOL_DESCRIPTIONS = {
     "get_version": "Inspect one recorded model version, its parameters and score.",
     "get_model": "Read the current or a recorded model in Antimony or SBML.",
     "make_changes": "Author or edit the ODE model and parameter search space with a justification. "
-                    "Every call fits and records one coherent change. Start with antimony; use "
-                    "model_edits for subsequent batches when supported. n_starts replaces the "
-                    "default fit budget. " + BIOLOGY_BLIND_SEMANTICS,
+    "Every call fits and records one coherent change. Start with antimony; use "
+    "model_edits for subsequent batches when supported. n_starts replaces the "
+    "default fit budget. " + BIOLOGY_BLIND_SEMANTICS,
 }
 
 
@@ -1565,9 +1668,7 @@ def all_prompts() -> "dict[str, str]":
     caller (Phoenix, the hash, a reader) is always a readable document.
     """
     return {
-        name: _bundle(entry)
-        for group in PROMPT_GROUPS.values()
-        for name, entry in group.items()
+        name: _bundle(entry) for group in PROMPT_GROUPS.values() for name, entry in group.items()
     }
 
 
@@ -1579,13 +1680,17 @@ def tracked_leaves() -> "set[str]":
     SUBSTRING of it, and a string that happens to sit inside a tracked one passes that while
     being untracked itself. These are the leaves, so the guard can ask for equality.
     """
-    def walk(entry) -> "list[str]":
-        return [entry] if isinstance(entry, str) else [
-            leaf for value in entry.values() for leaf in walk(value)
-        ]
 
-    return {leaf for group in PROMPT_GROUPS.values()
-            for entry in group.values() for leaf in walk(entry)}
+    def walk(entry) -> "list[str]":
+        return (
+            [entry]
+            if isinstance(entry, str)
+            else [leaf for value in entry.values() for leaf in walk(value)]
+        )
+
+    return {
+        leaf for group in PROMPT_GROUPS.values() for entry in group.values() for leaf in walk(entry)
+    }
 
 
 def _hash(entries: "dict[str, str]") -> str:

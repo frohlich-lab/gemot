@@ -25,24 +25,37 @@ def _problem(measurements, *, observables=("obs_A",), conditions=("c_train", "c_
         model=None,
         measurement_df=measurements,
         observable_df=pd.DataFrame(
-            {"observableFormula": ["x"] * len(observables),
-             "noiseFormula": ["1"] * len(observables)},
-            index=pd.Index(list(observables), name="observableId")),
+            {
+                "observableFormula": ["x"] * len(observables),
+                "noiseFormula": ["1"] * len(observables),
+            },
+            index=pd.Index(list(observables), name="observableId"),
+        ),
         condition_df=pd.DataFrame(
-            {"dose": [0.0] * len(conditions)},
-            index=pd.Index(list(conditions), name="conditionId")),
+            {"dose": [0.0] * len(conditions)}, index=pd.Index(list(conditions), name="conditionId")
+        ),
         parameter_df=pd.DataFrame(
-            {"parameterScale": ["lin"], "lowerBound": [0.0], "upperBound": [1.0],
-             "nominalValue": [0.5], "estimate": [1]},
-            index=pd.Index(["k"], name="parameterId")),
+            {
+                "parameterScale": ["lin"],
+                "lowerBound": [0.0],
+                "upperBound": [1.0],
+                "nominalValue": [0.5],
+                "estimate": [1],
+            },
+            index=pd.Index(["k"], name="parameterId"),
+        ),
     )
 
 
 def _rows(condition, times=(0.0, 1.0), observable="obs_A"):
-    return pd.DataFrame({"observableId": [observable] * len(times),
-                         "simulationConditionId": [condition] * len(times),
-                         "time": list(times),
-                         "measurement": [1.0] * len(times)})
+    return pd.DataFrame(
+        {
+            "observableId": [observable] * len(times),
+            "simulationConditionId": [condition] * len(times),
+            "time": list(times),
+            "measurement": [1.0] * len(times),
+        }
+    )
 
 
 # ------------------------------------------------------- the scorer does not disturb the session
@@ -117,8 +130,9 @@ def test_the_held_out_view_keeps_the_training_estimate_split(monkeypatch):
 
     monkeypatch.setattr(pypesto.petab, "PetabImporter", _importer)
     with pytest.raises(_Stop):
-        validation_data.score_problem(problem, _rows("c_test"),
-                                      build_dir="/tmp/train_build", model_name="train_module")
+        validation_data.score_problem(
+            problem, _rows("c_test"), build_dir="/tmp/train_build", model_name="train_module"
+        )
 
     view = captured["view"]
     assert view.parameter_df["estimate"].to_dict() == problem.parameter_df["estimate"].to_dict()
@@ -142,27 +156,38 @@ def test_an_empty_or_foreign_held_out_table_is_declined_before_any_build(monkeyp
     problem = _problem(_rows("c_train"))
 
     empty = validation_data.score_problem(
-        problem, _rows("c_test").iloc[0:0], build_dir="/tmp/x", model_name="m")
+        problem, _rows("c_test").iloc[0:0], build_dir="/tmp/x", model_name="m"
+    )
     assert empty["status"] == validation_data.STATUS_NO_DATA
 
     foreign = validation_data.score_problem(
-        problem, _rows("c_elsewhere"), build_dir="/tmp/x", model_name="m")
+        problem, _rows("c_elsewhere"), build_dir="/tmp/x", model_name="m"
+    )
     assert foreign["status"] == validation_data.STATUS_TABLE_MISMATCH
     assert "c_elsewhere" in foreign["reason"]
 
     unknown_obs = validation_data.score_problem(
-        problem, _rows("c_test", observable="obs_Z"), build_dir="/tmp/x", model_name="m")
+        problem, _rows("c_test", observable="obs_Z"), build_dir="/tmp/x", model_name="m"
+    )
     assert unknown_obs["status"] == validation_data.STATUS_TABLE_MISMATCH
     assert "obs_Z" in unknown_obs["reason"]
 
 
 # --------------------------------------------------------------------- the scoring projection
-_REF = {"nll": -66.58, "k": 19, "n": 144,
-        "validation": {"status": "ok", "nll": 500.0, "n": 276, "chi2": 1000.0}}
+_REF = {
+    "nll": -66.58,
+    "k": 19,
+    "n": 144,
+    "validation": {"status": "ok", "nll": 500.0, "n": 276, "chi2": 1000.0},
+}
 
 
-_JUDGE_REF = {"nll": 100.0, "k": 3, "n": 50,
-              "validation": {"status": "ok", "nll": 400.0, "n": 12, "chi2": 90.0}}
+_JUDGE_REF = {
+    "nll": 100.0,
+    "k": 3,
+    "n": 50,
+    "validation": {"status": "ok", "nll": 400.0, "n": 12, "chi2": 90.0},
+}
 
 
 _RAISES = object()
@@ -181,8 +206,9 @@ def test_the_validation_tool_is_not_exposed_to_the_panel():
     assert "evaluate_validation_data" not in ALLOWED_TOOLS
 
 
-def test_the_server_only_registers_the_tool_when_given_held_out_data(monkeypatch, yaml_path,
-                                                                    tmp_path):
+def test_the_server_only_registers_the_tool_when_given_held_out_data(
+    monkeypatch, yaml_path, tmp_path
+):
     """No held-out file, no tool — so an example without a validation set cannot accidentally be
     scored against a stale or unrelated table, and the judge's "unavailable" status is reached by
     the tool genuinely not existing.
@@ -197,19 +223,26 @@ def test_the_server_only_registers_the_tool_when_given_held_out_data(monkeypatch
     from petab_mcp.server import create_server
 
     calls = []
-    monkeypatch.setattr(server_mod, "_register_validation_data_tools",
-                        lambda mcp, ctx, held_out: calls.append(held_out))
+    monkeypatch.setattr(
+        server_mod,
+        "_register_validation_data_tools",
+        lambda mcp, ctx, held_out: calls.append(held_out),
+    )
     assert "validation_measurements" in inspect.signature(create_server).parameters
 
-    create_server(yaml_path, build_root=str(tmp_path / "b1"),
-                  provenance_dir=str(tmp_path / "prov1"))
+    create_server(
+        yaml_path, build_root=str(tmp_path / "b1"), provenance_dir=str(tmp_path / "prov1")
+    )
     assert calls == []
 
     meas = tmp_path / "held.tsv"
     _rows("c_test").to_csv(meas, sep="\t", index=False)
-    create_server(yaml_path, build_root=str(tmp_path / "b2"),
-                  provenance_dir=str(tmp_path / "prov2"),
-                  validation_measurements=str(meas))
+    create_server(
+        yaml_path,
+        build_root=str(tmp_path / "b2"),
+        provenance_dir=str(tmp_path / "prov2"),
+        validation_measurements=str(meas),
+    )
     assert len(calls) == 1
     assert isinstance(calls[0], validation_data.HeldOut)
     assert len(calls[0].measurement_df) == 2
@@ -227,13 +260,18 @@ def test_a_held_out_row_that_is_also_a_training_row_is_refused(monkeypatch, tmp_
     (tmp_path / "held_out.yaml").write_text("format_version: 1\n")
 
     import petab.v1 as petab
+
     held = _problem(overlapping)
     monkeypatch.setattr(petab.Problem, "from_yaml", staticmethod(lambda *a, **k: held))
 
     with pytest.raises(ValueError, match="also in the TRAINING table"):
         benchmark._validation_measurement_df(
-            name="X", validation_yaml="held_out.yaml", collection=None,
-            published=published, training_measurement_df=train)
+            name="X",
+            validation_yaml="held_out.yaml",
+            collection=None,
+            published=published,
+            training_measurement_df=train,
+        )
 
 
 def test_a_held_out_problem_that_changed_the_model_tables_is_refused(monkeypatch, tmp_path):
@@ -248,12 +286,17 @@ def test_a_held_out_problem_that_changed_the_model_tables_is_refused(monkeypatch
     monkeypatch.setattr(benchmark, "benchmark_dir", lambda *a, **k: tmp_path)
     (tmp_path / "held_out.yaml").write_text("format_version: 1\n")
     import petab.v1 as petab
+
     monkeypatch.setattr(petab.Problem, "from_yaml", staticmethod(lambda *a, **k: held))
 
     with pytest.raises(ValueError, match="condition table differs"):
         benchmark._validation_measurement_df(
-            name="X", validation_yaml="held_out.yaml", collection=None,
-            published=published, training_measurement_df=train)
+            name="X",
+            validation_yaml="held_out.yaml",
+            collection=None,
+            published=published,
+            training_measurement_df=train,
+        )
 
 
 def test_an_absent_validation_yaml_names_itself(monkeypatch, tmp_path):
@@ -262,8 +305,12 @@ def test_an_absent_validation_yaml_names_itself(monkeypatch, tmp_path):
     monkeypatch.setattr(benchmark, "benchmark_dir", lambda *a, **k: tmp_path)
     with pytest.raises(FileNotFoundError, match="nope.yaml"):
         benchmark._validation_measurement_df(
-            name="X", validation_yaml="nope.yaml", collection=None,
-            published=_problem(_rows("c_train")), training_measurement_df=_rows("c_train"))
+            name="X",
+            validation_yaml="nope.yaml",
+            collection=None,
+            published=_problem(_rows("c_train")),
+            training_measurement_df=_rows("c_train"),
+        )
 
 
 def test_the_held_out_table_lands_outside_the_problem_directory():
@@ -295,8 +342,7 @@ def test_a_model_that_cannot_integrate_the_unseen_conditions_keeps_its_own_statu
     """`non_finite` is a RESULT about the model — the ODEs blew up under an EGF pulse — not an
     infrastructure gap. Folding it into a null nll would make it indistinguishable from an example
     that ships no held-out data at all."""
-    out = _validation_fields(
-        {"status": "non_finite", "reason": "could not integrate"}, _REF)
+    out = _validation_fields({"status": "non_finite", "reason": "could not integrate"}, _REF)
     assert out["status"] == "non_finite" and out["reason"] == "could not integrate"
     assert "delta_nll" not in out and out["reference_nll"] == 500.0
 
@@ -341,9 +387,18 @@ def test_the_history_csv_has_columns_for_the_held_out_score(tmp_path):
     stayed invisible for a release."""
     from petab_harness import metrics
 
-    result = {"scenario": "fujita", "validation": {
-        "status": "ok", "nll": 560.0, "reference_nll": 500.0, "delta_nll": 60.0,
-        "n": 276, "chi2": 300.0, "reference_chi2": 250.0}}
+    result = {
+        "scenario": "fujita",
+        "validation": {
+            "status": "ok",
+            "nll": 560.0,
+            "reference_nll": 500.0,
+            "delta_nll": 60.0,
+            "n": 276,
+            "chi2": 300.0,
+            "reference_chi2": 250.0,
+        },
+    }
     path = metrics.append_history([metrics.build_row(result)], tmp_path / "h.csv")
     row = dict(zip(*(line.split(",") for line in path.read_text().splitlines()[:2])))
     assert row["val_status"] == "ok"
@@ -358,12 +413,15 @@ def test_the_history_csv_has_columns_for_the_held_out_score(tmp_path):
     # ...and a status without a usable difference writes the status but NOT a 0.0 delta, which a
     # sweep would average as "predicts exactly as well as the truth".
     p3 = metrics.append_history(
-        [metrics.build_row({"scenario": "fujita",
-                            "validation": {"status": "non_finite", "n": 276}})],
-        tmp_path / "h3.csv")
+        [
+            metrics.build_row(
+                {"scenario": "fujita", "validation": {"status": "non_finite", "n": 276}}
+            )
+        ],
+        tmp_path / "h3.csv",
+    )
     row3 = dict(zip(*(line.split(",") for line in p3.read_text().splitlines()[:2])))
     assert row3["val_status"] == "non_finite" and row3["val_delta_nll"] == ""
-
 
 
 class _Scenario:
@@ -377,7 +435,6 @@ class _Scenario:
 
     def reference(self):
         return dict(self._reference)
-
 
 
 class _Baseline:
@@ -418,8 +475,9 @@ def _run_judge(work, *, has_held_out, payload, reference=None, nll=100.0):
             raise RuntimeError("Unknown tool: evaluate_validation_data")
         return canned.get(name, {})
 
-    code, result = asyncio.run(_judge(scenario, call, _Baseline(), work, {},
-                                      _ToolClock(), time.monotonic()))
+    code, result = asyncio.run(
+        _judge(scenario, call, _Baseline(), work, {}, _ToolClock(), time.monotonic())
+    )
     return code, result, asked
 
 
@@ -428,10 +486,12 @@ def test_the_held_out_score_reaches_result_json_without_changing_the_verdict(tmp
     must be recorded and must NOT flip that: the check is report-only, and a gate on it would be
     calibrated against nothing (see scoring._validation_fields)."""
     code, result, _ = _run_judge(
-        tmp_path, has_held_out=True,
-        payload={"status": "ok", "nll": 900.0, "n": 12, "chi2": 400.0, "n_conditions": 4})
+        tmp_path,
+        has_held_out=True,
+        payload={"status": "ok", "nll": 900.0, "n": 12, "chi2": 400.0, "n_conditions": 4},
+    )
     assert result["delta_bic"] == pytest.approx(0.0)
-    assert result["validation"]["delta_nll"] == pytest.approx(500.0)   # 900 - 400, much worse
+    assert result["validation"]["delta_nll"] == pytest.approx(500.0)  # 900 - 400, much worse
     assert result["validation"]["reference_chi2"] == 90.0
     assert result["success"] is True and code == 0
 
@@ -441,8 +501,8 @@ def test_an_example_with_no_held_out_data_is_never_asked_for_a_score(tmp_path):
     line on every one of their runs for a check they were never meant to have — so the judge gates
     on the file, and `validation` stays None rather than becoming a status."""
     code, result, asked = _run_judge(
-        tmp_path, has_held_out=False, payload=_RAISES,
-        reference={"nll": 100.0, "k": 3, "n": 50})
+        tmp_path, has_held_out=False, payload=_RAISES, reference={"nll": 100.0, "k": 3, "n": 50}
+    )
     assert "evaluate_validation_data" not in asked
     assert result["validation"] is None
     assert result["success"] is True and code == 0
@@ -475,12 +535,25 @@ def test_the_span_and_the_csv_cannot_disagree_about_the_held_out_columns(monkeyp
     # absence of the string "val_status" from the source would also fail on a comment that merely
     # mentions the column.)
     stamped: dict = {}
-    monkeypatch.setattr(tracing, "_set_attrs",
-                        lambda span, attrs: stamped.update(attrs), raising=True)
-    tracing.record_run_result(object(), {"scenario": "fujita", "validation": {
-        "status": "ok", "nll": 5.0, "reference_nll": 4.0, "delta_nll": 1.0, "n": 12}})
-    assert {k.removeprefix("petab.") for k in stamped if k.startswith("petab.val_")} \
-        <= set(metrics.HISTORY_FIELDS)
+    monkeypatch.setattr(
+        tracing, "_set_attrs", lambda span, attrs: stamped.update(attrs), raising=True
+    )
+    tracing.record_run_result(
+        object(),
+        {
+            "scenario": "fujita",
+            "validation": {
+                "status": "ok",
+                "nll": 5.0,
+                "reference_nll": 4.0,
+                "delta_nll": 1.0,
+                "n": 12,
+            },
+        },
+    )
+    assert {k.removeprefix("petab.") for k in stamped if k.startswith("petab.val_")} <= set(
+        metrics.HISTORY_FIELDS
+    )
     assert "petab.val_delta_nll" in stamped and stamped["petab.val_delta_nll"] == 1.0
 
 
@@ -492,8 +565,9 @@ def test_an_explicit_point_must_come_with_matching_names(monkeypatch):
 
     problem = _problem(_rows("c_train"))
     with pytest.raises(ValueError, match="both x_full and x_names, or neither"):
-        validation_data.score_problem(problem, _rows("c_test"), build_dir="/tmp/x",
-                                      model_name="m", x_full=[0.5])
+        validation_data.score_problem(
+            problem, _rows("c_test"), build_dir="/tmp/x", model_name="m", x_full=[0.5]
+        )
 
 
 # --------------------------------------------- the guards the last two reviews added
@@ -528,9 +602,13 @@ def test_a_short_x_full_is_refused_rather_than_evaluated_misaligned(monkeypatch)
 
     with pytest.raises(ValueError, match="must be the FULL vector"):
         validation_data.score_problem(
-            problem, _rows("c_test"), build_dir="/tmp/x", model_name="m",
-            x_full=[0.5],                        # one value for three parameters
-            x_names=["k", "sigma", "scale"])     # ...but the NAMES match, so only length catches it
+            problem,
+            _rows("c_test"),
+            build_dir="/tmp/x",
+            model_name="m",
+            x_full=[0.5],  # one value for three parameters
+            x_names=["k", "sigma", "scale"],
+        )  # ...but the NAMES match, so only length catches it
 
 
 def test_the_recorded_reference_vector_must_be_full_dimensional():
@@ -544,7 +622,7 @@ def test_the_recorded_reference_vector_must_be_full_dimensional():
 
     class _Result:
         class optimize_result:
-            list = [{"x": [1.0, 2.0]}]           # pypesto returning a REDUCED vector
+            list = [{"x": [1.0, 2.0]}]  # pypesto returning a REDUCED vector
 
     assert list(_recorded_vector(_Result(), [1.0, 2.0, 3.0], _PP())) == [1.0, 2.0, 3.0]
     with pytest.raises(ValueError, match="must be the FULL vector"):
@@ -559,8 +637,13 @@ def test_a_failed_reference_refit_is_distinguishable_from_no_bar_at_all(tmp_path
 
     failed = _validation_fields(
         {"status": "ok", "nll": 500.0, "n": 12, "chi2": 1.0},
-        {"nll": 1.0, "k": 2, "n": 10,
-         "validation": {"status": "error", "reason": "ValueError: boom"}})
+        {
+            "nll": 1.0,
+            "k": 2,
+            "n": 10,
+            "validation": {"status": "error", "reason": "ValueError: boom"},
+        },
+    )
     assert failed["reference_status"] == "error" and failed["reference_nll"] is None
 
     rows = [metrics.build_row({"scenario": "fujita", "validation": failed})]
@@ -574,12 +657,13 @@ def test_an_attempted_check_with_no_reference_bar_is_reported_not_skipped():
     """A judge that CALLED the tool and got nothing back must not look like an example with no
     held-out set. Without `asked` the two are the same `None`, so a reference that has not been
     refit yet turns every failed call into a silent clean skip — undiagnosable from result.json."""
-    assert _validation_fields(None, {}) is None                      # genuinely no check exists
+    assert _validation_fields(None, {}) is None  # genuinely no check exists
     out = _validation_fields(None, {}, asked=True)
     assert out["status"] == "unavailable" and "no held-out score" in out["reason"]
     # and the shape does not depend on whether the tool answered
     assert "reference_chi2" in _validation_fields(
-        None, {"validation": {"status": "ok", "nll": 1.0, "n": 4, "chi2": 2.0}})
+        None, {"validation": {"status": "ok", "nll": 1.0, "n": 4, "chi2": 2.0}}
+    )
 
 
 def test_a_time_written_as_1_and_1_0_is_the_same_held_out_row(monkeypatch, tmp_path):
@@ -589,12 +673,19 @@ def test_a_time_written_as_1_and_1_0_is_the_same_held_out_row(monkeypatch, tmp_p
     import pandas as pd
 
     def _table(time_value):
-        return pd.DataFrame({"observableId": ["obs_A"], "simulationConditionId": ["c1"],
-                             "time": [time_value], "measurement": [1.0]})
+        return pd.DataFrame(
+            {
+                "observableId": ["obs_A"],
+                "simulationConditionId": ["c1"],
+                "time": [time_value],
+                "measurement": [1.0],
+            }
+        )
 
     class _V:
         measurement_df = _table(1.0)
         observable_df = _problem(_rows("c1")).observable_df
+
     monkeypatch.setattr("petab.v1.lint.check_measurement_df", lambda *a, **k: None)
     monkeypatch.setattr("petab_mcp.fitting.needs_flattening", lambda *a, **k: False)
 
@@ -611,12 +702,11 @@ def test_a_view_with_fewer_parameter_rows_is_served_not_refused():
     from petab_mcp.validation_data import _reduced_from_named
 
     class _PP:
-        x_names = ["k", "sigma"]                 # the view dropped the training scalings
+        x_names = ["k", "sigma"]  # the view dropped the training scalings
         x_free_indices = [0, 1]
 
-    reduced = _reduced_from_named(
-        _PP(), [1.0, 2.0, 3.0], ["k", "sigma", "s_blot_retired"])
-    assert reduced == [1.0, 2.0]                 # in pp.x_names order, the extra name ignored
+    reduced = _reduced_from_named(_PP(), [1.0, 2.0, 3.0], ["k", "sigma", "s_blot_retired"])
+    assert reduced == [1.0, 2.0]  # in pp.x_names order, the extra name ignored
 
 
 def test_a_name_the_view_needs_and_the_caller_omitted_is_refused():
@@ -645,7 +735,6 @@ def test_arity_is_reported_as_arity_not_as_a_name_mismatch():
         _reduced_from_named(_PP(), [0.5], ["k", "sigma", "scale"])
 
 
-
 # ------------------------------------------------------- a held-out table the EXAMPLE ships
 def test_a_curated_table_is_read_against_the_published_problems_own_tables(tmp_path):
     """The curated path has no second problem to compare against, so the published problem IS the
@@ -655,8 +744,11 @@ def test_a_curated_table_is_read_against_the_published_problems_own_tables(tmp_p
     _rows("c_test").to_csv(tmp_path / "curated" / "measurements.tsv", sep="\t", index=False)
 
     held = benchmark._curated_held_out(
-        name="X", validation_table="curated/measurements.tsv", example_dir=tmp_path,
-        published=_problem(_rows("c_train")))
+        name="X",
+        validation_table="curated/measurements.tsv",
+        example_dir=tmp_path,
+        published=_problem(_rows("c_train")),
+    )
 
     assert list(held.measurement_df["simulationConditionId"]) == ["c_test", "c_test"]
     assert held.condition_df is None and held.mode == "fixed"
@@ -672,8 +764,11 @@ def test_a_curated_table_naming_an_unpublished_condition_is_refused(tmp_path):
 
     with pytest.raises(ValueError, match="c_knockdown"):
         benchmark._curated_held_out(
-            name="X", validation_table="curated/measurements.tsv", example_dir=tmp_path,
-            published=_problem(_rows("c_train")))
+            name="X",
+            validation_table="curated/measurements.tsv",
+            example_dir=tmp_path,
+            published=_problem(_rows("c_train")),
+        )
 
 
 def test_a_curated_row_that_is_also_a_training_row_is_refused(tmp_path):
@@ -684,8 +779,11 @@ def test_a_curated_row_that_is_also_a_training_row_is_refused(tmp_path):
 
     with pytest.raises(ValueError, match="also in the TRAINING table"):
         benchmark._curated_held_out(
-            name="X", validation_table="curated/measurements.tsv", example_dir=tmp_path,
-            published=_problem(_rows("c_train")))
+            name="X",
+            validation_table="curated/measurements.tsv",
+            example_dir=tmp_path,
+            published=_problem(_rows("c_train")),
+        )
 
 
 def test_an_absent_curated_table_names_itself(tmp_path):
@@ -693,19 +791,26 @@ def test_an_absent_curated_table_names_itself(tmp_path):
     unvalidated."""
     with pytest.raises(FileNotFoundError, match="nope.tsv"):
         benchmark._curated_held_out(
-            name="X", validation_table="nope.tsv", example_dir=tmp_path,
-            published=_problem(_rows("c_train")))
+            name="X",
+            validation_table="nope.tsv",
+            example_dir=tmp_path,
+            published=_problem(_rows("c_train")),
+        )
 
 
 def test_a_malformed_curated_table_reports_lint_before_reading_condition_ids(tmp_path):
     """A missing required column must name the malformed table, not leak a raw KeyError."""
     _rows("c_test").drop(columns="simulationConditionId").to_csv(
-        tmp_path / "measurements.tsv", sep="\t", index=False)
+        tmp_path / "measurements.tsv", sep="\t", index=False
+    )
 
     with pytest.raises(ValueError, match="validation measurement table fails petab's lint"):
         benchmark._curated_held_out(
-            name="X", validation_table="measurements.tsv", example_dir=tmp_path,
-            published=_problem(_rows("c_train")))
+            name="X",
+            validation_table="measurements.tsv",
+            example_dir=tmp_path,
+            published=_problem(_rows("c_train")),
+        )
 
 
 def test_declaring_both_held_out_sources_is_refused(tmp_path):
@@ -713,17 +818,29 @@ def test_declaring_both_held_out_sources_is_refused(tmp_path):
     last would silently win and the example would be scored against a set nobody chose."""
     with pytest.raises(ValueError, match="BOTH"):
         benchmark._held_out_source(
-            name="X", validation_yaml="test_data/held.yaml",
-            validation_table="curated/measurements.tsv", example_dir=tmp_path,
-            collection=None, published=_problem(_rows("c_train")))
+            name="X",
+            validation_yaml="test_data/held.yaml",
+            validation_table="curated/measurements.tsv",
+            example_dir=tmp_path,
+            collection=None,
+            published=_problem(_rows("c_train")),
+        )
 
 
 def test_no_declaration_means_no_held_out_table(tmp_path):
     """The default: an example without held-out data returns None here, which is what leaves the
     server's scoring tool unregistered."""
-    assert benchmark._held_out_source(
-        name="X", validation_yaml=None, validation_table=None, example_dir=tmp_path,
-        collection=None, published=_problem(_rows("c_train"))) is None
+    assert (
+        benchmark._held_out_source(
+            name="X",
+            validation_yaml=None,
+            validation_table=None,
+            example_dir=tmp_path,
+            collection=None,
+            published=_problem(_rows("c_train")),
+        )
+        is None
+    )
 
 
 # ----------------------------------- a fixed-θ set that brings new rows of the training inputs
@@ -739,30 +856,43 @@ def test_a_curated_set_may_bring_new_values_of_the_training_inputs(tmp_path):
     """A conditions.tsv beside the table adds rows on the training table's own columns — another
     cell type's Smad abundances, a knockdown level — and the conditions it names are then known.
     Still fixed-θ: no parameter table, so the fitted point is what gets scored."""
-    table = _curated(tmp_path, _rows("c_knockdown"),
-                     pd.DataFrame({"conditionId": ["c_knockdown"], "dose": [0.5]}))
+    table = _curated(
+        tmp_path,
+        _rows("c_knockdown"),
+        pd.DataFrame({"conditionId": ["c_knockdown"], "dose": [0.5]}),
+    )
 
-    held = benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
-                                       published=_problem(_rows("c_train")))
+    held = benchmark._curated_held_out(
+        name="X", validation_table=table, example_dir=tmp_path, published=_problem(_rows("c_train"))
+    )
 
     assert held.mode == "fixed"
     assert list(held.condition_df.index) == ["c_knockdown"]
     assert float(held.condition_df.loc["c_knockdown", "dose"]) == 0.5
 
 
-@pytest.mark.parametrize("conditions, needle", [
-    (pd.DataFrame({"conditionId": ["c_new"], "dose": [0.5], "temperature": [37.0]}),
-     "different models"),
-    (pd.DataFrame({"conditionId": ["c_train"], "dose": [0.5]}), "does not redefine"),
-])
+@pytest.mark.parametrize(
+    "conditions, needle",
+    [
+        (
+            pd.DataFrame({"conditionId": ["c_new"], "dose": [0.5], "temperature": [37.0]}),
+            "different models",
+        ),
+        (pd.DataFrame({"conditionId": ["c_train"], "dose": [0.5]}), "does not redefine"),
+    ],
+)
 def test_a_curated_condition_table_may_only_add_rows(tmp_path, conditions, needle):
     """A new column is a new input, i.e. a different model; a training id redefines a condition
     the model was fitted under. Both are refused at setup, in the score-time rule's own words."""
     table = _curated(tmp_path, _rows("c_test"), conditions)
 
     with pytest.raises(ValueError, match=needle):
-        benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
-                                    published=_problem(_rows("c_train")))
+        benchmark._curated_held_out(
+            name="X",
+            validation_table=table,
+            example_dir=tmp_path,
+            published=_problem(_rows("c_train")),
+        )
 
 
 def test_a_curated_preequilibration_condition_must_be_known_too(tmp_path):
@@ -771,12 +901,17 @@ def test_a_curated_preequilibration_condition_must_be_known_too(tmp_path):
     table = _curated(tmp_path, _rows("c_test").assign(preequilibrationConditionId="c_basal"))
 
     with pytest.raises(ValueError, match="c_basal"):
-        benchmark._curated_held_out(name="X", validation_table=table, example_dir=tmp_path,
-                                    published=_problem(_rows("c_train")))
+        benchmark._curated_held_out(
+            name="X",
+            validation_table=table,
+            example_dir=tmp_path,
+            published=_problem(_rows("c_train")),
+        )
 
 
-def test_materialize_writes_a_fixed_sets_condition_rows_beside_its_measurements(tmp_path,
-                                                                                monkeypatch):
+def test_materialize_writes_a_fixed_sets_condition_rows_beside_its_measurements(
+    tmp_path, monkeypatch
+):
     """What lands on disk is the contract with the server: conditions.tsv beside measurements.tsv,
     in the shape of the problem's own (no conditionName), and gone again when the set stops
     bringing any. The directory is gitignored and outlives a branch switch, so every file an
@@ -789,16 +924,19 @@ def test_materialize_writes_a_fixed_sets_condition_rows_beside_its_measurements(
     monkeypatch.setattr(benchmark, "_load_problem", lambda *a, **k: copy.deepcopy(published))
     monkeypatch.setattr(benchmark, "_write_empty_sbml", lambda d: None)
     monkeypatch.setattr(benchmark, "_write_problem_yaml", lambda d: None)
-    table = _curated(tmp_path, _rows("c_knockdown"),
-                     pd.DataFrame({"conditionId": ["c_knockdown"], "conditionName": ["kd"],
-                                   "dose": [0.5]}))
+    table = _curated(
+        tmp_path,
+        _rows("c_knockdown"),
+        pd.DataFrame({"conditionId": ["c_knockdown"], "conditionName": ["kd"], "dose": [0.5]}),
+    )
     vpath = benchmark.validation_measurements_path(tmp_path)
     vpath.parent.mkdir()
     stale = vpath.with_name(validation_data.HELD_OUT_PARAMETERS)
     stale.write_text("parameterId\tnominalValue\testimate\nk\t0.5\t1\n")
 
-    out = benchmark.materialize(name="X", shipped_param_ids=["k"], example_dir=tmp_path,
-                                validation_table=table)
+    out = benchmark.materialize(
+        name="X", shipped_param_ids=["k"], example_dir=tmp_path, validation_table=table
+    )
     held = validation_data.read_held_out(vpath)
 
     assert out["validation_conditions"] == 1
@@ -808,8 +946,9 @@ def test_materialize_writes_a_fixed_sets_condition_rows_beside_its_measurements(
 
     _curated(tmp_path, _rows("c_test"))
     (tmp_path / "curated" / "conditions.tsv").unlink()
-    benchmark.materialize(name="X", shipped_param_ids=["k"], example_dir=tmp_path,
-                          validation_table=table)
+    benchmark.materialize(
+        name="X", shipped_param_ids=["k"], example_dir=tmp_path, validation_table=table
+    )
     assert validation_data.read_held_out(vpath).condition_df is None
 
     benchmark.materialize(name="X", shipped_param_ids=["k"], example_dir=tmp_path)
@@ -845,12 +984,14 @@ def test_score_problem_appends_a_fixed_sets_condition_rows_before_building(monke
 
     monkeypatch.setattr(pypesto.petab, "PetabImporter", _Importer)
     import petab_mcp.fitting as fitting
+
     monkeypatch.setattr(fitting, "_apply_amici_solver_defaults", lambda pp: None)
     problem = _problem(_rows("c_train"))
     new = pd.DataFrame({"dose": [0.5]}, index=pd.Index(["c_knockdown"], name="conditionId"))
 
-    out = validation_data.score_problem(problem, _rows("c_knockdown"), build_dir="/tmp/x",
-                                        model_name="m", condition_df=new)
+    out = validation_data.score_problem(
+        problem, _rows("c_knockdown"), build_dir="/tmp/x", model_name="m", condition_df=new
+    )
 
     assert out["status"] == validation_data.STATUS_OK and out["n_conditions"] == 1
     assert list(seen[0].condition_df.index) == ["c_train", "c_test", "c_knockdown"]
@@ -869,16 +1010,19 @@ def test_a_fixed_sets_condition_table_is_checked_before_any_build(monkeypatch):
     monkeypatch.setattr(pypesto.petab, "PetabImporter", _boom)
     problem = _problem(_rows("c_train"))
 
-    other_column = pd.DataFrame({"temperature": [37.0]},
-                                index=pd.Index(["c_new"], name="conditionId"))
-    out = validation_data.score_problem(problem, _rows("c_new"), build_dir="/tmp/x",
-                                        model_name="m", condition_df=other_column)
+    other_column = pd.DataFrame(
+        {"temperature": [37.0]}, index=pd.Index(["c_new"], name="conditionId")
+    )
+    out = validation_data.score_problem(
+        problem, _rows("c_new"), build_dir="/tmp/x", model_name="m", condition_df=other_column
+    )
     assert out["status"] == validation_data.STATUS_TABLE_MISMATCH
     assert "different models" in out["reason"]
 
     redefined = pd.DataFrame({"dose": [0.5]}, index=pd.Index(["c_train"], name="conditionId"))
-    out = validation_data.score_problem(problem, _rows("c_test"), build_dir="/tmp/x",
-                                        model_name="m", condition_df=redefined)
+    out = validation_data.score_problem(
+        problem, _rows("c_test"), build_dir="/tmp/x", model_name="m", condition_df=redefined
+    )
     assert out["status"] == validation_data.STATUS_TABLE_MISMATCH
     assert "does not redefine" in out["reason"]
 
@@ -898,14 +1042,17 @@ def test_score_session_hands_a_fixed_sets_condition_rows_to_the_scorer(monkeypat
         return {"status": "ok"}
 
     monkeypatch.setattr(validation_data, "score_problem", _score)
-    session = types.SimpleNamespace(lock=contextlib.nullcontext(), problem=object(),
-                                    sbml_hash=lambda: "h")
+    session = types.SimpleNamespace(
+        lock=contextlib.nullcontext(), problem=object(), sbml_hash=lambda: "h"
+    )
     engine = types.SimpleNamespace(
-        pypesto_importer_kwargs=lambda h: {"output_folder": "/tmp/x", "model_name": "m"})
+        pypesto_importer_kwargs=lambda h: {"output_folder": "/tmp/x", "model_name": "m"}
+    )
     rows = pd.DataFrame({"dose": [0.5]}, index=pd.Index(["c_knockdown"], name="conditionId"))
 
     validation_data.score_session(
-        session, engine, validation_data.HeldOut(_rows("c_knockdown"), condition_df=rows))
+        session, engine, validation_data.HeldOut(_rows("c_knockdown"), condition_df=rows)
+    )
 
     assert seen["condition_df"] is rows
 
@@ -917,7 +1064,8 @@ def test_read_held_out_gives_a_fixed_set_its_condition_rows(tmp_path):
 
     _rows("c_knockdown").to_csv(tmp_path / "measurements.tsv", sep="\t", index=False)
     pd.DataFrame({"conditionId": ["c_knockdown"], "dose": [0.5]}).to_csv(
-        tmp_path / validation_data.HELD_OUT_CONDITIONS, sep="\t", index=False)
+        tmp_path / validation_data.HELD_OUT_CONDITIONS, sep="\t", index=False
+    )
 
     held = validation_data.read_held_out(tmp_path / "measurements.tsv")
 
@@ -926,7 +1074,8 @@ def test_read_held_out_gives_a_fixed_set_its_condition_rows(tmp_path):
 
 
 def test_score_session_scores_the_toy_at_its_fitted_point_on_a_condition_of_the_sets_own(
-        session, engine):
+    session, engine
+):
     """The one AMICI-backed check of the fixed-θ side: the toy's measurements moved onto a condition
     `c1` the training table does not have, brought by the set. Scored at the training point, not
     refit — `mode: fixed`, no `k` — and the session's own table is left as it was."""
@@ -939,7 +1088,8 @@ def test_score_session_scores_the_toy_at_its_fitted_point_on_a_condition_of_the_
     held_meas = pd.read_csv(toy / "measurements.tsv", sep="\t").assign(simulationConditionId="c1")
     held = validation_data.HeldOut(
         measurement_df=held_meas,
-        condition_df=pd.DataFrame(index=pd.Index(["c1"], name="conditionId")))
+        condition_df=pd.DataFrame(index=pd.Index(["c1"], name="conditionId")),
+    )
 
     out = validation_data.score_session(session, engine, held)
 
@@ -948,6 +1098,7 @@ def test_score_session_scores_the_toy_at_its_fitted_point_on_a_condition_of_the_
     assert out["n"] == len(held_meas) and out["n_conditions"] == 1
     assert math.isfinite(out["nll"])
     assert list(session.problem.condition_df.index) == ["c0"]
+
 
 # ------------------------------------------- a held-out table's own per-blot scale factors
 def _scaled_problem(formula="observableParameter1_obs_A * x"):
@@ -959,13 +1110,21 @@ def _scaled_problem(formula="observableParameter1_obs_A * x"):
         measurement_df=_rows("c_train").assign(observableParameters="s_train"),
         observable_df=pd.DataFrame(
             {"observableFormula": [formula], "noiseFormula": ["noiseParameter1_obs_A"]},
-            index=pd.Index(["obs_A"], name="observableId")),
-        condition_df=pd.DataFrame({"dose": [0.0, 0.0]},
-                                  index=pd.Index(["c_train", "c_test"], name="conditionId")),
+            index=pd.Index(["obs_A"], name="observableId"),
+        ),
+        condition_df=pd.DataFrame(
+            {"dose": [0.0, 0.0]}, index=pd.Index(["c_train", "c_test"], name="conditionId")
+        ),
         parameter_df=pd.DataFrame(
-            {"parameterScale": ["lin", "lin"], "lowerBound": [0.0, 0.0], "upperBound": [1.0, 10.0],
-             "nominalValue": [0.5, 1.0], "estimate": [1, 1]},
-            index=pd.Index(["k", "s_train"], name="parameterId")),
+            {
+                "parameterScale": ["lin", "lin"],
+                "lowerBound": [0.0, 0.0],
+                "upperBound": [1.0, 10.0],
+                "nominalValue": [0.5, 1.0],
+                "estimate": [1, 1],
+            },
+            index=pd.Index(["k", "s_train"], name="parameterId"),
+        ),
     )
 
 
@@ -974,9 +1133,13 @@ def test_held_out_scalings_are_the_overrides_the_problem_does_not_define():
     scaling (fujita's rows) or a number is an ordinary PEtab override and not touched."""
     from petab_mcp import validation_data
 
-    held = pd.concat([_rows("c_test").assign(observableParameters="s_blot"),
-                      _rows("c_test", times=(2.0,)).assign(observableParameters="s_train"),
-                      _rows("c_test", times=(3.0,)).assign(observableParameters="2.5")])
+    held = pd.concat(
+        [
+            _rows("c_test").assign(observableParameters="s_blot"),
+            _rows("c_test", times=(2.0,)).assign(observableParameters="s_train"),
+            _rows("c_test", times=(3.0,)).assign(observableParameters="2.5"),
+        ]
+    )
     assert validation_data.held_out_scalings(_scaled_problem(), held) == {"s_blot"}
 
 
@@ -1016,15 +1179,19 @@ def test_held_out_scalings_are_solved_hierarchically_then_written_in_as_numbers(
             return _PP()
 
     monkeypatch.setattr(pypesto.petab, "PetabImporter", _Importer)
-    monkeypatch.setattr(validation_data, "_apply_amici_solver_defaults", lambda pp: None,
-                        raising=False)
+    monkeypatch.setattr(
+        validation_data, "_apply_amici_solver_defaults", lambda pp: None, raising=False
+    )
     import petab_mcp.fitting as fitting
+
     monkeypatch.setattr(fitting, "_apply_amici_solver_defaults", lambda pp: None)
 
     held = _rows("c_test").assign(observableParameters="s_blot")
     out = validation_data.score_problem(_scaled_problem(), held, build_dir="/tmp/x", model_name="m")
 
-    assert [h for _, h in seen] == [True, False], "hierarchical solve first, joint evaluation second"
+    assert [h for _, h in seen] == [True, False], (
+        "hierarchical solve first, joint evaluation second"
+    )
     hier_view, joint_view = seen[0][0], seen[1][0]
     row = hier_view.parameter_df.loc["s_blot"]
     assert row["parameterType"] == "scaling" and int(row["estimate"]) == 1
@@ -1034,7 +1201,9 @@ def test_held_out_scalings_are_solved_hierarchically_then_written_in_as_numbers(
     assert out["held_out_scalings"] == {"s_blot": 3.5}
 
 
-def test_a_callers_vector_is_matched_by_name_so_a_smaller_held_out_problem_still_scores(monkeypatch):
+def test_a_callers_vector_is_matched_by_name_so_a_smaller_held_out_problem_still_scores(
+    monkeypatch,
+):
     """The held-out view drops the training-only overrides and its hierarchical twin drops the inner
     scalings, so the problem pyPESTO builds has FEWER names than the reference fit's vector. Matching
     by name — not position — is what lets `_reference_validation` hand over its full vector."""
@@ -1058,8 +1227,14 @@ def test_a_callers_vector_is_matched_by_name_so_a_smaller_held_out_problem_still
     # ...and a caller whose vector is shorter than its own names is caught before any build
     monkeypatch.setattr(pypesto.petab, "PetabImporter", lambda *a, **k: None)
     with pytest.raises(ValueError, match="must be the FULL vector"):
-        validation_data.score_problem(_scaled_problem(), _rows("c_test"), build_dir="/tmp/x",
-                                      model_name="m", x_full=[0.5], x_names=["k", "s_train"])
+        validation_data.score_problem(
+            _scaled_problem(),
+            _rows("c_test"),
+            build_dir="/tmp/x",
+            model_name="m",
+            x_full=[0.5],
+            x_names=["k", "s_train"],
+        )
 
 
 # ------------------------------------------------ inputs the collection's export baked in
@@ -1082,7 +1257,7 @@ def _sbml_scaled_problem():
     sp_ = sm.createSpecies()
     sp_.setId("x"), sp_.setCompartment("cell"), sp_.setInitialConcentration(1.0)
     sp_.setHasOnlySubstanceUnits(False), sp_.setBoundaryCondition(False), sp_.setConstant(False)
-    par = sm.createParameter()          # the kinetic the parameter table declares
+    par = sm.createParameter()  # the kinetic the parameter table declares
     par.setId("k"), par.setValue(0.5), par.setConstant(True)
     base = _scaled_problem()
     return petab.Problem(
@@ -1105,20 +1280,34 @@ def test_the_extraneous_prune_is_petabs_lint_not_ours():
     held = _rows("c_test").assign(observableParameters="s_blot")
     view = copy.copy(problem)
     view.measurement_df = held
-    view.parameter_df = pd.concat([
-        problem.parameter_df,
-        pd.DataFrame({"parameterScale": ["lin"], "lowerBound": [0.0], "upperBound": [1e12],
-                      "nominalValue": [1.0], "estimate": [1]},
-                     index=pd.Index(["s_blot"], name="parameterId"))])
+    view.parameter_df = pd.concat(
+        [
+            problem.parameter_df,
+            pd.DataFrame(
+                {
+                    "parameterScale": ["lin"],
+                    "lowerBound": [0.0],
+                    "upperBound": [1e12],
+                    "nominalValue": [1.0],
+                    "estimate": [1],
+                },
+                index=pd.Index(["s_blot"], name="parameterId"),
+            ),
+        ]
+    )
 
     with pytest.raises((AssertionError, ValueError), match="[Ee]xtraneous"):
-        check_parameter_df(view.parameter_df, view.model, view.observable_df,
-                           view.measurement_df, view.condition_df)
+        check_parameter_df(
+            view.parameter_df,
+            view.model,
+            view.observable_df,
+            view.measurement_df,
+            view.condition_df,
+        )
 
     from petab_mcp import validation_data
 
     kept = validation_data._without_extraneous(view)
     assert "s_train" not in kept.index, "the retired training override is dropped"
     assert {"k", "s_blot"} <= set(kept.index), "the kinetics and the held-out scaling stay"
-    check_parameter_df(kept, view.model, view.observable_df, view.measurement_df,
-                       view.condition_df)
+    check_parameter_df(kept, view.model, view.observable_df, view.measurement_df, view.condition_df)

@@ -20,23 +20,23 @@ from __future__ import annotations
 
 #: alias -> OpenRouter id. The panel's go-to leads, every one pinned to an endpoint (``_ROUTING``).
 MODELS: dict[str, str] = {
-    "luna":       "openai/gpt-5.6-luna",
-    "luna-pro":   "openai/gpt-5.6-luna-pro",
-    "v4-flash":   "deepseek/deepseek-v4-flash",
-    "v4-pro":     "deepseek/deepseek-v4-pro",
+    "luna": "openai/gpt-5.6-luna",
+    "luna-pro": "openai/gpt-5.6-luna-pro",
+    "v4-flash": "deepseek/deepseek-v4-flash",
+    "v4-pro": "deepseek/deepseek-v4-pro",
     "minimax-m3": "minimax/minimax-m3",
-    "mimo":       "xiaomi/mimo-v2.5",
-    "glm-flash":  "z-ai/glm-5.3-flash",
+    "mimo": "xiaomi/mimo-v2.5",
+    "glm-flash": "z-ai/glm-5.3-flash",
     # The tier above the panel: ~10x luna per run, added to test whether capability buys
     # anything on the examples the panel cannot solve. Not defaults -- opt in with --models.
-    "terra":        "openai/gpt-5.6-terra",
-    "astra":        "openai/gpt-6-astra",
-    "grok":         "x-ai/grok-4.20",
+    "terra": "openai/gpt-5.6-terra",
+    "astra": "openai/gpt-6-astra",
+    "grok": "x-ai/grok-4.20",
     "gemini-flash": "google/gemini-3.6-flash",
-    "gemini-pro":   "google/gemini-3.1-pro-preview",
+    "gemini-pro": "google/gemini-3.1-pro-preview",
     # Anthropic, also opt-in: the only models whose caching is not implicit (``_CACHING``).
-    "sonnet":       "anthropic/claude-sonnet-5",
-    "opus":         "anthropic/claude-opus-5",
+    "sonnet": "anthropic/claude-sonnet-5",
+    "opus": "anthropic/claude-opus-5",
 }
 
 #: Default lead. 1M-token context, single pinned provider (Z.AI), and the best measured accuracy
@@ -97,21 +97,27 @@ _ROUTING: dict[str, dict] = {
     # and 58% below luna's. It needs a >=78% cache hit rate just to break even, and can only
     # afford 1.16x luna's token consumption before it costs MORE. Treat cost parity as unproven
     # until a real sweep reports its own cache_read_tokens.
-    "z-ai/glm-5.3-flash":       {"only": ["z-ai"]},
-    "openai/gpt-5.6-luna":      {"only": ["openai"]},
-    "openai/gpt-5.6-luna-pro":  {"only": ["openai"]},
-    "deepseek/deepseek-v4-flash": {"order": ["digitalocean", "novita"],
-                                   "only":  ["digitalocean", "novita"]},
+    "z-ai/glm-5.3-flash": {"only": ["z-ai"]},
+    "openai/gpt-5.6-luna": {"only": ["openai"]},
+    "openai/gpt-5.6-luna-pro": {"only": ["openai"]},
+    "deepseek/deepseek-v4-flash": {
+        "order": ["digitalocean", "novita"],
+        "only": ["digitalocean", "novita"],
+    },
     # mimo: the $0.003-cache-read endpoints at Xiaomi/GMICloud are ZDR-blocked, so Novita is the
     # cheapest reachable one ($0.066/run) and still carries that cache rate. DeepInfra is excluded
     # for CONTEXT, not price: it serves this model at 262,144 tokens, and driver.py runs no history
     # trimmer on the assumption of a 1M window — a run that landed there could wedge on context.
-    "xiaomi/mimo-v2.5": {"order": ["novita/fp8", "parasail/fp8"],
-                         "only":  ["novita/fp8", "parasail/fp8"]},
+    "xiaomi/mimo-v2.5": {
+        "order": ["novita/fp8", "parasail/fp8"],
+        "only": ["novita/fp8", "parasail/fp8"],
+    },
     # v4-pro: Baidu/StreamLake/DeepSeek serve it at ~$0.15/run but are all ZDR-blocked, so Novita
     # ($0.374) is the floor we can actually reach — the 120x cache discount is NOT available here.
-    "deepseek/deepseek-v4-pro": {"order": ["novita/fp8", "parasail/fp8"],
-                                 "only":  ["novita/fp8", "parasail/fp8"]},
+    "deepseek/deepseek-v4-pro": {
+        "order": ["novita/fp8", "parasail/fp8"],
+        "only": ["novita/fp8", "parasail/fp8"],
+    },
     # minimax-m3: pinned for CONTEXT as much as price. Five of its nine endpoints serve 524,288
     # tokens and Morph 256,000; only GMICloud/Novita/Parasail reach 1M, and GMICloud is ZDR-blocked.
     # Default routing lands on Venice (524K), so this pin closes a live context exposure. The 1M
@@ -119,8 +125,10 @@ _ROUTING: dict[str, dict] = {
     # instead of stalling it. 524K is deliberate headroom, not a guess — the largest single call
     # across 210 archived runs was 171k tokens, and the run-level cap is the recursion limit, not
     # the window. Cost is not the reason for the order: the 524K endpoints save ~$0.03/run.
-    "minimax/minimax-m3": {"order": ["novita/fp8", "parasail/fp8", "deepinfra/fp8", "together"],
-                           "only":  ["novita/fp8", "parasail/fp8", "deepinfra/fp8", "together"]},
+    "minimax/minimax-m3": {
+        "order": ["novita/fp8", "parasail/fp8", "deepinfra/fp8", "together"],
+        "only": ["novita/fp8", "parasail/fp8", "deepinfra/fp8", "together"],
+    },
     # terra: same Azure trap as the rest of the OpenAI family (OpenAI $1.00 vs Azure $2.75, a
     # 5.5x spread), so the bare `openai` tag is mandatory -- it also excludes `openai/flex` and
     # `openai/priority`, the undocumented cheap and dear tiers we refuse everywhere else.
@@ -157,18 +165,18 @@ _ROUTING: dict[str, dict] = {
     # No _REASONING entry on purpose: both models think by DEFAULT (verified live, 140-210
     # reasoning tokens on a one-shot tool call, tool calls intact). Contrast Flash-Lite below,
     # where thinking was off and had to be asked for.
-    "google/gemini-3.6-flash":       {"order": ["google-vertex/global", "google-vertex",
-                                                "google-vertex/eu"],
-                                      "only":  ["google-vertex/global", "google-vertex",
-                                                "google-vertex/eu"]},
-    "google/gemini-3.1-pro-preview": {"order": ["google-vertex/global", "google-vertex",
-                                                "google-vertex/eu"],
-                                      "only":  ["google-vertex/global", "google-vertex",
-                                                "google-vertex/eu"]},
+    "google/gemini-3.6-flash": {
+        "order": ["google-vertex/global", "google-vertex", "google-vertex/eu"],
+        "only": ["google-vertex/global", "google-vertex", "google-vertex/eu"],
+    },
+    "google/gemini-3.1-pro-preview": {
+        "order": ["google-vertex/global", "google-vertex", "google-vertex/eu"],
+        "only": ["google-vertex/global", "google-vertex", "google-vertex/eu"],
+    },
     # Anthropic: one tag, no `order` fallback -- pinned for the cache namespace, not the price.
     # `anthropic`, `claude-on-aws` and `azure/*` are ZDR-blocked here (404, verified per tag).
     "anthropic/claude-sonnet-5": {"only": ["google-vertex/global"]},
-    "anthropic/claude-opus-5":   {"only": ["google-vertex/global"]},
+    "anthropic/claude-opus-5": {"only": ["google-vertex/global"]},
 }
 
 
@@ -193,7 +201,7 @@ def reasoning_config(model_id: str) -> dict | None:
 #: message breakpoints by ``driver._apply_cache_breakpoints``. See docs/RATIONALE.md.
 _CACHING: dict[str, dict] = {
     "anthropic/claude-sonnet-5": {"type": "ephemeral", "ttl": "1h"},
-    "anthropic/claude-opus-5":   {"type": "ephemeral", "ttl": "1h"},
+    "anthropic/claude-opus-5": {"type": "ephemeral", "ttl": "1h"},
 }
 
 

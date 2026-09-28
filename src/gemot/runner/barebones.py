@@ -52,8 +52,21 @@ AGENT_SUBDIR = "agent"
 
 #: Delivered files copied beside the archived result, size-capped.
 _ARCHIVE_FILE_CAP_BYTES = 2_000_000
-_ARCHIVE_SUFFIXES = (".yaml", ".yml", ".tsv", ".xml", ".sbml", ".ant", ".py", ".sh", ".md",
-                    ".txt", ".json", ".log", ".csv")
+_ARCHIVE_SUFFIXES = (
+    ".yaml",
+    ".yml",
+    ".tsv",
+    ".xml",
+    ".sbml",
+    ".ant",
+    ".py",
+    ".sh",
+    ".md",
+    ".txt",
+    ".json",
+    ".log",
+    ".csv",
+)
 
 #: How long the server may take to compile + score the delivered model before it listens.
 _SCORE_LISTEN_TIMEOUT_S = 3600.0
@@ -104,8 +117,13 @@ def stage_workspace(work: Path) -> dict:
     shipped_rows = {}
     for name in files["parameter"]:
         shipped_rows.update(_parameter_rows(agent_dir / name))
-    return {"agent_dir": agent_dir, "withheld": withheld, "files": files,
-            "design_hashes": hashes, "shipped_rows": shipped_rows}
+    return {
+        "agent_dir": agent_dir,
+        "withheld": withheld,
+        "files": files,
+        "design_hashes": hashes,
+        "shipped_rows": shipped_rows,
+    }
 
 
 def _parameter_rows(path: Path) -> dict[str, tuple[int | None, float | None]]:
@@ -139,8 +157,13 @@ def check_delivery(work: Path, staged: dict) -> dict:
     tables whose bytes changed or left the YAML), ``shipped_rows_violated`` (shipped parameter
     rows removed, re-flagged, or — fixed ones — re-valued), ``model_ant_set_aside``,
     ``petab_lint`` (``{ok, messages}``) and ``model_authored``."""
-    out: dict = {"design_modified": [], "shipped_rows_violated": [], "model_ant_set_aside": False,
-                 "petab_lint": {"ok": False, "messages": []}, "model_authored": None}
+    out: dict = {
+        "design_modified": [],
+        "shipped_rows_violated": [],
+        "model_ant_set_aside": False,
+        "petab_lint": {"ok": False, "messages": []},
+        "model_authored": None,
+    }
     # a model.ant beside the YAML would be loaded instead of the SBML (session.py prefers it)
     ant = work / "model.ant"
     if ant.exists():
@@ -196,7 +219,10 @@ def _lint(yaml_path: Path) -> "tuple[dict, bool | None]":
                 messages.extend(_sbml_errors(model.sbml_document))
         return {"ok": not has_problems, "messages": messages[:50]}, authored
     except Exception as exc:  # noqa: BLE001 - any load failure IS the lint verdict
-        return {"ok": False, "messages": [*messages[:49], f"{type(exc).__name__}: {exc}"[:500]]}, None
+        return {
+            "ok": False,
+            "messages": [*messages[:49], f"{type(exc).__name__}: {exc}"[:500]],
+        }, None
     finally:
         logger.removeHandler(handler)
 
@@ -253,9 +279,20 @@ def _archive_delivery(work: Path, dest: Path) -> None:
 #: Names a lead-facing note may use that mean nothing to the null: the lead's tools and the
 #: `model_edits` operations. `rename` is left out — in the notes it is the English verb.
 _HARNESS_TOOL_NAMES = frozenset(ALLOWED_TOOLS) | {
-    "make_changes", "finish", "add_reaction", "remove_reaction", "set_rate_law", "set_initial",
-    "set_assignment", "remove_assignment", "model_edits", "base_version"}
-_HARNESS_TOOL_RE = re.compile(r"\b(" + "|".join(sorted(map(re.escape, _HARNESS_TOOL_NAMES))) + r")\b")
+    "make_changes",
+    "finish",
+    "add_reaction",
+    "remove_reaction",
+    "set_rate_law",
+    "set_initial",
+    "set_assignment",
+    "remove_assignment",
+    "model_edits",
+    "base_version",
+}
+_HARNESS_TOOL_RE = re.compile(
+    r"\b(" + "|".join(sorted(map(re.escape, _HARNESS_TOOL_NAMES))) + r")\b"
+)
 
 
 def check_note_is_tool_free(note: str) -> str:
@@ -281,16 +318,19 @@ def barebones_task(scenario: Scenario) -> str:
 
 
 # --------------------------------------------------------------------------- pipeline
-async def _judge_delivered(scenario: Scenario, session, work: Path, args: argparse.Namespace,
-                           meta: dict, t0: float) -> "tuple[int, dict]":
+async def _judge_delivered(
+    scenario: Scenario, session, work: Path, args: argparse.Namespace, meta: dict, t0: float
+) -> "tuple[int, dict]":
     """The judge over a server that holds the DELIVERED problem — the tail of :func:`.drive._drive`
     without the driver in the middle."""
     _wrap_call_timeout(session, args.n_starts)
     clock = _wrap_tool_clock(session)
     call = _make_call(session)
     desc = await call("describe_problem")
-    print(f"[judge] delivered model '{desc.get('model_id')}' | "
-          f"reactions={desc.get('n_reactions_detail')} | free params={desc.get('free_parameters')}")
+    print(
+        f"[judge] delivered model '{desc.get('model_id')}' | "
+        f"reactions={desc.get('n_reactions_detail')} | free params={desc.get('free_parameters')}"
+    )
     if not desc.get("model_authored", False):
         meta = {**meta, "stop_reason": "no_model_built"}
     # No baseline, as for a zero-shot build; every species the agent declared is "new".
@@ -300,16 +340,20 @@ async def _judge_delivered(scenario: Scenario, session, work: Path, args: argpar
 
 async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) -> "tuple[int, dict]":
     if ablations.enabled("biology_blind"):
-        raise SystemExit("PETAB_BIOLOGY_BLIND=1 is not supported with --driver barebones; "
-                         "use --driver deepagents or unset PETAB_BIOLOGY_BLIND.")
+        raise SystemExit(
+            "PETAB_BIOLOGY_BLIND=1 is not supported with --driver barebones; "
+            "use --driver deepagents or unset PETAB_BIOLOGY_BLIND."
+        )
     work = cleanup(scenario)
     started_at = _now_iso()
     t0 = time.monotonic()
     base_meta = _base_meta(scenario, args, started_at)
     staged = stage_workspace(work)
     agent_dir = staged["agent_dir"]
-    print(f"[null] workspace staged at {agent_dir.relative_to(scenario.example_dir.parent)} "
-          f"(withheld: {staged['withheld'] or 'nothing'})")
+    print(
+        f"[null] workspace staged at {agent_dir.relative_to(scenario.example_dir.parent)} "
+        f"(withheld: {staged['withheld'] or 'nothing'})"
+    )
 
     api_key = args.api_key or os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
@@ -319,26 +363,37 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
         sandbox = sandbox_preflight(agent_dir, n_cpus=FIT_N_WORKERS)
     except RuntimeError as exc:
         return 1, _write_degraded_result(work, base_meta, scenario, f"sandbox: {exc}")
-    print(f"[null] sandbox ok: bubblewrap {sandbox['bwrap']}, env {sandbox['env_prefix']} "
-          "(read-only), workspace at /work, no network")
+    print(
+        f"[null] sandbox ok: bubblewrap {sandbox['bwrap']}, env {sandbox['env_prefix']} "
+        "(read-only), workspace at /work, no network"
+    )
 
     # One shell command may run as long as one server fit would.
     execute_timeout_s = fit_time_budget(args.n_starts)
     system_prompt = BAREBONES_SYSTEM_PROMPT_TMPL.format(
-        execute_timeout=execute_timeout_s, n_cpus=FIT_N_WORKERS, n_starts=args.n_starts)
+        execute_timeout=execute_timeout_s, n_cpus=FIT_N_WORKERS, n_starts=args.n_starts
+    )
     task = barebones_task(scenario)
 
     from ..tracing import record_run_result, run_span, setup_phoenix_tracing, trace_id_hex
+
     tracing = setup_phoenix_tracing(project_name=args.phoenix_project) if args.phoenix else None
-    print(f"[null] driving {args.model} via OpenRouter + a barebones deepagent "
-          f"(recursion_limit={args.recursion_limit}, execute timeout {execute_timeout_s:.0f}s)")
+    print(
+        f"[null] driving {args.model} via OpenRouter + a barebones deepagent "
+        f"(recursion_limit={args.recursion_limit}, execute timeout {execute_timeout_s:.0f}s)"
+    )
     from ..agent.barebones import run_barebones
 
     span_attrs = {
-        "scenario": scenario.name, "example_version": scenario.version,
-        "model": args.model, "driver": args.driver, "temperature": args.temperature,
-        "recursion_limit": args.recursion_limit, "n_starts": args.n_starts,
-        "git_sha": base_meta["git_sha"], "run_started_at": started_at,
+        "scenario": scenario.name,
+        "example_version": scenario.version,
+        "model": args.model,
+        "driver": args.driver,
+        "temperature": args.temperature,
+        "recursion_limit": args.recursion_limit,
+        "n_starts": args.n_starts,
+        "git_sha": base_meta["git_sha"],
+        "run_started_at": started_at,
         "prompt_version": base_meta.get("prompt_version"),
         "skills_version": base_meta.get("skills_version"),
         "ablation_arm": base_meta.get("ablation_arm"),
@@ -348,76 +403,112 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
     launched: dict = {}
     try:
         with run_span(tracing, name="model_build_run", attributes=span_attrs) as span:
-            base_meta = {**base_meta,
-                         "phoenix_project": tracing.project_name if tracing else None,
-                         "phoenix_trace_id": trace_id_hex(span)}
+            base_meta = {
+                **base_meta,
+                "phoenix_project": tracing.project_name if tracing else None,
+                "phoenix_trace_id": trace_id_hex(span),
+            }
             _write_live_marker(work, base_meta, scenario, include_reference=False)
             try:
                 # The panel's bio-knowledge servers, opened the same supervised way.
                 async with open_bio_sessions(BIO_MCP_URLS) as bio_sessions:
                     agent_out = await run_barebones(
                         agent_dir,
-                        model=args.model, base_url=args.base_url, api_key=api_key,
-                        system_prompt=system_prompt, task=task,
-                        recursion_limit=args.recursion_limit, temperature=args.temperature,
-                        execute_timeout_s=execute_timeout_s, n_cpus=FIT_N_WORKERS,
+                        model=args.model,
+                        base_url=args.base_url,
+                        api_key=api_key,
+                        system_prompt=system_prompt,
+                        task=task,
+                        recursion_limit=args.recursion_limit,
+                        temperature=args.temperature,
+                        execute_timeout_s=execute_timeout_s,
+                        n_cpus=FIT_N_WORKERS,
                         max_wall_seconds=args.max_wall_seconds,
                         bio_sessions=bio_sessions,
                         bio_literature=ablations.enabled("bio_literature"),
                     )
                 delivery = check_delivery(agent_dir, staged)
-                meta = {**base_meta, **agent_out, "delivery": delivery,
-                        "scoring_mode": "delivered_nominal", "sandbox": sandbox,
-                        "workspace_withheld": staged["withheld"]}
+                meta = {
+                    **base_meta,
+                    **agent_out,
+                    "delivery": delivery,
+                    "scoring_mode": "delivered_nominal",
+                    "sandbox": sandbox,
+                    "workspace_withheld": staged["withheld"],
+                }
                 violations = delivery["design_modified"] or delivery["shipped_rows_violated"]
                 if violations:
                     result = _write_unscoreable_result(
-                        work, meta, scenario,
-                        "design_tampered: " + "; ".join(
+                        work,
+                        meta,
+                        scenario,
+                        "design_tampered: "
+                        + "; ".join(
                             [f"modified {n}" for n in delivery["design_modified"]]
-                            + delivery["shipped_rows_violated"])[:400])
+                            + delivery["shipped_rows_violated"]
+                        )[:400],
+                    )
                 elif delivery["model_authored"] is False:
                     # The problem ships model-less, so its own lint fails on the undefined
                     # readout_* symbols. Reporting that as `petab_invalid` describes the SHIPPED
                     # state, not what the agent did — which is nothing.
                     result = _write_unscoreable_result(
-                        work, meta, scenario,
-                        "no_model_authored: the delivered problem still has no model")
+                        work,
+                        meta,
+                        scenario,
+                        "no_model_authored: the delivered problem still has no model",
+                    )
                 elif not delivery["petab_lint"]["ok"]:
                     result = _write_unscoreable_result(
-                        work, meta, scenario,
-                        "petab_invalid: " + "; ".join(delivery["petab_lint"]["messages"][:5])[:400])
+                        work,
+                        meta,
+                        scenario,
+                        "petab_invalid: " + "; ".join(delivery["petab_lint"]["messages"][:5])[:400],
+                    )
                 else:
                     build_root = scenario.example_dir / ".amici_build"
                     try:
-                        async with _petab_server(work, build_root, args, scenario=scenario,
-                                                 score_shipped_model=True, handle_out=launched,
-                                                 listen_timeout=_SCORE_LISTEN_TIMEOUT_S,
-                                                 yaml_path=agent_dir / "problem.yaml") as server:
+                        async with _petab_server(
+                            work,
+                            build_root,
+                            args,
+                            scenario=scenario,
+                            score_shipped_model=True,
+                            handle_out=launched,
+                            listen_timeout=_SCORE_LISTEN_TIMEOUT_S,
+                            yaml_path=agent_dir / "problem.yaml",
+                        ) as server:
                             exit_code, result = await _judge_delivered(
-                                scenario, server.session, work, args, meta, t0)
+                                scenario, server.session, work, args, meta, t0
+                            )
                     except (RuntimeError, TimeoutError) as exc:
                         # the server died compiling/scoring the delivery; server.log names why
                         tail = _log_tail(work / "server.log")
                         result = _write_unscoreable_result(
-                            work, meta, scenario,
+                            work,
+                            meta,
+                            scenario,
                             f"delivered_model_unscoreable: {_summarize_exc(exc)}"
-                            + (f" | server.log: {tail}" if tail else ""))
+                            + (f" | server.log: {tail}" if tail else ""),
+                        )
                 record_run_result(span, result)
             except BaseException as exc:
                 if _should_reraise(exc):
                     raise
                 server = launched.get("handle")
                 rc = server.proc.poll() if server is not None else None
-                result = _write_degraded_result(work, base_meta, scenario, _summarize_exc(exc),
-                                                server_returncode=rc)
+                result = _write_degraded_result(
+                    work, base_meta, scenario, _summarize_exc(exc), server_returncode=rc
+                )
                 with contextlib.suppress(Exception):
                     record_run_result(span, result)
     finally:
         if tracing is not None:
             tracing.flush()
-            print(f"[phoenix] traces recorded under project '{tracing.project_name}' "
-                  f"-> {tracing.ui_url}")
+            print(
+                f"[phoenix] traces recorded under project '{tracing.project_name}' "
+                f"-> {tracing.ui_url}"
+            )
     if result:
         dest = archive_run(work, result)
         if dest is not None:

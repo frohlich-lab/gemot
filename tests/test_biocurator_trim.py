@@ -18,32 +18,45 @@ pytest.importorskip("langchain_core", reason="harness-only dependency")
 from petab_harness.agent import literature as _literature  # noqa: E402
 
 
-
-
 def _core_payload():
     """A minimal EuropePMC resultType=core response with one heavily-decorated record."""
-    return json.dumps({
-        "version": "6.9",
-        "hitCount": 4257,
-        "nextCursorMark": "AoJUUygyMzg0NDU5NQ==",
-        "nextPageUrl": "https://www.ebi.ac.uk/europepmc/...",
-        "request": {"queryString": "CD8 T cell kinetics", "pageSize": 10},
-        "resultList": {"result": [{
-            "id": "32433532", "source": "MED", "pmid": "32433532", "pmcid": "PMC7238960",
-            "doi": "10.1038/s41577-020-0306-5",
-            "title": "Inflammation directs memory precursor and short-lived effector CD8 T cell fates",
-            "authorString": ", ".join(f"Author{i} A" for i in range(60)),  # long -> capped
-            "pubYear": "2007",
-            "abstractText": "Acute infection drives naive CD8 T cells to expand and differentiate.",
-            "journalInfo": {"journal": {"title": "Immunity"}},
-            "pubTypeList": {"pubType": ["Journal Article", "Review"]},
-            "meshHeadingList": {"meshHeading": [{"descriptorName": f"M{i}"} for i in range(40)]},
-            "grantsList": {"grant": [{"grantId": f"G{i}"} for i in range(25)]},
-            "fullTextUrlList": {"fullTextUrl": [{"url": f"http://x/{i}"} for i in range(8)]},
-            "chemicalList": {"chemical": [{"name": f"c{i}"} for i in range(15)]},
-            "citedByCount": 1234,
-        }]},
-    })
+    return json.dumps(
+        {
+            "version": "6.9",
+            "hitCount": 4257,
+            "nextCursorMark": "AoJUUygyMzg0NDU5NQ==",
+            "nextPageUrl": "https://www.ebi.ac.uk/europepmc/...",
+            "request": {"queryString": "CD8 T cell kinetics", "pageSize": 10},
+            "resultList": {
+                "result": [
+                    {
+                        "id": "32433532",
+                        "source": "MED",
+                        "pmid": "32433532",
+                        "pmcid": "PMC7238960",
+                        "doi": "10.1038/s41577-020-0306-5",
+                        "title": "Inflammation directs memory precursor and short-lived effector CD8 T cell fates",
+                        "authorString": ", ".join(
+                            f"Author{i} A" for i in range(60)
+                        ),  # long -> capped
+                        "pubYear": "2007",
+                        "abstractText": "Acute infection drives naive CD8 T cells to expand and differentiate.",
+                        "journalInfo": {"journal": {"title": "Immunity"}},
+                        "pubTypeList": {"pubType": ["Journal Article", "Review"]},
+                        "meshHeadingList": {
+                            "meshHeading": [{"descriptorName": f"M{i}"} for i in range(40)]
+                        },
+                        "grantsList": {"grant": [{"grantId": f"G{i}"} for i in range(25)]},
+                        "fullTextUrlList": {
+                            "fullTextUrl": [{"url": f"http://x/{i}"} for i in range(8)]
+                        },
+                        "chemicalList": {"chemical": [{"name": f"c{i}"} for i in range(15)]},
+                        "citedByCount": 1234,
+                    }
+                ]
+            },
+        }
+    )
 
 
 def test_trim_drops_core_bloat_keeps_signal():
@@ -63,8 +76,15 @@ def test_trim_drops_core_bloat_keeps_signal():
     assert r["pubYear"] == "2007"
     assert r["pubType"] == ["Journal Article", "Review"]  # from pubTypeList.pubType, not top level
     # bloat dropped
-    for junk in ("meshHeadingList", "grantsList", "fullTextUrlList", "chemicalList",
-                 "citedByCount", "journalInfo", "pubTypeList"):
+    for junk in (
+        "meshHeadingList",
+        "grantsList",
+        "fullTextUrlList",
+        "chemicalList",
+        "citedByCount",
+        "journalInfo",
+        "pubTypeList",
+    ):
         assert junk not in r
     # long author list is capped
     assert r["authorString"].endswith("…et al.")
@@ -79,8 +99,10 @@ def test_trim_returns_none_on_unexpected_shape():
     """A non-core / unparseable payload is left untouched (the wrapper then returns it as-is)."""
     mod = _literature
     assert mod._trim_europepmc_search("not json at all") is None
-    assert mod._trim_europepmc_search(json.dumps({"foo": "bar"})) is None       # no resultList
-    assert mod._trim_europepmc_search(json.dumps({"resultList": {"result": 3}})) is None  # not a list
+    assert mod._trim_europepmc_search(json.dumps({"foo": "bar"})) is None  # no resultList
+    assert (
+        mod._trim_europepmc_search(json.dumps({"resultList": {"result": 3}})) is None
+    )  # not a list
 
 
 def test_wrapper_trims_and_preserves_result_shape():
@@ -88,6 +110,7 @@ def test_wrapper_trims_and_preserves_result_shape():
     trimmed payload, and keep the result's shape — a bare string stays a string, a
     (content, artifact) tuple keeps its artifact tail."""
     import asyncio
+
     mod = _literature
     payload = _core_payload()
 
@@ -96,14 +119,16 @@ def test_wrapper_trims_and_preserves_result_shape():
             self.name, self.coroutine = name, coro
 
     async def _string_coro(runtime=None, **kw):
-        return payload                       # bare-string content
+        return payload  # bare-string content
 
     async def _tuple_coro(runtime=None, **kw):
-        return (payload, {"artifact": 1})    # (content, artifact) content
+        return (payload, {"artifact": 1})  # (content, artifact) content
 
     log: list = []
-    tools = [_FakeTool("get_europepmc_articles", _string_coro),
-             _FakeTool("get_europepmc_articles", _tuple_coro)]
+    tools = [
+        _FakeTool("get_europepmc_articles", _string_coro),
+        _FakeTool("get_europepmc_articles", _tuple_coro),
+    ]
     mod._wrap_literature_recorder(tools, log)
 
     out_str = asyncio.run(tools[0].coroutine(runtime=None, query="q"))

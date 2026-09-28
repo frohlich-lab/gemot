@@ -52,15 +52,18 @@ def test_provider_read_from_llm_output():
 
 def test_provider_falls_back_to_message_metadata():
     """A response whose aggregate lost the field is still attributed from the per-message copy."""
-    acc = _feed(_Resp(llm_output={}, metas=[{"openrouter_provider": "Novita",
-                                             "service_tier": "default"}]))
+    acc = _feed(
+        _Resp(llm_output={}, metas=[{"openrouter_provider": "Novita", "service_tier": "default"}])
+    )
     assert acc.endpoints()["served"][0]["provider"] == "Novita"
 
 
 def test_two_endpoints_are_flagged_as_drift():
-    acc = _feed(_Resp({"openrouter_provider": "OpenAI", "service_tier": "default"}),
-                _Resp({"openrouter_provider": "OpenAI", "service_tier": "default"}),
-                _Resp({"openrouter_provider": "Azure", "service_tier": "default"}))
+    acc = _feed(
+        _Resp({"openrouter_provider": "OpenAI", "service_tier": "default"}),
+        _Resp({"openrouter_provider": "OpenAI", "service_tier": "default"}),
+        _Resp({"openrouter_provider": "Azure", "service_tier": "default"}),
+    )
     ep = acc.endpoints()
     assert ep["drifted"] is True and ep["n_distinct"] == 2
     # Busiest first, so the majority endpoint reads off the top.
@@ -70,8 +73,10 @@ def test_two_endpoints_are_flagged_as_drift():
 
 def test_same_provider_different_tier_is_drift():
     """`openai` and `openai/flex` are different prices and different machines."""
-    acc = _feed(_Resp({"openrouter_provider": "OpenAI", "service_tier": "default"}),
-                _Resp({"openrouter_provider": "OpenAI", "service_tier": "flex"}))
+    acc = _feed(
+        _Resp({"openrouter_provider": "OpenAI", "service_tier": "default"}),
+        _Resp({"openrouter_provider": "OpenAI", "service_tier": "flex"}),
+    )
     assert acc.endpoints()["drifted"] is True
 
 
@@ -112,42 +117,79 @@ def test_a_truthy_non_dict_llm_output_is_still_tallied():
 
 
 def test_metrics_flattens_served_endpoints():
-    row = _flatten_served_endpoints({"openrouter_endpoints": {
-        "served": [{"provider": "OpenAI", "service_tier": "default", "n_calls": 3}],
-        "n_distinct": 1, "drifted": False}})
+    row = _flatten_served_endpoints(
+        {
+            "openrouter_endpoints": {
+                "served": [{"provider": "OpenAI", "service_tier": "default", "n_calls": 3}],
+                "n_distinct": 1,
+                "drifted": False,
+            }
+        }
+    )
     # provider/tier, not the bare name: the tier is half of what makes two endpoints distinct.
     assert row["served_provider"] == "OpenAI/default"
     assert row["served_n_distinct"] == 1 and row["served_drifted"] is False
 
 
 def test_metrics_joins_multiple_providers_deterministically():
-    row = _flatten_served_endpoints({"openrouter_endpoints": {
-        "served": [{"provider": "OpenAI", "n_calls": 2}, {"provider": "Azure", "n_calls": 1}],
-        "n_distinct": 2, "drifted": True}})
-    assert row["served_provider"] == "Azure+OpenAI"   # sorted, so the key is stable
+    row = _flatten_served_endpoints(
+        {
+            "openrouter_endpoints": {
+                "served": [
+                    {"provider": "OpenAI", "n_calls": 2},
+                    {"provider": "Azure", "n_calls": 1},
+                ],
+                "n_distinct": 2,
+                "drifted": True,
+            }
+        }
+    )
+    assert row["served_provider"] == "Azure+OpenAI"  # sorted, so the key is stable
     assert row["served_drifted"] is True
 
 
 def test_metrics_key_keeps_the_tier_that_made_two_endpoints_distinct():
     """A name-only key renders the tier-drift case as the useless "OpenAI+OpenAI" and drops the
     one field naming what actually differed."""
-    row = _flatten_served_endpoints({"openrouter_endpoints": {
-        "served": [{"provider": "OpenAI", "service_tier": "default", "n_calls": 2},
-                   {"provider": "OpenAI", "service_tier": "flex", "n_calls": 1}],
-        "n_distinct": 2, "drifted": True}})
+    row = _flatten_served_endpoints(
+        {
+            "openrouter_endpoints": {
+                "served": [
+                    {"provider": "OpenAI", "service_tier": "default", "n_calls": 2},
+                    {"provider": "OpenAI", "service_tier": "flex", "n_calls": 1},
+                ],
+                "n_distinct": 2,
+                "drifted": True,
+            }
+        }
+    )
     assert row["served_provider"] == "OpenAI/default+OpenAI/flex"
 
 
 def test_metrics_never_writes_the_literal_string_None():
     """`str(None)` is indistinguishable from a real endpoint name when grouping a sweep."""
-    row = _flatten_served_endpoints({"openrouter_endpoints": {
-        "served": [{"provider": None, "service_tier": None, "n_calls": 3}],
-        "n_distinct": 0, "drifted": False}})
+    row = _flatten_served_endpoints(
+        {
+            "openrouter_endpoints": {
+                "served": [{"provider": None, "service_tier": None, "n_calls": 3}],
+                "n_distinct": 0,
+                "drifted": False,
+            }
+        }
+    )
     assert row["served_provider"] is None
-    row2 = _flatten_served_endpoints({"openrouter_endpoints": {
-        "served": [{"provider": "OpenAI", "service_tier": "default", "n_calls": 3},
-                   {"provider": None, "service_tier": None, "n_calls": 1}],
-        "n_distinct": 1, "drifted": False}})
+    row2 = _flatten_served_endpoints(
+        {
+            "openrouter_endpoints": {
+                "served": [
+                    {"provider": "OpenAI", "service_tier": "default", "n_calls": 3},
+                    {"provider": None, "service_tier": None, "n_calls": 1},
+                ],
+                "n_distinct": 1,
+                "drifted": False,
+            }
+        }
+    )
     assert row2["served_provider"] == "OpenAI/default"
 
 
@@ -180,8 +222,11 @@ def test_span_name_is_preserved_despite_the_subclass():
     """
     from petab_harness.agent.driver import _chat_model_class
 
-    kw = dict(model="openai/gpt-5.6-luna-pro", base_url="https://openrouter.ai/api/v1",
-              api_key="not-a-real-key")
+    kw = dict(
+        model="openai/gpt-5.6-luna-pro",
+        base_url="https://openrouter.ai/api/v1",
+        api_key="not-a-real-key",
+    )
     assert _chat_model_class()(name="ChatOpenAI", **kw).get_name() == "ChatOpenAI"
 
 
@@ -199,13 +244,19 @@ def test_the_block_travels_from_the_agent_output_to_the_history_column(tmp_path)
     from petab_harness import metrics
     from petab_harness.runner.provenance import _agent_meta
 
-    agent_out = {"stop_reason": "completed",
-                 "openrouter_endpoints": {
-                     "served": [{"provider": "OpenAI", "service_tier": "default", "n_calls": 2},
-                                {"provider": "Azure", "service_tier": "default", "n_calls": 1}],
-                     "n_distinct": 2, "drifted": True}}
+    agent_out = {
+        "stop_reason": "completed",
+        "openrouter_endpoints": {
+            "served": [
+                {"provider": "OpenAI", "service_tier": "default", "n_calls": 2},
+                {"provider": "Azure", "service_tier": "default", "n_calls": 1},
+            ],
+            "n_distinct": 2,
+            "drifted": True,
+        },
+    }
     meta = _agent_meta({"scenario": "sneyd"}, agent_out, "completed")
     path = metrics.append_history([metrics.build_row(meta)], tmp_path / "history.csv")
     row = dict(zip(*(line.split(",") for line in path.read_text().splitlines()[:2])))
-    assert row["served_provider"] == "Azure/default+OpenAI/default"   # sorted, so it is stable
+    assert row["served_provider"] == "Azure/default+OpenAI/default"  # sorted, so it is stable
     assert (row["served_n_distinct"], row["served_drifted"]) == ("2", "True")

@@ -73,8 +73,10 @@ class _Fixture:
         self.root.mkdir(exist_ok=True)
         yaml_path = _model_less_problem(self.tmp_path) if model_less else YAML_PATH
         self.session = PetabSession(
-            str(yaml_path), provenance_dir=str(self.tmp_path / "prov"),
-            resolver=StubReferenceResolver())
+            str(yaml_path),
+            provenance_dir=str(self.tmp_path / "prov"),
+            resolver=StubReferenceResolver(),
+        )
         self.session.engine = AmiciEngine(self.session, build_root=str(self.root))
         self.session.auto_fit = auto_fit
         self.session.auto_fit_starts = 2
@@ -94,8 +96,12 @@ class _Fixture:
         return asyncio.run(self.mcp.call_tool(name, args)).structured_content
 
     def state(self):
-        return (_listing(self.root), self.session.n_compiles, self.session.compile_seconds,
-                set(self.session.engine._pypesto_hashes))
+        return (
+            _listing(self.root),
+            self.session.n_compiles,
+            self.session.compile_seconds,
+            set(self.session.engine._pypesto_hashes),
+        )
 
 
 def _model_less_problem(work: Path) -> Path:
@@ -106,8 +112,13 @@ def _model_less_problem(work: Path) -> Path:
 
     d = work / "empty"
     d.mkdir()
-    for name in ("problem.yaml", "conditions.tsv", "measurements.tsv",
-                 "observables.tsv", "parameters.tsv"):
+    for name in (
+        "problem.yaml",
+        "conditions.tsv",
+        "measurements.tsv",
+        "observables.tsv",
+        "parameters.tsv",
+    ):
         shutil.copy(YAML_PATH.parent / name, d / name)
     doc = libsbml.SBMLDocument(3, 2)
     model = doc.createModel()
@@ -158,13 +169,21 @@ def _assert_nothing_built(fx, label):
         after = fx.state()
         assert after[0] == before[0], (
             f"{label}/{name} wrote to the build root: "
-            f"{sorted(after[0] - before[0])[:5]} — a diagnosis compiled a model")
+            f"{sorted(after[0] - before[0])[:5]} — a diagnosis compiled a model"
+        )
         assert after[1:] == before[1:], (
-            f"{label}/{name} moved the compile accounting {before[1:]} -> {after[1:]}")
+            f"{label}/{name} moved the compile accounting {before[1:]} -> {after[1:]}"
+        )
 
 
-_CASES = ["fitted_head", "dedup_noop", "dedup_noop_unsimulated", "resumed",
-          "auto_fit_off", "unauthored"]
+_CASES = [
+    "fitted_head",
+    "dedup_noop",
+    "dedup_noop_unsimulated",
+    "resumed",
+    "auto_fit_off",
+    "unauthored",
+]
 
 
 @pytest.mark.parametrize("case", _CASES)
@@ -179,8 +198,7 @@ def test_no_diagnosis_entry_point_builds_a_model(tmp_path, case):
     ``resumed`` is a restarted process, whose restored model serialises in a different declaration
     order and so hashes to a module nothing built: another 19.4 s, charged to no clock.
     """
-    fx = _Fixture(tmp_path, auto_fit=(case != "auto_fit_off"),
-                  model_less=(case == "unauthored"))
+    fx = _Fixture(tmp_path, auto_fit=(case != "auto_fit_off"), model_less=(case == "unauthored"))
     if case == "unauthored":
         # Nothing authored, nothing fitted: the state a run is in before its first make_changes.
         assert fx.session.model_authored() is False
@@ -210,7 +228,7 @@ def test_the_diagnosis_still_answers_where_it_refuses_to_build(tmp_path):
     reason, never an exception and never a silent empty payload that reads as "nothing wrong"."""
     fx = _Fixture(tmp_path, auto_fit=False)
     O.set_model(fx.session, _TOY.format(k1=0.5), justification="build the toy")
-    fx.session.fit()          # auto_fit off -> status "skipped", so no optimum was frozen
+    fx.session.fit()  # auto_fit off -> status "skipped", so no optimum was frozen
 
     ident = fx.call("get_fit_diagnosis", sections="parameters")["identifiability"]
     assert ident["available"] is False
@@ -238,5 +256,6 @@ def test_a_resumed_process_still_reports_the_fits_parameter_geometry(tmp_path):
     assert after["fim"] == fitted["fim"] and after["parameters"] == fitted["parameters"]
     assert "stale" not in after
     # ...and the score read beside it names the same tie (or the same absence of one)
-    assert resumed.call("get_fit_summary").get("merge_hints") == \
-        fx.call("get_fit_summary").get("merge_hints")
+    assert resumed.call("get_fit_summary").get("merge_hints") == fx.call("get_fit_summary").get(
+        "merge_hints"
+    )

@@ -34,13 +34,21 @@ def _phoenix_base_url(explicit: str | None) -> str:
     # then normalize to the base via the shared helper so a `.../v1/traces` env value is stripped
     # to the base the Phoenix Client wants — same rule as metrics/experiments/tracing.
     from ..tracing import phoenix_base_url
-    url = (explicit or os.environ.get("PHOENIX_COLLECTOR_ENDPOINT")
-           or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or "http://localhost:6006")
+
+    url = (
+        explicit
+        or os.environ.get("PHOENIX_COLLECTOR_ENDPOINT")
+        or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+        or "http://localhost:6006"
+    )
     return phoenix_base_url(url)
 
 
-def create_app(archive_root: Path | None = None, phoenix_base_url: str | None = None,
-               examples_root: Path | None = None) -> FastAPI:
+def create_app(
+    archive_root: Path | None = None,
+    phoenix_base_url: str | None = None,
+    examples_root: Path | None = None,
+) -> FastAPI:
     archive_root = Path(archive_root) if archive_root else archive.default_archive_root()
     # Live markers live in each example's work/ dir; that tree is the archive's parent
     # (examples/), so derive it from archive_root unless overridden.
@@ -66,8 +74,9 @@ def create_app(archive_root: Path | None = None, phoenix_base_url: str | None = 
     cache_lock = threading.Lock()
 
     def _build(run_id: str, run_dir, meta: dict) -> dict:
-        kw = dict(run_dir=run_dir, meta=meta, phoenix_base_url=px_url,
-                  project=meta.get("phoenix_project"))
+        kw = dict(
+            run_dir=run_dir, meta=meta, phoenix_base_url=px_url, project=meta.get("phoenix_project")
+        )
         # Only the Phoenix trace fetch (Arrow/pandas) is thread-unsafe, so take the lock solely
         # for runs that have a trace — trace-less bundles don't serialize under concurrent users.
         if meta.get("phoenix_trace_id"):
@@ -81,10 +90,14 @@ def create_app(archive_root: Path | None = None, phoenix_base_url: str | None = 
     @app.get("/")
     def index(request: Request):
         return templates.TemplateResponse(
-            request, "index.html",
-            {"runs": archive.list_runs(archive_root),
-             "live_runs": archive.list_live_runs(examples_root),
-             "archive_root": str(archive_root), "phoenix": px_url},
+            request,
+            "index.html",
+            {
+                "runs": archive.list_runs(archive_root),
+                "live_runs": archive.list_live_runs(examples_root),
+                "archive_root": str(archive_root),
+                "phoenix": px_url,
+            },
         )
 
     @app.get("/api/live")
@@ -95,8 +108,10 @@ def create_app(archive_root: Path | None = None, phoenix_base_url: str | None = 
 
     @app.get("/run/{run_id}")
     def run_page(request: Request, run_id: str):
-        if (archive.load_run_meta(run_id, archive_root) is None
-                and archive.load_live_run(run_id, examples_root) is None):
+        if (
+            archive.load_run_meta(run_id, archive_root) is None
+            and archive.load_live_run(run_id, examples_root) is None
+        ):
             raise HTTPException(404, f"unknown run {run_id!r}")
         return templates.TemplateResponse(request, "run.html", {"run_id": run_id})
 

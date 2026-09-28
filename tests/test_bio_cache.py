@@ -23,7 +23,10 @@ class _Result:
         self.isError = is_error
 
     def __eq__(self, other) -> bool:
-        return isinstance(other, _Result) and (self.text, self.isError) == (other.text, other.isError)
+        return isinstance(other, _Result) and (self.text, self.isError) == (
+            other.text,
+            other.isError,
+        )
 
 
 class _Session:
@@ -69,7 +72,7 @@ def test_different_arguments_tools_and_urls_are_separate_entries(tmp_path):
     s = _Session()
     _wrap(s, tmp_path)
     asyncio.run(s.call_tool("q", {"symbol": "EGFR"}))
-    asyncio.run(s.call_tool("q", {"symbol": "AKT1"}))     # different args
+    asyncio.run(s.call_tool("q", {"symbol": "AKT1"}))  # different args
     asyncio.run(s.call_tool("other", {"symbol": "EGFR"}))  # different tool
     assert len(s.calls) == 3
     # ...and a different endpoint must not read another endpoint's answers.
@@ -110,8 +113,8 @@ def test_an_unwritable_cache_directory_does_not_break_the_run(tmp_path):
     s = _Session()
     cache = bio_cache.wrap_session(s, "https://example/mcp", directory=target)
     assert asyncio.run(s.call_tool("q", {"x": 1})) == _Result("payload")
-    assert cache.errors >= 1          # noticed...
-    assert len(s.calls) == 1          # ...and the call still happened
+    assert cache.errors >= 1  # noticed...
+    assert len(s.calls) == 1  # ...and the call still happened
 
 
 def test_the_production_call_shape_is_cached(tmp_path):
@@ -123,8 +126,9 @@ def test_the_production_call_shape_is_cached(tmp_path):
     s = _Session()
     cache = _wrap(s, tmp_path)
     for _ in range(3):
-        asyncio.run(s.call_tool("get_uniprot", {"symbol": "EGFR"},
-                                progress_callback=lambda *a, **k: None))
+        asyncio.run(
+            s.call_tool("get_uniprot", {"symbol": "EGFR"}, progress_callback=lambda *a, **k: None)
+        )
     assert len(s.calls) == 1, "the production call shape still bypasses the cache"
     assert cache.hits == 2
 
@@ -155,6 +159,7 @@ def test_an_unknown_keyword_still_bypasses_the_cache(tmp_path):
 def test_writes_are_atomic_so_concurrent_tasks_cannot_read_a_torn_entry(tmp_path):
     """A sweep runs many array tasks against ONE shared cache directory. Every committed file must
     be a complete pickle — asserted by writing concurrently and reading every entry back."""
+
     async def hammer():
         # SAME key on every session, so all 12 writers collide on ONE file — the contention the
         # atomic rename exists for. Giving each a different key (as this test first did) exercises
@@ -171,7 +176,7 @@ def test_writes_are_atomic_so_concurrent_tasks_cannot_read_a_torn_entry(tmp_path
     assert len(list(tmp_path.rglob("*.pkl"))) == 1, "one key must produce exactly one entry"
     for p in tmp_path.rglob("*.pkl"):
         with open(p, "rb") as fh:
-            assert "result" in pickle.load(fh)          # every committed file is complete
+            assert "result" in pickle.load(fh)  # every committed file is complete
     assert not list(tmp_path.rglob("*.tmp")), "a temp file was left behind"
 
 
@@ -210,6 +215,7 @@ def test_a_session_without_call_tool_is_left_alone(tmp_path):
     """`open_bio_sessions` is injectable and its supervision tests use stand-ins that implement only
     what they need. Caching must never be the reason one of those breaks — nor a real session that
     exposes a different surface."""
+
     class _Bare:
         pass
 

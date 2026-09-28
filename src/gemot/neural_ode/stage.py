@@ -79,10 +79,20 @@ class Staged:
     products: tuple[tuple[str, str], ...] = ()
 
 
-def stage(problem: Problem, directory: Path | str, *, n_augmented: int = 0, width: int = 32,
-          depth: int = 2, clock: bool = False, shared_initial_conditions: bool = False,
-          seed: int = 0, design: Staged | None = None,
-          estimate_readout_scales: bool = False, multiplicative: bool = False) -> Staged:
+def stage(
+    problem: Problem,
+    directory: Path | str,
+    *,
+    n_augmented: int = 0,
+    width: int = 32,
+    depth: int = 2,
+    clock: bool = False,
+    shared_initial_conditions: bool = False,
+    seed: int = 0,
+    design: Staged | None = None,
+    estimate_readout_scales: bool = False,
+    multiplicative: bool = False,
+) -> Staged:
     """Write ``problem`` as a neural ODE into ``directory`` and return what was written.
 
     ``n_augmented`` latent states are appended after the observed and dosed ones; ``clock`` adds
@@ -121,8 +131,10 @@ def stage(problem: Problem, directory: Path | str, *, n_augmented: int = 0, widt
     horizon = problem.horizon
     if design is not None:
         if states != design.states or field_inputs != design.field_inputs:
-            raise ValueError(f"{problem.name} does not fit the design it is staged in: states {states} "
-                             f"against {design.states}, inputs {field_inputs} against {design.field_inputs}")
+            raise ValueError(
+                f"{problem.name} does not fit the design it is staged in: states {states} "
+                f"against {design.states}, inputs {field_inputs} against {design.field_inputs}"
+            )
         scales, horizon = dict(design.scales), design.horizon
 
     # The model, then the shipped tables around it, upgraded by petab.
@@ -147,24 +159,33 @@ def stage(problem: Problem, directory: Path | str, *, n_augmented: int = 0, widt
         for name in (f"{NETWORK_ID}.py", f"{NETWORK_ID}.yaml", f"{NETWORK_ID}_ps.hdf5"):
             shutil.copy(design.directory / name, directory / name)
         n_weights = design.n_weights
-    pd.DataFrame({
-        "targetId": [f"{NETWORK_ID}_input{i}" for i in range(len(network_inputs))]
-        + [f"f_{s}" for s in states],
-        "targetValue": [f"{s}_norm" for s in field_inputs] + [product_symbol(a, b) for a, b in products]
-        + [f"{NETWORK_ID}_output{i}" for i in range(len(states))],
-    }).to_csv(directory / "hybridization.tsv", sep="\t", index=False)
-    pd.DataFrame({
-        "petabEntityId": [f"{NETWORK_ID}_input{i}" for i in range(len(network_inputs))]
-        + [f"{NETWORK_ID}_output{i}" for i in range(len(states))] + [f"{NETWORK_ID}_ps"],
-        "modelEntityId": [f"{NETWORK_ID}.inputs[0][{i}]" for i in range(len(network_inputs))]
-        + [f"{NETWORK_ID}.outputs[0][{i}]" for i in range(len(states))] + [f"{NETWORK_ID}.parameters"],
-    }).to_csv(directory / "mapping.tsv", sep="\t", index=False)
+    pd.DataFrame(
+        {
+            "targetId": [f"{NETWORK_ID}_input{i}" for i in range(len(network_inputs))]
+            + [f"f_{s}" for s in states],
+            "targetValue": [f"{s}_norm" for s in field_inputs]
+            + [product_symbol(a, b) for a, b in products]
+            + [f"{NETWORK_ID}_output{i}" for i in range(len(states))],
+        }
+    ).to_csv(directory / "hybridization.tsv", sep="\t", index=False)
+    pd.DataFrame(
+        {
+            "petabEntityId": [f"{NETWORK_ID}_input{i}" for i in range(len(network_inputs))]
+            + [f"{NETWORK_ID}_output{i}" for i in range(len(states))]
+            + [f"{NETWORK_ID}_ps"],
+            "modelEntityId": [f"{NETWORK_ID}.inputs[0][{i}]" for i in range(len(network_inputs))]
+            + [f"{NETWORK_ID}.outputs[0][{i}]" for i in range(len(states))]
+            + [f"{NETWORK_ID}.parameters"],
+        }
+    ).to_csv(directory / "mapping.tsv", sep="\t", index=False)
 
     # Experiments are named after their simulation condition, the id the route knows; the
     # upgrader's own names depend on whether a condition has changes, and it names none at all
     # for a problem whose condition table has no columns.
     measurements = pd.read_csv(directory / "measurements.tsv", sep="\t")
-    measurements["experimentId"] = source.measurement_df[petab.C.SIMULATION_CONDITION_ID].astype(str).to_numpy()
+    measurements["experimentId"] = (
+        source.measurement_df[petab.C.SIMULATION_CONDITION_ID].astype(str).to_numpy()
+    )
     measurements.to_csv(directory / "measurements.tsv", sep="\t", index=False)
     periods = []
     for experiment in problem.experiment_ids:
@@ -175,30 +196,57 @@ def stage(problem: Problem, directory: Path | str, *, n_augmented: int = 0, widt
     experiments.to_csv(directory / "experiments.tsv", sep="\t", index=False)
 
     # Start states and the parameters the estimated ones need.
-    starts, estimated = _starts(problem, experiments, states, latents, scales,
-                                shared=shared_initial_conditions, directory=directory)
+    starts, estimated = _starts(
+        problem,
+        experiments,
+        states,
+        latents,
+        scales,
+        shared=shared_initial_conditions,
+        directory=directory,
+    )
     conditions = pd.read_csv(directory / "conditions.tsv", sep="\t")
     conditions = pd.concat([conditions, pd.DataFrame(starts, columns=conditions.columns[:3])])
     conditions.to_csv(directory / "conditions.tsv", sep="\t", index=False)
     parameters = pd.read_csv(directory / "parameters.tsv", sep="\t")
     rows = [*estimated.values(), (f"{NETWORK_ID}_ps", -WEIGHT_BOUND, WEIGHT_BOUND, "array", "true")]
-    extra = pd.DataFrame(rows, columns=["parameterId", "lowerBound", "upperBound", "nominalValue", "estimate"])
+    extra = pd.DataFrame(
+        rows, columns=["parameterId", "lowerBound", "upperBound", "nominalValue", "estimate"]
+    )
     pd.concat([parameters, extra]).reindex(columns=list(parameters.columns)).to_csv(
-        directory / "parameters.tsv", sep="\t", index=False)
+        directory / "parameters.tsv", sep="\t", index=False
+    )
 
     document = yaml.safe_load((directory / "problem.yaml").read_text())
     document["experiment_files"] = ["experiments.tsv"]
     document["mapping_files"] = ["mapping.tsv"]
-    document["extensions"] = {"sciml": {
-        "version": "0.1.0", "required": True, "array_files": [f"{NETWORK_ID}_ps.hdf5"],
-        "hybridization_files": ["hybridization.tsv"],
-        "neural_networks": {NETWORK_ID: {"location": f"{NETWORK_ID}.py", "pre_initialization": False,
-                                         "format": "equinox"}},
-    }}
+    document["extensions"] = {
+        "sciml": {
+            "version": "0.1.0",
+            "required": True,
+            "array_files": [f"{NETWORK_ID}_ps.hdf5"],
+            "hybridization_files": ["hybridization.tsv"],
+            "neural_networks": {
+                NETWORK_ID: {
+                    "location": f"{NETWORK_ID}.py",
+                    "pre_initialization": False,
+                    "format": "equinox",
+                }
+            },
+        }
+    }
     (directory / "problem.yaml").write_text(yaml.safe_dump(document, sort_keys=False))
-    return Staged(directory=directory, yaml=directory / "problem.yaml", states=states,
-                  field_inputs=field_inputs, estimated_starts=tuple(estimated), n_weights=n_weights,
-                  products=tuple(products), scales=scales, horizon=horizon)
+    return Staged(
+        directory=directory,
+        yaml=directory / "problem.yaml",
+        states=states,
+        field_inputs=field_inputs,
+        estimated_starts=tuple(estimated),
+        n_weights=n_weights,
+        products=tuple(products),
+        scales=scales,
+        horizon=horizon,
+    )
 
 
 def product_features(field_inputs) -> list[tuple[str, str]]:
@@ -218,14 +266,18 @@ def product_symbol(a: str, b: str) -> str:
     return f"{a}_x_{b}"
 
 
-def _antimony(problem: Problem, states, integrated, scales, horizon: float,
-              products=()) -> str:
-    lines = ["model neural_ode", "  compartment cell = 1;",
-             "  species " + ", ".join(f"{s} in cell" for s in integrated) + ";"]
+def _antimony(problem: Problem, states, integrated, scales, horizon: float, products=()) -> str:
+    lines = [
+        "model neural_ode",
+        "  compartment cell = 1;",
+        "  species " + ", ".join(f"{s} in cell" for s in integrated) + ";",
+    ]
     lines += [f"  {s} = 0;" for s in integrated]
     lines += [f"  {u} = 0;" for u in problem.inputs]
     lines += [f"  {item.target} := {item.formula};" for item in problem.timed_inputs]
-    lines += [f"  {s}_norm := {s} / {scales[s]!r};" for s in (*integrated, *problem.field_input_names)]
+    lines += [
+        f"  {s}_norm := {s} / {scales[s]!r};" for s in (*integrated, *problem.field_input_names)
+    ]
     lines += [f"  {product_symbol(a, b)} := {a}_norm * {b}_norm;" for a, b in products]
     lines += [f"  f_{s} = 0;" for s in states]
     lines += [f"  {s}' = ({scales[s]!r} / {horizon!r}) * f_{s};" for s in states]
@@ -234,24 +286,30 @@ def _antimony(problem: Problem, states, integrated, scales, horizon: float,
     return "\n".join((*lines, "end", ""))
 
 
-def _stage_v1_tables(problem: Problem, source, v1: Path, *, fix_readout_scales: bool = True) -> None:
+def _stage_v1_tables(
+    problem: Problem, source, v1: Path, *, fix_readout_scales: bool = True
+) -> None:
     """The shipped tables beside the generated model: dosing columns renamed to the states they
     set, the parameter table cut to what the observables, measurements and conditions reference,
     the readout scale factors fixed, and each estimated sigma started at its data's spread. The
     noise model stays the shipped one, flags included."""
     conditions = source.condition_df
     if conditions is not None:
-        conditions.rename(columns={c: s for c, s in problem.start_columns.items() if c != s}).to_csv(
-            v1 / "conditions.tsv", sep="\t")
+        conditions.rename(
+            columns={c: s for c, s in problem.start_columns.items() if c != s}
+        ).to_csv(v1 / "conditions.tsv", sep="\t")
     else:
         pd.DataFrame({"conditionId": list(problem.experiment_ids)}).to_csv(
-            v1 / "conditions.tsv", sep="\t", index=False)
+            v1 / "conditions.tsv", sep="\t", index=False
+        )
     source.measurement_df.to_csv(v1 / "measurements.tsv", sep="\t", index=False)
     observables = source.observable_df.copy()
     if "observableTransformation" in observables.columns:
         log10 = observables["observableTransformation"].astype(str).str.strip() == "log10"
         observables.loc[log10, "noiseFormula"] = [
-            f"({formula}) * {math.log(10.0)!r}" for formula in observables.loc[log10, "noiseFormula"]]
+            f"({formula}) * {math.log(10.0)!r}"
+            for formula in observables.loc[log10, "noiseFormula"]
+        ]
     observables.to_csv(v1 / "observables.tsv", sep="\t")
     parameters = source.parameter_df
     referenced = set(problem.noise_parameters)
@@ -272,14 +330,26 @@ def _stage_v1_tables(problem: Problem, source, v1: Path, *, fix_readout_scales: 
     if seeds:
         kept["nominalValue"] = kept["nominalValue"].astype(float)
         for pid, seed in seeds.items():
-            kept.loc[pid, "nominalValue"] = min(max(seed, float(kept.loc[pid, "lowerBound"])),
-                                                float(kept.loc[pid, "upperBound"]))
+            kept.loc[pid, "nominalValue"] = min(
+                max(seed, float(kept.loc[pid, "lowerBound"])), float(kept.loc[pid, "upperBound"])
+            )
     kept.to_csv(v1 / "parameters.tsv", sep="\t")
-    (v1 / "problem.yaml").write_text(yaml.safe_dump({
-        "format_version": 1, "parameter_file": "parameters.tsv",
-        "problems": [{"sbml_files": ["model.xml"], "condition_files": ["conditions.tsv"],
-                      "measurement_files": ["measurements.tsv"], "observable_files": ["observables.tsv"]}],
-    }))
+    (v1 / "problem.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "format_version": 1,
+                "parameter_file": "parameters.tsv",
+                "problems": [
+                    {
+                        "sbml_files": ["model.xml"],
+                        "condition_files": ["conditions.tsv"],
+                        "measurement_files": ["measurements.tsv"],
+                        "observable_files": ["observables.tsv"],
+                    }
+                ],
+            }
+        )
+    )
 
 
 def _names(formula: str) -> list[str]:
@@ -288,7 +358,9 @@ def _names(formula: str) -> list[str]:
     return _SYMBOL.findall(formula)
 
 
-def _write_network(directory: Path, n_in: int, n_out: int, width: int, depth: int, seed: int) -> int:
+def _write_network(
+    directory: Path, n_in: int, n_out: int, width: int, depth: int, seed: int
+) -> int:
     """The YAML architecture, the equinox module and the initial weights; returns the weight count."""
     import jax  # noqa: PLC0415
 
@@ -300,28 +372,50 @@ def _write_network(directory: Path, n_in: int, n_out: int, width: int, depth: in
     from petab_sciml.standard.nn_model import Input, Layer, NNModel, Node  # noqa: PLC0415
 
     sizes = [n_in, *([width] * depth), n_out]
-    layers = [Layer(layer_id=f"layer{i + 1}", layer_type="Linear",
-                    args={"in_features": a, "out_features": b, "bias": True})
-              for i, (a, b) in enumerate(zip(sizes[:-1], sizes[1:]))]
+    layers = [
+        Layer(
+            layer_id=f"layer{i + 1}",
+            layer_type="Linear",
+            args={"in_features": a, "out_features": b, "bias": True},
+        )
+        for i, (a, b) in enumerate(zip(sizes[:-1], sizes[1:]))
+    ]
     forward = [Node(name="net_input", op="placeholder", target="net_input", args=[], kwargs={})]
     previous = "net_input"
     for i in range(len(layers)):
-        forward.append(Node(name=f"layer{i + 1}", op="call_module", target=f"layer{i + 1}",
-                            args=[previous], kwargs={}))
+        forward.append(
+            Node(
+                name=f"layer{i + 1}",
+                op="call_module",
+                target=f"layer{i + 1}",
+                args=[previous],
+                kwargs={},
+            )
+        )
         previous = f"layer{i + 1}"
         if i < len(layers) - 1:
-            forward.append(Node(name=f"tanh{i + 1}", op="call_method", target="tanh", args=[previous], kwargs={}))
+            forward.append(
+                Node(
+                    name=f"tanh{i + 1}", op="call_method", target="tanh", args=[previous], kwargs={}
+                )
+            )
             previous = f"tanh{i + 1}"
     forward.append(Node(name="output", op="output", target="output", args=[previous], kwargs={}))
-    model = NNModel(nn_model_id=NETWORK_ID, inputs=[Input(input_id="input0")], layers=layers, forward=forward)
+    model = NNModel(
+        nn_model_id=NETWORK_ID, inputs=[Input(input_id="input0")], layers=layers, forward=forward
+    )
     NNModelStandard.save_data(model, str(directory / f"{NETWORK_ID}.yaml"))
     generate_equinox(model, directory / f"{NETWORK_ID}.py")
     module_name = f"{NETWORK_ID}_{hashlib.md5(str(directory.resolve()).encode()).hexdigest()[:10]}"
     net = amici._module_from_path(module_name, directory / f"{NETWORK_ID}.py").net(jr.PRNGKey(seed))
-    arrays = {name: {"weight": np.asarray(layer.weight), "bias": np.asarray(layer.bias)}
-              for name, layer in net.layers.items()}
-    ArrayDataStandard.save_data(ArrayData(metadata={"pytorch_format": True}, parameters={NETWORK_ID: arrays}),
-                                str(directory / f"{NETWORK_ID}_ps.hdf5"))
+    arrays = {
+        name: {"weight": np.asarray(layer.weight), "bias": np.asarray(layer.bias)}
+        for name, layer in net.layers.items()
+    }
+    ArrayDataStandard.save_data(
+        ArrayData(metadata={"pytorch_format": True}, parameters={NETWORK_ID: arrays}),
+        str(directory / f"{NETWORK_ID}_ps.hdf5"),
+    )
     return int(sum(a.size for d in arrays.values() for a in d.values()))
 
 
@@ -336,32 +430,55 @@ def _sigma_seeds(problem: Problem, source) -> dict[str, float]:
         oid = str(row.observableId)
         formula = str(observables.loc[oid, "noiseFormula"])
         cell = getattr(row, "noiseParameters", None)
-        overrides = [] if cell is None or (isinstance(cell, float) and math.isnan(cell)) else str(cell).split(";")
+        overrides = (
+            []
+            if cell is None or (isinstance(cell, float) and math.isnan(cell))
+            else str(cell).split(";")
+        )
         for index, value in enumerate(overrides, start=1):
             formula = formula.replace(f"noiseParameter{index}_{oid}", value.strip())
         if formula.strip() not in problem.noise_parameters:
             continue
-        transformation = str(observables.get("observableTransformation", pd.Series(dtype=str)).get(oid, "lin"))
+        transformation = str(
+            observables.get("observableTransformation", pd.Series(dtype=str)).get(oid, "lin")
+        )
         y = float(row.measurement)
         if transformation == "log10":
             y = math.log10(y)
         elif transformation == "log":
             y = math.log(y)
         pools.setdefault(formula.strip(), []).append(y)
-    return {pid: float(np.std(values)) for pid, values in pools.items()
-            if len(values) > 1 and np.std(values) > 0.0}
+    return {
+        pid: float(np.std(values))
+        for pid, values in pools.items()
+        if len(values) > 1 and np.std(values) > 0.0
+    }
 
 
-def _starts(problem: Problem, experiments: pd.DataFrame, states, latents, scales, *, shared: bool,
-            directory: Path) -> tuple[list[tuple], dict[str, tuple]]:
+def _starts(
+    problem: Problem,
+    experiments: pd.DataFrame,
+    states,
+    latents,
+    scales,
+    *,
+    shared: bool,
+    directory: Path,
+) -> tuple[list[tuple], dict[str, tuple]]:
     """Condition rows setting every state's start, and the parameters the estimated ones need.
 
     Per experiment the rows go on the preequilibration condition when there is one, else on the
     simulation condition. A start the tables know is written as its number; a latent, or a state
     the tables leave open, gets one parameter per condition or one shared across them.
     """
-    existing = set(map(tuple, pd.read_csv(directory / "conditions.tsv", sep="\t")[["conditionId", "targetId"]]
-                       .itertuples(index=False)))
+    existing = set(
+        map(
+            tuple,
+            pd.read_csv(directory / "conditions.tsv", sep="\t")[
+                ["conditionId", "targetId"]
+            ].itertuples(index=False),
+        )
+    )
     rows: list[tuple] = []
     estimated: dict[str, tuple] = {}
     for experiment, periods in experiments.groupby("experimentId", sort=False):
@@ -379,7 +496,15 @@ def _starts(problem: Problem, experiments: pd.DataFrame, states, latents, scales
                 rows.append((target, state, float(datum)))
                 continue
             pid = f"{state}_0" if shared else f"{state}_0_{target}"
-            estimated.setdefault(pid, (pid, 0.0, START_UPPER_FACTOR * scales[state],
-                                       START_GUESS_FRACTION * scales[state], "true"))
+            estimated.setdefault(
+                pid,
+                (
+                    pid,
+                    0.0,
+                    START_UPPER_FACTOR * scales[state],
+                    START_GUESS_FRACTION * scales[state],
+                    "true",
+                ),
+            )
             rows.append((target, state, pid))
     return rows, estimated

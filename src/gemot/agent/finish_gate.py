@@ -92,8 +92,11 @@ def _render_flat_directions(flat_directions, *, max_dirs: int = 4, max_parts: in
     condition free) shows a handful rather than a wall."""
     groups: list[str] = []
     for d in (flat_directions or [])[:max_dirs]:
-        terms = [f"{p.get('id')}·{p.get('weight')}"
-                 for p in (d.get("participants") or [])[:max_parts] if p.get("id")]
+        terms = [
+            f"{p.get('id')}·{p.get('weight')}"
+            for p in (d.get("participants") or [])[:max_parts]
+            if p.get("id")
+        ]
         if terms:
             groups.append("[" + ", ".join(terms) + "]")
     if not groups:
@@ -128,9 +131,14 @@ def _render_merge(hints) -> str:
             params = [str(p) for p in (hint.get("parameters") or ())]
             if not params:
                 continue
-            ties.append(prompts.FINISH_ARMED_MERGE_TIE_TMPL.format(
-                parameters=" == ".join(params), dnll=hint.get("dnll"),
-                dscore=_dscore_magnitude(hint.get("dscore")), move=hint.get("move_scaled")))
+            ties.append(
+                prompts.FINISH_ARMED_MERGE_TIE_TMPL.format(
+                    parameters=" == ".join(params),
+                    dnll=hint.get("dnll"),
+                    dscore=_dscore_magnitude(hint.get("dscore")),
+                    move=hint.get("move_scaled"),
+                )
+            )
         except Exception:  # noqa: BLE001 - an advisory line never fails a finish
             continue
     if not ties:
@@ -138,7 +146,7 @@ def _render_merge(hints) -> str:
     try:
         return prompts.FINISH_ARMED_MERGE_TMPL.format(ties="".join(ties))
     except Exception:  # noqa: BLE001 - inside the fail-open boundary too: a template slot
-        return ""      # mistake must cost the advisory line, never every finish in the run
+        return ""  # mistake must cost the advisory line, never every finish in the run
 
 
 def _dscore_magnitude(dscore) -> str:
@@ -197,8 +205,13 @@ def _finish_tool(session, finish_state=None, probe=None):
     # carries none (the persisted per-version sim blob has no version), and `None != None` would
     # then skip arming and confirm on the first call — bypassing the gate. bic+nll identify the
     # scored fit whether or not a version is attached.
-    state = {"armed_token": None, "no_fit_refusals": 0, "sigma_refusals": 0,
-             "parsimony_refusals": 0, "structure_refusals": 0}
+    state = {
+        "armed_token": None,
+        "no_fit_refusals": 0,
+        "sigma_refusals": 0,
+        "parsimony_refusals": 0,
+        "structure_refusals": 0,
+    }
 
     def _finite(x):
         return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
@@ -238,12 +251,15 @@ def _finish_tool(session, finish_state=None, probe=None):
             state["no_fit_refusals"] += 1
             if state["no_fit_refusals"] >= _MAX_NO_FIT_FINISH_ATTEMPTS:
                 finish_state["gave_up"] = True
-                print(f"[finish GAVE UP] no fittable model after {state['no_fit_refusals']} "
-                      "attempts — ending the run as no-model-built")
-                return prompts.FINISH_GAVE_UP_NO_FIT_TMPL.format(
-                    attempts=state["no_fit_refusals"])
-            print(f"[finish BLOCKED {state['no_fit_refusals']}/{_MAX_NO_FIT_FINISH_ATTEMPTS}] "
-                  "no valid fit (no model built, non-finite objective, or no score)")
+                print(
+                    f"[finish GAVE UP] no fittable model after {state['no_fit_refusals']} "
+                    "attempts — ending the run as no-model-built"
+                )
+                return prompts.FINISH_GAVE_UP_NO_FIT_TMPL.format(attempts=state["no_fit_refusals"])
+            print(
+                f"[finish BLOCKED {state['no_fit_refusals']}/{_MAX_NO_FIT_FINISH_ATTEMPTS}] "
+                "no valid fit (no model built, non-finite objective, or no score)"
+            )
             return prompts.FINISH_REFUSED_NO_FIT
         # A valid fit exists -> reset the no-fit give-up counter.
         state["no_fit_refusals"] = 0
@@ -264,18 +280,23 @@ def _finish_tool(session, finish_state=None, probe=None):
             if state["sigma_refusals"] < _MAX_SIGMA_FINISH_REFUSALS:
                 state["armed_token"] = None
                 state["sigma_refusals"] += 1
-                advice = (fit.get("noise_sigma_advice")
-                          or prompts.FINISH_SIGMA_FALLBACK_ADVICE)
+                advice = fit.get("noise_sigma_advice") or prompts.FINISH_SIGMA_FALLBACK_ADVICE
                 # Name BOTH tails when both are present (one observable inflated, another
                 # collapsed) so the agent doesn't fix one and get re-blocked on the other.
-                which = " and ".join(w for w, on in (("inflated", sigma_inflated),
-                                                     ("collapsed", sigma_collapsed)) if on)
-                print(f"[finish BLOCKED {state['sigma_refusals']}/{_MAX_SIGMA_FINISH_REFUSALS}] "
-                      f"noise sigma {which} — refusing finish on a gamed noise model")
-                return prompts.FINISH_REFUSED_SIGMA_TMPL.format(
-                    advice=advice, which=which)
-            print(f"[finish RELENTED] noise sigma still implausible after "
-                  f"{state['sigma_refusals']} refusals — allowing finish at its honest score")
+                which = " and ".join(
+                    w
+                    for w, on in (("inflated", sigma_inflated), ("collapsed", sigma_collapsed))
+                    if on
+                )
+                print(
+                    f"[finish BLOCKED {state['sigma_refusals']}/{_MAX_SIGMA_FINISH_REFUSALS}] "
+                    f"noise sigma {which} — refusing finish on a gamed noise model"
+                )
+                return prompts.FINISH_REFUSED_SIGMA_TMPL.format(advice=advice, which=which)
+            print(
+                f"[finish RELENTED] noise sigma still implausible after "
+                f"{state['sigma_refusals']} refusals — allowing finish at its honest score"
+            )
         else:
             state["sigma_refusals"] = 0
         # HARD STOP on a REPLICATE LACK-OF-FIT: the predictions miss design points by more than
@@ -284,20 +305,26 @@ def _finish_tool(session, finish_state=None, probe=None):
         # Keys on the replicate arm alone (never the advisory sign/runs tests) and on its own
         # `available`, so a vacuous / too-thin / untestable verdict never refuses. See
         # _MAX_STRUCTURE_FINISH_REFUSALS.
-        lof = ((fit.get("residual_structure") or {}).get("replicate_lack_of_fit") or {})
+        lof = (fit.get("residual_structure") or {}).get("replicate_lack_of_fit") or {}
         if lof.get("available") and lof.get("n_flagged"):
             if state["structure_refusals"] < _MAX_STRUCTURE_FINISH_REFUSALS:
                 state["armed_token"] = None
                 state["structure_refusals"] += 1
-                print(f"[finish BLOCKED {state['structure_refusals']}/"
-                      f"{_MAX_STRUCTURE_FINISH_REFUSALS}] replicate lack-of-fit at "
-                      f"{lof.get('n_flagged')} design point(s) — refusing finish on a model the "
-                      "data's own replicates rule out")
+                print(
+                    f"[finish BLOCKED {state['structure_refusals']}/"
+                    f"{_MAX_STRUCTURE_FINISH_REFUSALS}] replicate lack-of-fit at "
+                    f"{lof.get('n_flagged')} design point(s) — refusing finish on a model the "
+                    "data's own replicates rule out"
+                )
                 return prompts.FINISH_REFUSED_REPLICATE_LOF_TMPL.format(
-                    n_flagged=lof.get("n_flagged"), n_points=lof.get("n_points"),
-                    points=_render_lof_points(lof.get("points")))
-            print(f"[finish RELENTED] replicate lack-of-fit still flagged after "
-                  f"{state['structure_refusals']} refusals — allowing finish at its honest score")
+                    n_flagged=lof.get("n_flagged"),
+                    n_points=lof.get("n_points"),
+                    points=_render_lof_points(lof.get("points")),
+                )
+            print(
+                f"[finish RELENTED] replicate lack-of-fit still flagged after "
+                f"{state['structure_refusals']} refusals — allowing finish at its honest score"
+            )
         else:
             state["structure_refusals"] = 0
         # HARD STOP on an OVER-parameterised model: a finish whose good-looking bic rests on
@@ -348,13 +375,17 @@ def _finish_tool(session, finish_state=None, probe=None):
                     state["armed_token"] = None
                     state["parsimony_refusals"] += 1
                     directions = _render_flat_directions(flat_dirs)
-                    print(f"[finish BLOCKED {state['parsimony_refusals']}/"
-                          f"{_MAX_PARSIMONY_FINISH_REFUSALS}] rank-deficient FIM, flat "
-                          f"directions {directions} — refusing finish on an over-parameterised model")
+                    print(
+                        f"[finish BLOCKED {state['parsimony_refusals']}/"
+                        f"{_MAX_PARSIMONY_FINISH_REFUSALS}] rank-deficient FIM, flat "
+                        f"directions {directions} — refusing finish on an over-parameterised model"
+                    )
                     return prompts.FINISH_REFUSED_PARSIMONY_TMPL.format(directions=directions)
-                print(f"[finish RELENTED] parameters still non-identifiable after "
-                      f"{state['parsimony_refusals']} refusals — allowing finish at its "
-                      "honest score")
+                print(
+                    f"[finish RELENTED] parameters still non-identifiable after "
+                    f"{state['parsimony_refusals']} refusals — allowing finish at its "
+                    "honest score"
+                )
             else:
                 state["parsimony_refusals"] = 0
         # Valid, fitted model. First finish call ARMS: show the residual diagnosis and
@@ -372,15 +403,20 @@ def _finish_tool(session, finish_state=None, probe=None):
             rs = fit.get("residual_structure") or {}
             struct = rs.get("summary") or prompts.FINISH_STRUCT_UNAVAILABLE
             per = diag.get("per_observable") or []
-            worst = max(per, key=lambda o: abs(o.get("mean_weighted_residual") or 0.0),
-                        default=None) if per else None
+            worst = (
+                max(per, key=lambda o: abs(o.get("mean_weighted_residual") or 0.0), default=None)
+                if per
+                else None
+            )
             worst_line = ""
             if worst is not None:
                 st = worst.get("sign_test") or {}
                 rtst = worst.get("runs_test") or {}
                 worst_line = prompts.FINISH_ARMED_WORST_TMPL.format(
                     observable_id=worst.get("observable_id"),
-                    sign_p=st.get("p"), runs_p=rtst.get("p"))
+                    sign_p=st.get("p"),
+                    runs_p=rtst.get("p"),
+                )
             # The run's OUTSTANDING invalid "does adding structure help?" experiment, if any:
             # a variant that gained parameters yet fit WORSE than its parent, which a nested
             # model cannot do (the server flags it at commit time — see petab_mcp.nesting —
@@ -391,17 +427,26 @@ def _finish_tool(session, finish_state=None, probe=None):
             invalid = fit.get("invalid_comparison")
             invalid_line = (
                 prompts.FINISH_ARMED_INVALID_COMPARISON_TMPL.format(advisory=invalid)
-                if invalid else "")
+                if invalid
+                else ""
+            )
             # The PARAMETER counterpart of the residual verdict: the pairs the data cannot separate
             # whose merges BIC would pay for. Like the residual verdict they ride on the SCORE read
             # (petab_mcp.fitting.fit_summary carries the same `merge_hints` the fit result does), so
             # the gate names the ties the lead already saw instead of projecting new ones.
             merge_line = _render_merge(fit.get("merge_hints"))
-            print(f"[finish ARMED v={version}] bic={bic:.6g} — presented diagnosis, "
-                  "awaiting confirming finish")
+            print(
+                f"[finish ARMED v={version}] bic={bic:.6g} — presented diagnosis, "
+                "awaiting confirming finish"
+            )
             return prompts.FINISH_ARMED_TMPL.format(
-                bic=bic, nll=nll, struct=struct, worst_line=worst_line,
-                merge_line=merge_line, invalid_line=invalid_line)
+                bic=bic,
+                nll=nll,
+                struct=struct,
+                worst_line=worst_line,
+                merge_line=merge_line,
+                invalid_line=invalid_line,
+            )
         # Second finish on the same fit -> confirmed. Record it so the driver does not bounce
         # a legitimately-finished run back into the gate.
         state["armed_token"] = None
@@ -410,8 +455,7 @@ def _finish_tool(session, finish_state=None, probe=None):
         if fit.get("chi2_gof_pvalue") is None and fit.get("reduced_chi2") is None:
             chi2_note = prompts.FINISH_CHI2_UNAVAILABLE_NOTE
         print(f"[finish CONFIRMED v={version}] bic={bic:.6g}")
-        return prompts.FINISH_CONFIRMED_TMPL.format(
-            bic=bic, nll=nll, chi2_note=chi2_note)
+        return prompts.FINISH_CONFIRMED_TMPL.format(bic=bic, nll=nll, chi2_note=chi2_note)
 
     return StructuredTool.from_function(
         coroutine=finish,

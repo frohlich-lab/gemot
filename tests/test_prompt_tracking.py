@@ -29,29 +29,36 @@ _NOT_PROMPTS = {"PROMPT_GROUPS", "_HASH_SEP", "LEAD_SELF_READ_TOOLS"}
 # own, so they are checked by containment instead of equality. Keep this set tiny and
 # explicit — it is the one hole in an otherwise exact guard, and a new constant lands under the
 # strict rule by default.
-_FRAGMENTS = {"_REPORT_CONTRACT", "_BIOCURATOR_REPORT_CONTRACT",
-              # Concatenated into DEFAULT_SYSTEM_PROMPT, and EMPTY in the ablation
-              # arm (PETAB_DATA_REGIMES=0), where it is vacuously contained.
-              "_DATA_REGIMES_GUIDANCE",
-              # Same shape: concatenated into DEFAULT_SYSTEM_PROMPT. Default ON since the
-              # 2026-08-15 A/B, so under a bare test env this is NON-empty and the
-              # fragments-really-are-fragments check exercises it for real.
-              "_FREE_EXPONENTS_GUIDANCE",
-              # Concatenated into the three ANALYST prompts (the skill formerly fetched via
-              # get_skill once per spawn — now prompt text, versioned through those prompts).
-              "_PETAB_SKILL_INLINE",
-              # Same shape again: concatenated into DEFAULT_SYSTEM_PROMPT, and EMPTY in the
-              # ablation arm (PETAB_DIFF_EDITS=0). Default ON since the 2026-08-19 flip, so under
-              # a bare test env this is NON-empty and really is exercised here. While the arm was
-              # default-OFF the constant was "" and this check passed vacuously, which is why the
-              # gap only surfaced when the default moved.
-              "_DIFF_EDITS_GUIDANCE",
-              # The rules read on MORE THAN ONE surface, each composed into every prompt that
-              # states it (see the block at the top of prompts.py). They are fragments for the
-              # same reason as the guidance above; the difference is that these land in several
-              # registered prompts rather than one, which is the whole point of their existing.
-              "_PARAMETER_HALF", "_SIGMA_CAP_ADVISORY", "_DSCORE_SIGN", "_MERGE_TAKE_RULE",
-              "_ADEQUATE_IS_NOT_DONE", "_MODEL_EDIT_OPS"}
+_FRAGMENTS = {
+    "_REPORT_CONTRACT",
+    "_BIOCURATOR_REPORT_CONTRACT",
+    # Concatenated into DEFAULT_SYSTEM_PROMPT, and EMPTY in the ablation
+    # arm (PETAB_DATA_REGIMES=0), where it is vacuously contained.
+    "_DATA_REGIMES_GUIDANCE",
+    # Same shape: concatenated into DEFAULT_SYSTEM_PROMPT. Default ON since the
+    # 2026-08-15 A/B, so under a bare test env this is NON-empty and the
+    # fragments-really-are-fragments check exercises it for real.
+    "_FREE_EXPONENTS_GUIDANCE",
+    # Concatenated into the three ANALYST prompts (the skill formerly fetched via
+    # get_skill once per spawn — now prompt text, versioned through those prompts).
+    "_PETAB_SKILL_INLINE",
+    # Same shape again: concatenated into DEFAULT_SYSTEM_PROMPT, and EMPTY in the
+    # ablation arm (PETAB_DIFF_EDITS=0). Default ON since the 2026-08-19 flip, so under
+    # a bare test env this is NON-empty and really is exercised here. While the arm was
+    # default-OFF the constant was "" and this check passed vacuously, which is why the
+    # gap only surfaced when the default moved.
+    "_DIFF_EDITS_GUIDANCE",
+    # The rules read on MORE THAN ONE surface, each composed into every prompt that
+    # states it (see the block at the top of prompts.py). They are fragments for the
+    # same reason as the guidance above; the difference is that these land in several
+    # registered prompts rather than one, which is the whole point of their existing.
+    "_PARAMETER_HALF",
+    "_SIGMA_CAP_ADVISORY",
+    "_DSCORE_SIGN",
+    "_MERGE_TAKE_RULE",
+    "_ADEQUATE_IS_NOT_DONE",
+    "_MODEL_EDIT_OPS",
+}
 
 
 def _texts_of(value) -> list[str]:
@@ -161,7 +168,13 @@ def test_the_hash_framing_is_still_unambiguous():
 def test_the_surface_covers_every_kind_of_prompt():
     """Sanity on the groups themselves, including the barebones and anonymous modeling arms."""
     assert set(P.PROMPT_GROUPS) == {
-        "lead", "analysts", "biocurator", "tools", "control", "barebones", "biology_blind",
+        "lead",
+        "analysts",
+        "biocurator",
+        "tools",
+        "control",
+        "barebones",
+        "biology_blind",
     }
     # the previously-untracked ones, named explicitly so a regression is legible
     tracked = P.all_prompts()
@@ -180,8 +193,11 @@ def _known_constants_of_every_example() -> "dict[str, str]":
     for f in sorted((Path(__file__).parents[1] / "examples").glob("*/run.py")):
         for node in ast.parse(f.read_text()).body:
             if isinstance(node, ast.Assign) and any(
-                    getattr(x, "id", None) == "KNOWN_CONSTANTS" for x in node.targets):
-                assert isinstance(node.value, ast.Constant), f"{f}: KNOWN_CONSTANTS is not a literal"
+                getattr(x, "id", None) == "KNOWN_CONSTANTS" for x in node.targets
+            ):
+                assert isinstance(node.value, ast.Constant), (
+                    f"{f}: KNOWN_CONSTANTS is not a literal"
+                )
                 out[f.parent.name] = node.value.value
     assert out, "no example defines KNOWN_CONSTANTS"
     return out
@@ -228,8 +244,7 @@ def test_prompt_version_changes_when_any_group_changes(monkeypatch):
     before = P.prompt_version()
     for group in P.PROMPT_GROUPS:
         patched = {
-            g: (_bump_first_leaf(e) if g == group else e)
-            for g, e in P.PROMPT_GROUPS.items()
+            g: (_bump_first_leaf(e) if g == group else e) for g, e in P.PROMPT_GROUPS.items()
         }
         monkeypatch.setattr(P, "PROMPT_GROUPS", patched)
         assert P.prompt_version() != before, f"changing group {group!r} did not move the version"
@@ -283,8 +298,9 @@ def test_base_meta_stamps_the_prompt_version(tmp_path):
     from petab_harness.runner.provenance import _base_meta
 
     scenario = types.SimpleNamespace(example_dir=tmp_path, version=1)
-    args = argparse.Namespace(driver="deepagents", model="m", recursion_limit=10,
-                              n_starts=5, temperature=0.0)
+    args = argparse.Namespace(
+        driver="deepagents", model="m", recursion_limit=10, n_starts=5, temperature=0.0
+    )
     meta = _base_meta(scenario, args)
 
     assert meta["prompt_version"] == P.prompt_version()
@@ -321,9 +337,11 @@ def test_skills_are_tracked_like_prompts(tmp_path):
         assert "get_data_regimes" not in P.DEFAULT_SYSTEM_PROMPT
 
     skills = collect_skills()
-    assert set(skills) == {"petab-skill-petab-model-building",
-                           "petab-skill-antimony-authoring",
-                           "petab-skill-independence-audit"}
+    assert set(skills) == {
+        "petab-skill-petab-model-building",
+        "petab-skill-antimony-authoring",
+        "petab-skill-independence-audit",
+    }
     assert all(text.strip() for text in skills.values())
 
     v = skills_version()
@@ -339,8 +357,9 @@ def test_skills_are_tracked_like_prompts(tmp_path):
     assert "skills_version" in metrics.HISTORY_FIELDS
     assert "skills_version" in wandb_logging._CONFIG_KEYS
     scenario = types.SimpleNamespace(example_dir=tmp_path, version=1)
-    args = argparse.Namespace(driver="deepagents", model="m", recursion_limit=10,
-                              n_starts=5, temperature=0.0)
+    args = argparse.Namespace(
+        driver="deepagents", model="m", recursion_limit=10, n_starts=5, temperature=0.0
+    )
     assert _base_meta(scenario, args)["skills_version"] == v
 
 
@@ -354,7 +373,8 @@ def test_skills_version_moves_when_a_skill_changes(tmp_path):
     fake = tmp_path / "_skills" / "petab-model-building"
     fake.mkdir(parents=True)
     (fake / "SKILL.md").write_text(
-        (src / "petab-model-building" / "SKILL.md").read_text() + "\nAn extra rule.\n")
+        (src / "petab-model-building" / "SKILL.md").read_text() + "\nAn extra rule.\n"
+    )
     assert skills_version(tmp_path / "_skills") != before
 
 
@@ -387,15 +407,26 @@ def test_appending_to_a_pre_existing_history_does_not_shift_columns(tmp_path):
     from petab_harness import metrics
 
     out = tmp_path / "history.csv"
-    old_fields = [f for f in metrics.HISTORY_FIELDS
-                  if f not in ("prompt_version", "skills_version")]
+    old_fields = [
+        f for f in metrics.HISTORY_FIELDS if f not in ("prompt_version", "skills_version")
+    ]
     with out.open("w", newline="") as fh:
         w = _csv.DictWriter(fh, fieldnames=old_fields)
         w.writeheader()
         w.writerow({"scenario": "old", "run_started_at": "T0", "git_sha": "abc"})
 
-    metrics.append_history([{"scenario": "new", "run_started_at": "T1", "git_sha": "def",
-                             "prompt_version": "pv", "skills_version": "sv"}], out)
+    metrics.append_history(
+        [
+            {
+                "scenario": "new",
+                "run_started_at": "T1",
+                "git_sha": "def",
+                "prompt_version": "pv",
+                "skills_version": "sv",
+            }
+        ],
+        out,
+    )
 
     rows = list(_csv.DictReader(out.open()))
     assert [r["run_started_at"] for r in rows] == ["T0", "T1"]
@@ -429,8 +460,10 @@ _ARCHAEOLOGY = [
     # model versions, and "never an earlier version's metrics" is exactly the rule the lead prompt
     # needs to state. A guard that flags correct text gets silenced rather than obeyed, so this
     # matches only phrasings that can mean the HARNESS's history and nothing else.
-    (r"\bthis (?:harness|tool|prompt|skill) (?:used to|once)\b",
-     "describes the harness's own change history"),
+    (
+        r"\bthis (?:harness|tool|prompt|skill) (?:used to|once)\b",
+        "describes the harness's own change history",
+    ),
     (r"\ban earlier draft\b", "describes an earlier draft of this text"),
     (r"\bregression\b", "describes our own defect history"),
 ]
@@ -461,7 +494,7 @@ def test_agent_facing_text_contains_no_archaeology():
         "agent-facing text cites this project's own history instead of stating a rule:\n    "
         + "\n    ".join(offences)
         + "\n  State the rule and drop the provenance. If the number genuinely teaches something, "
-          "phrase it as a property of the problem ('a collapse of three near-free pairs can cost "
-          "hundreds of bic'), not as a finding of ours. Development history belongs in a code "
-          "comment, a commit message, or BENCHMARK_NOTES.md."
+        "phrase it as a property of the problem ('a collapse of three near-free pairs can cost "
+        "hundreds of bic'), not as a finding of ours. Development history belongs in a code "
+        "comment, a commit message, or BENCHMARK_NOTES.md."
     )

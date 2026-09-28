@@ -14,8 +14,12 @@ import pytest
 pytest.importorskip("langchain_openai", reason="harness-only dependency")
 
 import openai  # noqa: E402
-from langchain_core.messages import (AIMessage, HumanMessage,  # noqa: E402
-                                     SystemMessage, ToolMessage)
+from langchain_core.messages import (  # noqa: E402
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 
 from petab_harness import models  # noqa: E402
 from petab_harness.agent.driver import _chat_model_class, _extra_body  # noqa: E402
@@ -23,23 +27,41 @@ from petab_harness.agent.token_usage import _token_accountant  # noqa: E402
 
 # openai builds its client on `httpx` up to 2.x and on `httpx2` from 3.x, and rejects a response
 # produced by the other flavour's transport. Take the flavour from openai; do not import it here.
-_httpx = importlib.import_module(
-    openai.DefaultAsyncHttpxClient.__base__.__module__.split(".")[0])
+_httpx = importlib.import_module(openai.DefaultAsyncHttpxClient.__base__.__module__.split(".")[0])
 
 MODEL = "xiaomi/mimo-v2.5"
 # What OpenRouter returns with `usage: {include: true}`: the OpenAI fields plus `cost`.
-USAGE = {"prompt_tokens": 1000, "completion_tokens": 50, "total_tokens": 1050,
-         "prompt_tokens_details": {"cached_tokens": 800}, "cost": 0.00123,
-         "cost_details": {"upstream_inference_cost": None}, "is_byok": False}
+USAGE = {
+    "prompt_tokens": 1000,
+    "completion_tokens": 50,
+    "total_tokens": 1050,
+    "prompt_tokens_details": {"cached_tokens": 800},
+    "cost": 0.00123,
+    "cost_details": {"upstream_inference_cost": None},
+    "is_byok": False,
+}
 
 
 def _completion(request: _httpx.Request) -> _httpx.Response:
     assert json.loads(request.content)["usage"] == {"include": True}, "the flag must be on the wire"
-    return _httpx.Response(200, json={
-        "id": "gen-1", "provider": "Novita", "model": MODEL, "object": "chat.completion",
-        "created": 1, "usage": USAGE,
-        "choices": [{"index": 0, "finish_reason": "stop",
-                     "message": {"role": "assistant", "content": "hi"}}]})
+    return _httpx.Response(
+        200,
+        json={
+            "id": "gen-1",
+            "provider": "Novita",
+            "model": MODEL,
+            "object": "chat.completion",
+            "created": 1,
+            "usage": USAGE,
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "hi"},
+                }
+            ],
+        },
+    )
 
 
 def _stream(request: _httpx.Request) -> _httpx.Response:
@@ -47,26 +69,42 @@ def _stream(request: _httpx.Request) -> _httpx.Response:
     assert body["stream"] is True and body["usage"] == {"include": True}
 
     def event(delta=None, finish=None, usage=None):
-        d = {"id": "gen-2", "provider": "Novita", "model": MODEL, "created": 1,
-             "object": "chat.completion.chunk",
-             "choices": [] if delta is None
-             else [{"index": 0, "delta": delta, "finish_reason": finish}]}
+        d = {
+            "id": "gen-2",
+            "provider": "Novita",
+            "model": MODEL,
+            "created": 1,
+            "object": "chat.completion.chunk",
+            "choices": []
+            if delta is None
+            else [{"index": 0, "delta": delta, "finish_reason": finish}],
+        }
         if usage is not None:
             d["usage"] = usage
         return f"data: {json.dumps(d)}\n\n"
 
     # OpenRouter puts usage on a final, choice-less chunk.
-    text = (event({"role": "assistant", "content": "h"}) + event({"content": "i"}, finish="stop")
-            + event(usage=USAGE) + "data: [DONE]\n\n")
-    return _httpx.Response(200, headers={"content-type": "text/event-stream"},
-                          content=text.encode())
+    text = (
+        event({"role": "assistant", "content": "h"})
+        + event({"content": "i"}, finish="stop")
+        + event(usage=USAGE)
+        + "data: [DONE]\n\n"
+    )
+    return _httpx.Response(
+        200, headers={"content-type": "text/event-stream"}, content=text.encode()
+    )
 
 
 def _llm(handler, model=MODEL):
     return _chat_model_class()(
-        name="ChatOpenAI", model=model, base_url="https://openrouter.ai/api/v1", api_key="x",
-        stream_usage=True, extra_body=_extra_body(model),
-        http_async_client=openai.DefaultAsyncHttpxClient(transport=_httpx.MockTransport(handler)))
+        name="ChatOpenAI",
+        model=model,
+        base_url="https://openrouter.ai/api/v1",
+        api_key="x",
+        stream_usage=True,
+        extra_body=_extra_body(model),
+        http_async_client=openai.DefaultAsyncHttpxClient(transport=_httpx.MockTransport(handler)),
+    )
 
 
 @pytest.mark.asyncio
@@ -103,12 +141,21 @@ async def test_a_cached_model_sends_its_breakpoints_on_the_wire(model_id):
         return _completion(request)
 
     await _llm(handler, model=model_id).ainvoke(
-        [SystemMessage("sys text"), HumanMessage("task"),
-         AIMessage("", tool_calls=[{"name": "t", "args": {}, "id": "c1"}]),
-         ToolMessage("tool output", tool_call_id="c1")])
+        [
+            SystemMessage("sys text"),
+            HumanMessage("task"),
+            AIMessage("", tool_calls=[{"name": "t", "args": {}, "id": "c1"}]),
+            ToolMessage("tool output", tool_call_id="c1"),
+        ]
+    )
 
-    marked = {m["role"]: b for m in sent["messages"] if isinstance(m.get("content"), list)
-              for b in m["content"] if isinstance(b, dict) and "cache_control" in b}
+    marked = {
+        m["role"]: b
+        for m in sent["messages"]
+        if isinstance(m.get("content"), list)
+        for b in m["content"]
+        if isinstance(b, dict) and "cache_control" in b
+    }
     assert set(marked) == {"system", "tool"}, "the system prompt and the end of the history"
     for role, block in marked.items():
         assert block["cache_control"] == models.caching_config(model_id), f"{role}: wrong ttl/type"

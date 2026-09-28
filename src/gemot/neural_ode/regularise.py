@@ -29,7 +29,9 @@ import jax.numpy as jnp
 NAMES = ("none", "l1", "l2", "l21")
 
 
-def variable_groups(n_columns: int, products: Sequence[tuple[int, int]] = ()) -> tuple[tuple[int, ...], ...]:
+def variable_groups(
+    n_columns: int, products: Sequence[tuple[int, int]] = ()
+) -> tuple[tuple[int, ...], ...]:
     """First-layer columns grouped by the input VARIABLE they carry.
 
     Without product features each column is its own variable. With them the groups OVERLAP: a

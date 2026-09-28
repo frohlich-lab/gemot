@@ -45,8 +45,13 @@ from .circuit_breaker import (
     call_outcomes,
 )
 from .finish_gate import _finish_tool
-from .guards import (_empty_report_guard, _task_arg_guard,
-                     _tool_dispatch_guard, _reasoning_runaway_guard, new_guard_stats)
+from .guards import (
+    _empty_report_guard,
+    _task_arg_guard,
+    _tool_dispatch_guard,
+    _reasoning_runaway_guard,
+    new_guard_stats,
+)
 from .literature import _wrap_literature_recorder
 from .probe import _model_committed, _structured
 from .subagents import (
@@ -71,8 +76,8 @@ from .. import models, prompts
 #     STALL the client timeout can't catch — RESUMES ``astream`` from the last checkpoint instead
 #     of aborting, so every committed model version and the conversation state are preserved.
 _LLM_TIMEOUT_S = 120.0
-_LLM_MAX_RETRIES = 4           # OpenAI-client retries for connection / timeout / 5xx / 429
-_RUN_RESUME_ATTEMPTS = 3       # resume the graph from the last checkpoint after a stall/transient
+_LLM_MAX_RETRIES = 4  # OpenAI-client retries for connection / timeout / 5xx / 429
+_RUN_RESUME_ATTEMPTS = 3  # resume the graph from the last checkpoint after a stall/transient
 # Harness-level stall watchdog on the agent loop. The client `timeout` above does NOT reliably
 # catch a mid-stream provider stall (observed: a 24-min no-progress hang that the 120s timeout
 # never fired on). astream emits once per graph super-step (a lead LLM call, a tool, or a whole
@@ -238,7 +243,7 @@ def _pending_fit_starts(state: Any, default: int, stats: dict | None = None) -> 
             raise TypeError(f"state is {type(state).__name__}, not a mapping")
         messages = state.get("messages")
         if not messages:
-            return None                                   # start of the run / empty state
+            return None  # start of the run / empty state
         # Walk BACK to the newest message that carries tool_calls, stopping at the first
         # ToolMessage. Reading only messages[-1] was too brittle: deepagents/langchain
         # middleware hooks (after_model, the 0.85 compaction node, the dispatch and
@@ -254,7 +259,7 @@ def _pending_fit_starts(state: Any, default: int, stats: dict | None = None) -> 
             if _is_tool_result(msg):
                 break
             found = getattr(msg, "tool_calls", None)
-            if found is None and isinstance(msg, dict):   # serialized message
+            if found is None and isinstance(msg, dict):  # serialized message
                 found = msg.get("tool_calls")
             if found:
                 calls = found
@@ -262,7 +267,7 @@ def _pending_fit_starts(state: Any, default: int, stats: dict | None = None) -> 
             if not isinstance(msg, dict) and not hasattr(msg, "content"):
                 raise TypeError(f"unrecognised message object {type(msg).__name__}")
         if calls is None:
-            return None                                   # no fit-shaped call pending
+            return None  # no fit-shaped call pending
         pending = None
         for c in calls:
             # Per call: a malformed entry must not discard a VALID sibling's count. Everything
@@ -299,10 +304,12 @@ def _pending_fit_starts(state: Any, default: int, stats: dict | None = None) -> 
         else:
             first = False
         if first:
-            print(f"[agent] cannot read pending fits from the graph state "
-                  f"({type(exc).__name__}: {exc}) — the stall watchdog falls back to the "
-                  "run-default window, which can kill a legitimately larger fit and will "
-                  "report it as 'no fit pending'")
+            print(
+                f"[agent] cannot read pending fits from the graph state "
+                f"({type(exc).__name__}: {exc}) — the stall watchdog falls back to the "
+                "run-default window, which can kill a legitimately larger fit and will "
+                "report it as 'no fit pending'"
+            )
         return None
 
 
@@ -324,7 +331,7 @@ def _content_filter_stop_reason(exc: BaseException) -> str | None:
         i = text.find(opener)
         if i == -1:
             continue
-        rest = text[i + len(opener):]
+        rest = text[i + len(opener) :]
         # The message ends at the first closing quote that is followed by the JSON punctuation
         # that can legally follow a value. `rfind` would run past the message and land on the
         # quote of a LATER key (`'code'`); a plain `find` would stop at a quote inside the
@@ -605,8 +612,10 @@ async def run_deepagents(
     biocurator_enabled = prompts.BIOCURATOR_ENABLED
     if biology_blind:
         if not biology_blinded:
-            raise ValueError("The biology-blind arm requires an anonymized server problem; "
-                             "launch it through the scenario runner")
+            raise ValueError(
+                "The biology-blind arm requires an anonymized server problem; "
+                "launch it through the scenario runner"
+            )
         system_prompt = prompts.BIOLOGY_BLIND_SYSTEM_PROMPT
         # Built here, never taken from the caller: the passed task is discarded whole, so no
         # scenario prose can reach a blinded agent. The problem's input protocols arrive as data
@@ -628,9 +637,15 @@ async def run_deepagents(
     # counted as "LLM+overhead" in the metrics split rather than tool time (a known caveat now
     # that the biocurator runs by default; wrap each bio session's call_tool into the clock too
     # if that split matters).
-    bio_tools: list = [] if not biocurator_enabled else await discover_bio_tools(
-        bio_sessions, literature=bio_literature,
-        exclude_names={n for t in petab_tools if (n := getattr(t, "name", None))})
+    bio_tools: list = (
+        []
+        if not biocurator_enabled
+        else await discover_bio_tools(
+            bio_sessions,
+            literature=bio_literature,
+            exclude_names={n for t in petab_tools if (n := getattr(t, "name", None))},
+        )
+    )
     all_tools = petab_tools + bio_tools
     # Wrap the tool objects with the repeated-error circuit breaker BEFORE they are handed to
     # the lead and the analyst subagents (both reference these same objects), so a tool that
@@ -673,19 +688,30 @@ async def run_deepagents(
     if biocurator_enabled:
         biocurator_spec = _build_biocurator_subagent(
             bio_tools + [t for t in petab_tools if getattr(t, "name", None) == "list_observables"],
-            biocurator_entities, guard_stats)
+            biocurator_entities,
+            guard_stats,
+        )
         subagents.append(biocurator_spec)
     biocurator_tools = sorted(n for t in bio_tools if (n := getattr(t, "name", None)))
     if biology_blind:
         print("[agent] biology-blind panel: no biocurator or external knowledge tools")
     elif not biocurator_enabled:
-        print("[agent] biocurator disabled; biological context and three modeling analysts retained")
+        print(
+            "[agent] biocurator disabled; biological context and three modeling analysts retained"
+        )
     else:
-        print(f"[agent] biocurator on the panel with {len(biocurator_tools)} bio tool(s)"
-              + (f": {biocurator_tools}" if biocurator_tools
-                 else " (none resolved — running on the model's own knowledge)"))
-        print(f"[agent] biocurator handed {len(biocurator_entities)} entity name(s)"
-              + (f": {biocurator_entities}" if biocurator_entities else " (none curated)"))
+        print(
+            f"[agent] biocurator on the panel with {len(biocurator_tools)} bio tool(s)"
+            + (
+                f": {biocurator_tools}"
+                if biocurator_tools
+                else " (none resolved — running on the model's own knowledge)"
+            )
+        )
+        print(
+            f"[agent] biocurator handed {len(biocurator_entities)} entity name(s)"
+            + (f": {biocurator_entities}" if biocurator_entities else " (none curated)")
+        )
     # The LEAD gets ONLY the orchestrator tools (+ the finish gate) — NOT the analysts'
     # data/diagnostic tools (query_data, get_fitting_log, get_measurements, ...). Those heavy
     # reads run INSIDE analyst subagents, whose verbose results live in their own transient
@@ -738,7 +764,7 @@ async def run_deepagents(
             temperature=temperature,
             base_url=base_url,
             api_key=api_key,
-            timeout=_LLM_TIMEOUT_S,          # fail a hung provider call fast (was unbounded)
+            timeout=_LLM_TIMEOUT_S,  # fail a hung provider call fast (was unbounded)
             max_retries=_LLM_MAX_RETRIES,
             # Ask for token usage even on streamed responses (adds stream_options.include_usage):
             # OpenAI-compatible providers omit usage from a stream unless requested, which would
@@ -782,8 +808,11 @@ async def run_deepagents(
     # retrieval and summary rather than modelling, so it is the one seat where a cheaper model is
     # worth measuring. ``None`` (the default) leaves it on the lead's model, so nothing changes
     # unless asked. Recorded in result.json either way.
-    bio_model_id = ((models.resolve(biocurator_model) if biocurator_model else model)
-                    if biocurator_enabled else None)
+    bio_model_id = (
+        (models.resolve(biocurator_model) if biocurator_model else model)
+        if biocurator_enabled
+        else None
+    )
     if biocurator_spec is not None and bio_model_id != model:
         # Set on the spec built above rather than passed to it: the spec is assembled before any
         # model exists, and deepagents reads `model` off it when it builds the subagent graph.
@@ -794,10 +823,15 @@ async def run_deepagents(
     # retry. Non-transient errors (bad request, recursion-limit) are deliberately excluded.
     from json import JSONDecodeError
 
-    from openai import (APIConnectionError, APITimeoutError, InternalServerError,
-                        RateLimitError)
-    _TRANSIENT_ERRORS: tuple = (APIConnectionError, APITimeoutError, InternalServerError,
-                                RateLimitError, JSONDecodeError)
+    from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
+
+    _TRANSIENT_ERRORS: tuple = (
+        APIConnectionError,
+        APITimeoutError,
+        InternalServerError,
+        RateLimitError,
+        JSONDecodeError,
+    )
     # Backstop: a transport error (a closed/hung MCP server) that ESCAPES the per-tool breaker —
     # e.g. raised at the `task` subagent boundary or the bio ClientSession itself — should RESUME
     # the run from the checkpoint rather than abort it (the petab server is still alive). Cover both
@@ -806,11 +840,17 @@ async def run_deepagents(
     # RemoteProtocolError all derive from it).
     try:
         from anyio import BrokenResourceError, ClosedResourceError, EndOfStream
-        _TRANSIENT_ERRORS = _TRANSIENT_ERRORS + (ClosedResourceError, BrokenResourceError, EndOfStream)
+
+        _TRANSIENT_ERRORS = _TRANSIENT_ERRORS + (
+            ClosedResourceError,
+            BrokenResourceError,
+            EndOfStream,
+        )
     except Exception:  # pragma: no cover - anyio always present with mcp, but never fail on import
         pass
     try:
         import httpx
+
         _TRANSIENT_ERRORS = _TRANSIENT_ERRORS + (httpx.TransportError,)
     except Exception:  # pragma: no cover - httpx always present with mcp, but never fail on import
         pass
@@ -826,8 +866,10 @@ async def run_deepagents(
     if "subagents" in params:
         kwargs["subagents"] = subagents
     else:  # pragma: no cover - guards against a deepagents API drift
-        print("[agent] WARNING: installed deepagents has no `subagents` parameter; "
-              "running a single agent without the analyst panel.")
+        print(
+            "[agent] WARNING: installed deepagents has no `subagents` parameter; "
+            "running a single agent without the analyst panel."
+        )
     # Lead middleware: drop deepagents' built-in FS/todo tools (the analysts can't be reliably
     # filtered in this deepagents version — see _builtin_tool_filter; `task` is untouched), hide a
     # circuit-broken tool so it stops being re-proposed, and guard tool dispatch (dedupe duplicate
@@ -839,7 +881,8 @@ async def run_deepagents(
     guard_installed = "middleware" in params
     if guard_installed:
         kwargs["middleware"] = [
-            _builtin_tool_filter(), _disabled_tool_filter(breaker_state),
+            _builtin_tool_filter(),
+            _disabled_tool_filter(breaker_state),
             # _task_arg_guard is placed OUTSIDE _tool_dispatch_guard (earlier in the list = outer
             # tool-call wrapper) so a REJECTED `task` call short-circuits before the dispatch guard
             # counts it — a bounced call never dispatched a subagent, so it must not inflate
@@ -858,14 +901,17 @@ async def run_deepagents(
             # ones included — not only the final retry. Benign today (a truncated turn carries
             # no tool calls, so _dedupe_response finds nothing to do), but stated correctly so a
             # future reorder is not reasoned from a false invariant.
-            _task_arg_guard(guard_stats), _reasoning_runaway_guard(guard_stats),
+            _task_arg_guard(guard_stats),
+            _reasoning_runaway_guard(guard_stats),
             _tool_dispatch_guard(guard_stats),
             _empty_report_guard(guard_stats),
         ]
     else:  # pragma: no cover - guards against a deepagents API drift
-        print("[agent] WARNING: installed deepagents has no `middleware` parameter; "
-              "the lead's built-in FS/todo tools + full history will remain, and proposed "
-              "tool calls are not guarded.")
+        print(
+            "[agent] WARNING: installed deepagents has no `middleware` parameter; "
+            "the lead's built-in FS/todo tools + full history will remain, and proposed "
+            "tool calls are not guarded."
+        )
     # A checkpointer lets us RESUME the graph from its last completed super-step after a stall or
     # exhausted call-retry (below), instead of discarding the run. In-process MemorySaver is
     # enough (one run per process). Degrade gracefully if the graph can't take one.
@@ -873,11 +919,14 @@ async def run_deepagents(
     if "checkpointer" in params:
         try:
             from langgraph.checkpoint.memory import MemorySaver
+
             checkpointer = MemorySaver()
             kwargs["checkpointer"] = checkpointer
         except Exception as exc:  # pragma: no cover - resume is a best-effort enhancement
-            print(f"[agent] no checkpointer ({type(exc).__name__}); a stall will end the run "
-                  "instead of resuming.")
+            print(
+                f"[agent] no checkpointer ({type(exc).__name__}); a stall will end the run "
+                "instead of resuming."
+            )
     # Drop the uncurated `general-purpose` subagent BEFORE the graph is built — it is added
     # during create_deep_agent, so this must precede it (issue #112). Then verify through
     # deepagents' own resolver: a run whose panel still carries it is contaminated (the lead can
@@ -888,11 +937,13 @@ async def run_deepagents(
     guard_stats["general_purpose_subagent"] = gp_enabled
     guard_stats["subagent_names"] = [s["name"] for s in subagents]
     if gp_enabled is not False:
-        print("[agent] WARNING: deepagents' `general-purpose` subagent is "
-              + ("still enabled" if gp_enabled else "of unknown status")
-              + " — the lead may be able to delegate model authoring to an uncurated subagent "
-                "holding the full tool pool (issue #112). Treat this run's containment as "
-                "unverified.")
+        print(
+            "[agent] WARNING: deepagents' `general-purpose` subagent is "
+            + ("still enabled" if gp_enabled else "of unknown status")
+            + " — the lead may be able to delegate model authoring to an uncurated subagent "
+            "holding the full tool pool (issue #112). Treat this run's containment as "
+            "unverified."
+        )
     agent = create_deep_agent(**kwargs)
 
     stop_reason = "completed"
@@ -919,8 +970,8 @@ async def run_deepagents(
     # floor itself sized per step kind, which is a separate change -- a hung provider CALL is
     # already caught in 120s by the client timeout, so what is left here is a genuinely wedged
     # step, and those are rare enough that a late detection costs one resume.
-    from ..fit_budget import (FIT_WATCHDOG_MARGIN, fit_time_budget,
-                              fit_time_budget_for)
+    from ..fit_budget import FIT_WATCHDOG_MARGIN, fit_time_budget, fit_time_budget_for
+
     # Sized to the n_starts the step about to run ACTUALLY asked for -- see _pending_fit_starts.
     #
     # `n_starts` here is only the run's DEFAULT, and a watchdog sized to it kills legitimate
@@ -954,8 +1005,11 @@ async def run_deepagents(
     # reserved unconditionally, 12% of an isensee budget. A certain 12% tax against an occasional
     # lost last fit is the wrong trade. The residual risk is real and accepted: an agent that
     # doubles n_starts on the final step can still have it cancelled.
-    step_headroom = (min(fit_time_budget(n_starts), max_wall_seconds * 0.5)
-                     if max_wall_seconds is not None else 0.0)
+    step_headroom = (
+        min(fit_time_budget(n_starts), max_wall_seconds * 0.5)
+        if max_wall_seconds is not None
+        else 0.0
+    )
     # THE deadline for every "may I start (or continue into) another step?" decision. The hard
     # `deadline` is the budget; this is the budget minus one step, i.e. the last moment at which
     # beginning a super-step can still finish inside it. Every such decision must use this one --
@@ -1027,8 +1081,10 @@ async def run_deepagents(
         # The no-model-built guard (and the deterministic early-stop) both need the probe; without
         # it a silent no-model stop scores as an empty "completed" run instead of resuming to
         # build one — so a caller that omits progress_probe reintroduces that gap silently.
-        print("[agent] no progress_probe wired — the no-model-built guard and deterministic "
-              "early-stop are disabled for this run")
+        print(
+            "[agent] no progress_probe wired — the no-model-built guard and deterministic "
+            "early-stop are disabled for this run"
+        )
     while True:
         retriable: str | None = None
         agen = None
@@ -1088,7 +1144,8 @@ async def run_deepagents(
                     # step undetected for half a multi-day run.
                     step_limit = max(
                         _STEP_STALL_TIMEOUT_S * stall_backoff,
-                        fit_time_budget_for(pending_fit, n_starts) * FIT_WATCHDOG_MARGIN)
+                        fit_time_budget_for(pending_fit, n_starts) * FIT_WATCHDOG_MARGIN,
+                    )
                     # Wait no longer than the time left in the wall-time budget. Without this the
                     # loop can only notice the deadline BETWEEN super-steps, so a step starting
                     # just before it runs the loop up to `step_limit` PAST it -- against a default
@@ -1102,8 +1159,11 @@ async def run_deepagents(
                     # step finish: capping the wait at the soft deadline cancels a commit step up
                     # to `step_headroom` (as much as half the budget) early and throws its fit
                     # away. Only the "may I START another step?" decisions use the soft deadline.
-                    step_wait = step_limit if deadline is None else max(
-                        1.0, min(step_limit, deadline - time.monotonic()))
+                    step_wait = (
+                        step_limit
+                        if deadline is None
+                        else max(1.0, min(step_limit, deadline - time.monotonic()))
+                    )
                     state = await asyncio.wait_for(agen.__anext__(), timeout=step_wait)
                 except StopAsyncIteration:
                     break
@@ -1138,9 +1198,10 @@ async def run_deepagents(
                 # accountant is ONE instance across every resume, so this bounds the whole run
                 # rather than resetting each time astream is re-entered -- which is precisely how
                 # the observed runaway escaped every other limit.
-                if (max_run_tokens is not None
-                        and token_accountant.prompt + token_accountant.completion
-                        >= max_run_tokens):
+                if (
+                    max_run_tokens is not None
+                    and token_accountant.prompt + token_accountant.completion >= max_run_tokens
+                ):
                     token_budget_exceeded = True
                     break
                 # Context backstop, checked at the same clean boundary. This used to STOP at
@@ -1167,9 +1228,11 @@ async def run_deepagents(
                 # raimundez t4 at dBIC +39.6, still improving. Size it from the largest observed
                 # single-step prompt growth once that is measured.
                 if token_accountant.max_prompt >= 0.90 * max_input_tokens:
-                    early_stopped = ("context_window_approached: largest prompt "
-                                     f"{token_accountant.max_prompt:,} tokens >= 90% of the "
-                                     f"{max_input_tokens:,}-token window")
+                    early_stopped = (
+                        "context_window_approached: largest prompt "
+                        f"{token_accountant.max_prompt:,} tokens >= 90% of the "
+                        f"{max_input_tokens:,}-token window"
+                    )
                     break
                 # The gate gave up (too many no-fit finish attempts) — end promptly at this
                 # boundary rather than letting the model spam finish to the recursion limit.
@@ -1181,16 +1244,20 @@ async def run_deepagents(
                 if early_stopped is not None:
                     break
             stop_reason = (
-                "wall_time_budget_exceeded" if wall_budget_exceeded
+                "wall_time_budget_exceeded"
+                if wall_budget_exceeded
                 # A BARE label, like wall_time_budget_exceeded beside it: the counts used to be
                 # interpolated here, which made every such run's stop_reason unique AND collided
                 # with `experiments._INFRA_ABORT_MARKERS` -- its "402" marker (out-of-credits) is a
                 # substring of a comma-formatted token count like "20,402,551", so a runaway with
                 # 0 fits was classified as infrastructure noise and dropped from the aggregation
                 # entirely. The counts belong in the print below and in `token_usage`.
-                else "token_budget_exceeded" if token_budget_exceeded
-                else "no_model_built" if finish_state["gave_up"]
-                else f"early_stop: {early_stopped}" if early_stopped
+                else "token_budget_exceeded"
+                if token_budget_exceeded
+                else "no_model_built"
+                if finish_state["gave_up"]
+                else f"early_stop: {early_stopped}"
+                if early_stopped
                 else "completed"
             )
         except asyncio.TimeoutError:
@@ -1207,10 +1274,15 @@ async def run_deepagents(
                 # message naming the wrong number sends the next investigation to the wrong
                 # timeout. Name the pending fit too -- "wedged fit" and "wedged LLM turn" want
                 # different diagnoses, and this line is usually all a sweep post-mortem has.
-                waiting_on = (f"{pending_fit}-start fit pending" if pending_fit is not None
-                              else "no fit pending")
-                retriable = (f"stalled: no step completed in {step_wait:.0f}s "
-                             f"({waiting_on}; hung provider call or wedged fit)")
+                waiting_on = (
+                    f"{pending_fit}-start fit pending"
+                    if pending_fit is not None
+                    else "no fit pending"
+                )
+                retriable = (
+                    f"stalled: no step completed in {step_wait:.0f}s "
+                    f"({waiting_on}; hung provider call or wedged fit)"
+                )
         except _TRANSIENT_ERRORS as exc:  # call-level retries exhausted -> resume the run
             retriable = f"{type(exc).__name__}: {exc}"
         except Exception as exc:
@@ -1233,7 +1305,7 @@ async def run_deepagents(
                 # that is a tuple of CLASSES and this is one status code within McpError.
                 retriable = f"fit call timed out: {exc}"
             elif (transient := _transient_provider_reason(exc)) is not None:
-                retriable = transient          # resume from the checkpoint, keeping every version
+                retriable = transient  # resume from the checkpoint, keeping every version
             else:
                 stop_reason = f"{type(exc).__name__}: {exc}"
         finally:
@@ -1242,26 +1314,34 @@ async def run_deepagents(
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(agen.aclose(), timeout=10)
         if wall_budget_exceeded:
-            print(f"[agent] wall-time budget ({max_wall_seconds:.0f}s) reached with less than "
-                  f"one step ({step_headroom:.0f}s) of headroom left — stopping at this step "
-                  "boundary; the judge scores whatever is currently committed.")
+            print(
+                f"[agent] wall-time budget ({max_wall_seconds:.0f}s) reached with less than "
+                f"one step ({step_headroom:.0f}s) of headroom left — stopping at this step "
+                "boundary; the judge scores whatever is currently committed."
+            )
             break
         if token_budget_exceeded:
             # Deliberately NOT retriable: a resume would hand the loop a fresh step budget and the
             # whole history to re-send, which is the exact mechanism that turned one run into
             # 107.9M tokens. Ending here keeps everything committed so far scoreable.
-            print(f"[agent] token budget exceeded: "
-                  f"{token_accountant.prompt + token_accountant.completion:,} tokens over "
-                  f"{max_run_tokens:,} in {token_accountant.n_calls} LLM calls — stopping at this "
-                  "step boundary; the judge scores whatever is currently committed.")
+            print(
+                f"[agent] token budget exceeded: "
+                f"{token_accountant.prompt + token_accountant.completion:,} tokens over "
+                f"{max_run_tokens:,} in {token_accountant.n_calls} LLM calls — stopping at this "
+                "step boundary; the judge scores whatever is currently committed."
+            )
             break
         if early_stopped is not None:
-            print(f"[agent] early-stop: {early_stopped} — stopping at this step boundary; "
-                  "the judge restores + scores the best-scoring checkpoint.")
+            print(
+                f"[agent] early-stop: {early_stopped} — stopping at this step boundary; "
+                "the judge restores + scores the best-scoring checkpoint."
+            )
             break
         if finish_state["gave_up"]:
-            print("[agent] finish gate gave up (no fittable model after repeated attempts) — "
-                  "ending the run as no-model-built.")
+            print(
+                "[agent] finish gate gave up (no fittable model after repeated attempts) — "
+                "ending the run as no-model-built."
+            )
             break
         if retriable is None:
             # Clean graph termination. A "completed" that did NOT pass the finish gate is a SILENT
@@ -1278,13 +1358,20 @@ async def run_deepagents(
             if stop_reason == "completed" and not finish_state["confirmed"]:
                 model_committed = await _model_committed(progress_probe)
                 past_deadline = soft_deadline is not None and time.monotonic() >= soft_deadline
-                if (silent_bounces < _MAX_SILENT_BOUNCES and checkpointer is not None
-                        and not past_deadline):
+                if (
+                    silent_bounces < _MAX_SILENT_BOUNCES
+                    and checkpointer is not None
+                    and not past_deadline
+                ):
                     silent_bounces += 1
                     nudge = _NO_MODEL_NUDGE if not model_committed else _SILENT_FINISH_NUDGE
-                    what = "NO model authored" if not model_committed else "no finish through the gate"
-                    print(f"[agent] silent stop ({what}) — bouncing back to finish properly "
-                          f"({silent_bounces}/{_MAX_SILENT_BOUNCES})")
+                    what = (
+                        "NO model authored" if not model_committed else "no finish through the gate"
+                    )
+                    print(
+                        f"[agent] silent stop ({what}) — bouncing back to finish properly "
+                        f"({silent_bounces}/{_MAX_SILENT_BOUNCES})"
+                    )
                     stream_input = {"messages": [{"role": "user", "content": nudge}]}
                     continue
             break
@@ -1292,8 +1379,10 @@ async def run_deepagents(
             # Out of time even before a resume would start — don't burn a backoff on a retry
             # the deadline will just cut off anyway.
             stop_reason = f"wall_time_budget_exceeded (during retry: {retriable})"
-            print(f"[agent] wall-time budget ({max_wall_seconds:.0f}s) exceeded while handling "
-                  f"'{retriable}' — stopping instead of resuming.")
+            print(
+                f"[agent] wall-time budget ({max_wall_seconds:.0f}s) exceeded while handling "
+                f"'{retriable}' — stopping instead of resuming."
+            )
             break
         # The SAME guard for tokens. Without it a run already past the ceiling could still resume:
         # the inner check only runs at a completed step boundary, so a run that blew the budget and
@@ -1301,12 +1390,16 @@ async def run_deepagents(
         # Each resume re-enters astream with a fresh step budget AND re-sends the whole history, so
         # with `_RUN_RESUME_ATTEMPTS` retries the effective ceiling was several times the nominal
         # one -- the exact compounding `_MAX_RUN_TOKENS` exists to bound.
-        if (max_run_tokens is not None
-                and token_accountant.prompt + token_accountant.completion >= max_run_tokens):
+        if (
+            max_run_tokens is not None
+            and token_accountant.prompt + token_accountant.completion >= max_run_tokens
+        ):
             stop_reason = "token_budget_exceeded"
-            print(f"[agent] token budget ({max_run_tokens:,}) already exceeded at "
-                  f"{token_accountant.prompt + token_accountant.completion:,} while handling "
-                  f"'{retriable}' — stopping instead of resuming.")
+            print(
+                f"[agent] token budget ({max_run_tokens:,}) already exceeded at "
+                f"{token_accountant.prompt + token_accountant.completion:,} while handling "
+                f"'{retriable}' — stopping instead of resuming."
+            )
             break
         # Is there still a server to resume against? Ask BEFORE spending a resume attempt: each
         # one re-sends the whole history and re-issues the pending fit, so resuming into a dead
@@ -1315,10 +1408,12 @@ async def run_deepagents(
         # per-call fit timeout) with one probe.
         if _server_is_alive(server_poll) is False:
             stop_reason = f"server_unreachable: {retriable}"
-            print(f"[agent] {retriable} — and the MCP server process has exited, so it is gone "
-                  "rather than slow. Not resuming: each resume re-sends the whole history and "
-                  "re-issues the pending fit, and every call to a dead server waits out its own "
-                  "timeout.")
+            print(
+                f"[agent] {retriable} — and the MCP server process has exited, so it is gone "
+                "rather than slow. Not resuming: each resume re-sends the whole history and "
+                "re-issues the pending fit, and every call to a dead server waits out its own "
+                "timeout."
+            )
             break
         if resume_left <= 0:
             stop_reason = retriable  # out of resume attempts — end with whatever was built
@@ -1331,8 +1426,10 @@ async def run_deepagents(
         if retriable.startswith("stalled:"):
             stall_backoff *= 2.0
         backoff = min(5.0 * (_RUN_RESUME_ATTEMPTS - resume_left), 30.0)
-        print(f"[agent] {retriable} — resuming from last checkpoint in {backoff:.0f}s "
-              f"({resume_left} resume(s) left, stall window x{stall_backoff:.0f})")
+        print(
+            f"[agent] {retriable} — resuming from last checkpoint in {backoff:.0f}s "
+            f"({resume_left} resume(s) left, stall window x{stall_backoff:.0f})"
+        )
         await asyncio.sleep(backoff)
         stream_input = None  # resume pending work from the checkpoint
 
@@ -1357,25 +1454,34 @@ async def run_deepagents(
         else:
             stop_reason = "no_model_built" if not model_committed else "silent_stop"
     if guard_stats["dropped_dup_tool_calls"]:
-        print(f"[agent] de-duplicated {guard_stats['dropped_dup_tool_calls']} identical tool "
-              "call(s) within a batch over the run")
+        print(
+            f"[agent] de-duplicated {guard_stats['dropped_dup_tool_calls']} identical tool "
+            "call(s) within a batch over the run"
+        )
     if breaker_state["n_tool_errors"]:
         disabled = sorted(breaker_state["disabled"])
-        print(f"[agent] tool errors this run: {breaker_state['n_tool_errors']}"
-              + (f"; disabled: {disabled}" if disabled else ""))
+        print(
+            f"[agent] tool errors this run: {breaker_state['n_tool_errors']}"
+            + (f"; disabled: {disabled}" if disabled else "")
+        )
     token_usage = token_accountant.totals()
     # A run that dispatched tools necessarily made LLM calls; capturing zero of them means the
     # usage was not reported (a streamed response without usage, or a callback-propagation gap),
     # so the recorded token_usage understates the run. Make that loud rather than silently
     # writing zeros that read as a genuinely tiny run in the cost analysis.
     if token_usage["n_llm_calls"] == 0 and guard_stats.get("tools_executed", 0) > 0:
-        print("[agent] WARNING: token accounting captured 0 LLM calls despite tool activity — "
-              "token_usage in result.json is understated (usage not reported for this run).")
+        print(
+            "[agent] WARNING: token accounting captured 0 LLM calls despite tool activity — "
+            "token_usage in result.json is understated (usage not reported for this run)."
+        )
     elif token_usage["n_uncosted_calls"]:
-        print(f"[agent] WARNING: {token_usage['n_uncosted_calls']} of "
-              f"{token_usage['n_llm_calls']} LLM calls carried no billed cost — "
-              "token_usage.cost_usd "
-              + ("is absent" if token_usage["cost_usd"] is None else "understates the run") + ".")
+        print(
+            f"[agent] WARNING: {token_usage['n_uncosted_calls']} of "
+            f"{token_usage['n_llm_calls']} LLM calls carried no billed cost — "
+            "token_usage.cost_usd "
+            + ("is absent" if token_usage["cost_usd"] is None else "understates the run")
+            + "."
+        )
 
     return {
         "stop_reason": stop_reason,

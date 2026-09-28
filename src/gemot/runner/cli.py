@@ -35,53 +35,90 @@ from .main import _main_async
 from ..scenario import Scenario
 from .. import models
 
+
 def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=f"{scenario.name} repair demo",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--driver", choices=["deepagents", "scripted", "barebones"], default="deepagents",
-                   help="deepagents: drive an OpenRouter model through the panel + MCP server; "
-                        "scripted: deterministic repair, no LLM; barebones: the NULL arm — one "
-                        "stock deepagent with a shell and the PEtab files on disk, no server, no "
-                        "panel, judged on the problem it delivers (see runner/barebones.py).")
-    p.add_argument("--model", default=models.DEFAULT,
-                   help="OpenRouter model id, or a go-to alias (deepagents driver). Aliases: "
-                        f"{', '.join(models.MODELS)} (see petab_harness/models.py). Default "
-                        f"'{models.DEFAULT}' = {models.resolve(models.DEFAULT)}, 1M-token context. "
-                        "Every aliased model is pinned to a single provider (see "
-                        "models.provider_routing) so a mirrored copy at another price cannot "
-                        "silently take the traffic.")
-    p.add_argument("--biocurator-model", default=None,
-                   help="Run the BIOCURATOR on its own model (alias or OpenRouter id), leaving "
-                        "the lead and analysts on --model. It is the panel's heaviest reader — "
-                        "entity lookups return whole database entries that then ride its context "
-                        "— and its job is retrieval, not modelling, so a cheaper model here is "
-                        "worth measuring (e.g. --biocurator-model glm-flash). Default: the "
-                        "lead's model. Recorded per run as `biocurator_model`.")
-    p.add_argument("--base-url", default="https://openrouter.ai/api/v1",
-                   help="OpenAI-compatible base URL for the LLM provider (default: OpenRouter).")
-    p.add_argument("--api-key", default=None,
-                   help="OpenRouter API key (default: the OPENROUTER_API_KEY environment variable).")
-    p.add_argument("--temperature", type=float, default=0.0,
-                   help="LLM sampling temperature (deepagents driver); recorded per run for sweeps.")
-    p.add_argument("--recursion-limit", type=int, default=250,
-                   help="deepagents/LangGraph super-step budget — a GENEROUS backstop only (above "
-                        "the longest legitimate ~200-step run). The early-stop chain (non-improving"
-                        "-streak cap + plateau) does the real stopping, so this should rarely fire.")
-    p.add_argument("--n-starts", type=int, default=50,
-                   help="pyPESTO multistart count for the `fit` tool (the server's default, so "
-                        "the agent's own fits use it too unless they pass n_starts).")
-    p.add_argument("--max-wall-seconds", type=float, default=None,
-                   help="Self-imposed total-runtime budget (seconds): once exceeded, the agent "
-                        "stops at the next clean step boundary and the judge scores whatever is "
-                        "currently committed, instead of racing an outer resource limit (e.g. a "
-                        "Slurm --time allocation) that would hard-kill the process with no "
-                        "result at all. Default: unlimited (only the stall watchdog + outer "
-                        "scheduler limit apply). A sweep should set this comfortably below its "
-                        "Slurm --time (see make_sweep.py).")
-    p.add_argument("--reference-validation", choices=["required", "best_effort", "off"], default="off",
-                   help="Server reference-validation mode (off = no network; default for a hermetic demo).")
+    p.add_argument(
+        "--driver",
+        choices=["deepagents", "scripted", "barebones"],
+        default="deepagents",
+        help="deepagents: drive an OpenRouter model through the panel + MCP server; "
+        "scripted: deterministic repair, no LLM; barebones: the NULL arm — one "
+        "stock deepagent with a shell and the PEtab files on disk, no server, no "
+        "panel, judged on the problem it delivers (see runner/barebones.py).",
+    )
+    p.add_argument(
+        "--model",
+        default=models.DEFAULT,
+        help="OpenRouter model id, or a go-to alias (deepagents driver). Aliases: "
+        f"{', '.join(models.MODELS)} (see petab_harness/models.py). Default "
+        f"'{models.DEFAULT}' = {models.resolve(models.DEFAULT)}, 1M-token context. "
+        "Every aliased model is pinned to a single provider (see "
+        "models.provider_routing) so a mirrored copy at another price cannot "
+        "silently take the traffic.",
+    )
+    p.add_argument(
+        "--biocurator-model",
+        default=None,
+        help="Run the BIOCURATOR on its own model (alias or OpenRouter id), leaving "
+        "the lead and analysts on --model. It is the panel's heaviest reader — "
+        "entity lookups return whole database entries that then ride its context "
+        "— and its job is retrieval, not modelling, so a cheaper model here is "
+        "worth measuring (e.g. --biocurator-model glm-flash). Default: the "
+        "lead's model. Recorded per run as `biocurator_model`.",
+    )
+    p.add_argument(
+        "--base-url",
+        default="https://openrouter.ai/api/v1",
+        help="OpenAI-compatible base URL for the LLM provider (default: OpenRouter).",
+    )
+    p.add_argument(
+        "--api-key",
+        default=None,
+        help="OpenRouter API key (default: the OPENROUTER_API_KEY environment variable).",
+    )
+    p.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help="LLM sampling temperature (deepagents driver); recorded per run for sweeps.",
+    )
+    p.add_argument(
+        "--recursion-limit",
+        type=int,
+        default=250,
+        help="deepagents/LangGraph super-step budget — a GENEROUS backstop only (above "
+        "the longest legitimate ~200-step run). The early-stop chain (non-improving"
+        "-streak cap + plateau) does the real stopping, so this should rarely fire.",
+    )
+    p.add_argument(
+        "--n-starts",
+        type=int,
+        default=50,
+        help="pyPESTO multistart count for the `fit` tool (the server's default, so "
+        "the agent's own fits use it too unless they pass n_starts).",
+    )
+    p.add_argument(
+        "--max-wall-seconds",
+        type=float,
+        default=None,
+        help="Self-imposed total-runtime budget (seconds): once exceeded, the agent "
+        "stops at the next clean step boundary and the judge scores whatever is "
+        "currently committed, instead of racing an outer resource limit (e.g. a "
+        "Slurm --time allocation) that would hard-kill the process with no "
+        "result at all. Default: unlimited (only the stall watchdog + outer "
+        "scheduler limit apply). A sweep should set this comfortably below its "
+        "Slurm --time (see make_sweep.py).",
+    )
+    p.add_argument(
+        "--reference-validation",
+        choices=["required", "best_effort", "off"],
+        default="off",
+        help="Server reference-validation mode (off = no network; default for a hermetic demo).",
+    )
     # --- blinded `biocurator` analyst: on the deepagents panel every run (endpoints hardcoded in
     #     runner.BIO_MCP_URLS; tools = the curated agent.DEFAULT_BIO_TOOLS allowlist).
     #     Literature access (EuropePMC/bioRxiv) is an ABLATION, not a flag: `PETAB_BIO_LITERATURE=1`,
@@ -92,19 +129,31 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
     # Phoenix tracing is MANDATORY — every run must be traced, so there is deliberately no flag to
     # disable it (the --phoenix-* options below only configure it, they never turn it off).
     default_project = f"petab-mcp-{scenario.name}"
-    p.add_argument("--phoenix-project", default=os.environ.get("PHOENIX_PROJECT_NAME", default_project),
-                   help="Phoenix project name to group this run's traces under.")
-    p.add_argument("--phoenix-keep-alive", action="store_true",
-                   help="After the run, keep the process (and any locally launched Phoenix app) "
-                        "alive until Ctrl-C so the traces stay browsable.")
+    p.add_argument(
+        "--phoenix-project",
+        default=os.environ.get("PHOENIX_PROJECT_NAME", default_project),
+        help="Phoenix project name to group this run's traces under.",
+    )
+    p.add_argument(
+        "--phoenix-keep-alive",
+        action="store_true",
+        help="After the run, keep the process (and any locally launched Phoenix app) "
+        "alive until Ctrl-C so the traces stay browsable.",
+    )
     p.set_defaults(phoenix=True)
     # --- Weights & Biases metrics logging (off by default; the sweep's analysis UI) ---
-    p.add_argument("--wandb", action="store_true",
-                   help="Log this run's outcome (pass / ΔBIC / χ² / timings + config) to "
-                        "Weights & Biases. Orthogonal to Phoenix tracing — use both: W&B for "
-                        "the sweep metrics UI, Phoenix for the agent trace.")
-    p.add_argument("--wandb-project", default=os.environ.get("WANDB_PROJECT", "petab-mcp-sweep"),
-                   help="W&B project to log runs under (default: $WANDB_PROJECT or petab-mcp-sweep).")
+    p.add_argument(
+        "--wandb",
+        action="store_true",
+        help="Log this run's outcome (pass / ΔBIC / χ² / timings + config) to "
+        "Weights & Biases. Orthogonal to Phoenix tracing — use both: W&B for "
+        "the sweep metrics UI, Phoenix for the agent trace.",
+    )
+    p.add_argument(
+        "--wandb-project",
+        default=os.environ.get("WANDB_PROJECT", "petab-mcp-sweep"),
+        help="W&B project to log runs under (default: $WANDB_PROJECT or petab-mcp-sweep).",
+    )
     return p
 
 
@@ -141,6 +190,7 @@ def run_scenario(scenario: Scenario, argv: list[str] | None = None) -> int:
     if getattr(args, "wandb", False):
         try:
             from ..wandb_logging import log_result
+
             log_result(result, project=args.wandb_project)
         except Exception as exc:  # pragma: no cover - telemetry must not break the run
             print(f"[wandb] skipped ({type(exc).__name__}: {exc})")

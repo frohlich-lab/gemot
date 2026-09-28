@@ -23,7 +23,7 @@ from ..prompts import _DISABLED_TOOL_HINT_DEFAULT, _DISABLED_TOOL_HINTS
 # run INSIDE the analyst subagents, and deepagents 0.6.12's declarative subagents don't
 # reliably receive a middleware list (see _builtin_tool_filter). Wrapping the tool object makes
 # the breaker travel WITH the tool into whichever agent (lead or analyst) calls it.
-_TOOL_ERROR_DISABLE_THRESHOLD = 3   # consecutive identical errors from one tool before it is cut
+_TOOL_ERROR_DISABLE_THRESHOLD = 3  # consecutive identical errors from one tool before it is cut
 
 # Tools the breaker may NEVER disable, however often they fail. `make_changes` is the run's only
 # committer: disabling it does not degrade the run, it GUARANTEES `no_model_built`, because nothing
@@ -90,9 +90,13 @@ _JSON_CONTAINER_TYPES = frozenset({"array", "object"})
 # NAME (so we don't hard-import anyio internals that vary across versions); the httpx family is
 # matched against its public TransportError base in _is_transport_error, so the breaker classifies
 # the SAME httpx surface the resume backstop does rather than a hand-listed subset that can drift.
-_TRANSPORT_ERROR_NAMES = frozenset({
-    "ClosedResourceError", "BrokenResourceError", "EndOfStream",           # anyio streams
-})
+_TRANSPORT_ERROR_NAMES = frozenset(
+    {
+        "ClosedResourceError",
+        "BrokenResourceError",
+        "EndOfStream",  # anyio streams
+    }
+)
 
 
 def _is_call_timeout(exc: BaseException) -> bool:
@@ -135,24 +139,31 @@ def _is_transport_error(exc: BaseException) -> bool:
 
 def _new_breaker_state() -> dict[str, Any]:
     """Mutable, run-scoped state shared by the wrapped tools and the lead's tool filter."""
-    return {"disabled": set(), "n_tool_errors": 0, "streaks": {}, "events": [],
-            # Separate from `streaks`: an operation REJECTION is not a tool error (see
-            # `_result_error`) and must never disable anything, but a run can still spend its
-            # whole budget re-sending one -- gemini 106 identical rejections, luna 246 of 265.
-            "reject_streaks": {}, "n_rejection_escalations": 0,
-            # Per-tool CALL outcomes, counted here because this wrapper is the only place that
-            # sees every attempt. `_ToolClock.note_result` (runner/clock.py) tallies only calls
-            # that reach `session.call_tool` AND return a parseable payload, so it is blind to the
-            # three ways a call can fail without ever touching the server -- which is how a
-            # mimo-v2.5 run that made 134 failing make_changes calls wrote
-            # `edit_rejects: {attempted: 0, rejected: 0, reject_rate: null}`.
-            "calls": {}}
+    return {
+        "disabled": set(),
+        "n_tool_errors": 0,
+        "streaks": {},
+        "events": [],
+        # Separate from `streaks`: an operation REJECTION is not a tool error (see
+        # `_result_error`) and must never disable anything, but a run can still spend its
+        # whole budget re-sending one -- gemini 106 identical rejections, luna 246 of 265.
+        "reject_streaks": {},
+        "n_rejection_escalations": 0,
+        # Per-tool CALL outcomes, counted here because this wrapper is the only place that
+        # sees every attempt. `_ToolClock.note_result` (runner/clock.py) tallies only calls
+        # that reach `session.call_tool` AND return a parseable payload, so it is blind to the
+        # three ways a call can fail without ever touching the server -- which is how a
+        # mimo-v2.5 run that made 134 failing make_changes calls wrote
+        # `edit_rejects: {attempted: 0, rejected: 0, reject_rate: null}`.
+        "calls": {},
+    }
 
 
 def _breaker_message(name: str, hint: str) -> list[dict[str, str]]:
     """The terminal content block returned in place of a disabled tool's result."""
-    return [{"type": "text",
-             "text": prompts.TOOL_DISABLED_REPEATED_TMPL.format(name=name, hint=hint)}]
+    return [
+        {"type": "text", "text": prompts.TOOL_DISABLED_REPEATED_TMPL.format(name=name, hint=hint)}
+    ]
 
 
 def _transport_breaker_message(name: str, hint: str) -> list[dict[str, str]]:
@@ -160,8 +171,9 @@ def _transport_breaker_message(name: str, hint: str) -> list[dict[str, str]]:
 
     Distinct from :func:`_breaker_message`: a transport error disables on the FIRST failure, so the
     "failed repeatedly with the same error" wording would misdescribe it."""
-    return [{"type": "text",
-             "text": prompts.TOOL_DISABLED_TRANSPORT_TMPL.format(name=name, hint=hint)}]
+    return [
+        {"type": "text", "text": prompts.TOOL_DISABLED_TRANSPORT_TMPL.format(name=name, hint=hint)}
+    ]
 
 
 def _result_error(content: Any, artifact: Any) -> str | None:
@@ -199,6 +211,7 @@ def _result_error(content: Any, artifact: Any) -> str | None:
         text = content
     try:
         import json
+
         obj = json.loads(text)
     except Exception:
         return None
@@ -240,23 +253,25 @@ def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
         # and nothing in `events`: a run that scored nothing with no recorded reason, which is
         # the exact invisibility the August sweep had to be reverse-engineered from.
         if streak["count"] == _TOOL_ERROR_DISABLE_THRESHOLD:
-            msg = (f"`{name}` has failed {streak['count']} times with the same error but is part "
-                   f"of the model-editing loop, so it is NOT disabled; escalating instead: {sig}")
+            msg = (
+                f"`{name}` has failed {streak['count']} times with the same error but is part "
+                f"of the model-editing loop, so it is NOT disabled; escalating instead: {sig}"
+            )
             state["events"].append(msg)
             print(f"[circuit-breaker] {msg}")
         return False
     if streak["count"] >= _TOOL_ERROR_DISABLE_THRESHOLD and name not in state["disabled"]:
         state["disabled"].add(name)
-        msg = (f"disabled `{name}` after {streak['count']} consecutive identical errors: "
-               f"{sig}")
+        msg = f"disabled `{name}` after {streak['count']} consecutive identical errors: {sig}"
         state["events"].append(msg)
         print(f"[circuit-breaker] {msg}")
         return True
     return False
 
 
-def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
-                                     transport_disable_names: set[str] | None = None) -> list:
+def _wrap_tools_with_circuit_breaker(
+    tools: list, state: dict[str, Any], transport_disable_names: set[str] | None = None
+) -> list:
     """Wrap each tool's coroutine so repeated identical failures disable it (see above).
 
     Mutates the tool objects in place (and returns the list) so the breaker rides along into
@@ -293,8 +308,13 @@ def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
                 try:
                     result = await orig(runtime=runtime, **arguments)
                 except Exception as exc:  # a raised tool error (e.g. MCP isError -> ToolException)
-                    _note_call(state, name, _CALL_CLIENT_INVALID
-                               if _is_client_validation_error(exc) else _CALL_TOOL_ERROR)
+                    _note_call(
+                        state,
+                        name,
+                        _CALL_CLIENT_INVALID
+                        if _is_client_validation_error(exc)
+                        else _CALL_TOOL_ERROR,
+                    )
                     sig = f"{type(exc).__name__}: {exc}"
                     tripped = _record_error(state, name, sig)
                     # A TRANSPORT failure is exempt from the never-disable return below. The model
@@ -330,9 +350,10 @@ def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
                         # and transport paths return, so the model reliably SEES the error and can
                         # correct the call — which is the entire point of never disabling this tool.
                         n = state["streaks"].get(name, {}).get("count", 1)
-                        esc = (_ESCALATION_READ if name in _NEVER_DISABLE_READS else _ESCALATION)
-                        detail = sig + (esc.format(n=n, name=name)
-                                        if n >= _TOOL_ERROR_DISABLE_THRESHOLD else "")
+                        esc = _ESCALATION_READ if name in _NEVER_DISABLE_READS else _ESCALATION
+                        detail = sig + (
+                            esc.format(n=n, name=name) if n >= _TOOL_ERROR_DISABLE_THRESHOLD else ""
+                        )
                         return (detail, None)
                     # A transport error (unreachable/closed server) on an EXTERNAL bio tool can't be
                     # fixed by the model and aborts the whole run if it propagates — disable that
@@ -353,8 +374,13 @@ def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
                 if err is None:
                     state["streaks"].pop(name, None)  # a success clears the tool's error streak
                     escalated = _note_repeated_rejection(state, name, content, artifact)
-                    _note_call(state, name, _CALL_SERVER_REJECTED
-                               if _rejection_error(content, artifact) is not None else _CALL_OK)
+                    _note_call(
+                        state,
+                        name,
+                        _CALL_SERVER_REJECTED
+                        if _rejection_error(content, artifact) is not None
+                        else _CALL_OK,
+                    )
                     return escalated or result
                 _note_call(state, name, _CALL_TOOL_ERROR)
                 if _record_error(state, name, err) and isinstance(content, list):
@@ -368,9 +394,16 @@ def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
                     # turn limit — no disable, no escalation, only a stdout line it cannot see.
                     n = state["streaks"].get(name, {}).get("count", 1)
                     if n >= _TOOL_ERROR_DISABLE_THRESHOLD and isinstance(content, list):
-                        note = [{"type": "text",
-                                 "text": (_ESCALATION_READ if name in _NEVER_DISABLE_READS
-                                          else _ESCALATION).format(n=n, name=name)}]
+                        note = [
+                            {
+                                "type": "text",
+                                "text": (
+                                    _ESCALATION_READ
+                                    if name in _NEVER_DISABLE_READS
+                                    else _ESCALATION
+                                ).format(n=n, name=name),
+                            }
+                        ]
                         return (content + note, artifact)
                 return result
 
@@ -385,10 +418,10 @@ def _wrap_tools_with_circuit_breaker(tools: list, state: dict[str, Any],
 
 
 _CALL_OK = "ok"
-_CALL_SERVER_REJECTED = "server_rejected"   # reached the server, `applied: false`
-_CALL_CLIENT_INVALID = "client_invalid"     # never reached it: argument shape failed validation
-_CALL_TOOL_ERROR = "tool_error"             # raised anything else
-_CALL_DISABLED = "disabled"                 # short-circuited by the breaker
+_CALL_SERVER_REJECTED = "server_rejected"  # reached the server, `applied: false`
+_CALL_CLIENT_INVALID = "client_invalid"  # never reached it: argument shape failed validation
+_CALL_TOOL_ERROR = "tool_error"  # raised anything else
+_CALL_DISABLED = "disabled"  # short-circuited by the breaker
 
 
 def _note_call(state: dict[str, Any], name: str, outcome: str) -> None:
@@ -426,7 +459,7 @@ def call_outcomes(state: dict[str, Any], name: str) -> dict[str, Any]:
 # reintroduce a raise here without checking that callback first.
 
 
-_REJECTION_ESCALATE_AT = 5   # identical operation rejections before the wording escalates
+_REJECTION_ESCALATE_AT = 5  # identical operation rejections before the wording escalates
 
 _REJECTION_ESCALATION = (
     "\n\nNOTE: this is the {n}th time this call was rejected for the SAME reason. Re-sending it "
@@ -489,8 +522,7 @@ def _note_repeated_rejection(state: dict[str, Any], name: str, content: Any, art
         msg = f"`{name}` rejected {streak['count']}x with the same error; escalating: {sig}"
         state["events"].append(msg)
         print(f"[circuit-breaker] {msg}")
-    note = [{"type": "text",
-             "text": _REJECTION_ESCALATION.format(n=streak["count"])}]
+    note = [{"type": "text", "text": _REJECTION_ESCALATION.format(n=streak["count"])}]
     return (content + note, artifact)
 
 
@@ -519,7 +551,7 @@ def _container_arg_names(tool: Any) -> dict[str, str]:
         branches = spec.get("anyOf") or spec.get("oneOf") or [spec]
         for branch in branches:
             if isinstance(branch, dict) and branch.get("type") in _JSON_CONTAINER_TYPES:
-                names[arg] = branch["type"]      # remember WHICH container was declared
+                names[arg] = branch["type"]  # remember WHICH container was declared
                 break
     return names
 

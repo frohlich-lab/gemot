@@ -22,13 +22,21 @@ import shutil
 from pathlib import Path
 
 #: What the scripted fix tells the server. The judge reads it as any other justification.
-JUSTIFICATION = ("Rate laws distilled by symbolic regression (PySR) from a neural vector field fitted to "
-                 "these data (petab_harness.neural_ode). The named constants are seeded at their regressed "
-                 "values and refit here; agreement with the field, not with the data, chose the expressions.")
+JUSTIFICATION = (
+    "Rate laws distilled by symbolic regression (PySR) from a neural vector field fitted to "
+    "these data (petab_harness.neural_ode). The named constants are seeded at their regressed "
+    "values and refit here; agreement with the field, not with the data, chose the expressions."
+)
 
 
-def score_proposals(proposals: Path | str, example_dir: Path | str, out: Path | str, *, n_starts: int = 50,
-                    only: tuple[str, ...] = ()) -> list[dict]:
+def score_proposals(
+    proposals: Path | str,
+    example_dir: Path | str,
+    out: Path | str,
+    *,
+    n_starts: int = 50,
+    only: tuple[str, ...] = (),
+) -> list[dict]:
     """Run the judge on every proposal in ``proposals`` (the route's ``proposals.json``) for the
     example in ``example_dir``; one row per proposal, also written to ``<out>/scores.json``.
     ``only`` restricts the run to proposals with those tags (``selected``, ``c7``, ...)."""
@@ -48,41 +56,81 @@ def score_proposals(proposals: Path | str, example_dir: Path | str, out: Path | 
         _stage_example(example_dir, run_dir)
         fix = _fix_for(proposal["antimony"], build_true_model)
         if template is not None:
-            scenario = dataclasses.replace(template, name=proposal["model_name"], problem_dir=run_dir / "problem",
-                                           scripted_fix=fix, fix_summary=f"neural route proposal {tag}")
+            scenario = dataclasses.replace(
+                template,
+                name=proposal["model_name"],
+                problem_dir=run_dir / "problem",
+                scripted_fix=fix,
+                fix_summary=f"neural route proposal {tag}",
+            )
         else:
-            scenario = Scenario(name=proposal["model_name"], problem_dir=run_dir / "problem", scripted_fix=fix,
-                                fix_summary=f"neural route proposal {tag}")
+            scenario = Scenario(
+                name=proposal["model_name"],
+                problem_dir=run_dir / "problem",
+                scripted_fix=fix,
+                fix_summary=f"neural route proposal {tag}",
+            )
         code = run_scenario(scenario, ["--driver", "scripted", "--n-starts", str(int(n_starts))])
         result_path = run_dir / "work" / "result.json"
         result = json.loads(result_path.read_text()) if result_path.is_file() else {}
-        rows.append({
-            "model_name": proposal["model_name"], "tag": tag, "n_constants": proposal.get("n_constants"),
-            "complexity_budget": record.get("complexity_budget"), "field_r2": record.get("field_r2"),
-            "exit_code": code, "success": result.get("success"), "final_nll": result.get("final_nll"),
-            "k": result.get("k"), "bic": result.get("bic"), "delta_bic": result.get("delta_bic"),
-            "validation": result.get("validation"), "result": str(result_path),
-        })
-        print(f"[judge] {proposal['model_name']}: success {result.get('success')} ΔBIC {result.get('delta_bic')} "
-              f"nll {result.get('final_nll')} k {result.get('k')}")
+        rows.append(
+            {
+                "model_name": proposal["model_name"],
+                "tag": tag,
+                "n_constants": proposal.get("n_constants"),
+                "complexity_budget": record.get("complexity_budget"),
+                "field_r2": record.get("field_r2"),
+                "exit_code": code,
+                "success": result.get("success"),
+                "final_nll": result.get("final_nll"),
+                "k": result.get("k"),
+                "bic": result.get("bic"),
+                "delta_bic": result.get("delta_bic"),
+                "validation": result.get("validation"),
+                "result": str(result_path),
+            }
+        )
+        print(
+            f"[judge] {proposal['model_name']}: success {result.get('success')} ΔBIC {result.get('delta_bic')} "
+            f"nll {result.get('final_nll')} k {result.get('k')}"
+        )
     out.mkdir(parents=True, exist_ok=True)
-    (out / "scores.json").write_text(json.dumps({"proposals": str(proposals), "example": str(example_dir),
-                                                 "n_starts": n_starts, "scores": rows}, indent=1, default=str) + "\n")
+    (out / "scores.json").write_text(
+        json.dumps(
+            {
+                "proposals": str(proposals),
+                "example": str(example_dir),
+                "n_starts": n_starts,
+                "scores": rows,
+            },
+            indent=1,
+            default=str,
+        )
+        + "\n"
+    )
     return rows
 
 
 def _fix_for(antimony: str, build_true_model):
     """The scripted fix: one ``make_changes`` with the proposal's model, as the canonical builds do."""
+
     async def fix(call, n_starts: int) -> None:
-        await build_true_model(call, antimony=antimony, justification=JUSTIFICATION, n_starts=n_starts)
+        await build_true_model(
+            call, antimony=antimony, justification=JUSTIFICATION, n_starts=n_starts
+        )
+
     return fix
 
 
 def _stage_example(example_dir: Path, run_dir: Path) -> None:
     """A private copy of the example for one run: the problem with its reference and protocol, the
     held-out set beside it; never the compile cache, an earlier run's provenance or its ``work/``."""
-    shutil.copytree(example_dir / "problem", run_dir / "problem", dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns(".petab_mcp", ".amici_build", "__pycache__"))
+    shutil.copytree(
+        example_dir / "problem",
+        run_dir / "problem",
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns(".petab_mcp", ".amici_build", "__pycache__"),
+    )
     if (example_dir / "validation").is_dir():
         shutil.copytree(example_dir / "validation", run_dir / "validation", dirs_exist_ok=True)
     shutil.rmtree(run_dir / "work", ignore_errors=True)

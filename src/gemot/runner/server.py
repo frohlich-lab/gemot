@@ -62,8 +62,9 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
-def _wait_until_listening(host: str, port: int, proc: subprocess.Popen, log: Path,
-                          timeout: float = 120.0) -> None:
+def _wait_until_listening(
+    host: str, port: int, proc: subprocess.Popen, log: Path, timeout: float = 120.0
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if proc.poll() is not None:

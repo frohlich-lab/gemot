@@ -23,14 +23,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _fresh(script: str, **switches: str) -> str:
     env = {**os.environ, **{a.env: str(int(a.default_on)) for a in ABLATIONS}, **switches}
-    result = subprocess.run([sys.executable, "-c", script], cwd=ROOT, env=env,
-                            text=True, capture_output=True, timeout=90)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=90,
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     return result.stdout
 
 
 def test_only_curator_guidance_and_roster_change():
-    script = r'''
+    script = r"""
 import json
 from pathlib import Path
 from petab_harness import agent, prompts
@@ -42,7 +48,7 @@ print(json.dumps({"roster": agent.SUBAGENT_NAMES, "prompt": scenario.system_prom
                   "task": scenario.agent_task, "analysts": agent.ANALYSTS,
                   "tools": sorted(agent.ALLOWED_TOOLS), "groups": prompts.prompt_group_versions(),
                   "enabled": prompts.BIOCURATOR_ENABLED}))
-'''
+"""
     baseline = json.loads(_fresh(script))
     off = json.loads(_fresh(script, PETAB_BIOCURATOR="0"))
     assert baseline["enabled"] and not off["enabled"]
@@ -64,7 +70,8 @@ print(json.dumps({"roster": agent.SUBAGENT_NAMES, "prompt": scenario.system_prom
 @requires_harness
 @pytest.mark.parametrize("literature", ["0", "1"])
 def test_disabled_curator_skips_connections_discovery_and_model(literature):
-    _fresh(r'''
+    _fresh(
+        r"""
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -152,7 +159,10 @@ with TemporaryDirectory() as directory, pytest.MonkeyPatch.context() as patch:
     args = build_parser(scenario).parse_args(["--driver", "deepagents"])
     code, saved = asyncio.run(runner._main_async(scenario, args))
     assert code == 0 and seen == [saved]
-''', PETAB_BIOCURATOR="0", PETAB_BIO_LITERATURE=literature)
+""",
+        PETAB_BIOCURATOR="0",
+        PETAB_BIO_LITERATURE=literature,
+    )
 
 
 def test_sweep_accepts_the_curator_only_arm():

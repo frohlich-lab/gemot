@@ -26,10 +26,12 @@ class _FakeResult:
 # An identifiability payload the PARSIMONY gate reads as CLEAN (identifiable): available, a full-
 # rank FIM, no flat directions. The default so existing tests exercise the gate's fail-through,
 # not its refusal. `_ident(...)` builds the non-identifiable variants the parsimony tests need.
-_IDENTIFIABLE = {"available": True, "method": "fim+multistart",
-                 "fim": {"rank": 3, "n_estimated": 3, "condition": 12.0,
-                         "rank_deficient": False},
-                 "flat_directions": []}
+_IDENTIFIABLE = {
+    "available": True,
+    "method": "fim+multistart",
+    "fim": {"rank": 3, "n_estimated": 3, "condition": 12.0, "rank_deficient": False},
+    "flat_directions": [],
+}
 
 
 def _ident(*, flat_directions=None, rank_deficient=False, available=True, fim=True):
@@ -38,8 +40,11 @@ def _ident(*, flat_directions=None, rank_deficient=False, available=True, fim=Tr
     return {
         "available": available,
         "method": "fim+multistart" if fim else "multistart",
-        "fim": ({"rank": 2, "n_estimated": 3, "condition": 1e12,
-                 "rank_deficient": rank_deficient} if fim else None),
+        "fim": (
+            {"rank": 2, "n_estimated": 3, "condition": 1e12, "rank_deficient": rank_deficient}
+            if fim
+            else None
+        ),
         "flat_directions": flat_directions or [],
     }
 
@@ -73,8 +78,7 @@ async def _finish(tool):
 
 
 def _tool_for(mod, fit_summary, diagnosis=None, finish_state=None, identifiability=None):
-    return mod._finish_tool(
-        _FakeSession(fit_summary, diagnosis, identifiability), finish_state)
+    return mod._finish_tool(_FakeSession(fit_summary, diagnosis, identifiability), finish_state)
 
 
 @pytest.mark.asyncio
@@ -110,7 +114,7 @@ async def test_no_fit_finish_refuses_then_gives_up_never_accepts():
     for _ in range(mod._MAX_NO_FIT_FINISH_ATTEMPTS - 1):
         out = await _finish(tool)
         assert "FINISH REFUSED" in out and not out.startswith("Recorded: finish")
-        assert fs.get("gave_up") is not True                 # not yet
+        assert fs.get("gave_up") is not True  # not yet
     # The Nth attempt gives up — ends as no-model-built, still not an accepted finish.
     out = await _finish(tool)
     assert not out.startswith("Recorded: finish")
@@ -127,8 +131,12 @@ async def test_no_fit_counter_is_consecutive_and_resets_on_a_fit():
     for _ in range(mod._MAX_NO_FIT_FINISH_ATTEMPTS - 1):
         assert "FINISH REFUSED" in await _finish(tool)
     # A valid fit appears -> the next finish ARMS (counter reset), it does not give up.
-    session.fit_summary = {"neg_log_likelihood": 100.0, "bic": 210.0, "version": 1,
-                           "has_unfit_edits": False}
+    session.fit_summary = {
+        "neg_log_likelihood": 100.0,
+        "bic": 210.0,
+        "version": 1,
+        "has_unfit_edits": False,
+    }
     assert "FINISH ARMED" in await _finish(tool)
     # Fit gone again -> counting restarts from 1, so it refuses rather than immediately gives up.
     session.fit_summary = {"neg_log_likelihood": None, "bic": None, "version": 0}
@@ -140,11 +148,14 @@ async def test_confirmed_finish_records_confirmed_flag():
     """A confirmed finish sets finish_state['confirmed'] so the driver won't bounce it back."""
     mod = _agent
     fs = {}
-    tool = _tool_for(mod, {"neg_log_likelihood": 100.0, "bic": 210.0, "version": 5,
-                           "has_unfit_edits": False}, finish_state=fs)
-    await _finish(tool)           # arm
-    assert fs.get("confirmed") is not True   # not yet — a single call never confirms
-    second = await _finish(tool)   # confirm
+    tool = _tool_for(
+        mod,
+        {"neg_log_likelihood": 100.0, "bic": 210.0, "version": 5, "has_unfit_edits": False},
+        finish_state=fs,
+    )
+    await _finish(tool)  # arm
+    assert fs.get("confirmed") is not True  # not yet — a single call never confirms
+    second = await _finish(tool)  # confirm
     assert second.startswith("Recorded: finish")
     assert fs["confirmed"] is True
 
@@ -157,8 +168,9 @@ async def test_finish_is_not_blocked_on_unfit_edits_because_there_cannot_be_any(
     would have blocked the finish with no way out. The flag is still reported by
     describe_problem, so a real regression shows up there rather than as a wedged run."""
     mod = _agent
-    tool = _tool_for(mod, {"neg_log_likelihood": 100.0, "bic": 210.0, "version": 3,
-                           "has_unfit_edits": True})
+    tool = _tool_for(
+        mod, {"neg_log_likelihood": 100.0, "bic": 210.0, "version": 3, "has_unfit_edits": True}
+    )
     out = await _finish(tool)
     assert "FINISH ARMED" in out
     assert "call fit" not in out.lower()
@@ -167,19 +179,37 @@ async def test_finish_is_not_blocked_on_unfit_edits_because_there_cannot_be_any(
 @pytest.mark.asyncio
 async def test_finish_arms_then_confirms():
     mod = _agent
-    diag = {"per_observable": [{"observable_id": "obs_A", "mean_weighted_residual": 2.0,
-                                "sign_test": {"p": 0.002}, "runs_test": {"p": 0.3}}]}
+    diag = {
+        "per_observable": [
+            {
+                "observable_id": "obs_A",
+                "mean_weighted_residual": 2.0,
+                "sign_test": {"p": 0.002},
+                "runs_test": {"p": 0.3},
+            }
+        ]
+    }
     # The rolled-up verdict rides on the FIT — the diagnosis does not repeat it — so the armed
     # message has to read the summary from there and the worst-observable row from the diagnosis.
-    tool = _tool_for(mod, {"neg_log_likelihood": 100.0, "bic": 210.0, "version": 5,
-                           "has_unfit_edits": False,
-                           "residual_structure": {
-                               "summary": "systematic residual structure in obs_A",
-                               "flagged_observables": ["obs_A"], "low_power": False}}, diag)
+    tool = _tool_for(
+        mod,
+        {
+            "neg_log_likelihood": 100.0,
+            "bic": 210.0,
+            "version": 5,
+            "has_unfit_edits": False,
+            "residual_structure": {
+                "summary": "systematic residual structure in obs_A",
+                "flagged_observables": ["obs_A"],
+                "low_power": False,
+            },
+        },
+        diag,
+    )
     first = await _finish(tool)
     assert "FINISH ARMED" in first
     assert "systematic residual structure in obs_A" in first  # verdict off the fit result
-    assert "obs_A" in first and "0.002" in first               # worst-observable line
+    assert "obs_A" in first and "0.002" in first  # worst-observable line
     second = await _finish(tool)
     assert second.startswith("Recorded: finish") and "bic=210" in second
 
@@ -187,14 +217,19 @@ async def test_finish_arms_then_confirms():
 @pytest.mark.asyncio
 async def test_finish_rearms_when_version_changes():
     mod = _agent
-    session = _FakeSession({"neg_log_likelihood": 100.0, "bic": 210.0, "version": 5,
-                            "has_unfit_edits": False})
+    session = _FakeSession(
+        {"neg_log_likelihood": 100.0, "bic": 210.0, "version": 5, "has_unfit_edits": False}
+    )
     tool = mod._finish_tool(session)
     assert "FINISH ARMED" in await _finish(tool)
     # The agent edits + refits between the two finish calls -> new version -> must re-arm.
-    session.fit_summary = {"neg_log_likelihood": 90.0, "bic": 205.0, "version": 6,
-                           "has_unfit_edits": False}
-    assert "FINISH ARMED" in await _finish(tool)   # NOT confirmed
+    session.fit_summary = {
+        "neg_log_likelihood": 90.0,
+        "bic": 205.0,
+        "version": 6,
+        "has_unfit_edits": False,
+    }
+    assert "FINISH ARMED" in await _finish(tool)  # NOT confirmed
     assert (await _finish(tool)).startswith("Recorded: finish")
 
 
@@ -204,10 +239,11 @@ async def test_finish_arms_even_when_version_is_none():
     gate must STILL arm on the first finish and confirm on the second — keying on version alone
     would make `None != None` False and confirm immediately, bypassing the gate."""
     mod = _agent
-    tool = _tool_for(mod, {"neg_log_likelihood": 100.0, "bic": 210.0, "version": None,
-                           "has_unfit_edits": False})
+    tool = _tool_for(
+        mod, {"neg_log_likelihood": 100.0, "bic": 210.0, "version": None, "has_unfit_edits": False}
+    )
     first = await _finish(tool)
-    assert "FINISH ARMED" in first                              # NOT confirmed on first call
+    assert "FINISH ARMED" in first  # NOT confirmed on first call
     second = await _finish(tool)
     assert second.startswith("Recorded: finish")
 
@@ -224,8 +260,9 @@ async def test_finish_refused_on_implausible_sigma_then_relents():
     fix-the-mechanism advice — but bounded: after _MAX_SIGMA_FINISH_REFUSALS it relents (arms) so a
     model that genuinely can't reach a plausible sigma still terminates at its honest score."""
     mod = _agent
-    tool = _tool_for(mod, _fit(noise_sigma_inflated=True,
-                               noise_sigma_advice="fix the mechanism, not the noise."))
+    tool = _tool_for(
+        mod, _fit(noise_sigma_inflated=True, noise_sigma_advice="fix the mechanism, not the noise.")
+    )
     for _ in range(mod._MAX_SIGMA_FINISH_REFUSALS):
         out = await _finish(tool)
         assert "FINISH REFUSED" in out and "implausible noise model" in out
@@ -238,8 +275,9 @@ async def test_finish_refused_on_implausible_sigma_then_relents():
 @pytest.mark.asyncio
 async def test_collapsed_sigma_is_also_refused():
     mod = _agent
-    tool = _tool_for(mod, _fit(noise_sigma_collapsed=True,
-                               noise_sigma_advice="prefer a simpler mechanism."))
+    tool = _tool_for(
+        mod, _fit(noise_sigma_collapsed=True, noise_sigma_advice="prefer a simpler mechanism.")
+    )
     out = await _finish(tool)
     assert "FINISH REFUSED" in out and "collapsed" in out
 
@@ -249,8 +287,14 @@ async def test_refusal_names_both_tails_when_both_present():
     """With one observable inflated and another collapsed, the refusal names BOTH tails so the agent
     doesn't fix one and get silently re-blocked on the other."""
     mod = _agent
-    tool = _tool_for(mod, _fit(noise_sigma_inflated=True, noise_sigma_collapsed=True,
-                               noise_sigma_advice="fix the mechanism."))
+    tool = _tool_for(
+        mod,
+        _fit(
+            noise_sigma_inflated=True,
+            noise_sigma_collapsed=True,
+            noise_sigma_advice="fix the mechanism.",
+        ),
+    )
     out = await _finish(tool)
     assert "FINISH REFUSED" in out and "inflated and collapsed" in out
 
@@ -281,13 +325,23 @@ async def test_plausible_sigma_finish_is_unaffected():
 def _lof(*, available=True, n_flagged=1, n_points=15, status="flagged"):
     """A get_fit_summary residual_structure carrying the replicate arm's verdict, in the shape
     data_access._lof_reported puts on a fit result."""
-    return {"residual_structure": {
-        "summary": "systematic residual structure", "flagged_observables": ["observable_k5"],
-        "low_power": False,
-        "replicate_lack_of_fit": {
-            "available": available, "status": status, "n_points": n_points, "alpha": 0.01,
-            "n_flagged": n_flagged, "max_abs_z": 48.847, "min_p_holm": 1.51e-18,
-            "points": [{"label": "observable_k5", "n": 18, "z": -48.847, "p_holm": 1.51e-18}]}}}
+    return {
+        "residual_structure": {
+            "summary": "systematic residual structure",
+            "flagged_observables": ["observable_k5"],
+            "low_power": False,
+            "replicate_lack_of_fit": {
+                "available": available,
+                "status": status,
+                "n_points": n_points,
+                "alpha": 0.01,
+                "n_flagged": n_flagged,
+                "max_abs_z": 48.847,
+                "min_p_holm": 1.51e-18,
+                "points": [{"label": "observable_k5", "n": 18, "z": -48.847, "p_holm": 1.51e-18}],
+            },
+        }
+    }
 
 
 @pytest.mark.asyncio
@@ -300,7 +354,7 @@ async def test_finish_refused_on_replicate_lack_of_fit_then_relents():
     for _ in range(mod._MAX_STRUCTURE_FINISH_REFUSALS):
         out = await _finish(tool)
         assert "FINISH REFUSED" in out and "REPLICATES rule this model out" in out
-        assert "observable_k5" in out                 # names WHERE the form fails
+        assert "observable_k5" in out  # names WHERE the form fails
         assert not out.startswith("Recorded: finish")
     assert "FINISH ARMED" in await _finish(tool)
 
@@ -321,10 +375,12 @@ async def test_an_unavailable_replicate_verdict_never_refuses():
     untestable verdict reports NO EVIDENCE, which must not read as a condemnation. The
     over-parameterised case is the parsimony gate's, not this one's."""
     mod = _agent
-    for verdict in (_lof(available=False, status="vacuous", n_flagged=0),
-                    _lof(available=False, status="replicates_too_thin", n_flagged=0),
-                    {"residual_structure": {"summary": "s", "flagged_observables": []}},  # no arm
-                    {}):                                                    # no verdict at all
+    for verdict in (
+        _lof(available=False, status="vacuous", n_flagged=0),
+        _lof(available=False, status="replicates_too_thin", n_flagged=0),
+        {"residual_structure": {"summary": "s", "flagged_observables": []}},  # no arm
+        {},
+    ):  # no verdict at all
         assert "FINISH ARMED" in await _finish(_tool_for(mod, _fit(**verdict)))
 
 
@@ -334,20 +390,35 @@ async def test_sign_runs_flags_alone_do_not_refuse():
     but are advisory by design (low power at these sample sizes), so a flag from them alone must
     still arm — gating on it would refuse far beyond what this gate replaces."""
     mod = _agent
-    sign_runs_only = {"residual_structure": {
-        "summary": "sign-test bias in observable_k5", "flagged_observables": ["observable_k5"],
-        "low_power": False,
-        "replicate_lack_of_fit": {"available": False, "status": "no_replicated_points",
-                                  "n_points": 0, "alpha": 0.01, "n_flagged": 0, "points": []}}}
+    sign_runs_only = {
+        "residual_structure": {
+            "summary": "sign-test bias in observable_k5",
+            "flagged_observables": ["observable_k5"],
+            "low_power": False,
+            "replicate_lack_of_fit": {
+                "available": False,
+                "status": "no_replicated_points",
+                "n_points": 0,
+                "alpha": 0.01,
+                "n_flagged": 0,
+                "points": [],
+            },
+        }
+    }
     assert "FINISH ARMED" in await _finish(_tool_for(mod, _fit(**sign_runs_only)))
 
 
 # --- the PARSIMONY / identifiability gate ----------------------------------------------------
 _FLAT_16_ICS = _ident(
     rank_deficient=True,
-    flat_directions=[{"eigenvalue": 1e-9, "rel": 1e-8,
-                      "participants": [{"id": f"ic_{i}", "weight": 0.9} for i in range(4)]}
-                     for _ in range(2)],
+    flat_directions=[
+        {
+            "eigenvalue": 1e-9,
+            "rel": 1e-8,
+            "participants": [{"id": f"ic_{i}", "weight": 0.9} for i in range(4)],
+        }
+        for _ in range(2)
+    ],
 )
 
 
@@ -365,8 +436,8 @@ async def test_finish_refused_on_non_identifiable_then_relents():
         assert "rank-deficient" in out.lower()
         # the flat directions are rendered as id·weight groups, not a flat name list
         assert "ic_0·0.9" in out
-        assert "simplify" in out.lower()                          # GENERAL fix menu, not the answer
-        assert "initial condition" not in out.lower()             # never ships the specific fix
+        assert "simplify" in out.lower()  # GENERAL fix menu, not the answer
+        assert "initial condition" not in out.lower()  # never ships the specific fix
         assert not out.startswith("Recorded: finish")
     # Bounded: the next attempt relents and ARMS instead of refusing forever.
     assert "FINISH ARMED" in await _finish(tool)
@@ -380,7 +451,7 @@ async def test_rank_deficient_alone_refuses_even_without_named_flat_directions()
     tool = _tool_for(mod, _fit(), identifiability=_ident(rank_deficient=True, flat_directions=[]))
     out = await _finish(tool)
     assert "FINISH REFUSED" in out and "rank-deficient" in out.lower()
-    assert "get_fit_diagnosis" in out                         # points to the full diagnosis
+    assert "get_fit_diagnosis" in out  # points to the full diagnosis
 
 
 @pytest.mark.asyncio
@@ -390,11 +461,20 @@ async def test_flat_direction_without_rank_deficiency_does_NOT_refuse():
     group) is NOT refused — this is the enzyme_kinetics reference structure (rank 5/5, two flat
     directions, correct model). Only RANK DEFICIENCY triggers the gate; the finish arms normally."""
     mod = _agent
-    ident = _ident(rank_deficient=False,
-                   flat_directions=[{"eigenvalue": 1e-7, "rel": 1e-7,
-                                     "participants": [{"id": "Km", "weight": 0.6},
-                                                      {"id": "Ki", "weight": 0.6},
-                                                      {"id": "Vmax", "weight": 0.5}]}])
+    ident = _ident(
+        rank_deficient=False,
+        flat_directions=[
+            {
+                "eigenvalue": 1e-7,
+                "rel": 1e-7,
+                "participants": [
+                    {"id": "Km", "weight": 0.6},
+                    {"id": "Ki", "weight": 0.6},
+                    {"id": "Vmax", "weight": 0.5},
+                ],
+            }
+        ],
+    )
     tool = _tool_for(mod, _fit(), identifiability=ident)
     assert "FINISH ARMED" in await _finish(tool)
     assert (await _finish(tool)).startswith("Recorded: finish")
@@ -419,7 +499,7 @@ async def test_identifiable_fit_resets_the_parsimony_counter():
     mod = _agent
     session = _FakeSession(_fit(), identifiability=_FLAT_16_ICS)
     tool = mod._finish_tool(session)
-    assert "FINISH REFUSED" in await _finish(tool)     # refusal #1
+    assert "FINISH REFUSED" in await _finish(tool)  # refusal #1
     # Agent simplifies the FORM -> FIM now full-rank, no flat directions -> counter resets, arms.
     session.identifiability = _IDENTIFIABLE
     assert "FINISH ARMED" in await _finish(tool)
@@ -451,9 +531,11 @@ async def test_one_diagnosis_call_serves_both_the_parsimony_gate_and_the_arm():
 #: A `merge_hints` row as the server puts it on a fit result AND on get_fit_summary.
 _HINT = {"parameters": ["ac16", "ac8"], "dnll": 0.001, "dscore": -5.528, "move_scaled": 0.002}
 #: The other two rows of a redundant GROUP, as the server sends them cheapest-first.
-_HINTS = [_HINT,
-          {"parameters": ["ac16", "ac9"], "dnll": 0.004, "dscore": -5.522, "move_scaled": 0.01},
-          {"parameters": ["dc1", "dc2"], "dnll": 0.02, "dscore": -5.49, "move_scaled": 0.3}]
+_HINTS = [
+    _HINT,
+    {"parameters": ["ac16", "ac9"], "dnll": 0.004, "dscore": -5.522, "move_scaled": 0.01},
+    {"parameters": ["dc1", "dc2"], "dnll": 0.02, "dscore": -5.49, "move_scaled": 0.3},
+]
 
 
 @pytest.mark.asyncio
@@ -465,9 +547,9 @@ async def test_the_armed_finish_names_an_outstanding_merge():
     mod = _agent
     armed = await _finish(_tool_for(mod, _fit(merge_hints=[_HINT])))
     assert "FINISH ARMED" in armed and "OUTSTANDING MERGE" in armed
-    assert "ac16 == ac8" in armed and "5.528" in armed       # ...and stated as a score DECREASE
+    assert "ac16 == ac8" in armed and "5.528" in armed  # ...and stated as a score DECREASE
     assert "lowers the score" in armed.lower() and "-5.528" not in armed
-    assert "0.002" in armed                                   # the move the panel must sanity-check
+    assert "0.002" in armed  # the move the panel must sanity-check
     # a clean fit says nothing: the line is absent, not "no merge found"
     assert "OUTSTANDING MERGE" not in await _finish(_tool_for(mod, _fit()))
 
@@ -493,11 +575,15 @@ async def test_the_armed_finish_names_every_outstanding_tie_not_just_the_cheapes
     assert prompts._MERGE_TAKE_RULE in armed
     # ...and it really is the rule this test is about: independent pairs together, an overlapping
     # group one pair at a time, and the unpriced collapse named and refused.
-    for claim in ("ONE `make_changes` call", "PRICED", "PAIR alone",
-                  "Do NOT collapse three symbols"):
+    for claim in (
+        "ONE `make_changes` call",
+        "PRICED",
+        "PAIR alone",
+        "Do NOT collapse three symbols",
+    ):
         assert claim in prompts._MERGE_TAKE_RULE, claim
     assert "multi-way tie" not in armed
-    assert "  " not in armed          # the tie lines carry their own leading space
+    assert "  " not in armed  # the tie lines carry their own leading space
 
 
 @pytest.mark.asyncio
@@ -522,13 +608,16 @@ async def test_a_broken_merge_template_costs_the_line_not_the_finish():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("hint", [
-    # REGRESSION: `abs(hint["dscore"] or 0.0)` — a tie beating the ln(n)/2 price by under 5e-4 nll
-    # rounds to -0.0, which is FALSY, so the arm printed "LOWERS bic by 0.0" while telling the lead
-    # to take the merge. A merge whose stated payoff is zero is not an argument.
-    {**_HINT, "dscore": -0.0},
-    {**_HINT, "dscore": None},          # ...and a genuinely absent dscore was swallowed the same way
-])
+@pytest.mark.parametrize(
+    "hint",
+    [
+        # REGRESSION: `abs(hint["dscore"] or 0.0)` — a tie beating the ln(n)/2 price by under 5e-4 nll
+        # rounds to -0.0, which is FALSY, so the arm printed "LOWERS bic by 0.0" while telling the lead
+        # to take the merge. A merge whose stated payoff is zero is not an argument.
+        {**_HINT, "dscore": -0.0},
+        {**_HINT, "dscore": None},  # ...and a genuinely absent dscore was swallowed the same way
+    ],
+)
 async def test_the_armed_merge_never_advertises_a_zero_payoff(hint):
     mod = _agent
     armed = await _finish(_tool_for(mod, _fit(merge_hints=[hint])))
@@ -537,8 +626,9 @@ async def test_the_armed_merge_never_advertises_a_zero_payoff(hint):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("hints", ["not-a-list", {"parameters": ["a", "b"]}, [], [None],
-                                   ["not-a-dict"], [{}]])
+@pytest.mark.parametrize(
+    "hints", ["not-a-list", {"parameters": ["a", "b"]}, [], [None], ["not-a-dict"], [{}]]
+)
 async def test_a_malformed_merge_hints_payload_never_raises_a_finish(hints):
     """The field itself, not just its rows: anything that is not a list of rows means "no merge to
     report". A bare dict is included because that is the shape this field used to have."""
@@ -573,8 +663,10 @@ async def test_a_stale_diagnosis_never_refuses_a_finish():
     model (which would mean building it). Refusing on it would refuse this finish over another
     structure's rank, so the parsimony gate fails open."""
     mod = _agent
-    ident = {**_ident(rank_deficient=True, flat_directions=[{"participants": [{"id": "a"}]}]),
-             "stale": True}
+    ident = {
+        **_ident(rank_deficient=True, flat_directions=[{"participants": [{"id": "a"}]}]),
+        "stale": True,
+    }
     assert "FINISH ARMED" in await _finish(_tool_for(mod, _fit(), identifiability=ident))
 
 
@@ -583,10 +675,13 @@ async def test_parsimony_and_sigma_gates_compose():
     """The sigma gate runs FIRST: an implausible sigma is refused before the (expensive) FIM probe
     is even consulted, so a model with both problems is not double-charged in one call."""
     mod = _agent
-    tool = _tool_for(mod, _fit(noise_sigma_inflated=True, noise_sigma_advice="fix the mechanism."),
-                     identifiability=_FLAT_16_ICS)
+    tool = _tool_for(
+        mod,
+        _fit(noise_sigma_inflated=True, noise_sigma_advice="fix the mechanism."),
+        identifiability=_FLAT_16_ICS,
+    )
     out = await _finish(tool)
-    assert "FINISH REFUSED" in out and "implausible noise model" in out   # sigma wins this call
+    assert "FINISH REFUSED" in out and "implausible noise model" in out  # sigma wins this call
 
 
 @pytest.mark.asyncio
@@ -601,10 +696,10 @@ async def test_a_refusal_disarms_a_pending_finish():
     session = _FakeSession(_fit(), identifiability=_IDENTIFIABLE)
     tool = mod._finish_tool(session)
     assert "FINISH ARMED" in await _finish(tool)
-    session.identifiability = _FLAT_16_ICS                     # refuses -> must disarm
+    session.identifiability = _FLAT_16_ICS  # refuses -> must disarm
     assert "FINISH REFUSED" in await _finish(tool)
     session.identifiability = _IDENTIFIABLE
-    assert "FINISH ARMED" in await _finish(tool)               # re-arms, does NOT confirm
+    assert "FINISH ARMED" in await _finish(tool)  # re-arms, does NOT confirm
     assert (await _finish(tool)).startswith("Recorded: finish")
 
 
@@ -613,6 +708,7 @@ def _probe_returning(payload):
     async def probe(tool, args):
         assert tool == "describe_problem"
         return _FakeResult(payload)
+
     return probe
 
 
@@ -639,10 +735,11 @@ async def test_model_committed_fails_open():
 
     async def raising(tool, args):
         raise RuntimeError("probe down")
+
     assert await mod._model_committed(raising) is True
 
-    assert await mod._model_committed(_probe_returning({})) is True          # key missing
-    assert await mod._model_committed(_probe_returning(None)) is True        # no structured content
+    assert await mod._model_committed(_probe_returning({})) is True  # key missing
+    assert await mod._model_committed(_probe_returning(None)) is True  # no structured content
 
 
 def test_no_model_nudge_text_is_actionable():

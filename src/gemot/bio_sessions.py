@@ -39,15 +39,15 @@ from typing import Any, AsyncIterator, Callable
 # sse_read_timeout is separate — the in-session streaming read window (long, for tool responses);
 # it deliberately does NOT govern the startup handshake, which the per-attempt deadline below
 # bounds so a slow server can't stall run startup. A hung server is retried a couple of times.
-_BIO_TRANSPORT_TIMEOUT_S = 10.0    # httpx connect/write/pool timeout for a bio session
-_BIO_SSE_READ_TIMEOUT_S = 120.0    # in-session streaming read window (tool responses), not startup
+_BIO_TRANSPORT_TIMEOUT_S = 10.0  # httpx connect/write/pool timeout for a bio session
+_BIO_SSE_READ_TIMEOUT_S = 120.0  # in-session streaming read window (tool responses), not startup
 # Per-ATTEMPT budget for a full connect+initialize. It EXCEEDS the httpx connect timeout above so a
 # real handshake isn't cut short, and the ~10s of headroom over it covers a normal initialize();
 # it deliberately caps the whole startup handshake well under sse_read_timeout so a slow/hung
 # server can't stall startup (the long streaming window is for live tool calls, not this handshake).
 _BIO_CONNECT_TIMEOUT_S = 20.0
-_BIO_CONNECT_RETRIES = 2           # extra attempts after the first (up to 3 total per server)
-_BIO_CONNECT_BACKOFF_S = 2.0       # wait between connect attempts
+_BIO_CONNECT_RETRIES = 2  # extra attempts after the first (up to 3 total per server)
+_BIO_CONNECT_BACKOFF_S = 2.0  # wait between connect attempts
 # Grace period at teardown for holder tasks to exit cleanly on the shutdown signal before any
 # still-wedged one is cancelled.
 _BIO_TEARDOWN_GRACE_S = 5.0
@@ -128,11 +128,11 @@ async def _bio_session_runner(
     try:
         async with opener(url) as session:
             holder["session"] = session
-            ready.set()               # hand the live session out to the supervisor
-            await shutdown.wait()     # keep it open until the run tears down
+            ready.set()  # hand the live session out to the supervisor
+            await shutdown.wait()  # keep it open until the run tears down
     except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
-        raise                         # teardown cancel / interpreter exit — never swallowed
-    except BaseException as exc:      # noqa: BLE001 — isolation boundary: contain transport failures
+        raise  # teardown cancel / interpreter exit — never swallowed
+    except BaseException as exc:  # noqa: BLE001 — isolation boundary: contain transport failures
         if not ready.is_set():
             # Connect-phase failure: report it so the supervisor can skip/retry this URL.
             holder["error"] = exc
@@ -141,8 +141,10 @@ async def _bio_session_runner(
             # Live-session failure AFTER hand-out (the #86 crash): the session is now dead; the
             # biocurator's bio tool calls will fail as ordinary tool errors and it degrades. This
             # MUST NOT propagate to the run's task — that is the whole point of the isolation.
-            log(f"[bio] WARNING: bio session {url} failed after connect "
-                f"({_summarize_exc(exc)}); the biocurator loses it for the rest of the run.")
+            log(
+                f"[bio] WARNING: bio session {url} failed after connect "
+                f"({_summarize_exc(exc)}); the biocurator loses it for the rest of the run."
+            )
         # swallow: contain the failure in this detached task
 
 
@@ -177,7 +179,7 @@ async def open_bio_sessions(
     from . import bio_cache, omnipath_local
 
     shutdown = asyncio.Event()
-    tasks: list[asyncio.Task] = []      # every holder task ever created — all retrieved at teardown
+    tasks: list[asyncio.Task] = []  # every holder task ever created — all retrieved at teardown
     sessions: list[Any] = []
     caches: list[Any] = []
     try:
@@ -193,8 +195,10 @@ async def open_bio_sessions(
                 info = omnipath_local.snapshot_info()
                 tables = info.get("tables") or {}
                 counts = ", ".join(f"{name} {meta.get('rows')}" for name, meta in tables.items())
-                log(f"[bio] OmniPath served LOCALLY from the {info.get('fetched_at')} snapshot "
-                    f"({counts} rows) — no network, no rate limit")
+                log(
+                    f"[bio] OmniPath served LOCALLY from the {info.get('fetched_at')} snapshot "
+                    f"({counts} rows) — no network, no rate limit"
+                )
                 continue
             session = None
             for attempt in range(retries + 1):
@@ -210,7 +214,7 @@ async def open_bio_sessions(
                 except asyncio.TimeoutError:
                     timed_out = True
 
-                if holder["session"] is not None:      # connected (even if right at the deadline)
+                if holder["session"] is not None:  # connected (even if right at the deadline)
                     session = holder["session"]
                     log(f"[bio] biocurator knowledge server connected: {url}")
                     break
@@ -226,12 +230,16 @@ async def open_bio_sessions(
                 else:
                     reason = "unknown error"
                 if attempt < retries:
-                    log(f"[bio] connect to bio-knowledge server {url} failed ({reason}); "
-                        f"retry {attempt + 1}/{retries} in {backoff:g}s")
+                    log(
+                        f"[bio] connect to bio-knowledge server {url} failed ({reason}); "
+                        f"retry {attempt + 1}/{retries} in {backoff:g}s"
+                    )
                     await asyncio.sleep(backoff)
                 else:
-                    log(f"[bio] WARNING: could not connect to bio-knowledge server {url} "
-                        f"({reason}); skipping it.")
+                    log(
+                        f"[bio] WARNING: could not connect to bio-knowledge server {url} "
+                        f"({reason}); skipping it."
+                    )
             if session is not None:
                 # Read-through disk cache in front of the hosted server, wrapped HERE so every
                 # consumer gets it and none has to know. A sweep asks the same SCENARIO-level
@@ -256,9 +264,11 @@ async def open_bio_sessions(
             for c in caches:
                 with contextlib.suppress(Exception):
                     s = c.stats()
-                    log(f"[bio] cache {s['url']}: {s['hits']} hits / {s['misses']} misses "
+                    log(
+                        f"[bio] cache {s['url']}: {s['hits']} hits / {s['misses']} misses "
                         f"(rate {s['hit_rate']}), {s['writes']} written, "
-                        f"{s['bypasses']} bypassed, {s['errors']} errors")
+                        f"{s['bypasses']} bypassed, {s['errors']} errors"
+                    )
     finally:
         # Signal the holders to close cleanly, give them a moment, then cancel any straggler and
         # RETRIEVE every task so nothing leaks an unretrieved exception AND this teardown never
@@ -273,4 +283,5 @@ async def open_bio_sessions(
                 task.cancel()
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(
-                    asyncio.gather(*tasks, return_exceptions=True), timeout=teardown_grace)
+                    asyncio.gather(*tasks, return_exceptions=True), timeout=teardown_grace
+                )

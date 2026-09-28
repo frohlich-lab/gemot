@@ -20,11 +20,16 @@ from .. import paths
 
 # per-version files worth keeping — small + sufficient for the trajectory panel. The big
 # pypesto_result.hdf5 / optimization.json are deliberately skipped to keep the archive lean.
-_VERSION_FILES = ("meta.json", "model.ant", "parameters.tsv", "simulations.json",
-                  # The caller's own text. Without it the post-hoc lineage check the source
-                  # exists for (`child.source == parent.source + ops`) dies with work/ on the
-                  # next run of the same example — the identical hole errors.jsonl had.
-                  "model_source.ant")
+_VERSION_FILES = (
+    "meta.json",
+    "model.ant",
+    "parameters.tsv",
+    "simulations.json",
+    # The caller's own text. Without it the post-hoc lineage check the source
+    # exists for (`child.source == parent.source + ops`) dies with work/ on the
+    # next run of the same example — the identical hole errors.jsonl had.
+    "model_source.ant",
+)
 
 
 def default_archive_root() -> Path:
@@ -63,17 +68,19 @@ def list_live_runs(examples_root: Path | None = None) -> list[dict]:
             m = json.loads(mp.read_text())
         except Exception:
             continue
-        runs.append({
-            "run_id": m.get("run_id") or m.get("phoenix_trace_id"),
-            "scenario": m.get("scenario"),
-            "model": m.get("model"),
-            "driver": m.get("driver"),
-            "run_started_at": m.get("run_started_at"),
-            "has_trace": bool(m.get("phoenix_trace_id")),
-            "n_versions": _count_versions(mp.parent),  # mp.parent is the live work/ dir
-            "live": True,
-        })
-    runs.sort(key=lambda x: (x.get("run_started_at") or ""), reverse=True)
+        runs.append(
+            {
+                "run_id": m.get("run_id") or m.get("phoenix_trace_id"),
+                "scenario": m.get("scenario"),
+                "model": m.get("model"),
+                "driver": m.get("driver"),
+                "run_started_at": m.get("run_started_at"),
+                "has_trace": bool(m.get("phoenix_trace_id")),
+                "n_versions": _count_versions(mp.parent),  # mp.parent is the live work/ dir
+                "live": True,
+            }
+        )
+    runs.sort(key=lambda x: x.get("run_started_at") or "", reverse=True)
     return runs
 
 
@@ -155,21 +162,23 @@ def list_runs(archive_root: Path | None = None) -> list[dict]:
             r = json.loads(rj.read_text())
         except Exception:
             continue
-        runs.append({
-            "run_id": d.name,
-            "scenario": r.get("scenario"),
-            "model": r.get("model"),
-            "driver": r.get("driver"),
-            "success": r.get("success"),
-            "stop_reason": r.get("stop_reason"),
-            "delta_bic": r.get("delta_bic"),
-            "bic": r.get("bic"),
-            "run_started_at": r.get("run_started_at"),
-            "run_ended_at": r.get("run_ended_at"),
-            "has_trace": bool(r.get("phoenix_trace_id")),
-            "n_versions": _count_versions(d),
-        })
-    runs.sort(key=lambda x: (x.get("run_started_at") or ""), reverse=True)
+        runs.append(
+            {
+                "run_id": d.name,
+                "scenario": r.get("scenario"),
+                "model": r.get("model"),
+                "driver": r.get("driver"),
+                "success": r.get("success"),
+                "stop_reason": r.get("stop_reason"),
+                "delta_bic": r.get("delta_bic"),
+                "bic": r.get("bic"),
+                "run_started_at": r.get("run_started_at"),
+                "run_ended_at": r.get("run_ended_at"),
+                "has_trace": bool(r.get("phoenix_trace_id")),
+                "n_versions": _count_versions(d),
+            }
+        )
+    runs.sort(key=lambda x: x.get("run_started_at") or "", reverse=True)
     return runs
 
 

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ..scenario import Scenario
 
+
 # --------------------------------------------------------------------------- provenance
 def _now_iso() -> str:
     """Current UTC time as an ISO-8601 string (for the metrics history + trace join)."""
@@ -23,16 +24,23 @@ def _git_sha(path: Path) -> str | None:
     a detached/absent git checkout never breaks the run.
     """
     try:
-        sha = subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"], cwd=str(path),
-            stderr=subprocess.DEVNULL,
-        ).decode().strip()
+        sha = (
+            subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=str(path),
+                stderr=subprocess.DEVNULL,
+            )
+            .decode()
+            .strip()
+        )
     except Exception:
         return None
     try:
         dirty = subprocess.call(
-            ["git", "diff", "--quiet", "--ignore-submodules"], cwd=str(path),
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            ["git", "diff", "--quiet", "--ignore-submodules"],
+            cwd=str(path),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except Exception:
         dirty = 0
@@ -57,7 +65,8 @@ def _git_diff_digest(path: Path) -> dict | None:
 
     try:
         diff = subprocess.check_output(
-            ["git", "diff", "HEAD", "--ignore-submodules"], cwd=str(path),
+            ["git", "diff", "HEAD", "--ignore-submodules"],
+            cwd=str(path),
             stderr=subprocess.DEVNULL,
         )
     except Exception:  # noqa: BLE001 - no git, detached tree, anything
@@ -73,7 +82,7 @@ def _git_diff_digest(path: Path) -> dict | None:
     for line in diff.decode(errors="replace").splitlines():
         for prefix in ("+++ b/", "--- a/"):
             if line.startswith(prefix):
-                names.add(line[len(prefix):])
+                names.add(line[len(prefix) :])
     files = sorted(names)
     return {
         "sha256": hashlib.sha256(diff).hexdigest(),
@@ -96,12 +105,15 @@ def _omnipath_provenance() -> dict | None:
     """
     try:
         from ..omnipath_local import available, snapshot_info
+
         if not available():
             return None
         info = snapshot_info()
         tables = info.get("tables") or {}
-        return {"fetched_at": info.get("fetched_at"),
-                "rows": {name: meta.get("rows") for name, meta in tables.items()}}
+        return {
+            "fetched_at": info.get("fetched_at"),
+            "rows": {name: meta.get("rows") for name, meta in tables.items()},
+        }
     except Exception:  # noqa: BLE001 - any import/IO problem degrades to "unrecorded", not a crash
         return None
 
@@ -137,13 +149,15 @@ def _reference_score(ref, criterion) -> float | None:
 
     try:
         return (criterion or CANONICAL["bic"]).value(
-            ref["nll"], ref["k"], ref["n"], ref.get("k_eff"))
+            ref["nll"], ref["k"], ref["n"], ref.get("k_eff")
+        )
     except (KeyError, TypeError, ValueError):
         return None
 
 
-def _write_live_marker(work: Path, meta: dict, scenario: Scenario, *,
-                       include_reference: bool = True) -> None:
+def _write_live_marker(
+    work: Path, meta: dict, scenario: Scenario, *, include_reference: bool = True
+) -> None:
     """Write ``work/run_live.json`` so the run explorer can watch this run WHILE it is still
     in flight — before ``result.json`` (written only at run end) exists.
 
@@ -178,16 +192,18 @@ def _write_live_marker(work: Path, meta: dict, scenario: Scenario, *,
             # run that ranks by another one against the right bar. `None` where the reference
             # has no value under it (aicc at n <= k+1; tic until the reference is regenerated
             # with a k_eff).
-            "criteria_reference": {name: _reference_score(ref, crit)
-                                   for name, crit in CANONICAL.items()},
+            "criteria_reference": {
+                name: _reference_score(ref, crit) for name, crit in CANONICAL.items()
+            },
         }
         (work / "run_live.json").write_text(json.dumps(marker, indent=2, default=str))
     except Exception:
         pass
 
 
-def _base_meta(scenario: Scenario, args: argparse.Namespace,
-               run_started_at: str | None = None) -> dict:
+def _base_meta(
+    scenario: Scenario, args: argparse.Namespace, run_started_at: str | None = None
+) -> dict:
     """The result-json fields known before ever touching the server — enough to write a
     well-formed degraded result from ANY failure: preflight, baseline scoring, the agent, the
     judge (see ``_drive``, which enriches its own copy with Phoenix ids once its span is open),
@@ -215,13 +231,17 @@ def _base_meta(scenario: Scenario, args: argparse.Namespace,
     scripted = args.driver == "scripted"
     from ..biology_blinding import read_names
 
-    blind_names = read_names(scenario.example_dir / "work") if ablations.enabled("biology_blind") else None
-    uses_bio_tools = (args.driver == "barebones"
-                      or (args.driver == "deepagents" and BIOCURATOR_ENABLED))
+    blind_names = (
+        read_names(scenario.example_dir / "work") if ablations.enabled("biology_blind") else None
+    )
+    uses_bio_tools = args.driver == "barebones" or (
+        args.driver == "deepagents" and BIOCURATOR_ENABLED
+    )
     return {
         "driver": args.driver,
         "model": None if scripted else args.model,
-        "git_sha": _git_sha(scenario.example_dir), "example_version": scenario.version,
+        "git_sha": _git_sha(scenario.example_dir),
+        "example_version": scenario.version,
         # What `git_sha`'s `+dirty` suffix only hinted at: see `_git_diff_digest`. None when clean.
         "git_diff": _git_diff_digest(scenario.example_dir),
         "prompt_version": prompt_version(),
@@ -245,17 +265,20 @@ def _base_meta(scenario: Scenario, args: argparse.Namespace,
         "ablations": ablations.state(),
         # Which OmniPath answered, and from when. A pinned snapshot that nothing records is the
         # `git_sha +dirty` problem in a new costume; None for hosted service or no bio access.
-        "omnipath_snapshot": (_omnipath_provenance()
-                              if uses_bio_tools and blind_names is None else None),
+        "omnipath_snapshot": (
+            _omnipath_provenance() if uses_bio_tools and blind_names is None else None
+        ),
         # Operator-only metadata: persisted with the archive so its anonymous model can
         # still be interpreted after work/ is replaced by the next run.
-        "biology_blinding": ({"version": 1, "identifiers": blind_names.forward}
-                             if blind_names is not None else None),
+        "biology_blinding": (
+            {"version": 1, "identifiers": blind_names.forward} if blind_names is not None else None
+        ),
         "recursion_limit": None if scripted else args.recursion_limit,
         "n_starts": args.n_starts,
         "temperature": None if scripted else args.temperature,
         "run_started_at": run_started_at or _now_iso(),
-        "phoenix_project": None, "phoenix_trace_id": None,
+        "phoenix_project": None,
+        "phoenix_trace_id": None,
     }
 
 

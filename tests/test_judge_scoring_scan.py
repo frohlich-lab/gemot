@@ -45,8 +45,15 @@ _PARAMS = [{"estimate": 1}] * 12 + [{"estimate": 0}]
 
 
 def _report(sigma):
-    return {"sigmaYDosR": {"fitted": sigma, "effective_sigma": sigma, "upper_bound_cap": 30.0,
-                           "data_std": 34.5, "fraction_of_data_std": sigma / 34.5}}
+    return {
+        "sigmaYDosR": {
+            "fitted": sigma,
+            "effective_sigma": sigma,
+            "upper_bound_cap": 30.0,
+            "data_std": 34.5,
+            "fraction_of_data_std": sigma / 34.5,
+        }
+    }
 
 
 class _Scenario:
@@ -72,12 +79,19 @@ class _Store:
     ``get_fit_summary`` answers for whichever version is currently restored — the same coupling the
     real server has, which is what makes the scan's restore-then-read loop meaningful here."""
 
-    def __init__(self, versions: "dict[int, tuple[float, float]]", head: int,
-                 checkpoint: "int | None", *, can_list: bool = True,
-                 stores_reports: bool = True,
-                 criterion_values: "dict[int, float] | None" = None,
-                 criterion: "str | None" = "bic", k_eff: "float | None" = None):
-        self.versions = versions          # version -> (nll, fitted sigma)
+    def __init__(
+        self,
+        versions: "dict[int, tuple[float, float]]",
+        head: int,
+        checkpoint: "int | None",
+        *,
+        can_list: bool = True,
+        stores_reports: bool = True,
+        criterion_values: "dict[int, float] | None" = None,
+        criterion: "str | None" = "bic",
+        k_eff: "float | None" = None,
+    ):
+        self.versions = versions  # version -> (nll, fitted sigma)
         # The effective parameter count the server reports on a fit — TIC's input. None = a fit
         # that produced none (or a server predating it).
         self.k_eff = k_eff
@@ -91,11 +105,12 @@ class _Store:
         self.head = head
         self.checkpoint = checkpoint
         self.can_list = can_list
-        self.stores_reports = stores_reports   # False = a store written before #155 persisted them
+        self.stores_reports = stores_reports  # False = a store written before #155 persisted them
         self.calls: list[tuple[str, dict]] = []
 
-    def _bic(self, version):              # 2*nll + k*ln(n), k=12 n=43 — the judge's own formula
+    def _bic(self, version):  # 2*nll + k*ln(n), k=12 n=43 — the judge's own formula
         import math
+
         return 2 * self.versions[version][0] + 12 * math.log(43)
 
     async def __call__(self, name, **kwargs):
@@ -104,9 +119,15 @@ class _Store:
             if not self.can_list:
                 raise RuntimeError("this server has no list_versions")
             cv = self.criterion_values or {}
-            return [{"version": v, "bic": self._bic(v), "kind": "fit",
-                     **({"criterion_value": cv[v]} if v in cv else {})}
-                    for v in self.versions]
+            return [
+                {
+                    "version": v,
+                    "bic": self._bic(v),
+                    "kind": "fit",
+                    **({"criterion_value": cv[v]} if v in cv else {}),
+                }
+                for v in self.versions
+            ]
         if name == "restore_version":
             self.head = kwargs["version"]
             return {"version": self.head}
@@ -118,14 +139,22 @@ class _Store:
             if not self.stores_reports:
                 return {"simulation": {"neg_log_likelihood": self.versions[kwargs["version"]][0]}}
             nll, sigma = self.versions[kwargs["version"]]
-            return {"simulation": {"neg_log_likelihood": nll,
-                                   **({"k_eff": self.k_eff} if self.k_eff is not None else {}),
-                                   "noise_sigma_report": _report(sigma)}}
+            return {
+                "simulation": {
+                    "neg_log_likelihood": nll,
+                    **({"k_eff": self.k_eff} if self.k_eff is not None else {}),
+                    "noise_sigma_report": _report(sigma),
+                }
+            }
         if name == "get_fit_summary":
             nll, sigma = self.versions[self.head]
-            return {"neg_log_likelihood": nll, "n_data_points": 43, "chi2": 40.0,
-                    **({"criterion": self.criterion} if self.criterion else {}),
-                    "noise_sigma_report": _report(sigma)}
+            return {
+                "neg_log_likelihood": nll,
+                "n_data_points": 43,
+                "chi2": 40.0,
+                **({"criterion": self.criterion} if self.criterion else {}),
+                "noise_sigma_report": _report(sigma),
+            }
         if name == "get_parameters":
             return _PARAMS
         if name == "get_model_structure":
@@ -138,8 +167,9 @@ class _Store:
 
 
 def _run(work: Path, store: _Store, ref: "dict | None" = None):
-    return asyncio.run(_judge(_Scenario(work, ref), store, _Baseline(), work, {},
-                              _ToolClock(), time.monotonic()))
+    return asyncio.run(
+        _judge(_Scenario(work, ref), store, _Baseline(), work, {}, _ToolClock(), time.monotonic())
+    )
 
 
 def test_the_effective_parameter_count_is_read_off_the_stored_version(tmp_path):
@@ -161,13 +191,14 @@ def test_the_judge_scores_the_best_version_whose_sigma_would_pass_the_gate(tmp_p
     the clean version improved on it by less than NEW_BEST_MIN_DELTA_SCORE (brannmark 9285a352 hit
     exactly that hysteresis). The run passes on the clean model instead of failing on the collapsed
     one."""
-    store = _Store({4: (140.467, _COLLAPSED_SIGMA), 5: (140.117, _CLEAN_SIGMA)},
-                   head=5, checkpoint=4)
+    store = _Store(
+        {4: (140.467, _COLLAPSED_SIGMA), 5: (140.117, _CLEAN_SIGMA)}, head=5, checkpoint=4
+    )
     code, result = _run(tmp_path, store)
 
     assert store.head == 5, "scored the collapsed-sigma version the checkpoint pointed at"
     assert result["success"] is True and code == 0
-    assert result["delta_bic"] < -10          # the pass was there to be had all along
+    assert result["delta_bic"] < -10  # the pass was there to be had all along
     assert result["noise_sigma_flag"]["collapsed"] is False
 
 
@@ -190,7 +221,8 @@ def test_the_pass_gate_grades_under_the_criterion_the_run_searched_by(tmp_path):
 
     assert result["criterion"] == "aicc"
     assert result["delta_criterion"] == pytest.approx(
-        result["criterion_value"] - result["criterion_reference"])
+        result["criterion_value"] - result["criterion_reference"]
+    )
     # The DELTA itself moves, not just the absolute scores — the candidate is leaner than the
     # truth (k=12 vs 22 on n=43), so the two penalties disagree about how much that is worth:
     # ΔBIC -41.2 against ΔAICc -63.7. A gate still reading canonical BIC would report -41.2 here.
@@ -224,8 +256,11 @@ def test_every_criterion_is_recorded_candidate_against_reference(tmp_path):
 
     table = result["criteria"]
     assert set(table) == set(PENALTIES)
-    assert table["bic"] == {"candidate": result["bic"], "reference": result["bic_reference"],
-                            "delta": result["delta_bic"]}
+    assert table["bic"] == {
+        "candidate": result["bic"],
+        "reference": result["bic_reference"],
+        "delta": result["delta_bic"],
+    }
     assert table["aicc"]["delta"] == pytest.approx(result["delta_criterion"])
     assert table["caic"]["delta"] == pytest.approx(result["delta_bic"] + (12 - 22))
     # No k_eff on either side: TIC has no value, and says so with None rather than a number.
@@ -257,7 +292,8 @@ def test_a_tic_run_against_a_regenerated_reference_is_graded_by_tic(tmp_path):
     assert result["criterion_note"] is None
     assert result["criterion_reference"] == pytest.approx(2 * 141.889 + 2 * 20.0)
     assert result["delta_criterion"] == pytest.approx(
-        (2 * 140.117 + 2 * 11.0) - (2 * 141.889 + 2 * 20.0))
+        (2 * 140.117 + 2 * 11.0) - (2 * 141.889 + 2 * 20.0)
+    )
     assert result["delta_criterion"] == pytest.approx(result["criteria"]["tic"]["delta"])
     assert result["success"] is True
 
@@ -277,8 +313,12 @@ def test_the_scan_ranks_candidates_by_the_runs_own_criterion_not_by_bic(tmp_path
     run's own criterion. Here v4 is the better model under that criterion while v5 is the better
     one on canonical bic (nll 145.0 vs 140.117) — both sigma-clean, so ordering alone decides
     which gets scored. Ranking by bic would score v5, the one the run never preferred."""
-    store = _Store({4: (145.0, _CLEAN_SIGMA), 5: (140.117, _CLEAN_SIGMA)}, head=5, checkpoint=4,
-                   criterion_values={4: 100.0, 5: 300.0})
+    store = _Store(
+        {4: (145.0, _CLEAN_SIGMA), 5: (140.117, _CLEAN_SIGMA)},
+        head=5,
+        checkpoint=4,
+        criterion_values={4: 100.0, 5: 300.0},
+    )
     code, result = _run(tmp_path, store)
 
     assert store.restored == [4], "ordered by bic instead of the run's criterion"
@@ -291,8 +331,12 @@ def test_the_scan_falls_back_to_bic_for_the_WHOLE_set_when_any_version_lacks_a_s
     scales, arbitrary order — so the fallback is all-or-nothing. v5's criterion value would put it
     LAST if it were honoured; because v4 has none, the whole ordering reverts to bic and v5 (the
     lower-bic model) is scored."""
-    store = _Store({4: (145.0, _CLEAN_SIGMA), 5: (140.117, _CLEAN_SIGMA)}, head=4, checkpoint=4,
-                   criterion_values={5: 9_999.0})   # v4 predates it — v5's score must be ignored
+    store = _Store(
+        {4: (145.0, _CLEAN_SIGMA), 5: (140.117, _CLEAN_SIGMA)},
+        head=4,
+        checkpoint=4,
+        criterion_values={5: 9_999.0},
+    )  # v4 predates it — v5's score must be ignored
     code, result = _run(tmp_path, store)
 
     assert store.restored == [5], "honoured a criterion value the rest of the store cannot match"
@@ -302,8 +346,9 @@ def test_an_all_gamed_run_is_still_reported_on_its_own_best_bic_model(tmp_path):
     """No clean version exists, so there is nothing to prefer. The run is scored on its lowest-BIC
     model and FAILS on the sigma gate — the scan must not turn a gamed run into a pass by hunting
     for a version that clears the gate on a technicality, nor score some arbitrary worse model."""
-    store = _Store({4: (140.467, _COLLAPSED_SIGMA), 5: (140.117, _COLLAPSED_SIGMA)},
-                   head=4, checkpoint=4)
+    store = _Store(
+        {4: (140.467, _COLLAPSED_SIGMA), 5: (140.117, _COLLAPSED_SIGMA)}, head=4, checkpoint=4
+    )
     code, result = _run(tmp_path, store)
 
     assert store.head == 5, "scored something other than the best-BIC model"
@@ -317,22 +362,24 @@ def test_every_fitted_version_is_a_candidate_not_just_the_first_few(tmp_path):
     cap would give up the best scoreable model exactly like the checkpoint it replaces — the same
     failure one rung down. Here the only clean model is the WORST of twelve."""
     versions = {v: (140.0 + v * 0.1, _COLLAPSED_SIGMA) for v in range(1, 13)}
-    versions[12] = (141.2, _CLEAN_SIGMA)          # cleanest sigma, worst bic of the twelve
+    versions[12] = (141.2, _CLEAN_SIGMA)  # cleanest sigma, worst bic of the twelve
     store = _Store(versions, head=1, checkpoint=1)
     code, result = _run(tmp_path, store)
 
     assert store.head == 12 and result["success"] is True
     # Every version read once by the scan, then the chosen one read again for the record (k_eff).
-    assert [kw["version"] for n, kw in store.calls if n == "get_version"] == \
-        list(range(1, 13)) + [12], "stopped scanning before the last version"
+    assert [kw["version"] for n, kw in store.calls if n == "get_version"] == list(range(1, 13)) + [
+        12
+    ], "stopped scanning before the last version"
     assert store.restored == [12], "the scan is a READ — only the chosen version is restored"
 
 
 def test_a_server_that_cannot_list_versions_falls_back_to_the_checkpoint(tmp_path):
     """The scan needs `list_versions`; without it the judge restores `best_version` exactly as it
     did before, rather than scoring whatever HEAD happens to be."""
-    store = _Store({4: (140.467, _CLEAN_SIGMA), 5: (150.0, _CLEAN_SIGMA)},
-                   head=5, checkpoint=4, can_list=False)
+    store = _Store(
+        {4: (140.467, _CLEAN_SIGMA), 5: (150.0, _CLEAN_SIGMA)}, head=5, checkpoint=4, can_list=False
+    )
     code, result = _run(tmp_path, store)
 
     assert store.head == 4 and store.restored == [4]
@@ -344,8 +391,9 @@ def test_the_scan_reads_stored_reports_instead_of_rolling_through_the_versions(t
     read — not a rollback. Restoring each one in turn mutated the working state N times and wrote N
     entries into the provenance the run is judged on, to reach numbers stored beside every version.
     Exactly one restore happens: the version actually scored."""
-    store = _Store({4: (140.467, _COLLAPSED_SIGMA), 5: (140.117, _CLEAN_SIGMA)},
-                   head=4, checkpoint=4)
+    store = _Store(
+        {4: (140.467, _COLLAPSED_SIGMA), 5: (140.117, _CLEAN_SIGMA)}, head=4, checkpoint=4
+    )
     _run(tmp_path, store)
 
     assert store.restored == [5]
@@ -358,8 +406,12 @@ def test_a_store_without_saved_sigma_reports_scores_the_best_bic_version(tmp_pat
     """Version dirs written before the report was persisted (a resumed run, an older store) are
     unassessable rather than flagged, so the scan lands on the best-BIC model — the behaviour before
     the scan existed — instead of ranking versions on a verdict it cannot read."""
-    store = _Store({4: (145.0, _COLLAPSED_SIGMA), 5: (140.117, _COLLAPSED_SIGMA)},
-                   head=4, checkpoint=4, stores_reports=False)
+    store = _Store(
+        {4: (145.0, _COLLAPSED_SIGMA), 5: (140.117, _COLLAPSED_SIGMA)},
+        head=4,
+        checkpoint=4,
+        stores_reports=False,
+    )
     _run(tmp_path, store)
 
     assert store.head == 5 and store.restored == [5]
@@ -370,6 +422,7 @@ def test_a_failed_restore_says_so_instead_of_naming_a_version_nothing_scored(tmp
     restore, not precede it. With the scan read-only, HEAD is wherever the AGENT left it, so a failed
     restore does not leave the runner-up in place: it leaves an arbitrary model, and a log line
     naming v5 would then describe a score nothing produced."""
+
     class _Refusing(_Store):
         async def __call__(self, name, **kwargs):
             if name == "restore_version":
@@ -377,8 +430,9 @@ def test_a_failed_restore_says_so_instead_of_naming_a_version_nothing_scored(tmp
                 raise RuntimeError("restore refused")
             return await super().__call__(name, **kwargs)
 
-    store = _Refusing({4: (140.467, _COLLAPSED_SIGMA), 5: (140.117, _CLEAN_SIGMA)},
-                      head=4, checkpoint=4)
+    store = _Refusing(
+        {4: (140.467, _COLLAPSED_SIGMA), 5: (140.117, _CLEAN_SIGMA)}, head=4, checkpoint=4
+    )
     code, result = _run(tmp_path, store)
 
     assert store.head == 4, "HEAD moved despite the restore failing"

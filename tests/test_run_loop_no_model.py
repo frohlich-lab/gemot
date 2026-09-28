@@ -29,8 +29,10 @@ def _have(mod: str) -> bool:
 
 
 requires_harness = pytest.mark.skipif(
-    not all(_have(m) for m in ("deepagents", "langchain_openai",
-                               "langchain_mcp_adapters", "openai", "langgraph")),
+    not all(
+        _have(m)
+        for m in ("deepagents", "langchain_openai", "langchain_mcp_adapters", "openai", "langgraph")
+    ),
     reason="examples-harness deps (deepagents/langchain/openai) not installed",
 )
 
@@ -48,8 +50,11 @@ class _Probe:
         self.model_authored = model_authored
 
     async def __call__(self, tool, args):
-        payload = ({"model_authored": self.model_authored} if tool == "describe_problem"
-                   else {"should_stop": False})
+        payload = (
+            {"model_authored": self.model_authored}
+            if tool == "describe_problem"
+            else {"should_stop": False}
+        )
         return type("R", (), {"structuredContent": payload})()
 
 
@@ -61,7 +66,7 @@ class _FakeAgent:
 
     def __init__(self):
         self.inputs = []
-        self.captured = {}          # {"fs": finish_state} populated by the capturing _finish_tool
+        self.captured = {}  # {"fs": finish_state} populated by the capturing _finish_tool
         self.confirm_after = None
 
     def astream(self, stream_input, config=None, stream_mode=None):
@@ -73,6 +78,7 @@ class _FakeAgent:
             if confirm_after and n >= confirm_after and captured.get("fs") is not None:
                 captured["fs"]["confirmed"] = True
             yield {"messages": []}
+
         return _gen()
 
 
@@ -91,15 +97,18 @@ class _TimeoutAgent:
         async def _gen():
             from mcp.shared.exceptions import McpError
             from mcp.types import ErrorData
+
             raise McpError(ErrorData(code=408, message="Timed out waiting for response"))
             yield  # pragma: no cover - unreachable, present to make this an async generator
 
         return _gen()
 
 
-def _run(mod, monkeypatch, probe, confirm_after=None, agent=None, server_poll=None,
-         driver_options=None):
+def _run(
+    mod, monkeypatch, probe, confirm_after=None, agent=None, server_poll=None, driver_options=None
+):
     from langchain_core.tools import StructuredTool
+
     fake_agent = agent if agent is not None else _FakeAgent()
     fake_agent.confirm_after = confirm_after
 
@@ -115,20 +124,33 @@ def _run(mod, monkeypatch, probe, confirm_after=None, agent=None, server_poll=No
 
     # Real (inert) tool objects named per ALLOWED_TOOLS so _select_tools' curation passes; the
     # faked create_deep_agent ignores them, so they are never actually invoked.
-    fake_tools = [StructuredTool.from_function(func=(lambda: ""), name=n, description=n)
-                  for n in sorted(mod.ALLOWED_TOOLS)]
+    fake_tools = [
+        StructuredTool.from_function(func=(lambda: ""), name=n, description=n)
+        for n in sorted(mod.ALLOWED_TOOLS)
+    ]
 
     async def _fake_load_mcp_tools(session):
         return fake_tools
 
-    def _fake_create_deep_agent(*, model=None, tools=None, system_prompt=None,
-                                subagents=None, middleware=None, checkpointer=None, name=None, **kw):
-        fake_agent.captured.update(system_prompt=system_prompt, subagents=subagents, tools=tools,
-                                   name=name)
+    def _fake_create_deep_agent(
+        *,
+        model=None,
+        tools=None,
+        system_prompt=None,
+        subagents=None,
+        middleware=None,
+        checkpointer=None,
+        name=None,
+        **kw,
+    ):
+        fake_agent.captured.update(
+            system_prompt=system_prompt, subagents=subagents, tools=tools, name=name
+        )
         return fake_agent
 
     import deepagents
     import langchain_mcp_adapters.tools as lmt
+
     monkeypatch.setattr(lmt, "load_mcp_tools", _fake_load_mcp_tools)
     monkeypatch.setattr(deepagents, "create_deep_agent", _fake_create_deep_agent)
 
@@ -141,16 +163,24 @@ def _run(mod, monkeypatch, probe, confirm_after=None, agent=None, server_poll=No
     monkeypatch.setattr(mod.driver.asyncio, "sleep", _no_backoff)
 
     import asyncio
+
     options = dict(
-        model="fake/model", base_url="http://x", api_key="sk-test",
-        system_prompt="sp", task="build a model", recursion_limit=50,
-        progress_probe=probe, server_poll=server_poll,
+        model="fake/model",
+        base_url="http://x",
+        api_key="sk-test",
+        system_prompt="sp",
+        task="build a model",
+        recursion_limit=50,
+        progress_probe=probe,
+        server_poll=server_poll,
     )
     options.update(driver_options or {})
-    result = asyncio.run(mod.run_deepagents(
-        object(),  # session — only passed to the (mocked) load_mcp_tools and decision tool
-        **options,
-    ))
+    result = asyncio.run(
+        mod.run_deepagents(
+            object(),  # session — only passed to the (mocked) load_mcp_tools and decision tool
+            **options,
+        )
+    )
     return result, fake_agent
 
 
@@ -164,7 +194,7 @@ def test_no_model_silent_stop_bounces_with_build_nudge(monkeypatch):
 
     assert result["stop_reason"] == "no_model_built"
     assert len(fake_agent.inputs) == 1 + mod._MAX_SILENT_BOUNCES  # initial drive + N bounces
-    for inp in fake_agent.inputs[1:]:                             # every bounce = the build nudge
+    for inp in fake_agent.inputs[1:]:  # every bounce = the build nudge
         msg = inp["messages"][0]
         assert msg["role"] == "user" and msg["content"] == mod._NO_MODEL_NUDGE
 
@@ -176,9 +206,9 @@ def test_model_silent_stop_bounces_into_the_gate(monkeypatch):
     mod = _load_agent_module()
     result, fake_agent = _run(mod, monkeypatch, _Probe(model_authored=True))
 
-    assert result["stop_reason"] == "silent_stop"                # not an accepted finish
+    assert result["stop_reason"] == "silent_stop"  # not an accepted finish
     assert len(fake_agent.inputs) == 1 + mod._MAX_SILENT_BOUNCES
-    for inp in fake_agent.inputs[1:]:                            # every bounce = the finish nudge
+    for inp in fake_agent.inputs[1:]:  # every bounce = the finish nudge
         msg = inp["messages"][0]
         assert msg["role"] == "user" and msg["content"] == mod._SILENT_FINISH_NUDGE
 
@@ -194,7 +224,7 @@ def test_confirmed_finish_is_not_bounced(monkeypatch):
     # (The exact label may be the orthogonal pre-existing "no_tools_executed" — the faked graph
     # runs no real tools — but never our silent-stop labels.)
     assert result["stop_reason"] not in ("silent_stop", "no_model_built")
-    assert len(fake_agent.inputs) == 2                          # initial + 1 bounce, then confirmed
+    assert len(fake_agent.inputs) == 2  # initial + 1 bounce, then confirmed
 
 
 # --- liveness at the CALL SITE ---------------------------------------------------------------
@@ -209,12 +239,13 @@ def test_a_dead_server_ends_the_run_without_spending_a_resume(monkeypatch):
     another full 4200s timeout. The check must come BEFORE the resume budget is spent."""
     mod = _load_agent_module()
     agent = _TimeoutAgent()
-    result, agent = _run(mod, monkeypatch, _Probe(model_authored=True),
-                         agent=agent, server_poll=lambda: -9)
+    result, agent = _run(
+        mod, monkeypatch, _Probe(model_authored=True), agent=agent, server_poll=lambda: -9
+    )
 
     assert result["stop_reason"].startswith("server_unreachable:")
-    assert "fit call timed out" in result["stop_reason"]   # keeps WHY it stopped talking
-    assert len(agent.inputs) == 1                          # no resume attempted
+    assert "fit call timed out" in result["stop_reason"]  # keeps WHY it stopped talking
+    assert len(agent.inputs) == 1  # no resume attempted
 
 
 @requires_harness
@@ -222,8 +253,13 @@ def test_a_live_server_still_gets_every_resume_attempt(monkeypatch):
     """The other side: a fit timeout against a server that is still running is exactly the case
     the checkpoint resume exists for, and must not be cut short."""
     mod = _load_agent_module()
-    result, agent = _run(mod, monkeypatch, _Probe(model_authored=True),
-                         agent=_TimeoutAgent(), server_poll=lambda: None)
+    result, agent = _run(
+        mod,
+        monkeypatch,
+        _Probe(model_authored=True),
+        agent=_TimeoutAgent(),
+        server_poll=lambda: None,
+    )
 
     assert not result["stop_reason"].startswith("server_unreachable")
     assert len(agent.inputs) == 1 + mod.driver._RUN_RESUME_ATTEMPTS
@@ -234,14 +270,16 @@ def test_no_liveness_signal_does_not_end_the_run(monkeypatch):
     """`None` is 'cannot tell', not 'dead'. A refactor to `if not await _server_is_alive(...)`
     would end every run that wires no signal — this is the test that would catch it."""
     mod = _load_agent_module()
-    result, agent = _run(mod, monkeypatch, _Probe(model_authored=True),
-                         agent=_TimeoutAgent(), server_poll=None)
+    result, agent = _run(
+        mod, monkeypatch, _Probe(model_authored=True), agent=_TimeoutAgent(), server_poll=None
+    )
 
     assert not result["stop_reason"].startswith("server_unreachable")
     assert len(agent.inputs) == 1 + mod.driver._RUN_RESUME_ATTEMPTS
 
 
 # --- the artifact contract -------------------------------------------------------------------
+
 
 @requires_harness
 def test_result_json_carries_every_key_the_driver_returns(monkeypatch, tmp_path):

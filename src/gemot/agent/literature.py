@@ -51,8 +51,17 @@ def _content_to_text(content: Any) -> str:
 # input was ~800k, vs ~150k without literature). We keep only the fields that carry modelling
 # signal — title, abstract, DOI/PMID, journal, year, a capped author line — and drop the rest. The
 # FULL response is still recorded (DOIs/PMIDs) for the provenance audit trail before trimming.
-_EPMC_KEEP_FIELDS = ("id", "source", "pmid", "pmcid", "doi", "title", "authorString",
-                     "pubYear", "abstractText")
+_EPMC_KEEP_FIELDS = (
+    "id",
+    "source",
+    "pmid",
+    "pmcid",
+    "doi",
+    "title",
+    "authorString",
+    "pubYear",
+    "abstractText",
+)
 _EPMC_AUTHOR_CAP = 200
 
 
@@ -61,6 +70,7 @@ def _trim_europepmc_search(text: str) -> "str | None":
     modeller needs. Returns the trimmed JSON string, or ``None`` if the text isn't the expected
     shape (leave it untouched) — best-effort, never raises."""
     import json
+
     try:
         data = json.loads(text)
         results = data["resultList"]["result"]
@@ -117,12 +127,14 @@ def _wrap_literature_recorder(tools: list, log: list) -> list:
                     content = result[0] if isinstance(result, tuple) else result
                     text = _content_to_text(content)
                     # Record the FULL response (complete DOI/PMID audit trail) BEFORE any trimming.
-                    log.append({
-                        "tool": name,
-                        "query": arguments,
-                        "dois": sorted(set(_DOI_RE.findall(text))),
-                        "pmids": sorted(set(_PMID_RE.findall(text))),
-                    })
+                    log.append(
+                        {
+                            "tool": name,
+                            "query": arguments,
+                            "dois": sorted(set(_DOI_RE.findall(text))),
+                            "pmids": sorted(set(_PMID_RE.findall(text))),
+                        }
+                    )
                     # Hand the biocurator a slimmed article payload (drops resultType=core bloat
                     # the model never uses); the audit log above still has everything.
                     if name == "get_europepmc_articles":
@@ -130,10 +142,16 @@ def _wrap_literature_recorder(tools: list, log: list) -> list:
                         if slim is not None and len(slim) < len(text):
                             # Preserve the original content SHAPE (bare string vs list-of-blocks)
                             # so trimmed and untrimmed results are the same type downstream.
-                            new_content = ([{"type": "text", "text": slim}]
-                                           if isinstance(content, list) else slim)
-                            return ((new_content,) + result[1:]
-                                    if isinstance(result, tuple) else new_content)
+                            new_content = (
+                                [{"type": "text", "text": slim}]
+                                if isinstance(content, list)
+                                else slim
+                            )
+                            return (
+                                (new_content,) + result[1:]
+                                if isinstance(result, tuple)
+                                else new_content
+                            )
                 except Exception:  # pragma: no cover - provenance/trim must never break a tool call
                     pass
                 return result

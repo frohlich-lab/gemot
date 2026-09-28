@@ -62,6 +62,7 @@ def test_the_agent_dir_holds_only_the_problem_even_after_the_live_marker(tmp_pat
     server logs and result.json land beside it; all of that is written to `work/`, which is NOT
     the mount — the agent sees `work/agent/` and nothing above it."""
     from petab_harness.runner.provenance import _write_live_marker
+
     work = _workspace(tmp_path)
     staged = R.stage_workspace(work)
     agent = staged["agent_dir"]
@@ -70,15 +71,21 @@ def test_the_agent_dir_holds_only_the_problem_even_after_the_live_marker(tmp_pat
         name = "toy"
         version = 1
         bic_threshold = 10.0
+
         def reference(self):
             return {"nll": 1.0, "k": 2, "n": 10}
+
     _write_live_marker(work, {"phoenix_trace_id": "abc"}, _S(), include_reference=False)
     marker = json.loads((work / "run_live.json").read_text())
     assert marker["reference"] is None and marker["bic_reference"] is None
     visible = {f.name for f in agent.iterdir()}
     listed = {n for names in staged["files"].values() for n in names}
-    assert visible == listed | {"problem.yaml", "conversion_reaction.xml",
-                                R.SANDBOX_HOME_DIR, R.SANDBOX_TMP_DIR}
+    assert visible == listed | {
+        "problem.yaml",
+        "conversion_reaction.xml",
+        R.SANDBOX_HOME_DIR,
+        R.SANDBOX_TMP_DIR,
+    }
     assert "run_live.json" not in visible
 
 
@@ -90,7 +97,7 @@ def test_an_untouched_delivery_is_clean(tmp_path):
     out = R.check_delivery(work, staged)
     assert out["design_modified"] == [] and out["shipped_rows_violated"] == []
     assert out["petab_lint"]["ok"], out["petab_lint"]
-    assert out["model_authored"] is True          # the toy ships a real model
+    assert out["model_authored"] is True  # the toy ships a real model
     assert out["model_ant_set_aside"] is False
 
 
@@ -129,17 +136,18 @@ def test_shipped_rows_are_protected(tmp_path):
     for row in rows:
         cells = row.split("\t")
         if cells[0] == "sigma_B":
-            cells[4] = "0.5"                    # fixed row re-valued
+            cells[4] = "0.5"  # fixed row re-valued
         elif cells[0] == "A_init":
-            cells[5] = "1"                      # fixed row freed
+            cells[5] = "1"  # fixed row freed
         elif cells[0] == "B_init":
-            continue                            # shipped row removed
+            continue  # shipped row removed
         edited.append("\t".join(cells))
-    edited.append("kcat_new\tlog10\t1e-3\t1e3\t2.5\t1")   # the agent's own row: fine
+    edited.append("kcat_new\tlog10\t1e-3\t1e3\t2.5\t1")  # the agent's own row: fine
     (work / "parameters.tsv").write_text("\n".join([header, *edited]) + "\n")
     out = R.check_delivery(work, staged)
-    assert sorted(out["shipped_rows_violated"]) == sorted([
-        "sigma_B: fixed value 0.1 -> 0.5", "A_init: estimate 0 -> 1", "B_init: removed"])
+    assert sorted(out["shipped_rows_violated"]) == sorted(
+        ["sigma_B: fixed value 0.1 -> 0.5", "A_init: estimate 0 -> 1", "B_init: removed"]
+    )
 
 
 def test_an_agent_model_ant_is_set_aside_before_scoring(tmp_path):
@@ -190,7 +198,9 @@ def test_lint_names_the_libsbml_errors(tmp_path):
 """)
     out = R.check_delivery(work, staged)
     assert out["petab_lint"]["ok"] is False
-    assert any(m.startswith("SBML error 20623") for m in out["petab_lint"]["messages"]), out["petab_lint"]
+    assert any(m.startswith("SBML error 20623") for m in out["petab_lint"]["messages"]), out[
+        "petab_lint"
+    ]
     assert out["model_authored"] is True
 
 
@@ -204,7 +214,8 @@ def test_an_untouched_model_less_problem_reads_as_no_model(tmp_path):
     (work / "conversion_reaction.xml").write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">'
-        '<model id="conversion_reaction"/></sbml>\n')
+        '<model id="conversion_reaction"/></sbml>\n'
+    )
     out = R.check_delivery(work, staged)
     assert out["model_authored"] is False
 
@@ -212,8 +223,10 @@ def test_an_untouched_model_less_problem_reads_as_no_model(tmp_path):
 def test_unscoreable_result_is_a_loss_not_an_abort(tmp_path):
     """`aborted:` is what the sweep aggregation drops as infrastructure noise; a delivery that
     cannot be judged is the agent's failure and must stay in the table as one."""
+
     class _S:
         name = "toy"
+
     meta = {"stop_reason": "completed", "driver": "barebones"}
     res = R._write_unscoreable_result(tmp_path, meta, _S(), "petab_invalid: bad sbml")
     assert res["success"] is False and res["delta_bic"] is None
@@ -225,6 +238,7 @@ def test_unscoreable_result_is_a_loss_not_an_abort(tmp_path):
 # --------------------------------------------------------------------------- wiring
 def test_prompt_template_formats_and_is_tracked():
     from petab_harness import prompts as P
+
     text = P.BAREBONES_SYSTEM_PROMPT_TMPL.format(execute_timeout=1234.0, n_cpus=8, n_starts=100)
     assert "1234s" in text and "8 CPU" in text and "100 starts" in text
     assert "{" not in text and "}" not in text
@@ -233,20 +247,28 @@ def test_prompt_template_formats_and_is_tracked():
     bio = P.BAREBONES_BIO_TOOLS_TMPL.format(n=2, names="get_interactions, omnipath_query")
     assert "2 tools" in bio and "omnipath_query" in bio and "{" not in bio
     # the null gets the contract, not the treatment: none of the lead's modelling rules
-    for treatment in ("EXPONENTS ARE PARAMETERS", "ADEQUACY BEFORE PARSIMONY", "make_changes",
-                      "subagent_type"):
+    for treatment in (
+        "EXPONENTS ARE PARAMETERS",
+        "ADEQUACY BEFORE PARSIMONY",
+        "make_changes",
+        "subagent_type",
+    ):
         assert treatment not in text
 
 
 def _known_constants_of_every_example() -> dict[str, str]:
     """Each example's KNOWN_CONSTANTS literal, read by AST (importing a run.py pulls in AMICI)."""
     import ast
+
     out = {}
     for f in sorted((Path(__file__).parents[1] / "examples").glob("*/run.py")):
         for node in ast.parse(f.read_text()).body:
             if isinstance(node, ast.Assign) and any(
-                    getattr(t, "id", None) == "KNOWN_CONSTANTS" for t in node.targets):
-                assert isinstance(node.value, ast.Constant), f"{f}: KNOWN_CONSTANTS is not a literal"
+                getattr(t, "id", None) == "KNOWN_CONSTANTS" for t in node.targets
+            ):
+                assert isinstance(node.value, ast.Constant), (
+                    f"{f}: KNOWN_CONSTANTS is not a literal"
+                )
                 out[f.parent.name] = node.value.value
     assert out, "no example defines KNOWN_CONSTANTS"
     return out
@@ -264,15 +286,18 @@ def test_every_example_note_is_problem_specific_and_tool_free():
 def test_the_lead_still_gets_the_readout_note_with_its_constants():
     from petab_harness import prompts as P
     from petab_harness.scenario import Scenario
+
     kw = dict(problem_dir=Path("/x/problem"), scripted_fix=None)
     with_note = Scenario(name="a", known_constants="KNOWN CONSTANTS: k.", **kw).agent_task
     assert with_note.endswith("KNOWN CONSTANTS: k." + P.KNOWN_CONSTANTS_READOUT_NOTE)
-    assert "set_assignment" in with_note                  # the lead's own tool vocabulary
+    assert "set_assignment" in with_note  # the lead's own tool vocabulary
     assert Scenario(name="b", **kw).agent_task == P.DEFAULT_TASK
+
     # the null's task never carries the lead's note
     class _S:
         known_constants = "KNOWN CONSTANTS: k."
         biocurator_entities = []
+
     assert P.KNOWN_CONSTANTS_READOUT_NOTE not in R.barebones_task(_S())
 
 
@@ -285,9 +310,11 @@ def test_note_check_refuses_a_tool_name_but_not_the_verb_rename():
 def test_task_carries_the_known_constants_and_the_curated_entities():
     """The null gets what the panel gets: the lead's known-constants note AND the entity names the
     biocurator is handed — information parity, so only the design differs."""
+
     class _S:
         known_constants = "KNOWN CONSTANTS: sigma ships estimated."
         biocurator_entities = ["IP3 receptor (ITPR)", "calcium ion"]
+
     task = R.barebones_task(_S())
     assert task.startswith(R.BAREBONES_TASK)
     assert "KNOWN CONSTANTS: sigma ships estimated." in task
@@ -296,6 +323,7 @@ def test_task_carries_the_known_constants_and_the_curated_entities():
     class _Bare:
         known_constants = ""
         biocurator_entities = []
+
     assert R.barebones_task(_Bare()) == R.BAREBONES_TASK
 
 
@@ -316,7 +344,7 @@ def test_bio_tool_discovery_is_the_panels_allowlist(monkeypatch):
     literature = B.LITERATURE_BIO_TOOLS[0]
     servers = {
         "a": [_tool(curated), _tool(literature), _tool("describe_problem"), _tool("unrelated")],
-        "b": [_tool(curated)],            # duplicate of a's
+        "b": [_tool(curated)],  # duplicate of a's
         "dead": RuntimeError("tools/list failed"),
     }
 
@@ -327,8 +355,11 @@ def test_bio_tool_discovery_is_the_panels_allowlist(monkeypatch):
         return out
 
     monkeypatch.setattr(lmt, "load_mcp_tools", _fake_load)
-    got = asyncio.run(B.discover_bio_tools(["a", "b", "dead"], literature=False,
-                                           exclude_names={"describe_problem"}))
+    got = asyncio.run(
+        B.discover_bio_tools(
+            ["a", "b", "dead"], literature=False, exclude_names={"describe_problem"}
+        )
+    )
     assert [t.name for t in got] == [curated]
     got = asyncio.run(B.discover_bio_tools(["a"], literature=True))
     assert sorted(t.name for t in got) == sorted([curated, literature])
@@ -344,6 +375,7 @@ def test_cli_accepts_the_barebones_driver_and_dispatches_to_its_pipeline(monkeyp
         name = "toy"
         problem_dir = tmp_path / "problem"
         version = 1
+
     args = cli.build_parser(_S()).parse_args(["--driver", "barebones"])
     assert args.driver == "barebones"
 
@@ -377,16 +409,36 @@ def test_sweep_keeps_the_model_grid_for_the_null_arm():
     """`build_combos` collapses models/temperatures for `scripted` only: the null arm is an LLM
     driver and must sweep the same example x model grid as `deepagents`, or it cannot be paired."""
     import importlib.util
+
     spec = importlib.util.spec_from_file_location(
-        "make_sweep", Path(__file__).parents[1] / "slurm" / "make_sweep.py")
+        "make_sweep", Path(__file__).parents[1] / "slurm" / "make_sweep.py"
+    )
     ms = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ms)
-    combos = ms.build_combos(["enzyme_kinetics"], ["a/m1", "b/m2"], [0.0], 2, "barebones",
-                             100, 250, 3600.0, match_refit_starts=False)
+    combos = ms.build_combos(
+        ["enzyme_kinetics"],
+        ["a/m1", "b/m2"],
+        [0.0],
+        2,
+        "barebones",
+        100,
+        250,
+        3600.0,
+        match_refit_starts=False,
+    )
     assert len(combos) == 4 and {c["model"] for c in combos} == {"a/m1", "b/m2"}
     assert all(c["driver"] == "barebones" for c in combos)
-    scripted = ms.build_combos(["enzyme_kinetics"], ["a/m1", "b/m2"], [0.0], 1, "scripted",
-                               100, 250, 3600.0, match_refit_starts=False)
+    scripted = ms.build_combos(
+        ["enzyme_kinetics"],
+        ["a/m1", "b/m2"],
+        [0.0],
+        1,
+        "scripted",
+        100,
+        250,
+        3600.0,
+        match_refit_starts=False,
+    )
     assert len(scripted) == 1
 
 

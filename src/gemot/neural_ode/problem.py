@@ -38,8 +38,24 @@ from petab.v1 import C
 from petab.versions import get_major_version
 
 #: Symbols a protocol formula may use besides its declared condition columns.
-PROTOCOL_ALLOWED = frozenset({"time", "piecewise", "exp", "log", "log10", "ln", "sqrt", "pow",
-                              "abs", "min", "max", "true", "false", "pi"})
+PROTOCOL_ALLOWED = frozenset(
+    {
+        "time",
+        "piecewise",
+        "exp",
+        "log",
+        "log10",
+        "ln",
+        "sqrt",
+        "pow",
+        "abs",
+        "min",
+        "max",
+        "true",
+        "false",
+        "pi",
+    }
+)
 _SINGLE = "__single__"
 _SYMBOL = re.compile(r"[A-Za-z_]\w*")
 _PLACEHOLDER = re.compile(r"^(observable|noise)Parameter\d+_")
@@ -107,8 +123,12 @@ class Problem:
         """What the field reads besides its states: clamped columns no protocol consumes, then the
         protocol targets."""
         consumed = {c for item in self.timed_inputs for c in item.columns}
-        return tuple((*(n for n in self.inputs if n not in consumed),
-                      *(item.target for item in self.timed_inputs)))
+        return tuple(
+            (
+                *(n for n in self.inputs if n not in consumed),
+                *(item.target for item in self.timed_inputs),
+            )
+        )
 
     @property
     def uses_preequilibration(self) -> bool:
@@ -117,8 +137,11 @@ class Problem:
     @property
     def basal_conditions(self) -> tuple[str, ...]:
         """Distinct preequilibration conditions, in order of first use."""
-        return tuple(dict.fromkeys(self.preequilibration[e] for e in self.experiment_ids
-                                   if e in self.preequilibration))
+        return tuple(
+            dict.fromkeys(
+                self.preequilibration[e] for e in self.experiment_ids if e in self.preequilibration
+            )
+        )
 
     def start_is_known(self, experiment: str, state: str) -> bool:
         """Whether the tables pin ``state``'s start in ``experiment`` at no parameter cost: a t=0
@@ -129,19 +152,30 @@ class Problem:
         experiments whose cell is blank unpinned, and counting those as fixed would understate
         ``k``, and an over-generous parameter budget is how a field gets latents the data cannot pay for.
         """
-        return (state in self.pinned_starts or (experiment, state) in self.column_starts
-                or (experiment, state) in self.measured_starts)
+        return (
+            state in self.pinned_starts
+            or (experiment, state) in self.column_starts
+            or (experiment, state) in self.measured_starts
+        )
 
     def counts(self, *, shared_ics: bool) -> dict:
         """The counts the field-sizing rules read, off this problem's own tables. ``n_fixed_ics``
         is per experiment, or per state when starts are shared across experiments."""
         known = [[self.start_is_known(e, s) for s in self.state_names] for e in self.experiment_ids]
-        n_fixed = (sum(all(column) for column in zip(*known)) if shared_ics and known
-                   else sum(map(sum, known)))
-        return {"n_measurements": self.n_measurements, "n_experiments": len(self.experiment_ids),
-                "n_modelled_states": len(self.observed), "n_dosed": len(self.dosed),
-                "n_inputs": len(self.field_input_names), "n_fixed_ics": int(n_fixed),
-                "n_sigma": len(self.noise_parameters)}
+        n_fixed = (
+            sum(all(column) for column in zip(*known))
+            if shared_ics and known
+            else sum(map(sum, known))
+        )
+        return {
+            "n_measurements": self.n_measurements,
+            "n_experiments": len(self.experiment_ids),
+            "n_modelled_states": len(self.observed),
+            "n_dosed": len(self.dosed),
+            "n_inputs": len(self.field_input_names),
+            "n_fixed_ics": int(n_fixed),
+            "n_sigma": len(self.noise_parameters),
+        }
 
 
 def load(problem: Path | str, *, name: str | None = None, dosed: tuple[str, ...] = ()) -> Problem:
@@ -156,8 +190,11 @@ def load(problem: Path | str, *, name: str | None = None, dosed: tuple[str, ...]
     if get_major_version(str(yaml_path)) != 1:
         raise ProblemError(f"{yaml_path} is not a PEtab v1 problem; this route reads v1 directly")
     pp = petab.Problem.from_yaml(str(yaml_path))
-    name = name or (yaml_path.parent.parent.name if yaml_path.parent.name == "problem"
-                    else yaml_path.parent.name)
+    name = name or (
+        yaml_path.parent.parent.name
+        if yaml_path.parent.name == "problem"
+        else yaml_path.parent.name
+    )
     warnings: list[str] = []
 
     meas = pp.measurement_df.reset_index(drop=True).copy()
@@ -166,15 +203,18 @@ def load(problem: Path | str, *, name: str | None = None, dosed: tuple[str, ...]
     for column in (C.SIMULATION_CONDITION_ID, C.PREEQUILIBRATION_CONDITION_ID):
         if column not in meas.columns:
             meas[column] = _SINGLE if column == C.SIMULATION_CONDITION_ID else None
-    meas[C.SIMULATION_CONDITION_ID] = (meas[C.SIMULATION_CONDITION_ID].fillna(_SINGLE)
-                                       .astype(str).replace("", _SINGLE))
+    meas[C.SIMULATION_CONDITION_ID] = (
+        meas[C.SIMULATION_CONDITION_ID].fillna(_SINGLE).astype(str).replace("", _SINGLE)
+    )
     experiment_ids = tuple(pd.unique(meas[C.SIMULATION_CONDITION_ID]))
 
     observables = pp.observable_df.reset_index()
     observable_ids = tuple(str(o) for o in observables[C.OBSERVABLE_ID])
     unknown = set(meas[C.OBSERVABLE_ID].astype(str)) - set(observable_ids)
     if unknown:
-        raise ProblemError(f"{name}: measurements reference undeclared observables {sorted(unknown)}")
+        raise ProblemError(
+            f"{name}: measurements reference undeclared observables {sorted(unknown)}"
+        )
     nominal, estimated = _parameters(pp.parameter_df)
     formulas = {oid: str(f) for oid, f in zip(observable_ids, observables[C.OBSERVABLE_FORMULA])}
     observed: list[str] = []
@@ -186,8 +226,11 @@ def load(problem: Path | str, *, name: str | None = None, dosed: tuple[str, ...]
         raise ProblemError(f"{name}: no observable formula reads a state; nothing to model")
 
     conditions = pp.condition_df
-    targets = [str(c) for c in (conditions.columns if conditions is not None else ())
-               if str(c) != C.CONDITION_NAME]
+    targets = [
+        str(c)
+        for c in (conditions.columns if conditions is not None else ())
+        if str(c) != C.CONDITION_NAME
+    ]
     lower = {s.lower(): s for s in observed}
     start_columns: dict[str, str] = {}
     dosed_states: list[str] = []
@@ -218,17 +261,22 @@ def load(problem: Path | str, *, name: str | None = None, dosed: tuple[str, ...]
     # experiment and 0 only in `preeq_untreated` -- and the distiller needs both to recover any
     # dependence on it at all (`distil.sample`).
     basal = tuple(dict.fromkeys(preequilibration.values()))
-    values, given = _condition_values(conditions, targets, (*experiment_ids, *basal), nominal, warnings)
+    values, given = _condition_values(
+        conditions, targets, (*experiment_ids, *basal), nominal, warnings
+    )
     column_starts = frozenset(
         (experiment, state)
         for target, state in start_columns.items()
-        for e, experiment in enumerate(experiment_ids) if given[target][e])
+        for e, experiment in enumerate(experiment_ids)
+        if given[target][e]
+    )
     identity = {oid: f for oid, f in formulas.items() if f.strip() in observed}
     measured_starts: dict[tuple[str, str], float] = {}
     at_start = meas[(meas[C.TIME] == 0.0) & meas[C.OBSERVABLE_ID].isin(identity)]
     for (experiment, oid), rows in at_start.groupby([C.SIMULATION_CONDITION_ID, C.OBSERVABLE_ID]):
         measured_starts[(str(experiment), identity[str(oid)].strip())] = float(
-            rows[C.MEASUREMENT].astype(float).mean())
+            rows[C.MEASUREMENT].astype(float).mean()
+        )
 
     scales: dict[str, float] = {}
     for state in observed:
@@ -247,17 +295,30 @@ def load(problem: Path | str, *, name: str | None = None, dosed: tuple[str, ...]
         scales[item.target] = 1.0
 
     return Problem(
-        name=name, source=yaml_path, observable_ids=observable_ids, observed=tuple(observed),
-        dosed=tuple(dosed_states), inputs=tuple(inputs), timed_inputs=timed,
-        condition_values={e: {t: float(values[t][i]) for t in targets}
-                          for i, e in enumerate((*experiment_ids, *basal))},
-        start_columns=start_columns, column_starts=column_starts, pinned_starts=pinned_starts,
+        name=name,
+        source=yaml_path,
+        observable_ids=observable_ids,
+        observed=tuple(observed),
+        dosed=tuple(dosed_states),
+        inputs=tuple(inputs),
+        timed_inputs=timed,
+        condition_values={
+            e: {t: float(values[t][i]) for t in targets}
+            for i, e in enumerate((*experiment_ids, *basal))
+        },
+        start_columns=start_columns,
+        column_starts=column_starts,
+        pinned_starts=pinned_starts,
         measured_starts=measured_starts,
-        experiment_ids=experiment_ids, preequilibration=preequilibration,
+        experiment_ids=experiment_ids,
+        preequilibration=preequilibration,
         n_measurements=int(len(meas)),
         noise_parameters=_noise_parameters(meas, observables, nominal, estimated),
         observable_parameters=_observable_parameters(pp, estimated),
-        scales=scales, horizon=horizon, warnings=tuple(dict.fromkeys(warnings)))
+        scales=scales,
+        horizon=horizon,
+        warnings=tuple(dict.fromkeys(warnings)),
+    )
 
 
 def _symbols(formula: str) -> list[str]:
@@ -284,8 +345,11 @@ def _noise_parameters(meas, observables, nominal, estimated) -> tuple[str, ...]:
     """Distinct symbols the noise formulas resolve to that the parameter table estimates: a
     ``noiseFormula`` naming a parameter, or a placeholder the measurements override with one."""
     found: dict[str, None] = {}
-    overrides = (meas[C.NOISE_PARAMETERS].astype(str) if C.NOISE_PARAMETERS in meas.columns
-                 else pd.Series([""] * len(meas)))
+    overrides = (
+        meas[C.NOISE_PARAMETERS].astype(str)
+        if C.NOISE_PARAMETERS in meas.columns
+        else pd.Series([""] * len(meas))
+    )
     for _, row in observables.iterrows():
         formula = "" if _blank(row.get(C.NOISE_FORMULA)) else str(row[C.NOISE_FORMULA])
         # Free symbols, not a regex over identifiers: `sigma * exp(-decay * time)` makes `exp` look
@@ -294,12 +358,19 @@ def _noise_parameters(meas, observables, nominal, estimated) -> tuple[str, ...]:
         # exist. `time` is PEtab's independent variable and reaches free_symbols as an ordinary
         # symbol, so it needs excluding too, for the same reason and with the same consequence.
         # The measurement overrides stay a regex: those cells are raw text, not a formula.
-        names = ({str(s) for s in sympify_petab(formula).free_symbols} - {C.TIME}
-                 if formula.strip() else set())
+        names = (
+            {str(s) for s in sympify_petab(formula).free_symbols} - {C.TIME}
+            if formula.strip()
+            else set()
+        )
         if any(_PLACEHOLDER.match(n) for n in names):
             rows = (meas[C.OBSERVABLE_ID].astype(str) == str(row[C.OBSERVABLE_ID])).to_numpy()
             for cell in overrides[rows]:
-                names.update(n for n in str(cell).split(C.PARAMETER_SEPARATOR) if _SYMBOL.fullmatch(n.strip()))
+                names.update(
+                    n
+                    for n in str(cell).split(C.PARAMETER_SEPARATOR)
+                    if _SYMBOL.fullmatch(n.strip())
+                )
         for symbol in sorted(names):
             if not _PLACEHOLDER.match(symbol) and estimated.get(symbol, symbol not in nominal):
                 found.setdefault(symbol)
@@ -331,10 +402,15 @@ def _observed_scale(state, meas, formulas, nominal) -> float:
         if state not in {str(s) for s in expr.free_symbols}:
             continue
         rows = meas[meas[C.OBSERVABLE_ID].astype(str) == oid]
-        cells = (rows[C.OBSERVABLE_PARAMETERS] if C.OBSERVABLE_PARAMETERS in rows.columns
-                 else pd.Series([None] * len(rows), index=rows.index))
+        cells = (
+            rows[C.OBSERVABLE_PARAMETERS]
+            if C.OBSERVABLE_PARAMETERS in rows.columns
+            else pd.Series([None] * len(rows), index=rows.index)
+        )
         gains = {cell: _gain(expr, state, nominal, cell) for cell in cells.astype(str).unique()}
-        parts.append(rows[C.MEASUREMENT].to_numpy(dtype=float) / cells.astype(str).map(gains).to_numpy())
+        parts.append(
+            rows[C.MEASUREMENT].to_numpy(dtype=float) / cells.astype(str).map(gains).to_numpy()
+        )
     return _rms(np.concatenate(parts)) if parts else 1.0
 
 
@@ -342,8 +418,10 @@ def _gain(expr, state: str, nominal, cell) -> float:
     """The observable's slope in ``state``: the formula at ``state = 1`` less the formula at
     ``state = 0``, with every parameter at its nominal, every placeholder at the row's override
     and every other state at zero -- so an additive offset does not enter the scale."""
-    placeholders = sorted((str(s) for s in expr.free_symbols if _PLACEHOLDER.match(str(s))),
-                          key=lambda n: int(re.search(r"\d+", n).group()))
+    placeholders = sorted(
+        (str(s) for s in expr.free_symbols if _PLACEHOLDER.match(str(s))),
+        key=lambda n: int(re.search(r"\d+", n).group()),
+    )
     overrides = [] if _blank(cell) or cell == "None" else str(cell).split(C.PARAMETER_SEPARATOR)
     values = {}
     own = [symbol for symbol in expr.free_symbols if str(symbol) == state]
@@ -354,7 +432,11 @@ def _gain(expr, state: str, nominal, cell) -> float:
         if name in placeholders:
             index = placeholders.index(name)
             override = overrides[index].strip() if index < len(overrides) else ""
-            values[symbol] = _as_float(override) if _as_float(override) is not None else nominal.get(override, 1.0)
+            values[symbol] = (
+                _as_float(override)
+                if _as_float(override) is not None
+                else nominal.get(override, 1.0)
+            )
         else:
             values[symbol] = nominal.get(name, 0.0)
     try:
@@ -372,8 +454,9 @@ def _rms(values) -> float:
     return magnitude if magnitude > 0.0 else 1.0
 
 
-def _condition_values(conditions, targets, experiment_ids, nominal,
-                      warnings) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+def _condition_values(
+    conditions, targets, experiment_ids, nominal, warnings
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     """Per column, one value per experiment: numeric cells as given, a parameter's name as its
     nominal value; a missing row or cell reads as zero, and says so.
 
@@ -398,7 +481,9 @@ def _condition_values(conditions, targets, experiment_ids, nominal,
                 given[target][e] = True
             else:
                 if not _blank(cell):
-                    warnings.append(f"{target}={cell!r} in {experiment!r} is not numeric; read as 0")
+                    warnings.append(
+                        f"{target}={cell!r} in {experiment!r} is not numeric; read as 0"
+                    )
                 value = 0.0
             values[target][e] = value
     return values, given
@@ -407,14 +492,18 @@ def _condition_values(conditions, targets, experiment_ids, nominal,
 def _preequilibration(meas, experiment_ids, name) -> dict[str, str]:
     """Experiment -> preequilibration condition, for every experiment or none."""
     found: dict[str, str] = {}
-    for experiment, value in zip(meas[C.SIMULATION_CONDITION_ID], meas[C.PREEQUILIBRATION_CONDITION_ID]):
+    for experiment, value in zip(
+        meas[C.SIMULATION_CONDITION_ID], meas[C.PREEQUILIBRATION_CONDITION_ID]
+    ):
         if not _blank(value):
             found.setdefault(str(experiment), str(value).strip())
     if not found:
         return {}
     missing = [e for e in experiment_ids if e not in found]
     if missing:
-        raise ProblemError(f"{name}: experiments {missing} preequilibrate in no condition while others do")
+        raise ProblemError(
+            f"{name}: experiments {missing} preequilibrate in no condition while others do"
+        )
     return found
 
 
@@ -432,22 +521,29 @@ def _timed_inputs(directory: Path, input_names, warnings) -> tuple[TimedInput, .
         for row in csv.DictReader(handle, delimiter="\t"):
             target = str(row.get("inputId") or "").strip()
             formula = str(row.get("formula") or "").strip()
-            columns = tuple(c.strip() for c in str(row.get("conditionInputs") or "").split(";") if c.strip())
+            columns = tuple(
+                c.strip() for c in str(row.get("conditionInputs") or "").split(";") if c.strip()
+            )
             if not target or not formula:
                 continue
             symbols = {s for s in _SYMBOL.findall(formula) if s.lower() not in PROTOCOL_ALLOWED}
             outside = (symbols - set(columns)) | (set(columns) - set(input_names))
             if outside:
-                warnings.append(f"input {target!r} REFUSED: it names {sorted(outside)}, which are "
-                                "not clamped condition columns of this problem")
+                warnings.append(
+                    f"input {target!r} REFUSED: it names {sorted(outside)}, which are "
+                    "not clamped condition columns of this problem"
+                )
                 continue
             out.append(TimedInput(target, formula, columns))
     return tuple(out)
 
 
 def _blank(value) -> bool:
-    return value is None or (isinstance(value, float) and math.isnan(value)) or (
-        isinstance(value, str) and not value.strip())
+    return (
+        value is None
+        or (isinstance(value, float) and math.isnan(value))
+        or (isinstance(value, str) and not value.strip())
+    )
 
 
 def _as_float(value) -> float | None:

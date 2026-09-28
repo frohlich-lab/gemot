@@ -25,10 +25,16 @@ from .clock import _make_call, _wrap_call_timeout, _wrap_tool_clock
 from .provenance import _agent_meta, _base_meta, _write_live_marker
 from ..scenario import Baseline, Scenario
 
-async def _drive(scenario: Scenario, session: ClientSession, work: Path,
-                 args: argparse.Namespace, run_started_at: str | None = None,
-                 server_proc: "subprocess.Popen | None" = None,
-                 bio_sessions: "list | None" = None) -> "tuple[int, dict]":
+
+async def _drive(
+    scenario: Scenario,
+    session: ClientSession,
+    work: Path,
+    args: argparse.Namespace,
+    run_started_at: str | None = None,
+    server_proc: "subprocess.Popen | None" = None,
+    bio_sessions: "list | None" = None,
+) -> "tuple[int, dict]":
     """Preflight, run the chosen driver, and judge — all on one live session.
 
     ``run_started_at`` (the real start captured by ``_main_async`` before the server launched)
@@ -59,8 +65,9 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
         call = blind_names.judge_call(call)
         agent_session = AnonymousSession(session, scenario.example_dir)
         # The finish gate also exposes diagnostics through its unmeasured reader.
-        raw_call_tool = AnonymousSession(session, scenario.example_dir,
-                                         call_tool=raw_call_tool).call_tool
+        raw_call_tool = AnonymousSession(
+            session, scenario.example_dir, call_tool=raw_call_tool
+        ).call_tool
 
     # Stamp the run's start + provenance up front (before the slow baseline compile) so a
     # degraded result.json is still well-formed if preflight/baseline itself blows up.
@@ -72,10 +79,12 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
     tracing = None
     try:
         desc = await call("describe_problem")
-        print(f"[preflight] model '{desc.get('model_id')}' | "
-              f"reactions={desc.get('n_reactions_detail')} | "
-              f"observables={desc.get('observables')} | "
-              f"free params={desc.get('free_parameters')}")
+        print(
+            f"[preflight] model '{desc.get('model_id')}' | "
+            f"reactions={desc.get('n_reactions_detail')} | "
+            f"observables={desc.get('observables')} | "
+            f"free params={desc.get('free_parameters')}"
+        )
 
         # Record the initial species set so the judge can reject "repairs" that invent a new,
         # unobserved species to bend the curve rather than fixing the mechanism.
@@ -91,7 +100,9 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
             # usable baseline" (scored like a zero-shot build). A single failed first fit is not
             # an infrastructure failure — the run should still reach the agent + judge, which
             # score against the true-model reference and don't need a baseline nll.
-            raw_bl = baseline_fit.get("neg_log_likelihood") if isinstance(baseline_fit, dict) else None
+            raw_bl = (
+                baseline_fit.get("neg_log_likelihood") if isinstance(baseline_fit, dict) else None
+            )
             try:
                 bl_nll = float(raw_bl)
             except (TypeError, ValueError):
@@ -99,7 +110,9 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
             if not math.isfinite(bl_nll):
                 bl_nll = None
             baseline = Baseline(nll=bl_nll, species=baseline_species, structure=baseline_structure)
-            _bl_disp = f"{baseline.nll:.6g}" if baseline.nll is not None else "n/a (first fit failed)"
+            _bl_disp = (
+                f"{baseline.nll:.6g}" if baseline.nll is not None else "n/a (first fit failed)"
+            )
             print(f"[preflight] baseline neg_log_likelihood = {_bl_disp}")
         else:
             # Zero-shot: the problem ships without a model — nothing to score until the agent
@@ -130,8 +143,10 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                 "Get one at https://openrouter.ai/keys, or use --driver scripted for a "
                 "no-LLM self-test."
             )
-        print(f"[agent] driving {args.model} via OpenRouter + deepagents "
-              f"(recursion_limit={args.recursion_limit})")
+        print(
+            f"[agent] driving {args.model} via OpenRouter + deepagents "
+            f"(recursion_limit={args.recursion_limit})"
+        )
         from ..agent import run_deepagents
         from ..tracing import record_run_result, run_span, trace_id_hex
 
@@ -139,10 +154,15 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
         # trace (model + fit metrics + verdict on the root); its trace id is stamped into
         # result.json so the across-example aggregator can join usage back to it.
         span_attrs = {
-            "scenario": scenario.name, "example_version": scenario.version,
-            "model": args.model, "driver": args.driver, "temperature": args.temperature,
-            "recursion_limit": args.recursion_limit, "n_starts": args.n_starts,
-            "git_sha": git_sha, "run_started_at": run_started_at,
+            "scenario": scenario.name,
+            "example_version": scenario.version,
+            "model": args.model,
+            "driver": args.driver,
+            "temperature": args.temperature,
+            "recursion_limit": args.recursion_limit,
+            "n_starts": args.n_starts,
+            "git_sha": git_sha,
+            "run_started_at": run_started_at,
             # The text the agent was given is an INPUT to the run, like the code sha — so the
             # trace root carries both, and a Phoenix query can group or split traces on either.
             # Two numbers rather than one so a change is attributable to the prompts
@@ -160,9 +180,11 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
         }
         exit_code, result = 1, {}
         with run_span(tracing, name="model_build_run", attributes=span_attrs) as span:
-            base_meta = {**base_meta,
-                         "phoenix_project": tracing.project_name if tracing else None,
-                         "phoenix_trace_id": trace_id_hex(span)}
+            base_meta = {
+                **base_meta,
+                "phoenix_project": tracing.project_name if tracing else None,
+                "phoenix_trace_id": trace_id_hex(span),
+            }
             # Publish the live marker now that the trace id is known, so the explorer can
             # watch this run's turns + model variants stream in before it finishes.
             _write_live_marker(work, base_meta, scenario)
@@ -198,8 +220,10 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                 )
                 stop_reason = agent_out.get("stop_reason", "completed")
                 if stop_reason != "completed":
-                    print(f"[agent] stopped early: {stop_reason} "
-                          f"(raise --recursion-limit if it ran out of steps)")
+                    print(
+                        f"[agent] stopped early: {stop_reason} "
+                        f"(raise --recursion-limit if it ran out of steps)"
+                    )
                 # The driver's whole return, wholesale (see provenance._agent_meta).
                 meta = _agent_meta(base_meta, agent_out, stop_reason)
                 # Is there a server left to judge against? Keyed on the PROCESS, not on
@@ -211,8 +235,10 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                 # for scoring, which is how a task gets hard-killed with no result.json at all.
                 rc = server_proc.poll() if server_proc is not None else None
                 if rc is not None:
-                    print(f"[run] the MCP server process has exited ({rc}); skipping the judge "
-                          "and writing what the run already produced.")
+                    print(
+                        f"[run] the MCP server process has exited ({rc}); skipping the judge "
+                        "and writing what the run already produced."
+                    )
                     # `meta`, NOT `base_meta`: an aborted run that DID work must keep its work.
                     # base_meta drops token_usage, n_tool_errors, make_changes_calls, the
                     # biocurator provenance and the subagent counters -- and without them
@@ -220,12 +246,18 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                     # DROPS it, which for bachmann 52859568_0 would have discarded 14 completed
                     # fits.
                     result = _write_degraded_result(
-                        work, meta, scenario, f"server_unreachable: MCP server exited ({rc})",
-                        server_returncode=rc, clock=clock)
+                        work,
+                        meta,
+                        scenario,
+                        f"server_unreachable: MCP server exited ({rc})",
+                        server_returncode=rc,
+                        clock=clock,
+                    )
                     exit_code = 1
                 else:
-                    exit_code, result = await _judge(scenario, call, baseline, work, meta,
-                                                     clock, t0)
+                    exit_code, result = await _judge(
+                        scenario, call, baseline, work, meta, clock, t0
+                    )
                 record_run_result(span, result)
             except BaseException as exc:
                 # A provider or MCP-connection stall (httpx ReadTimeout/ConnectError, often
@@ -238,8 +270,14 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
                 if _should_reraise(exc):
                     raise
                 rc = server_proc.poll() if server_proc is not None else None
-                result = _write_degraded_result(work, base_meta, scenario, _summarize_exc(exc),
-                                                server_returncode=rc, clock=clock)
+                result = _write_degraded_result(
+                    work,
+                    base_meta,
+                    scenario,
+                    _summarize_exc(exc),
+                    server_returncode=rc,
+                    clock=clock,
+                )
                 exit_code = 1
                 with contextlib.suppress(Exception):
                     record_run_result(span, result)  # span still live inside the `with`
@@ -252,16 +290,21 @@ async def _drive(scenario: Scenario, session: ClientSession, work: Path,
         if _should_reraise(exc):
             raise
         rc = server_proc.poll() if server_proc is not None else None
-        return 1, _write_degraded_result(work, base_meta, scenario, _summarize_exc(exc),
-                                         server_returncode=rc)
+        return 1, _write_degraded_result(
+            work, base_meta, scenario, _summarize_exc(exc), server_returncode=rc
+        )
     finally:
         if tracing is not None:
             tracing.flush()  # export any buffered spans before we (maybe) exit
-            print(f"[phoenix] traces recorded under project '{tracing.project_name}' "
-                  f"-> {tracing.ui_url}")
+            print(
+                f"[phoenix] traces recorded under project '{tracing.project_name}' "
+                f"-> {tracing.ui_url}"
+            )
             if args.phoenix_keep_alive:
-                print("[phoenix] keeping the process alive so the traces stay browsable; "
-                      "press Ctrl-C to exit.")
+                print(
+                    "[phoenix] keeping the process alive so the traces stay browsable; "
+                    "press Ctrl-C to exit."
+                )
                 try:
                     while True:
                         await asyncio.sleep(3600)

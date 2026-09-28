@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+
 def _structured(res) -> Any:
     """The tool's structured payload from a CallToolResult — unwrapping FastMCP's ``{"result": x}``
     envelope — or ``None`` when there is no structured dict. The one place the finish gate and the

@@ -6,6 +6,7 @@ in :mod:`.guards` that uses them is unit-testable on its own.
 
 from __future__ import annotations
 
+
 def _tool_call_key(tc: dict) -> str:
     """A stable identity for a proposed tool call: its name + canonicalised arguments.
 

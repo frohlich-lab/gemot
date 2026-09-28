@@ -108,16 +108,18 @@ def _validation_fields(payload, reference, *, asked: bool = False) -> dict | Non
         }
 
     mode = str(payload.get("mode") or "fixed")
-    out = {"status": str(payload["status"]),
-           "mode": mode,
-           "nll": payload.get("nll"),
-           "n": payload.get("n"),
-           "chi2": payload.get("chi2"),
-           "n_conditions": payload.get("n_conditions"),
-           "reference_status": ref_status,
-           "reference_nll": ref_nll,
-           "reference_chi2": ref_chi2,
-           "reference_n": ref_n}
+    out = {
+        "status": str(payload["status"]),
+        "mode": mode,
+        "nll": payload.get("nll"),
+        "n": payload.get("n"),
+        "chi2": payload.get("chi2"),
+        "n_conditions": payload.get("n_conditions"),
+        "reference_status": ref_status,
+        "reference_nll": ref_nll,
+        "reference_chi2": ref_chi2,
+        "reference_n": ref_n,
+    }
     if payload.get("reason"):
         out["reason"] = payload["reason"]
 
@@ -175,27 +177,37 @@ def _residual_structure_fields(diagnosis, rollup=None) -> dict | None:
     # non-verdict reads as unavailable rather than as an empty flagged list.
     read = isinstance(rollup, dict) and "flagged_observables" in rollup
     per_obs = []
-    for o in (per or []):
+    for o in per or []:
         if not isinstance(o, dict):
             continue
         st = o.get("sign_test") or {}
         rt = o.get("runs_test") or {}
-        per_obs.append({
-            "observable_id": o.get("observable_id"),
-            "sign_test_p": st.get("p"),
-            "runs_test_p": rt.get("p"),
-            "mean_weighted_residual": o.get("mean_weighted_residual"),
-            "low_power": bool(o.get("structure_low_power")),
-        })
+        per_obs.append(
+            {
+                "observable_id": o.get("observable_id"),
+                "sign_test_p": st.get("p"),
+                "runs_test_p": rt.get("p"),
+                "mean_weighted_residual": o.get("mean_weighted_residual"),
+                "low_power": bool(o.get("structure_low_power")),
+            }
+        )
     out = {
         "rollup_status": "read" if read else "unavailable",
         # "truncated" is its own status: since 2026-08-16 fit_diagnosis caps per_observable on
         # large problems, and a sweep aggregate over a worst-chi2-biased subsample that calls
         # itself "read" is the silent-truncation failure this field exists to prevent.
-        "rows_status": ("truncated" if isinstance(per, list) and (diagnosis or {}).get("omitted")
-                        else "read" if isinstance(per, list) else "unavailable"),
-        **({"rows_omitted": (diagnosis or {}).get("omitted")} if isinstance(per, list)
-           and (diagnosis or {}).get("omitted") else {}),
+        "rows_status": (
+            "truncated"
+            if isinstance(per, list) and (diagnosis or {}).get("omitted")
+            else "read"
+            if isinstance(per, list)
+            else "unavailable"
+        ),
+        **(
+            {"rows_omitted": (diagnosis or {}).get("omitted")}
+            if isinstance(per, list) and (diagnosis or {}).get("omitted")
+            else {}
+        ),
         "per_observable": per_obs,
     }
     if read:
@@ -310,8 +322,11 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
         if not isinstance(entry, dict):
             continue
         # Match the side chosen above: effective vs effective, or raw vs raw.
-        fitted = (entry.get("effective_sigma") if use_effective and "effective_sigma" in entry
-                  else entry.get("fitted"))
+        fitted = (
+            entry.get("effective_sigma")
+            if use_effective and "effective_sigma" in entry
+            else entry.get("fitted")
+        )
         ref_value = ref_sigmas.get(pid, solo_ref_value) if solo_pairing else ref_sigmas.get(pid)
         try:
             fitted, ref_value = float(fitted), float(ref_value)
@@ -328,10 +343,16 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
         hi = ratio if hi is None else max(hi, ratio)
         lo = ratio if lo is None else min(lo, ratio)
         floor, ceiling, df_cand, df_ref = _sigma_ratio_band(
-            entry.get("n_points"), k, n, reference, alpha)
-        detail = {"ratio": ratio, "n_points": entry.get("n_points"),
-                  "band_low": floor, "band_high": ceiling,
-                  "df": df_cand, "df_reference": df_ref}
+            entry.get("n_points"), k, n, reference, alpha
+        )
+        detail = {
+            "ratio": ratio,
+            "n_points": entry.get("n_points"),
+            "band_low": floor,
+            "band_high": ceiling,
+            "df": df_cand,
+            "df_reference": df_ref,
+        }
         if ratio > ceiling:
             inflated = True
             detail["verdict"] = "inflated"
@@ -343,16 +364,21 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
         per_sigma[pid] = detail
     if hi is None:
         return None
-    return {"inflated": inflated, "collapsed": collapsed,
-            "max_ratio": hi, "min_ratio": lo,
-            # The per-sigma detail behind the verdict: each ratio, the df it was judged at, and the
-            # band that df implies. Written to result.json so a flag (or the absence of one on a
-            # low-power sigma) can be audited without re-deriving any of it.
-            "alpha": alpha, "per_sigma": per_sigma,
-            # Same key names the data-std fallback emits, so a consumer of result.json's
-            # noise_sigma_flag sees ONE shape regardless of which basis produced it.
-            "max_fraction_of_data_std": _max_fraction_of_data_std(report),
-            "min_fraction_of_data_std": _min_fraction_of_data_std(report)}
+    return {
+        "inflated": inflated,
+        "collapsed": collapsed,
+        "max_ratio": hi,
+        "min_ratio": lo,
+        # The per-sigma detail behind the verdict: each ratio, the df it was judged at, and the
+        # band that df implies. Written to result.json so a flag (or the absence of one on a
+        # low-power sigma) can be audited without re-deriving any of it.
+        "alpha": alpha,
+        "per_sigma": per_sigma,
+        # Same key names the data-std fallback emits, so a consumer of result.json's
+        # noise_sigma_flag sees ONE shape regardless of which basis produced it.
+        "max_fraction_of_data_std": _max_fraction_of_data_std(report),
+        "min_fraction_of_data_std": _min_fraction_of_data_std(report),
+    }
 
 
 def _sigma_ratio_band(n_points, k, n, reference, alpha):
@@ -394,7 +420,7 @@ def _sigma_ratio_band(n_points, k, n, reference, alpha):
         k_cand, n_cand = int(k), int(n)
         k_ref, n_ref = int(reference["k"]), int(reference["n"])
     except (TypeError, ValueError, KeyError):
-        return (*fixed, None, None)       # unknown df: the fixed tolerance, as before
+        return (*fixed, None, None)  # unknown df: the fixed tolerance, as before
     if points <= 0 or n_cand <= 0 or n_ref <= 0:
         return (*fixed, None, None)
     df_cand = points * max(0.0, 1.0 - k_cand / n_cand)
@@ -405,9 +431,12 @@ def _sigma_ratio_band(n_points, k, n, reference, alpha):
     lo_df = max(df_cand, _NOISE_SIGMA_BAND_MIN_DF)
     hi_df = max(df_ref, _NOISE_SIGMA_BAND_MIN_DF)
     # The band is on the RATIO, the F quantiles are on its square.
-    return (min(fixed[0], float(_f.ppf(alpha / 2, lo_df, hi_df)) ** 0.5),
-            max(fixed[1], float(_f.ppf(1 - alpha / 2, lo_df, hi_df)) ** 0.5),
-            df_cand, df_ref)
+    return (
+        min(fixed[0], float(_f.ppf(alpha / 2, lo_df, hi_df)) ** 0.5),
+        max(fixed[1], float(_f.ppf(1 - alpha / 2, lo_df, hi_df)) ** 0.5),
+        df_cand,
+        df_ref,
+    )
 
 
 def _fractions_of_data_std(report) -> list[float]:
@@ -448,6 +477,7 @@ def _noise_sigma_flag(report) -> dict | None:
         return None
     # Single source of truth for both predicates (shared with the session adequacy gate).
     from petab_mcp.fitting import noise_sigma_collapsed, noise_sigma_inflated
+
     inflated = noise_sigma_inflated(report)
     collapsed = noise_sigma_collapsed(report)
     hi = lo = None
@@ -458,5 +488,9 @@ def _noise_sigma_flag(report) -> dict | None:
         if isinstance(frac, (int, float)):
             hi = frac if hi is None else max(hi, frac)
             lo = frac if lo is None else min(lo, frac)
-    return {"inflated": inflated, "collapsed": collapsed,
-            "max_fraction_of_data_std": hi, "min_fraction_of_data_std": lo}
+    return {
+        "inflated": inflated,
+        "collapsed": collapsed,
+        "max_fraction_of_data_std": hi,
+        "min_fraction_of_data_std": lo,
+    }

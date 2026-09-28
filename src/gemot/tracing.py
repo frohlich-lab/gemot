@@ -122,11 +122,13 @@ def phoenix_base_url(url: str) -> str:
 #
 # The graph's other per-step node, ``tools``, is deliberately absent: its ``input.value`` is
 # the tool call being dispatched, ~0.5 KB, not a transcript copy.
-_STRIPPED_INPUT_SPANS = frozenset({
-    "model",                            # LangChain's model node
-    "TodoListMiddleware.after_model",   # deepagents
-    "_ToolDispatchGuard.after_model",   # ours, see petab_harness.agent.guards
-})
+_STRIPPED_INPUT_SPANS = frozenset(
+    {
+        "model",  # LangChain's model node
+        "TodoListMiddleware.after_model",  # deepagents
+        "_ToolDispatchGuard.after_model",  # ours, see petab_harness.agent.guards
+    }
+)
 
 # Only the payload goes; the span, its parentage and its timings stay, so the trace tree is
 # unchanged. Dropping these spans outright is NOT an option -- ``ChatOpenAI`` is their child
@@ -144,6 +146,7 @@ def _strip_span_inputs(span: Any) -> Any:
     if span.name not in _STRIPPED_INPUT_SPANS:
         return span
     from opentelemetry.sdk.trace import ReadableSpan
+
     attributes = {
         key: value
         for key, value in (span.attributes or {}).items()
@@ -253,7 +256,12 @@ def setup_phoenix_tracing(
     # So a package gap would reproduce the 2026-08-16 outcome exactly — full budget spent, zero
     # spans — with all three layers reporting success.
     _require = os.environ.get("PETAB_REQUIRE_COLLECTOR", "0").strip().lower() not in (
-        "0", "false", "no", "off", "")
+        "0",
+        "false",
+        "no",
+        "off",
+        "",
+    )
 
     def _refuse(why: str) -> None:
         raise RuntimeError(
@@ -287,8 +295,11 @@ def setup_phoenix_tracing(
         return None
 
     # Only auto-launch a local app when the user didn't point us at an external collector.
-    explicit_endpoint = endpoint or os.environ.get("PHOENIX_COLLECTOR_ENDPOINT") \
+    explicit_endpoint = (
+        endpoint
+        or os.environ.get("PHOENIX_COLLECTOR_ENDPOINT")
         or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    )
     # A BATCH run must never take the throwaway-local-app path. An in-process Phoenix dies with
     # the task and takes every span with it, so the run burns its whole budget and produces
     # nothing analysable — measured on 2026-08-16 at 40 tasks / ~26 CPU-hours, discovered only
@@ -322,8 +333,7 @@ def setup_phoenix_tracing(
             )
             return None
         except Exception as exc:  # pragma: no cover - launch is environment-dependent
-            print(f"[phoenix] failed to launch local Phoenix app ({exc}); "
-                  "running without tracing.")
+            print(f"[phoenix] failed to launch local Phoenix app ({exc}); running without tracing.")
             return None
 
     # Normalize to the collector base so we append the OTLP path exactly once, whether the
@@ -359,8 +369,10 @@ def setup_phoenix_tracing(
     # (see _STRIPPED_INPUT_SPANS). Best-effort: if the provider isn't Phoenix's, tracing
     # still works, it just exports the full ~4x-duplicated transcript as before.
     if not _install_stripping_processor(tracer_provider, traces_endpoint):
-        print("[phoenix] could not install the input-stripping span processor; "
-              "traces will carry duplicated agent transcripts and grow quickly.")
+        print(
+            "[phoenix] could not install the input-stripping span processor; "
+            "traces will carry duplicated agent transcripts and grow quickly."
+        )
 
     # Instrument LangChain (deepagents/LangGraph run on it) so LLM calls and tool calls
     # are captured. Passing the provider explicitly avoids relying on global-lookup order.
@@ -387,17 +399,48 @@ def setup_phoenix_tracing(
 
 # Result keys copied onto the run span as queryable ``attributes.petab.<key>`` values.
 _RESULT_METRIC_KEYS = (
-    "scenario", "example_version", "model", "driver", "stop_reason", "success",
-    "baseline_nll", "final_nll", "delta",
-    "chi2", "chi2_dof", "chi2_gof_pvalue",
-    "k", "k_estimated", "n", "k_eff", "bic", "bic_reference", "delta_bic", "bic_threshold",
-    "criterion", "criterion_note", "criterion_value", "criterion_reference", "delta_criterion",
-    "head_version", "n_errors", "tool_calls",
-    "wall_seconds", "compute_seconds", "llm_seconds",
-    "compile_seconds", "fit_seconds", "n_compiles", "n_fits",
-    "recursion_limit", "n_starts", "temperature", "git_sha", "ablation_arm", "ablation_state",
+    "scenario",
+    "example_version",
+    "model",
+    "driver",
+    "stop_reason",
+    "success",
+    "baseline_nll",
+    "final_nll",
+    "delta",
+    "chi2",
+    "chi2_dof",
+    "chi2_gof_pvalue",
+    "k",
+    "k_estimated",
+    "n",
+    "k_eff",
+    "bic",
+    "bic_reference",
+    "delta_bic",
+    "bic_threshold",
+    "criterion",
+    "criterion_note",
+    "criterion_value",
+    "criterion_reference",
+    "delta_criterion",
+    "head_version",
+    "n_errors",
+    "tool_calls",
+    "wall_seconds",
+    "compute_seconds",
+    "llm_seconds",
+    "compile_seconds",
+    "fit_seconds",
+    "n_compiles",
+    "n_fits",
+    "recursion_limit",
+    "n_starts",
+    "temperature",
+    "git_sha",
+    "ablation_arm",
+    "ablation_state",
 )
-
 
 
 def _otel_value(value: Any) -> Any:
@@ -437,10 +480,13 @@ def run_span(handle: TracingHandle | None, *, name: str, attributes: dict[str, A
     with tracer.start_as_current_span(name) as span:
         _set_attrs(span, {"openinference.span.kind": "CHAIN"})
         _set_attrs(span, {f"petab.{k}": v for k, v in attributes.items()})
-        _set_attrs(span, {
-            "input.value": json.dumps(attributes, default=str),
-            "input.mime_type": "application/json",
-        })
+        _set_attrs(
+            span,
+            {
+                "input.value": json.dumps(attributes, default=str),
+                "input.mime_type": "application/json",
+            },
+        )
         yield span
 
 
@@ -474,10 +520,22 @@ def record_run_result(span: Any, result: dict[str, Any]) -> None:
     _set_attrs(span, {"petab.verdict": "success" if result.get("success") else "not_fixed"})
     with contextlib.suppress(Exception):
         span.set_attribute("metadata", json.dumps(result, default=str))
-    outcome = {k: result.get(k) for k in
-               ("success", "chi2", "chi2_gof_pvalue", "delta_bic", "bic",
-                "final_nll", "stop_reason")}
-    _set_attrs(span, {
-        "output.value": json.dumps(outcome, default=str),
-        "output.mime_type": "application/json",
-    })
+    outcome = {
+        k: result.get(k)
+        for k in (
+            "success",
+            "chi2",
+            "chi2_gof_pvalue",
+            "delta_bic",
+            "bic",
+            "final_nll",
+            "stop_reason",
+        )
+    }
+    _set_attrs(
+        span,
+        {
+            "output.value": json.dumps(outcome, default=str),
+            "output.mime_type": "application/json",
+        },
+    )

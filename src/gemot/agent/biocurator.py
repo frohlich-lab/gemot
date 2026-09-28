@@ -10,8 +10,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..prompts import (BIOCURATOR_ENABLED, BIOCURATOR_DESCRIPTION, BIOCURATOR_PROMPT,
-                       _biocurator_entity_block)
+from ..prompts import (
+    BIOCURATOR_ENABLED,
+    BIOCURATOR_DESCRIPTION,
+    BIOCURATOR_PROMPT,
+    _biocurator_entity_block,
+)
 from .guards import _reasoning_runaway_guard, _subagent_turn_limit
 from .subagents import ACTIVE_SPECS, _subagent_prompt_key
 
@@ -49,8 +53,10 @@ BIOCURATOR_NAME = "biocurator"
 # `change_parameters` into a subagent and bypass lead-only authoring, plus sink ~39% of that
 # subagent's calls into unused filesystem builtins (issue #112). run_deepagents turns that
 # auto-add off (see _disable_general_purpose_subagent), so this tuple is the whole registry.
-SUBAGENT_NAMES = (*(spec["name"] for spec in ACTIVE_SPECS),
-                 *((BIOCURATOR_NAME,) if BIOCURATOR_ENABLED else ()))
+SUBAGENT_NAMES = (
+    *(spec["name"] for spec in ACTIVE_SPECS),
+    *((BIOCURATOR_NAME,) if BIOCURATOR_ENABLED else ()),
+)
 
 # Curated default tool allowlist for the biocurator. The default bio server (BioContextAI
 # Knowledgebase) exposes ~50 tools across ~20 databases — literature search, clinical trials,
@@ -115,9 +121,13 @@ LITERATURE_BIO_TOOLS = (
 _BIO_DISCOVERY_TIMEOUT_S = 30.0
 
 
-async def discover_bio_tools(bio_sessions, *, literature: bool,
-                             exclude_names: "set[str] | frozenset[str]" = frozenset(),
-                             holder: str = "the biocurator") -> list:
+async def discover_bio_tools(
+    bio_sessions,
+    *,
+    literature: bool,
+    exclude_names: "set[str] | frozenset[str]" = frozenset(),
+    holder: str = "the biocurator",
+) -> list:
     """The curated bio tools that resolved on the connected server(s), as tool objects.
 
     Shared by the panel (its biocurator) and the barebones null arm.
@@ -148,36 +158,49 @@ async def discover_bio_tools(bio_sessions, *, literature: bool,
         try:
             bs_tools = await asyncio.wait_for(load_mcp_tools(bs), timeout=_BIO_DISCOVERY_TIMEOUT_S)
         except Exception as exc:  # noqa: BLE001 - one server's failure must not end the run
-            print(f"[bio] WARNING: tool discovery on a bio server failed "
-                  f"({type(exc).__name__}: {exc}); skipping that server's tools.")
+            print(
+                f"[bio] WARNING: tool discovery on a bio server failed "
+                f"({type(exc).__name__}: {exc}); skipping that server's tools."
+            )
             continue
         for t in bs_tools:
             nm = getattr(t, "name", None)
             if nm in exclude_names:
-                print(f"[bio] WARNING: bio tool {nm!r} collides with a petab tool name; "
-                      "dropping it so it cannot shadow the petab tool.")
+                print(
+                    f"[bio] WARNING: bio tool {nm!r} collides with a petab tool name; "
+                    "dropping it so it cannot shadow the petab tool."
+                )
                 continue
             if nm in seen:
-                print(f"[bio] duplicate bio tool {nm!r} from another bio server; keeping the first.")
+                print(
+                    f"[bio] duplicate bio tool {nm!r} from another bio server; keeping the first."
+                )
                 continue
             seen.add(nm)
             discovered.append((nm, t))
     names = [nm for nm, _ in discovered]
     if not discovered:
-        print(f"[bio] the bio server(s) exposed no tools; {holder} will run 'dumb' "
-              "(the model's own biology knowledge).")
+        print(
+            f"[bio] the bio server(s) exposed no tools; {holder} will run 'dumb' "
+            "(the model's own biology knowledge)."
+        )
         return []
     bio_tools = [t for nm, t in discovered if nm in allow]
     if not bio_tools:
         shown = f"{names[:12]}{' …' if len(names) > 12 else ''}"
-        print(f"[bio] none of the curated tool names matched the connected server(s)' "
-              f"{len(names)} tools ({shown}); {holder} will run 'dumb'.")
+        print(
+            f"[bio] none of the curated tool names matched the connected server(s)' "
+            f"{len(names)} tools ({shown}); {holder} will run 'dumb'."
+        )
     return bio_tools
 
 
-def _build_biocurator_subagent(bio_tools: list, entity_names: "list[str] | None" = None,
-                               stats: "dict[str, Any] | None" = None,
-                               model: "Any | None" = None) -> dict[str, Any]:
+def _build_biocurator_subagent(
+    bio_tools: list,
+    entity_names: "list[str] | None" = None,
+    stats: "dict[str, Any] | None" = None,
+    model: "Any | None" = None,
+) -> dict[str, Any]:
     """Build the biocurator subagent spec from the RUNTIME-DISCOVERED bio-server tools.
 
     Unlike the three static analysts (whose tool NAMES are hard-coded and resolved from the
@@ -208,8 +231,10 @@ def _build_biocurator_subagent(bio_tools: list, entity_names: "list[str] | None"
         # list at once, so its floor scales with that list rather than being a single question.
         # Runaway-guarded like the analysts, and for the same measured reason -- 3 of the 11
         # subagent-side truncations were the biocurator's (see _build_subagents).
-        "middleware": ([_subagent_turn_limit(BIOCURATOR_MAX_TURNS)]
-                       + ([_reasoning_runaway_guard(stats)] if stats is not None else [])),
+        "middleware": (
+            [_subagent_turn_limit(BIOCURATOR_MAX_TURNS)]
+            + ([_reasoning_runaway_guard(stats)] if stats is not None else [])
+        ),
     }
     # deepagents reads `model` off the spec and falls back to the lead's, so an unset key is the
     # single-model panel unchanged (``spec.get("model", model)`` in its graph builder).

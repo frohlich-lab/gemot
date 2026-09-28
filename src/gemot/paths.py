@@ -73,12 +73,27 @@ SYNTHETIC_EXAMPLES = ["enzyme_kinetics", "predator_prey", "repressilator"]
 #: as argparse ``choices=``, ``--examples fujita`` became a hard error. Add a new example
 #: here and nowhere else.
 BENCHMARK_EXAMPLES = [
-    "perelson", "blasi", "rahman", "crauste", "armistead", "sneyd", "fiedler",
-    "boehm", "brannmark", "schwen", "bruno", "oliveira", "fujita",
+    "perelson",
+    "blasi",
+    "rahman",
+    "crauste",
+    "armistead",
+    "sneyd",
+    "fiedler",
+    "boehm",
+    "brannmark",
+    "schwen",
+    "bruno",
+    "oliveira",
+    "fujita",
     # Large published networks (25-36 species, 36-96 reactions, reference k 46-142). Slower to
     # compile and fit than the rest of the suite -- see LARGE_EXAMPLES below and the wall-time
     # warning in slurm/make_sweep.py.
-    "isensee", "alkan", "bachmann", "lucarelli", "raimundez",
+    "isensee",
+    "alkan",
+    "bachmann",
+    "lucarelli",
+    "raimundez",
 ]
 
 #: The subset needing a bigger per-task budget than the sweep defaults: AMICI has to compile

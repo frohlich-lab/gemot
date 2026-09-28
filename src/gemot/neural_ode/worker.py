@@ -18,8 +18,9 @@ from pathlib import Path
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("problem_dir")
     parser.add_argument("--out", required=True)
     parser.add_argument("--config", default=None)
@@ -30,23 +31,31 @@ def main(argv: list[str] | None = None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
 
     def fail(code: int, reason: str) -> int:
-        out.write_text(json.dumps({"ok": False, "reason": reason,
-                                   "traceback": traceback.format_exc()}, indent=1))
+        out.write_text(
+            json.dumps(
+                {"ok": False, "reason": reason, "traceback": traceback.format_exc()}, indent=1
+            )
+        )
         return code
 
     try:  # inside main, so an import error still leaves a payload the parent can read
         from . import route
         from .config import Config
-    except Exception as exc:                                    # noqa: BLE001 -- reported
+    except Exception as exc:  # noqa: BLE001 -- reported
         return fail(2, f"could not import the route in {sys.executable}: {exc}")
     try:
         config = Config.load(args.config) if args.config else Config()
         config = Config.from_dict({**config.as_dict(), "interpreter": None})  # never re-delegate
         outcome = route.propose(args.problem_dir, config, work_dir=args.work, seconds=args.seconds)
-    except Exception as exc:                                    # noqa: BLE001 -- reported
+    except Exception as exc:  # noqa: BLE001 -- reported
         return fail(3, f"the route raised {type(exc).__name__}: {exc}")
-    out.write_text(json.dumps({"ok": True, "interpreter": sys.executable,
-                               "outcome": outcome.as_dict()}, indent=1, default=str))
+    out.write_text(
+        json.dumps(
+            {"ok": True, "interpreter": sys.executable, "outcome": outcome.as_dict()},
+            indent=1,
+            default=str,
+        )
+    )
     print(f"wrote {out}: {len(outcome.proposals)} proposal(s)")
     return 0
 

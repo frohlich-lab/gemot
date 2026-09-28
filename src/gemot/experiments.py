@@ -152,7 +152,7 @@ def register_prompts(client, *, model_name: str) -> dict[str, Any]:
             client.prompts.create(
                 name=name,
                 prompt_description=f"petab-mcp model-building harness {kind} ({name}); "
-                                   f"source of truth is the repo. {stamp}.",
+                f"source of truth is the repo. {stamp}.",
                 version=PromptVersion(
                     [{"role": role, "content": text}],
                     model_name=model_name,
@@ -164,8 +164,12 @@ def register_prompts(client, *, model_name: str) -> dict[str, Any]:
             registered.append(name)
         except Exception as exc:  # registry is best-effort — never fail a run over it
             errors.append(f"{name}: {type(exc).__name__}: {exc}")
-    return {"prompt_version": version, "skills_version": skills_v,
-            "registered": registered, "errors": errors}
+    return {
+        "prompt_version": version,
+        "skills_version": skills_v,
+        "registered": registered,
+        "errors": errors,
+    }
 
 
 # --------------------------------------------------------------------------- dataset
@@ -187,10 +191,15 @@ def get_or_create_dataset(client, scenario) -> Any:
         name=name,
         dataset_description=f"petab-mcp zero-shot model-building example: {scenario.name}.",
         inputs=[{"scenario": scenario.name, "task": scenario.task}],
-        outputs=[{"reference_nll": ref.get("nll"), "reference_k": ref.get("k"),
-                  "reference_n": ref.get("n"), "canonical_fix": scenario.fix_summary}],
-        metadata=[{"example_version": scenario.version,
-                   "bic_threshold": scenario.bic_threshold}],
+        outputs=[
+            {
+                "reference_nll": ref.get("nll"),
+                "reference_k": ref.get("k"),
+                "reference_n": ref.get("n"),
+                "canonical_fix": scenario.fix_summary,
+            }
+        ],
+        metadata=[{"example_version": scenario.version, "bic_threshold": scenario.bic_threshold}],
     )
 
 
@@ -224,9 +233,18 @@ EVALUATORS = [bic_pass, delta_bic, chi2_gof_pvalue, reduced_chi2]
 
 
 # --------------------------------------------------------------------------- run
-def _run_one_via_subprocess(scenario, *, driver, model, temperature, n_starts,
-                            recursion_limit, base_url, wandb=False,
-                            wandb_project=None) -> dict:
+def _run_one_via_subprocess(
+    scenario,
+    *,
+    driver,
+    model,
+    temperature,
+    n_starts,
+    recursion_limit,
+    base_url,
+    wandb=False,
+    wandb_project=None,
+) -> dict:
     """Run one scenario as a subprocess of its ``run.py`` and return its ``result.json``.
 
     Reuses the fully-exercised ``run.py`` path so the agent's complete ``model_build_run``
@@ -244,9 +262,20 @@ def _run_one_via_subprocess(scenario, *, driver, model, temperature, n_starts,
     import subprocess
     import sys
 
-    cmd = [sys.executable, str(scenario.example_dir / "run.py"), "--driver", driver,
-           "--model", model, "--temperature", str(temperature),
-           "--recursion-limit", str(recursion_limit), "--n-starts", str(n_starts)]
+    cmd = [
+        sys.executable,
+        str(scenario.example_dir / "run.py"),
+        "--driver",
+        driver,
+        "--model",
+        model,
+        "--temperature",
+        str(temperature),
+        "--recursion-limit",
+        str(recursion_limit),
+        "--n-starts",
+        str(n_starts),
+    ]
     if wandb:
         cmd.append("--wandb")
         if wandb_project:
@@ -270,14 +299,22 @@ def run_scripted_selftest(scenarios: list, *, n_starts: int = 50) -> list:
 
     results = []
     for s in scenarios:
-        cmd = [sys.executable, str(s.example_dir / "run.py"), "--driver", "scripted",
-               "--n-starts", str(n_starts)]
+        cmd = [
+            sys.executable,
+            str(s.example_dir / "run.py"),
+            "--driver",
+            "scripted",
+            "--n-starts",
+            str(n_starts),
+        ]
         rc = subprocess.run(cmd, check=False).returncode
         rp = s.example_dir / "work" / "result.json"
         res = json.loads(rp.read_text()) if rp.is_file() else {"success": rc == 0}
         results.append({"scenario": s.name, **res})
-        print(f"[scripted] {s.name}: {'PASS' if res.get('success') else 'FAIL'} "
-              f"(ΔBIC {res.get('delta_bic')})")
+        print(
+            f"[scripted] {s.name}: {'PASS' if res.get('success') else 'FAIL'} "
+            f"(ΔBIC {res.get('delta_bic')})"
+        )
     return results
 
 
@@ -321,18 +358,24 @@ def run_experiments(
     # registration leaves the Phoenix registry missing prompts while `prompt_version` still
     # claims to cover them. Print what did not land so the discrepancy is visible.
     if prompts_info["errors"]:
-        print(f"[prompts] WARNING: {len(prompts_info['errors'])} of "
-              f"{len(prompts_info['errors']) + len(prompts_info['registered'])} prompts failed to "
-              f"register in Phoenix; prompt_version={prompts_info['prompt_version']} still covers "
-              "them, so the registry is INCOMPLETE for this run:")
+        print(
+            f"[prompts] WARNING: {len(prompts_info['errors'])} of "
+            f"{len(prompts_info['errors']) + len(prompts_info['registered'])} prompts failed to "
+            f"register in Phoenix; prompt_version={prompts_info['prompt_version']} still covers "
+            "them, so the registry is INCOMPLETE for this run:"
+        )
         for err in prompts_info["errors"]:
             print(f"[prompts]   {err}")
     git_sha = _git_sha(scenarios[0].example_dir) if scenarios else None
     metadata = {
-        "driver": driver, "model": model, "temperature": temperature,
-        "git_sha": git_sha, "prompt_version": prompts_info["prompt_version"],
+        "driver": driver,
+        "model": model,
+        "temperature": temperature,
+        "git_sha": git_sha,
+        "prompt_version": prompts_info["prompt_version"],
         "skills_version": prompts_info["skills_version"],
-        "recursion_limit": recursion_limit, "n_starts": n_starts,
+        "recursion_limit": recursion_limit,
+        "n_starts": n_starts,
     }
 
     ran = []
@@ -341,9 +384,15 @@ def run_experiments(
 
         def task(input: dict, _scenario=scenario) -> dict:
             return _run_one_via_subprocess(
-                _scenario, driver=driver, model=model, temperature=temperature,
-                n_starts=n_starts, recursion_limit=recursion_limit, base_url=base_url,
-                wandb=wandb, wandb_project=wandb_project,
+                _scenario,
+                driver=driver,
+                model=model,
+                temperature=temperature,
+                n_starts=n_starts,
+                recursion_limit=recursion_limit,
+                base_url=base_url,
+                wandb=wandb,
+                wandb_project=wandb_project,
             )
 
         # Default the experiment name to the MODEL only; temperature, driver, git_sha, and
@@ -351,19 +400,19 @@ def run_experiments(
         # of a model — across temperatures and repeats — under one experiment identity instead
         # of splitting them into a separate experiment per (temp, sha) cell.
         name = experiment_name or model.split("/")[-1]
-        ran.append(client.experiments.run_experiment(
-            dataset=dataset,
-            task=task,
-            evaluators=EVALUATORS,
-            experiment_name=name,
-            experiment_description=f"petab-mcp {scenario.name} zero-shot model build "
-                                   f"(prompt_version={prompts_info['prompt_version']})",
-            experiment_metadata=metadata,
-            dry_run=dry_run,
-        ))
+        ran.append(
+            client.experiments.run_experiment(
+                dataset=dataset,
+                task=task,
+                evaluators=EVALUATORS,
+                experiment_name=name,
+                experiment_description=f"petab-mcp {scenario.name} zero-shot model build "
+                f"(prompt_version={prompts_info['prompt_version']})",
+                experiment_metadata=metadata,
+                dry_run=dry_run,
+            )
+        )
     return ran
-
-
 
 
 # --------------------------------------------------------------------------- sweep report
@@ -371,13 +420,25 @@ def run_experiments(
 # model × temperature × example). One row per experiment task-run; each experiment is a
 # single (model, temperature, repeat) for one example, so a cell's repeats are just the
 # runs that share (example, model, temperature).
-_ROW_FIELDS = ("example", "model", "temperature", "success", "delta_bic",
-               # The delta the GATE used, and the criterion it used — `delta_bic` is only the
-               # gating number when BIC is that criterion, so aggregating it beside `success`
-               # would report one comparison next to a verdict from another.
-               "delta_criterion", "criterion",
-               "chi2_gof_pvalue", "stop_reason", "n_ops", "n_fits",
-               "prompt_version", "skills_version", "git_sha")
+_ROW_FIELDS = (
+    "example",
+    "model",
+    "temperature",
+    "success",
+    "delta_bic",
+    # The delta the GATE used, and the criterion it used — `delta_bic` is only the
+    # gating number when BIC is that criterion, so aggregating it beside `success`
+    # would report one comparison next to a verdict from another.
+    "delta_criterion",
+    "criterion",
+    "chi2_gof_pvalue",
+    "stop_reason",
+    "n_ops",
+    "n_fits",
+    "prompt_version",
+    "skills_version",
+    "git_sha",
+)
 
 
 # --------------------------------------------------------------------------- abort triage
@@ -397,17 +458,28 @@ _ROW_FIELDS = ("example", "model", "temperature", "success", "delta_bic",
 # modeling OUTCOMES and are never treated as infrastructure aborts (a recursion-limit run with no
 # commits genuinely failed to build anything — it is a modeling failure, not scoring noise).
 _INFRA_ABORT_MARKERS = (
-    "402",                       # OpenRouter payment-required (out of credits)
-    "apistatuserror", "apiconnectionerror", "apitimeouterror", "apierror",
-    "internalservererror", "ratelimiterror", "permissiondeniederror", "authenticationerror",
-    "readtimeout", "readerror", "writeerror", "connecterror", "connecttimeout",
-    "remoteprotocolerror", "pooltimeout",
-    "stalled",                   # harness stall watchdog: hung provider call / wedged fit
-    "fit call timed out",        # per-call MCP read timeout (clock._wrap_call_timeout). Same
-                                 # event as the "readtimeout" above -- it only stopped being an
-                                 # httpx.ReadTimeout when the timeout moved from the session to
-                                 # the individual call, and it must keep scoring as infra.
-    "typeerror",                 # e.g. a scoring float() crash before a verdict was reached
+    "402",  # OpenRouter payment-required (out of credits)
+    "apistatuserror",
+    "apiconnectionerror",
+    "apitimeouterror",
+    "apierror",
+    "internalservererror",
+    "ratelimiterror",
+    "permissiondeniederror",
+    "authenticationerror",
+    "readtimeout",
+    "readerror",
+    "writeerror",
+    "connecterror",
+    "connecttimeout",
+    "remoteprotocolerror",
+    "pooltimeout",
+    "stalled",  # harness stall watchdog: hung provider call / wedged fit
+    "fit call timed out",  # per-call MCP read timeout (clock._wrap_call_timeout). Same
+    # event as the "readtimeout" above -- it only stopped being an
+    # httpx.ReadTimeout when the timeout moved from the session to
+    # the individual call, and it must keep scoring as infra.
+    "typeerror",  # e.g. a scoring float() crash before a verdict was reached
 )
 
 
@@ -462,11 +534,13 @@ def fetch_experiment_rows(base_url: str = "http://localhost:6006") -> list[dict[
     client = Client(base_url=phoenix_base_url(base_url))
     rows: list[dict[str, Any]] = []
     for ds_meta in client.datasets.list():
-        name = ds_meta.get("name", "") if isinstance(ds_meta, dict) else getattr(ds_meta, "name", "")
+        name = (
+            ds_meta.get("name", "") if isinstance(ds_meta, dict) else getattr(ds_meta, "name", "")
+        )
         prefix = f"{DATASET_PREFIX}-"
         if not name.startswith(prefix):
             continue
-        example = name[len(prefix):]
+        example = name[len(prefix) :]
         dataset = client.datasets.get_dataset(dataset=name)
         for exp in client.experiments.list(dataset_id=dataset.id):
             exp_id = exp.get("id") if isinstance(exp, dict) else getattr(exp, "id", None)
@@ -478,26 +552,31 @@ def fetch_experiment_rows(base_url: str = "http://localhost:6006") -> list[dict[
                 out = tr.get("output")
                 if not isinstance(out, dict):
                     continue
-                rows.append({
-                    "example": example,
-                    "model": md.get("model") or out.get("model"),
-                    "temperature": md.get("temperature"),
-                    "success": out.get("success"),
-                    "delta_bic": out.get("delta_bic"),
-                    "delta_criterion": out.get("delta_criterion"),
-                    "criterion": out.get("criterion"),
-                    "chi2_gof_pvalue": out.get("chi2_gof_pvalue"),
-                    "stop_reason": out.get("stop_reason"),
-                    # Modeling-work signals used to tell an instant infrastructure abort from a
-                    # late-abort partial (see summarize_sweep): n_ops = committed model versions;
-                    # n_fits = number of fits run. Both zero ⇒ no work was done. head_version is
-                    # 0-based and -1 when nothing was fit, so the COUNT is head_version + 1.
-                    "n_ops": (None if out.get("head_version") is None
-                              else int(out["head_version"]) + 1),
-                    "n_fits": out.get("n_fits"),
-                    "prompt_version": md.get("prompt_version"),
-                    "git_sha": md.get("git_sha"),
-                })
+                rows.append(
+                    {
+                        "example": example,
+                        "model": md.get("model") or out.get("model"),
+                        "temperature": md.get("temperature"),
+                        "success": out.get("success"),
+                        "delta_bic": out.get("delta_bic"),
+                        "delta_criterion": out.get("delta_criterion"),
+                        "criterion": out.get("criterion"),
+                        "chi2_gof_pvalue": out.get("chi2_gof_pvalue"),
+                        "stop_reason": out.get("stop_reason"),
+                        # Modeling-work signals used to tell an instant infrastructure abort from a
+                        # late-abort partial (see summarize_sweep): n_ops = committed model versions;
+                        # n_fits = number of fits run. Both zero ⇒ no work was done. head_version is
+                        # 0-based and -1 when nothing was fit, so the COUNT is head_version + 1.
+                        "n_ops": (
+                            None
+                            if out.get("head_version") is None
+                            else int(out["head_version"]) + 1
+                        ),
+                        "n_fits": out.get("n_fits"),
+                        "prompt_version": md.get("prompt_version"),
+                        "git_sha": md.get("git_sha"),
+                    }
+                )
     return rows
 
 
@@ -523,10 +602,13 @@ def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool 
     if drop_noop_infra_aborts and excluded:
         rows = [r for r in rows if not is_noop_infra_abort(r)]
         from collections import Counter
+
         by = Counter((r.get("stop_reason") or "?").split(":")[0].strip() for r in excluded)
-        note = (f"(excluded {len(excluded)} no-work infrastructure abort(s) "
-                f"[n_ops==0 & n_fits==0] — {dict(by)}; late-abort partials are KEPT; "
-                f"pass --include-crashed to keep these too)\n")
+        note = (
+            f"(excluded {len(excluded)} no-work infrastructure abort(s) "
+            f"[n_ops==0 & n_fits==0] — {dict(by)}; late-abort partials are KEPT; "
+            f"pass --include-crashed to keep these too)\n"
+        )
         if not rows:
             return note + "(no scored runs yet — every run was a no-work infrastructure abort)"
 
@@ -551,8 +633,10 @@ def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool 
 
     lines = [note] if note else []
     lines += ["Per-cell (example × model × temperature):", ""]
-    hdr = f"{'example':<16} {'model':<26} {'temp':>4} {'n':>3} {'pass':>5} " \
-          f"{'ΔBIC med':>9} {'ΔBIC min':>9} {'ΔBIC max':>9} {'chi2p med':>9}"
+    hdr = (
+        f"{'example':<16} {'model':<26} {'temp':>4} {'n':>3} {'pass':>5} "
+        f"{'ΔBIC med':>9} {'ΔBIC min':>9} {'ΔBIC max':>9} {'chi2p med':>9}"
+    )
     lines += [hdr, "-" * len(hdr)]
     for key in sorted(cells, key=lambda k: (str(k[0]), str(k[1]), k[2] is None, str(k[2]))):
         ex, model, temp = key
@@ -561,8 +645,12 @@ def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool 
         passes = sum(1 for g in group if g.get("success"))
         # The gate's delta, falling back to canonical BIC for a row written before it existed
         # (they are the same number whenever BIC is the criterion).
-        dbs = [g.get("delta_criterion", g.get("delta_bic")) if g.get("delta_criterion") is not None
-               else g.get("delta_bic") for g in group]
+        dbs = [
+            g.get("delta_criterion", g.get("delta_bic"))
+            if g.get("delta_criterion") is not None
+            else g.get("delta_bic")
+            for g in group
+        ]
         lines.append(
             f"{_fmt(ex):<16} {_fmt(model):<26} {_fmt(temp, 'g'):>4} {n:>3} "
             f"{passes}/{n:<3} {_fmt(_med(dbs), '+.3g'):>9} "
@@ -575,7 +663,7 @@ def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool 
     lines += ["", "Pass rate by model × temperature (pooled over examples):", ""]
     models = sorted({r.get("model") for r in rows}, key=str)
     temps = sorted({r.get("temperature") for r in rows}, key=lambda t: (t is None, str(t)))
-    head = f"{'model':<26}" + "".join(f"{('t='+_fmt(t,'g')):>10}" for t in temps)
+    head = f"{'model':<26}" + "".join(f"{('t=' + _fmt(t, 'g')):>10}" for t in temps)
     lines += [head, "-" * len(head)]
     for model in models:
         cell_strs = []
@@ -589,6 +677,9 @@ def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool 
         lines.append(f"{_fmt(model):<26}" + "".join(f"{c:>10}" for c in cell_strs))
 
     total_pass = sum(1 for r in rows if r.get("success"))
-    lines += ["", f"overall: {total_pass}/{len(rows)} runs passed "
-                  f"({len(cells)} cells, prompt_version={rows[0].get('prompt_version')})"]
+    lines += [
+        "",
+        f"overall: {total_pass}/{len(rows)} runs passed "
+        f"({len(cells)} cells, prompt_version={rows[0].get('prompt_version')})",
+    ]
     return "\n".join(lines)

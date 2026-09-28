@@ -5,6 +5,7 @@ our own guard: the stripping is name-based, so a rename upstream would silently 
 saving and let the collector DB go back to storing the agent transcript four times per step.
 The second checks the strip itself removes only ``input.*``, and only on those spans.
 """
+
 import pytest
 
 # Phoenix/OTel live in the `harness` extra, NOT in `dev` (pyproject: dev -> petab-mcp[agent]),
@@ -26,6 +27,7 @@ from petab_harness.tracing import (  # noqa: E402
 
 # --------------------------------------------------------------------------- name pinning
 
+
 def _real_graph_nodes():
     """Nodes of the graph the DRIVER builds — `create_deep_agent`, not bare `create_agent`.
 
@@ -39,6 +41,7 @@ def _real_graph_nodes():
     from petab_harness.agent.guards import _tool_dispatch_guard
 
     import inspect
+
     params = inspect.signature(create_deep_agent).parameters
     kwargs = {"model": GenericFakeChatModel(messages=iter([])), "tools": []}
     if "middleware" in params:
@@ -83,17 +86,21 @@ def test_the_stripped_names_still_match_real_nodes():
 
 # ------------------------------------------------------------------------------ stripping
 
+
 def _span(name, attributes):
     return ReadableSpan(name=name, attributes=attributes)
 
 
 def test_strips_only_the_input_attributes():
-    span = _span("model", {
-        "input.value": "x" * 100_000,
-        "input.mime_type": "application/json",
-        "output.value": "the useful bit",
-        "llm.token_count.prompt": 1234,
-    })
+    span = _span(
+        "model",
+        {
+            "input.value": "x" * 100_000,
+            "input.mime_type": "application/json",
+            "output.value": "the useful bit",
+            "llm.token_count.prompt": 1234,
+        },
+    )
     stripped = _strip_span_inputs(span)
 
     assert "input.value" not in stripped.attributes
@@ -143,10 +150,12 @@ def test_exporter_strips_in_flight_and_delegates():
             return True
 
     exporter = _make_stripping_exporter(_Recorder())
-    result = exporter.export([
-        _span("model", {"input.value": "drop", "output.value": "keep"}),
-        _span("ChatOpenAI", {"input.value": "keep"}),
-    ])
+    result = exporter.export(
+        [
+            _span("model", {"input.value": "drop", "output.value": "keep"}),
+            _span("ChatOpenAI", {"input.value": "keep"}),
+        ]
+    )
 
     assert result is SpanExportResult.SUCCESS
     assert "input.value" not in exported[0].attributes
@@ -158,6 +167,7 @@ def test_exporter_strips_in_flight_and_delegates():
 
 
 # ---------------------------------------------------------------------------- wiring
+
 
 def test_install_replaces_the_default_processor_rather_than_adding_to_it():
     """The load-bearing post-condition: exactly ONE processor afterwards.

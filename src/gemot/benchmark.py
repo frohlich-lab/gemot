@@ -46,8 +46,12 @@ COLLECTION_URL = "https://github.com/Benchmarking-Initiative/Benchmark-Models-PE
 # Pinned so the copied tables (and thus the committed reference.json) are reproducible.
 COLLECTION_PIN = "1763dfcd66d25bfd97492cfedf6a730472c383d0"
 
-_DEFAULT_CLONE = Path(os.environ.get("BENCHMARK_MODELS_PETAB_CACHE",
-                                     Path.home() / ".cache" / "petab_mcp" / "Benchmark-Models-PEtab"))
+_DEFAULT_CLONE = Path(
+    os.environ.get(
+        "BENCHMARK_MODELS_PETAB_CACHE",
+        Path.home() / ".cache" / "petab_mcp" / "Benchmark-Models-PEtab",
+    )
+)
 
 
 def download_collection(clone_dir: Path | None = None, pin: str = COLLECTION_PIN) -> Path:
@@ -68,7 +72,9 @@ def download_collection(clone_dir: Path | None = None, pin: str = COLLECTION_PIN
         print(f"[setup] cloning {COLLECTION_URL} -> {clone}")
         subprocess.run(["git", "clone", COLLECTION_URL, str(clone)], check=True)
     # Check out the pin (fetch it first if the local clone predates it).
-    have = subprocess.run(["git", "-C", str(clone), "cat-file", "-e", f"{pin}^{{commit}}"]).returncode
+    have = subprocess.run(
+        ["git", "-C", str(clone), "cat-file", "-e", f"{pin}^{{commit}}"]
+    ).returncode
     if have != 0:
         subprocess.run(["git", "-C", str(clone), "fetch", "--quiet", "origin", pin], check=True)
     subprocess.run(["git", "-C", str(clone), "checkout", "--quiet", pin], check=True)
@@ -85,8 +91,12 @@ def benchmark_dir(name: str, collection: Path | None = None) -> Path:
     return d
 
 
-def _load_problem(name: str, collection: Path | None, flatten: bool = True,
-                  restated_measurements: Path | None = None):
+def _load_problem(
+    name: str,
+    collection: Path | None,
+    flatten: bool = True,
+    restated_measurements: Path | None = None,
+):
     """The published petab problem — flattened only when AMICI genuinely requires it AND the
     caller asks (the reference fit, which hands the problem to pypesto directly).
 
@@ -125,14 +135,19 @@ def _restate_measurements(name: str, published, path: Path):
         raise ValueError(f"{name}: TRAINING_MEASUREMENTS {path} does not exist")
     df = petab.get_measurement_df(str(path))
     for column, known, what in (
-            (OBSERVABLE_ID, set(published.observable_df.index.astype(str)), "observable"),
-            (SIMULATION_CONDITION_ID, set(published.condition_df.index.astype(str)), "condition")):
+        (OBSERVABLE_ID, set(published.observable_df.index.astype(str)), "observable"),
+        (SIMULATION_CONDITION_ID, set(published.condition_df.index.astype(str)), "condition"),
+    ):
         unknown = sorted(set(df[column].astype(str)) - known)
         if unknown:
-            raise ValueError(f"{name}: {path.name} names {what}(s) the published problem does not "
-                             f"define: {unknown}")
-    print(f"[setup] {name}: training measurements RESTATED from {path.name}: {len(df)} row(s) "
-          f"replace the published {len(published.measurement_df)}")
+            raise ValueError(
+                f"{name}: {path.name} names {what}(s) the published problem does not "
+                f"define: {unknown}"
+            )
+    print(
+        f"[setup] {name}: training measurements RESTATED from {path.name}: {len(df)} row(s) "
+        f"replace the published {len(published.measurement_df)}"
+    )
     return df
 
 
@@ -159,8 +174,11 @@ def _write_problem_yaml(problem_dir: Path) -> None:
 ANON_MODEL_ID = "zero_shot_problem"
 
 
-def _write_protocols(problem_dir: Path, protocols: dict[str, tuple[str, list[str]]] | None,
-                     condition_columns: list[str]) -> None:
+def _write_protocols(
+    problem_dir: Path,
+    protocols: dict[str, tuple[str, list[str]]] | None,
+    condition_columns: list[str],
+) -> None:
     """``problem/inputs.tsv`` (``inputId``, ``formula``, ``conditionInputs``) for the declared
     protocols, or no file: a stale table from an earlier definition must not outlive it."""
     path = problem_dir / "inputs.tsv"
@@ -171,8 +189,10 @@ def _write_protocols(problem_dir: Path, protocols: dict[str, tuple[str, list[str
     for input_id, (formula, columns) in protocols.items():
         missing = sorted(set(columns) - set(condition_columns))
         if missing:
-            raise ValueError(f"protocol {input_id!r} reads condition columns {missing} the condition "
-                             f"table does not have; it has {condition_columns}")
+            raise ValueError(
+                f"protocol {input_id!r} reads condition columns {missing} the condition "
+                f"table does not have; it has {condition_columns}"
+            )
         rows.append(f"{input_id}\t{formula}\t{';'.join(columns)}")
     path.write_text("inputId\tformula\tconditionInputs\n" + "\n".join(rows) + "\n")
 
@@ -187,7 +207,8 @@ def _write_empty_sbml(problem_dir: Path) -> None:
     libsbml.writeSBMLToFile(doc, str(problem_dir / "model.xml"))
     (problem_dir / "model.ant").write_text(
         "// Zero-shot problem: ships without a model — the agent builds it via make_changes.\n"
-        f"model {ANON_MODEL_ID}\nend\n")
+        f"model {ANON_MODEL_ID}\nend\n"
+    )
 
 
 def _placeholder_re(oid: str) -> "re.Pattern[str]":
@@ -227,8 +248,14 @@ def _merge_equivalent_observables(prob) -> dict[str, str]:
     ``pEGFR``) when that is unique, else the first member's id.
     """
 
-    from petab.v1.C import (NOISE_DISTRIBUTION, NOISE_FORMULA, OBSERVABLE_ID,
-                            OBSERVABLE_NAME, OBSERVABLE_PARAMETERS, OBSERVABLE_TRANSFORMATION)
+    from petab.v1.C import (
+        NOISE_DISTRIBUTION,
+        NOISE_FORMULA,
+        OBSERVABLE_ID,
+        OBSERVABLE_NAME,
+        OBSERVABLE_PARAMETERS,
+        OBSERVABLE_TRANSFORMATION,
+    )
 
     from petab_mcp.fitting import needs_flattening
 
@@ -243,8 +270,12 @@ def _merge_equivalent_observables(prob) -> dict[str, str]:
 
     groups: dict[tuple, list[str]] = {}
     for oid, row in odf.iterrows():
-        key = (norm(oid, row.get("observableFormula")), norm(oid, row.get(NOISE_FORMULA)),
-               str(row.get(OBSERVABLE_TRANSFORMATION, "")), str(row.get(NOISE_DISTRIBUTION, "")))
+        key = (
+            norm(oid, row.get("observableFormula")),
+            norm(oid, row.get(NOISE_FORMULA)),
+            str(row.get(OBSERVABLE_TRANSFORMATION, "")),
+            str(row.get(NOISE_DISTRIBUTION, "")),
+        )
         groups.setdefault(key, []).append(str(oid))
 
     mapping: dict[str, str] = {}
@@ -253,6 +284,7 @@ def _merge_equivalent_observables(prob) -> dict[str, str]:
         if len(members) < 2:
             continue
         import os.path
+
         prefix = os.path.commonprefix(members).rstrip("_")
         # Cut at the first dataset-ish segment: `pEGFR_ID3_HS746T_FM` and friends share far more
         # than the biological name, and a merged id of `MMET_ID10_HS746T_FM_EGF` (the common
@@ -270,8 +302,15 @@ def _merge_equivalent_observables(prob) -> dict[str, str]:
         # per-dataset ids only avoided this by accident of their suffixes.
         if prefix and not prefix.endswith(("_obs", "_au", "_rel", "_fold", "_count")):
             prefix = f"{prefix}_obs"
-        new_id = prefix if (prefix and re.match(r"[A-Za-z_]\w*$", prefix)
-                            and (prefix not in taken or prefix in members)) else members[0]
+        new_id = (
+            prefix
+            if (
+                prefix
+                and re.match(r"[A-Za-z_]\w*$", prefix)
+                and (prefix not in taken or prefix in members)
+            )
+            else members[0]
+        )
         # trial the merge on COPIES; keep it only if the flattening predicate stays quiet
         trial = {m: new_id for m in members}
         m2 = mdf.copy()
@@ -319,8 +358,10 @@ def _merge_equivalent_observables(prob) -> dict[str, str]:
     new_odf.index.name = odf.index.name
     prob.observable_df = new_odf
     mdf[OBSERVABLE_ID] = mdf[OBSERVABLE_ID].map(lambda v: mapping.get(str(v), v))
-    print(f"[setup] merged {len(mapping)} redundant per-dataset observables into "
-          f"{len(set(mapping.values()))} (per-row overrides already carried the difference)")
+    print(
+        f"[setup] merged {len(mapping)} redundant per-dataset observables into "
+        f"{len(set(mapping.values()))} (per-row overrides already carried the difference)"
+    )
     return mapping
 
 
@@ -356,8 +397,11 @@ def _collapse_blinding(blinding: dict[str, dict], merged: dict[str, str]) -> dic
     for oid, spec in blinding.items():
         new = merged.get(oid, oid)
         ph = _placeholder_re(oid)
-        derived = None if spec.get("readout") else (
-            re.compile(rf"\breadout_{re.escape(oid)}\b"), f"readout_{new}")
+        derived = (
+            None
+            if spec.get("readout")
+            else (re.compile(rf"\breadout_{re.escape(oid)}\b"), f"readout_{new}")
+        )
         renamed = dict(spec)
         for key in ("formula", "noise"):
             if isinstance(renamed.get(key), str):
@@ -366,8 +410,10 @@ def _collapse_blinding(blinding: dict[str, dict], merged: dict[str, str]) -> dic
                     renamed[key] = derived[0].sub(derived[1], renamed[key])
         existing = collapsed.setdefault(new, renamed)
         if existing != renamed:
-            raise ValueError(f"observable merge: blinding specs for {oid!r} disagree "
-                             f"after collapsing onto {new!r}")
+            raise ValueError(
+                f"observable merge: blinding specs for {oid!r} disagree "
+                f"after collapsing onto {new!r}"
+            )
     return collapsed
 
 
@@ -454,8 +500,9 @@ def _blind_observables(prob, blinding: dict[str, dict]) -> None:
         # would flag every kept symbol. Skip it rather than refuse (materialize always has one;
         # this is the hand-built-problem path).
         seed_entities = set()
-    seed_entities = {i for i in seed_entities
-                     if not re.fullmatch(r"(?:observable|noise)Parameter\d+_.*", i)}
+    seed_entities = {
+        i for i in seed_entities if not re.fullmatch(r"(?:observable|noise)Parameter\d+_.*", i)
+    }
     # The noise branch needs the same notion of "model entity", widened by the symbols only the
     # SIGMA column names: a species appearing nowhere but a proportional noise formula is still
     # reference-model content, and checking it against the observable-side set alone would miss it.
@@ -468,8 +515,11 @@ def _blind_observables(prob, blinding: dict[str, dict]) -> None:
         # (`noiseParameter1_a * a`, where petab substitutes the simulated observable), not a
         # model entity -- refusing it would reject a formula that leaks nothing.
         noise_seed_entities -= {str(i) for i in odf.index}
-        noise_seed_entities = {i for i in noise_seed_entities
-                               if not re.fullmatch(r"(?:observable|noise)Parameter\d+_.*", i)}
+        noise_seed_entities = {
+            i
+            for i in noise_seed_entities
+            if not re.fullmatch(r"(?:observable|noise)Parameter\d+_.*", i)
+        }
     # Once, before the loop: a shipped-but-empty observableName column is all-NaN float64, and
     # writing a string into it raises under pandas 2 rather than upcasting.
     if OBSERVABLE_NAME not in odf.columns:
@@ -478,27 +528,35 @@ def _blind_observables(prob, blinding: dict[str, dict]) -> None:
         odf[OBSERVABLE_NAME] = odf[OBSERVABLE_NAME].astype(object)
     for obs_id, spec in blinding.items():
         if obs_id not in odf.index:
-            raise ValueError(f"observable blinding: no observable {obs_id!r} "
-                             f"(have: {sorted(map(str, odf.index))})")
+            raise ValueError(
+                f"observable blinding: no observable {obs_id!r} "
+                f"(have: {sorted(map(str, odf.index))})"
+            )
         readout = str(spec.get("readout") or f"readout_{obs_id}")
         if not readout.startswith("readout_"):
-            raise ValueError(f"observable blinding: {obs_id!r}: readout symbol {readout!r} must "
-                             "start with 'readout_' — the commit-time check keys on the prefix")
+            raise ValueError(
+                f"observable blinding: {obs_id!r}: readout symbol {readout!r} must "
+                "start with 'readout_' — the commit-time check keys on the prefix"
+            )
         blinded = str(spec["formula"])
         original = str(odf.loc[obs_id, OBSERVABLE_FORMULA])
         blinded_ids = formula_identifiers(blinded)
         original_ids = formula_identifiers(original)
         if readout not in blinded_ids:
-            raise ValueError(f"observable blinding: {obs_id!r}: the blinded formula must "
-                             f"reference {readout!r}, got {blinded!r}")
+            raise ValueError(
+                f"observable blinding: {obs_id!r}: the blinded formula must "
+                f"reference {readout!r}, got {blinded!r}"
+            )
         # every readout_* is agent-defined (a template may reference more than one -- schwen's
         # ELISA form carries the intact-insulin AND fragments readouts); the commit-time check
         # keys on the prefix, so none of them is a "kept" reference-model symbol.
         kept = {i for i in blinded_ids if not i.startswith("readout_")}
         if not kept <= original_ids:
-            raise ValueError(f"observable blinding: {obs_id!r}: {sorted(kept - original_ids)} "
-                             "do not appear in the published formula — only existing "
-                             "scaling/offset symbols may be kept")
+            raise ValueError(
+                f"observable blinding: {obs_id!r}: {sorted(kept - original_ids)} "
+                "do not appear in the published formula — only existing "
+                "scaling/offset symbols may be kept"
+            )
         # The guard above stops a NEW symbol being smuggled in; this one stops an old one being
         # LEFT IN. Without it a spec of `scale * (readout_x + pAkt)` passed every check — `pAkt`
         # is in the published formula, so "kept <= original" holds — and the species leaked into
@@ -511,11 +569,14 @@ def _blind_observables(prob, blinding: dict[str, dict]) -> None:
             raise ValueError(
                 f"observable blinding: {obs_id!r}: {sorted(model_side)} are reference-model "
                 "entities and must not survive the blinding — only shipped scaling/offset "
-                "parameters may be kept")
+                "parameters may be kept"
+            )
         if "noise" in spec:
             if NOISE_FORMULA not in odf.columns:
-                raise ValueError(f"observable blinding: {obs_id!r}: a 'noise' key was given but "
-                                 "the observable table has no noiseFormula column to blind")
+                raise ValueError(
+                    f"observable blinding: {obs_id!r}: a 'noise' key was given but "
+                    "the observable table has no noiseFormula column to blind"
+                )
             noise_blinded = str(spec["noise"])
             noise_original_ids = formula_identifiers(odf.loc[obs_id, NOISE_FORMULA])
             # Same rule as the observable side, and for the same two reasons: EVERY `readout_*`
@@ -525,18 +586,21 @@ def _blind_observables(prob, blinding: dict[str, dict]) -> None:
             # legal multi-readout specs; omitting the model-side check let the leak the observable
             # branch prevents walk straight back in through the sigma column, which is precisely
             # what the guard below this block exists to stop.
-            noise_kept = {i for i in formula_identifiers(noise_blinded)
-                          if not i.startswith("readout_")}
+            noise_kept = {
+                i for i in formula_identifiers(noise_blinded) if not i.startswith("readout_")
+            }
             if not noise_kept <= noise_original_ids:
                 raise ValueError(
                     f"observable blinding: {obs_id!r}: noise {sorted(noise_kept - noise_original_ids)} "
-                    "do not appear in the published noiseFormula — only existing symbols may be kept")
+                    "do not appear in the published noiseFormula — only existing symbols may be kept"
+                )
             noise_model_side = {i for i in noise_kept if i in noise_seed_entities}
             if noise_model_side:
                 raise ValueError(
                     f"observable blinding: {obs_id!r}: noise {sorted(noise_model_side)} are "
                     "reference-model entities and must not survive the blinding — only shipped "
-                    "scaling/offset parameters may be kept")
+                    "scaling/offset parameters may be kept"
+                )
             odf.loc[obs_id, NOISE_FORMULA] = noise_blinded
         if NOISE_FORMULA in odf.columns:
             noise_ids = formula_identifiers(odf.loc[obs_id, NOISE_FORMULA])
@@ -551,7 +615,8 @@ def _blind_observables(prob, blinding: dict[str, dict]) -> None:
                     f"observable blinding: {obs_id!r}: noiseFormula references "
                     f"{sorted(leaked)}, which are reference-model entities the blinding must "
                     "not ship — the leak would move into sigma. Blind the noise formula too "
-                    "(the 'noise' key), or keep the symbol.")
+                    "(the 'noise' key), or keep the symbol."
+                )
         odf.loc[obs_id, OBSERVABLE_FORMULA] = blinded
         odf.loc[obs_id, OBSERVABLE_NAME] = str(spec["measures"])
 
@@ -572,8 +637,9 @@ def validation_measurements_path(example_dir: Path) -> Path:
     return Path(example_dir) / VALIDATION_DIR / VALIDATION_MEASUREMENTS
 
 
-def _validation_measurement_df(*, name: str, validation_yaml: str, collection: Path | None,
-                               published, training_measurement_df):
+def _validation_measurement_df(
+    *, name: str, validation_yaml: str, collection: Path | None, published, training_measurement_df
+):
     """The held-out measurement table for ``name``, in the PUBLISHED vocabulary, fully checked.
 
     ``validation_yaml`` is a path relative to the benchmark's directory in the collection — fujita's
@@ -600,21 +666,25 @@ def _validation_measurement_df(*, name: str, validation_yaml: str, collection: P
     path = bdir / validation_yaml
     if not path.is_file():
         raise FileNotFoundError(
-            f"{name}: validation_yaml {validation_yaml!r} does not exist under {bdir}")
+            f"{name}: validation_yaml {validation_yaml!r} does not exist under {bdir}"
+        )
     vprob = petab.Problem.from_yaml(str(path))
 
     # The held-out problem must differ from the training one ONLY in its measurements. Compared on
     # the tables that define the estimation problem; the visualization table is deliberately not
     # compared (it describes plots, and the collection's held-out variants do carry their own).
-    for label, mine, theirs in (("observable", published.observable_df, vprob.observable_df),
-                                ("condition", published.condition_df, vprob.condition_df),
-                                ("parameter", published.parameter_df, vprob.parameter_df)):
+    for label, mine, theirs in (
+        ("observable", published.observable_df, vprob.observable_df),
+        ("condition", published.condition_df, vprob.condition_df),
+        ("parameter", published.parameter_df, vprob.parameter_df),
+    ):
         if theirs is None or not mine.equals(theirs):
             raise ValueError(
                 f"{name}: the validation problem's {label} table differs from the published "
                 f"training one. A held-out set must re-use the SAME problem (same model, same "
                 f"observables, same conditions, same parameters) and change only the measurements "
-                f"— otherwise the two scores are not comparable.")
+                f"— otherwise the two scores are not comparable."
+            )
 
     vmeas = vprob.measurement_df
     if vmeas is None or vmeas.empty:
@@ -636,14 +706,16 @@ def _check_held_out_rows(name: str, vprob, published, training_measurement_df) -
     vmeas = vprob.measurement_df
     # petab's own measurement-table lint on BOTH operands (required columns, observable ids, override
     # counts, numeric measurements) before the disjointness check below indexes them.
-    for label, frame, odf in (("validation", vmeas, vprob.observable_df),
-                              ("published training", training_measurement_df,
-                               published.observable_df)):
+    for label, frame, odf in (
+        ("validation", vmeas, vprob.observable_df),
+        ("published training", training_measurement_df, published.observable_df),
+    ):
         try:
             check_measurement_df(frame, odf)
         except (AssertionError, ValueError) as exc:
             raise ValueError(
-                f"{name}: the {label} measurement table fails petab's lint: {exc}") from exc
+                f"{name}: the {label} measurement table fails petab's lint: {exc}"
+            ) from exc
 
     # Flattening: refused at SETUP, where `published` is still unflattened (see the docstring).
     for label, prob_ in (("published training", published), ("validation", vprob)):
@@ -653,7 +725,8 @@ def _check_held_out_rows(name: str, vprob, published, training_measurement_df) -
                 f"flattening, which mints one observable per distinct override — so the training "
                 f"and held-out tables would flatten to different observable sets and their "
                 f"likelihoods could not be compared. Held-out scoring is not supported for this "
-                f"problem; drop the example's held-out declaration.")
+                f"problem; drop the example's held-out declaration."
+            )
 
     # HELD OUT means held out: a row the model was fitted to cannot also test it. Checked at row
     # level rather than by condition, because a held-out set may legitimately withhold later
@@ -670,11 +743,13 @@ def _check_held_out_rows(name: str, vprob, published, training_measurement_df) -
     if shared:
         raise ValueError(
             f"{name}: {len(shared)} held-out measurement row(s) are also in the TRAINING table "
-            f"(e.g. {sorted(shared)[:3]}); the score would be partly in-sample")
+            f"(e.g. {sorted(shared)[:3]}); the score would be partly in-sample"
+        )
 
 
-def _transfer_problem(*, name: str, transfer_yaml: str, collection: Path | None, published,
-                      training_measurement_df):
+def _transfer_problem(
+    *, name: str, transfer_yaml: str, collection: Path | None, published, training_measurement_df
+):
     """The collection's second problem on the same mechanism, in the published vocabulary.
 
     ``transfer_yaml`` is relative to the benchmark directory. Its own condition and parameter
@@ -697,40 +772,48 @@ def _transfer_problem(*, name: str, transfer_yaml: str, collection: Path | None,
     path = bdir / transfer_yaml
     if not path.is_file():
         raise FileNotFoundError(
-            f"{name}: transfer_yaml {transfer_yaml!r} does not exist under {bdir}")
+            f"{name}: transfer_yaml {transfer_yaml!r} does not exist under {bdir}"
+        )
     vprob = petab.Problem.from_yaml(str(path))
 
     def _sbml_digest(yaml_path: Path) -> list[str]:
         cfg = load_yaml(str(yaml_path))
-        return sorted(hashlib.sha1((yaml_path.parent / f).read_bytes()).hexdigest()
-                      for prob_ in cfg["problems"] for f in prob_.get("sbml_files", []))
+        return sorted(
+            hashlib.sha1((yaml_path.parent / f).read_bytes()).hexdigest()
+            for prob_ in cfg["problems"]
+            for f in prob_.get("sbml_files", [])
+        )
 
     if _sbml_digest(path) != _sbml_digest(bdir / f"{name}.yaml"):
         raise ValueError(
             f"{name}: the transfer problem's SBML differs from the training problem's. A transfer "
             f"set is the SAME mechanism on a different system; a variant that also changed the "
             f"model would be refit as a different structure from the one the candidate is compared "
-            f"to.")
+            f"to."
+        )
     mine = sorted(set(map(str, published.condition_df.columns)) - {CONDITION_NAME})
     theirs = sorted(set(map(str, vprob.condition_df.columns)) - {CONDITION_NAME})
     if mine != theirs:
         raise ValueError(
             f"{name}: the transfer problem's condition table has columns {theirs} where the "
             f"training one has {mine}; a condition column is a model input, so the two describe "
-            f"different models.")
+            f"different models."
+        )
 
     # Validate against the complete published problem, before cropping unshared readouts. The
     # zero-shot shipped table omits kinetics, and a candidate may name its own rates differently.
     _reject_untransferable_table(vprob.parameter_df, published.parameter_df, vprob)
 
-    unknown = sorted(set(map(str, vprob.observable_df.index))
-                     - set(map(str, published.observable_df.index)))
+    unknown = sorted(
+        set(map(str, vprob.observable_df.index)) - set(map(str, published.observable_df.index))
+    )
     if unknown:
         raise ValueError(
             f"{name}: the transfer problem defines observable(s) {unknown} that the training "
             f"problem does not; a model built for the training problem has no readout to score "
             f"them on, and dropping them would score a subset of what was measured without saying "
-            f"so. Ship a held-out problem that defines only the training problem's observables.")
+            f"so. Ship a held-out problem that defines only the training problem's observables."
+        )
     for oid in vprob.observable_df.index:
         mine = {k: str(v) for k, v in published.observable_df.loc[oid].items()}
         theirs = {k: str(v) for k, v in vprob.observable_df.loc[oid].items()}
@@ -738,7 +821,8 @@ def _transfer_problem(*, name: str, transfer_yaml: str, collection: Path | None,
             raise ValueError(
                 f"{name}: observable {oid!r} is defined differently in the transfer problem "
                 f"({theirs}) and the training problem ({mine}); the two would score different "
-                f"quantities under one name.")
+                f"quantities under one name."
+            )
     vprob.visualization_df = None
     if vprob.measurement_df.empty:
         raise ValueError(f"{name}: transfer_yaml {transfer_yaml!r} lists no measurements")
@@ -794,8 +878,10 @@ def patch_reference_model(model, patch: dict[str, Any]) -> "tuple[Any, list[str]
             raise ValueError(f"patch_reference_model: cannot parse {expression!r} for {what}")
         unknown = sorted(_ast_names(ast) - known)
         if unknown:
-            raise ValueError(f"patch_reference_model: {expression!r} names {unknown}, which the "
-                             f"reference model does not define")
+            raise ValueError(
+                f"patch_reference_model: {expression!r} names {unknown}, which the "
+                f"reference model does not define"
+            )
         return ast
 
     touched: list[str] = []
@@ -805,8 +891,10 @@ def patch_reference_model(model, patch: dict[str, Any]) -> "tuple[Any, list[str]
         if sbml.getInitialAssignmentBySymbol(target) is not None:
             raise ValueError(f"patch_reference_model: {target!r} already has an initial assignment")
         if sbml.getAssignmentRuleByVariable(target) is not None:
-            raise ValueError(f"patch_reference_model: {target!r} is set by an assignment rule, which "
-                             f"an initial assignment cannot override")
+            raise ValueError(
+                f"patch_reference_model: {target!r} is set by an assignment rule, which "
+                f"an initial assignment cannot override"
+            )
         ia = sbml.createInitialAssignment()
         ia.setSymbol(target)
         ia.setMath(_math(expression, f"initial assignment of {target!r}"))
@@ -838,18 +926,35 @@ def _stated_problem(name: str, published, reference_patch):
         import pandas as pd
 
         rows = pd.DataFrame(
-            [{PARAMETER_SCALE: "lin", LOWER_BOUND: value, UPPER_BOUND: value,
-              NOMINAL_VALUE: value, ESTIMATE: 0} for value in added.values()],
-            index=pd.Index(list(added), name=published.parameter_df.index.name))
+            [
+                {
+                    PARAMETER_SCALE: "lin",
+                    LOWER_BOUND: value,
+                    UPPER_BOUND: value,
+                    NOMINAL_VALUE: value,
+                    ESTIMATE: 0,
+                }
+                for value in added.values()
+            ],
+            index=pd.Index(list(added), name=published.parameter_df.index.name),
+        )
         view.parameter_df = pd.concat(
-            [published.parameter_df, rows.reindex(columns=published.parameter_df.columns)])
+            [published.parameter_df, rows.reindex(columns=published.parameter_df.columns)]
+        )
     print(f"[setup] {name}: reference model patched for {sorted(added)}: {touched}")
     return view
 
 
-def _held_out_source(*, name: str, validation_yaml: str | None, validation_table: str | None,
-                     example_dir: Path, collection: Path | None, published,
-                     transfer_yaml: str | None = None):
+def _held_out_source(
+    *,
+    name: str,
+    validation_yaml: str | None,
+    validation_table: str | None,
+    example_dir: Path,
+    collection: Path | None,
+    published,
+    transfer_yaml: str | None = None,
+):
     """The held-out set (:class:`petab_mcp.validation_data.HeldOut`) from whichever source the
     example declares, in the PUBLISHED vocabulary, or ``None``.
 
@@ -860,27 +965,47 @@ def _held_out_source(*, name: str, validation_yaml: str | None, validation_table
     """
     from petab_mcp.validation_data import HeldOut
 
-    declared = {"VALIDATION_YAML": validation_yaml, "VALIDATION_TABLE": validation_table,
-                "TRANSFER_VALIDATION_YAML": transfer_yaml}
+    declared = {
+        "VALIDATION_YAML": validation_yaml,
+        "VALIDATION_TABLE": validation_table,
+        "TRANSFER_VALIDATION_YAML": transfer_yaml,
+    }
     if sum(1 for v in declared.values() if v) > 1:
         raise ValueError(
             f"{name}: declares BOTH of {sorted(k for k, v in declared.items() if v)}; the held-out "
             f"sources are mutually exclusive — an example has one held-out set, so pick the source "
-            f"it comes from")
+            f"it comes from"
+        )
     if validation_yaml:
-        return HeldOut(measurement_df=_validation_measurement_df(
-            name=name, validation_yaml=validation_yaml, collection=collection,
-            published=published, training_measurement_df=published.measurement_df))
+        return HeldOut(
+            measurement_df=_validation_measurement_df(
+                name=name,
+                validation_yaml=validation_yaml,
+                collection=collection,
+                published=published,
+                training_measurement_df=published.measurement_df,
+            )
+        )
     if transfer_yaml:
         vprob = _transfer_problem(
-            name=name, transfer_yaml=transfer_yaml, collection=collection, published=published,
-            training_measurement_df=published.measurement_df)
-        return HeldOut(measurement_df=vprob.measurement_df, condition_df=vprob.condition_df,
-                       parameter_df=vprob.parameter_df)
+            name=name,
+            transfer_yaml=transfer_yaml,
+            collection=collection,
+            published=published,
+            training_measurement_df=published.measurement_df,
+        )
+        return HeldOut(
+            measurement_df=vprob.measurement_df,
+            condition_df=vprob.condition_df,
+            parameter_df=vprob.parameter_df,
+        )
     if validation_table:
         return _curated_held_out(
-            name=name, validation_table=validation_table, example_dir=example_dir,
-            published=published)
+            name=name,
+            validation_table=validation_table,
+            example_dir=example_dir,
+            published=published,
+        )
     return None
 
 
@@ -914,19 +1039,30 @@ def _curated_held_out(*, name: str, validation_table: str, example_dir: Path, pu
     import copy
 
     import petab.v1 as petab
-    from petab.v1.C import (CONDITION_NAME, OBSERVABLE_ID, PREEQUILIBRATION_CONDITION_ID,
-                            SIMULATION_CONDITION_ID)
+    from petab.v1.C import (
+        CONDITION_NAME,
+        OBSERVABLE_ID,
+        PREEQUILIBRATION_CONDITION_ID,
+        SIMULATION_CONDITION_ID,
+    )
     from petab.v1.parameters import get_valid_parameters_for_parameter_table
 
-    from petab_mcp.validation_data import (HELD_OUT_CONDITIONS, HELD_OUT_PARAMETERS,
-                                           HELD_OUT_UNITS, HeldOut, _refit_units,
-                                           _reject_untransferable_table, _with_held_out_conditions,
-                                           read_units)
+    from petab_mcp.validation_data import (
+        HELD_OUT_CONDITIONS,
+        HELD_OUT_PARAMETERS,
+        HELD_OUT_UNITS,
+        HeldOut,
+        _refit_units,
+        _reject_untransferable_table,
+        _with_held_out_conditions,
+        read_units,
+    )
 
     path = Path(example_dir) / validation_table
     if not path.is_file():
         raise FileNotFoundError(
-            f"{name}: validation_table {validation_table!r} does not exist under {example_dir}")
+            f"{name}: validation_table {validation_table!r} does not exist under {example_dir}"
+        )
     vmeas = petab.get_measurement_df(str(path))
     if vmeas.empty:
         raise ValueError(f"{name}: validation_table {validation_table!r} lists no measurements")
@@ -937,9 +1073,11 @@ def _curated_held_out(*, name: str, validation_table: str, example_dir: Path, pu
     upath = path.with_name(HELD_OUT_UNITS)
     units = read_units(upath) if upath.is_file() else None
     if units is not None and vpars is None:
-        raise ValueError(f"{name}: {upath.relative_to(example_dir)} names refit units, but without "
-                         f"a {HELD_OUT_PARAMETERS} beside it the set is scored at the fitted "
-                         f"point, where nothing is refit")
+        raise ValueError(
+            f"{name}: {upath.relative_to(example_dir)} names refit units, but without "
+            f"a {HELD_OUT_PARAMETERS} beside it the set is scored at the fitted "
+            f"point, where nothing is refit"
+        )
     if units is not None and isinstance(_refit_units(vmeas, units), str):
         raise ValueError(f"{name}: {upath.relative_to(example_dir)}: {_refit_units(vmeas, units)}")
 
@@ -959,41 +1097,49 @@ def _curated_held_out(*, name: str, validation_table: str, example_dir: Path, pu
                 raise ValueError(
                     f"{name}: {cpath.relative_to(example_dir)} has columns {theirs} against the "
                     f"published {mine}; a condition column is a model input, so the two tables "
-                    f"describe different models")
+                    f"describe different models"
+                )
             vprob.condition_df = vcond
             # A condition the published table does not have is another experiment (crauste's F5
             # responses: same inputs, other cells and antigen, every rate refit as the paper did),
             # and a row with input values no published row has is another system (lucarelli).
             # Either makes the set a transfer set without a delta row; re-using published
             # conditions with published values does not.
-            known = {tuple(map(str, r)) for r in published.condition_df[mine].itertuples(index=False)}
-            system_differs = (any(str(c) not in set(map(str, published.condition_df.index))
-                                  for c in vcond.index)
-                              or any(tuple(map(str, r)) not in known
-                                     for r in vcond[mine].itertuples(index=False)))
+            known = {
+                tuple(map(str, r)) for r in published.condition_df[mine].itertuples(index=False)
+            }
+            system_differs = any(
+                str(c) not in set(map(str, published.condition_df.index)) for c in vcond.index
+            ) or any(tuple(map(str, r)) not in known for r in vcond[mine].itertuples(index=False))
         # Only the observables the set measures: a sigma no held-out row informs is not a
         # parameter of the refit, and a delta row for it names nothing the set uses.
         measured = set(vmeas[OBSERVABLE_ID].astype(str))
         vprob.observable_df = published.observable_df.loc[
-            [o for o in published.observable_df.index if str(o) in measured]]
+            [o for o in published.observable_df.index if str(o) in measured]
+        ]
         full = _overlay_parameters(published.parameter_df, vpars)
         try:
             # On the unpruned overlay: a published row the held-out tables retire must not read as
             # a difference, and the identity check sees every column (`system_differs` is the
             # other legitimate source of difference).
-            _reject_untransferable_table(full, published.parameter_df, vprob,
-                                         system_differs=system_differs)
+            _reject_untransferable_table(
+                full, published.parameter_df, vprob, system_differs=system_differs
+            )
         except ValueError as exc:
             raise ValueError(f"{name}: {ppath.relative_to(example_dir)}: {exc}") from exc
         allowed = get_valid_parameters_for_parameter_table(
-            model=vprob.model, condition_df=vprob.condition_df, observable_df=vprob.observable_df,
-            measurement_df=vmeas)
+            model=vprob.model,
+            condition_df=vprob.condition_df,
+            observable_df=vprob.observable_df,
+            measurement_df=vmeas,
+        )
         unused = sorted(str(pid) for pid in vpars.index if pid not in allowed)
         if unused:
             raise ValueError(
                 f"{name}: {ppath.relative_to(example_dir)}: row(s) {unused} name nothing the "
                 f"held-out problem uses — not a parameter of the published model, not a "
-                f"placeholder of the observables it measures or of its measurement table")
+                f"placeholder of the observables it measures or of its measurement table"
+            )
         vprob.parameter_df = full.loc[[pid for pid in full.index if pid in allowed]]
     # Lint before indexing condition ids, so a malformed curated table gets the same
     # actionable setup error as a table loaded through the yaml path.
@@ -1009,10 +1155,15 @@ def _curated_held_out(*, name: str, validation_table: str, example_dir: Path, pu
             f"nor a {HELD_OUT_CONDITIONS} beside it defines: {unknown}. Scoring at the fitted "
             f"point requires the model to have been told what the condition is: a new value of "
             f"the published inputs goes in that file; a new input makes this a TRANSFER set, not "
-            f"a fixed-θ one")
+            f"a fixed-θ one"
+        )
 
-    return HeldOut(measurement_df=vmeas, condition_df=vcond,
-                   parameter_df=None if vpars is None else vprob.parameter_df, units=units)
+    return HeldOut(
+        measurement_df=vmeas,
+        condition_df=vcond,
+        parameter_df=None if vpars is None else vprob.parameter_df,
+        units=units,
+    )
 
 
 def _overlay_parameters(published_df, delta_df):
@@ -1028,8 +1179,9 @@ def _overlay_parameters(published_df, delta_df):
             for col, val in cells.items():
                 full.loc[pid, col] = val
         else:
-            full = pd.concat([full, pd.DataFrame([cells], index=pd.Index([pid],
-                                                                          name=full.index.name))])
+            full = pd.concat(
+                [full, pd.DataFrame([cells], index=pd.Index([pid], name=full.index.name))]
+            )
     if ESTIMATE in full.columns and not full[ESTIMATE].isna().any():
         full[ESTIMATE] = full[ESTIMATE].astype(float).astype(int)
     return full
@@ -1048,24 +1200,30 @@ def _held_out_problem(published, held_out):
         vprob.condition_df = held_out.condition_df
     measured = set(held_out.measurement_df[OBSERVABLE_ID].astype(str))
     vprob.observable_df = published.observable_df.loc[
-        [o for o in published.observable_df.index if str(o) in measured]]
+        [o for o in published.observable_df.index if str(o) in measured]
+    ]
     vprob.parameter_df = held_out.parameter_df
     vprob.visualization_df = None
     return vprob
 
 
-def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
-                shipped_param_overrides: dict[str, dict] | None = None,
-                rename_ids: dict[str, str] | None = None,
-                preequilibration: dict[str, str] | None = None,
-                observable_blinding: dict[str, dict] | None = None,
-                validation_yaml: str | None = None,
-                transfer_yaml: str | None = None,
-                validation_table: str | None = None,
-                reference_patch: dict[str, Any] | None = None,
-                training_measurements: str | None = None,
-                protocols: dict[str, tuple[str, list[str]]] | None = None,
-                collection: Path | None = None) -> dict[str, Any]:
+def materialize(
+    *,
+    name: str,
+    shipped_param_ids: list[str],
+    example_dir: Path,
+    shipped_param_overrides: dict[str, dict] | None = None,
+    rename_ids: dict[str, str] | None = None,
+    preequilibration: dict[str, str] | None = None,
+    observable_blinding: dict[str, dict] | None = None,
+    validation_yaml: str | None = None,
+    transfer_yaml: str | None = None,
+    validation_table: str | None = None,
+    reference_patch: dict[str, Any] | None = None,
+    training_measurements: str | None = None,
+    protocols: dict[str, tuple[str, list[str]]] | None = None,
+    collection: Path | None = None,
+) -> dict[str, Any]:
     """Write ``example_dir/problem/`` from the pinned collection — the fast, no-fit path run by
     ``setup.py``. Copies the published measurements/observables/conditions VERBATIM (flattening
     per-measurement output overrides when required), ships an empty SBML + the SUBSET parameter
@@ -1123,13 +1281,19 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     ``EGF_end``). It states what was done to the system, not how the system responds, which is why
     it may name only ``time`` and condition columns -- :mod:`petab_harness.neural_ode.problem`
     refuses anything else. The server ignores the file; the model-producing routes read it.
-"""
+    """
     from petab.v1.C import CONDITION_NAME
 
     problem_dir = Path(example_dir) / "problem"
     problem_dir.mkdir(parents=True, exist_ok=True)
-    prob = _load_problem(name, collection, flatten=False, restated_measurements=(
-        None if training_measurements is None else Path(example_dir) / training_measurements))
+    prob = _load_problem(
+        name,
+        collection,
+        flatten=False,
+        restated_measurements=(
+            None if training_measurements is None else Path(example_dir) / training_measurements
+        ),
+    )
 
     # BEFORE any rewriting: `prob` is still exactly as the collection ships it, which is what the
     # held-out yaml has to be checked against — so it serves as BOTH `published` and the training
@@ -1137,9 +1301,14 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     # freshly-loaded copy cost another full SBML + four-TSV parse for tables identical to these.)
     # `prob` is mutated in place from here on.
     held_out = _held_out_source(
-        name=name, validation_yaml=validation_yaml, validation_table=validation_table,
-        transfer_yaml=transfer_yaml, example_dir=example_dir, collection=collection,
-        published=_stated_problem(name, prob, reference_patch))
+        name=name,
+        validation_yaml=validation_yaml,
+        validation_table=validation_table,
+        transfer_yaml=transfer_yaml,
+        example_dir=example_dir,
+        collection=collection,
+        published=_stated_problem(name, prob, reference_patch),
+    )
     validation_meas = held_out.measurement_df if held_out is not None else None
 
     def _relabel(v):
@@ -1178,6 +1347,7 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
         # table's observableId in place; a held-out table left unfolded would reference the retired
         # per-dataset ids and fail the observable check in `validation_data._table_mismatch`.
         from petab.v1.C import OBSERVABLE_ID as _OID
+
         validation_meas[_OID] = validation_meas[_OID].map(lambda v: merged.get(str(v), v))
     if merged and observable_blinding:
         observable_blinding = _collapse_blinding(observable_blinding, merged)
@@ -1189,6 +1359,7 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
 
     if preequilibration:
         from petab.v1.C import PREEQUILIBRATION_CONDITION_ID
+
         # Every measurement preequilibrates at the synthesized basal condition (added to `cond` below).
         prob.measurement_df[PREEQUILIBRATION_CONDITION_ID] = preequilibration["preeq_condition_id"]
         if validation_meas is not None:
@@ -1199,8 +1370,7 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
             # two scores would then describe different simulations and `delta_nll` would be a
             # silent, arbitrarily wrong number. The synthesized condition is in the shipped
             # condition table either way, so nothing else has to change.
-            validation_meas[PREEQUILIBRATION_CONDITION_ID] = \
-                preequilibration["preeq_condition_id"]
+            validation_meas[PREEQUILIBRATION_CONDITION_ID] = preequilibration["preeq_condition_id"]
 
     prob.measurement_df.to_csv(problem_dir / "measurements.tsv", sep="\t", index=False)
     prob.observable_df.reset_index().to_csv(problem_dir / "observables.tsv", sep="\t", index=False)
@@ -1211,6 +1381,7 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     if preequilibration:
         import pandas as pd
         from petab.v1.C import CONDITION_ID
+
         gate, preeq_id = preequilibration["gate_column"], preequilibration["preeq_condition_id"]
         cond[gate] = 1  # every real (simulation) condition runs with the stimulus ON
         # Synthesized basal preequilibration condition: stimulus OFF (gate=0) and every other input 0.
@@ -1243,19 +1414,35 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     # would leak structure — so priors on agent-introduced parameters are inherently outside a
     # zero-shot build. Both the reference (derive-via-reconcile) and the candidate load this table,
     # so whatever priors ship here apply to BOTH sides and ΔBIC stays a fair head-to-head.
-    keep = [c for c in ["parameterId", "parameterScale", "lowerBound", "upperBound",
-                        "nominalValue", "estimate", "objectivePriorType", "objectivePriorParameters"]
-            if c in shipped.columns]
+    keep = [
+        c
+        for c in [
+            "parameterId",
+            "parameterScale",
+            "lowerBound",
+            "upperBound",
+            "nominalValue",
+            "estimate",
+            "objectivePriorType",
+            "objectivePriorParameters",
+        ]
+        if c in shipped.columns
+    ]
     shipped[keep].to_csv(problem_dir / "parameters.tsv", sep="\t", index=False)
 
     _write_empty_sbml(problem_dir)
     _write_problem_yaml(problem_dir)
     _write_protocols(problem_dir, protocols, [str(c) for c in cond.columns])
-    out = {"measurements": len(prob.measurement_df), "observables": len(prob.observable_df),
-           "conditions": len(prob.condition_df)}
-    print(f"[setup] {name}: materialized {len(prob.measurement_df)} measurements, "
-          f"{len(prob.observable_df)} observables, {len(prob.condition_df)} condition(s); "
-          f"shipped params {shipped_param_ids}")
+    out = {
+        "measurements": len(prob.measurement_df),
+        "observables": len(prob.observable_df),
+        "conditions": len(prob.condition_df),
+    }
+    print(
+        f"[setup] {name}: materialized {len(prob.measurement_df)} measurements, "
+        f"{len(prob.observable_df)} observables, {len(prob.condition_df)} condition(s); "
+        f"shipped params {shipped_param_ids}"
+    )
     from petab_mcp.validation_data import HELD_OUT_CONDITIONS, HELD_OUT_PARAMETERS, HELD_OUT_UNITS
 
     vpath = validation_measurements_path(example_dir)
@@ -1263,8 +1450,12 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
     # Files an earlier definition of the example left behind: the directory is gitignored, a
     # leftover parameters.tsv would flip the set's mode (validation_data.read_held_out) and a
     # leftover set would score an example that declares none.
-    for stale in (vpath, cpath, vpath.with_name(HELD_OUT_PARAMETERS),
-                  vpath.with_name(HELD_OUT_UNITS)):
+    for stale in (
+        vpath,
+        cpath,
+        vpath.with_name(HELD_OUT_PARAMETERS),
+        vpath.with_name(HELD_OUT_UNITS),
+    ):
         stale.unlink(missing_ok=True)
     if validation_meas is not None:
         from petab.v1.C import SIMULATION_CONDITION_ID
@@ -1285,20 +1476,40 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
                     # preequilibration condition has to be in it too — every held-out row names it.
                     import pandas as pd
                     from petab.v1.C import CONDITION_ID
-                    hcond = pd.concat([hcond, pd.DataFrame([{
-                        c: (preequilibration["preeq_condition_id"] if c == CONDITION_ID else 0)
-                        for c in hcond.columns}])], ignore_index=True)
+
+                    hcond = pd.concat(
+                        [
+                            hcond,
+                            pd.DataFrame(
+                                [
+                                    {
+                                        c: (
+                                            preequilibration["preeq_condition_id"]
+                                            if c == CONDITION_ID
+                                            else 0
+                                        )
+                                        for c in hcond.columns
+                                    }
+                                ]
+                            ),
+                        ],
+                        ignore_index=True,
+                    )
             hcond.to_csv(cpath, sep="\t", index=False)
             out["validation_conditions"] = len(hcond)
-            print(f"[setup] {name}: held-out set brings {len(hcond)} condition row(s) of its "
-                  f"own -> {cpath.name}")
+            print(
+                f"[setup] {name}: held-out set brings {len(hcond)} condition row(s) of its "
+                f"own -> {cpath.name}"
+            )
         # Disjointness is enforced at ROW level (`_check_held_out_rows`), so a held-out condition
         # may legitimately also appear in training with other timepoints — hence "condition(s)",
         # with no claim that they are absent from the training data.
-        print(f"[setup] {name}: held-out validation set -> {vpath.name}: "
-              f"{len(validation_meas)} measurement(s) over "
-              f"{validation_meas[SIMULATION_CONDITION_ID].nunique()} condition(s), none of them a "
-              f"training row (from {validation_yaml or validation_table or transfer_yaml})")
+        print(
+            f"[setup] {name}: held-out validation set -> {vpath.name}: "
+            f"{len(validation_meas)} measurement(s) over "
+            f"{validation_meas[SIMULATION_CONDITION_ID].nunique()} condition(s), none of them a "
+            f"training row (from {validation_yaml or validation_table or transfer_yaml})"
+        )
         if held_out.parameter_df is not None:
             # The set's own parameter table, ids relabelled with the shipped ones; its presence is
             # what tells the server to refit (validation_data.HeldOut). Which of its rows the
@@ -1306,15 +1517,23 @@ def materialize(*, name: str, shipped_param_ids: list[str], example_dir: Path,
             hpars = held_out.parameter_df.reset_index()
             hpars["parameterId"] = hpars["parameterId"].map(_relabel)
             hpars.to_csv(vpath.with_name(HELD_OUT_PARAMETERS), sep="\t", index=False)
-            print(f"[setup] {name}: transfer set: {len(hpars)}-row parameter table -> both sides "
-                  f"are REFIT on it")
+            print(
+                f"[setup] {name}: transfer set: {len(hpars)}-row parameter table -> both sides "
+                f"are REFIT on it"
+            )
         if held_out.units:
             import pandas as pd
-            pd.DataFrame({"conditionId": [_relabel(c) for c in held_out.units],
-                          "unitId": list(held_out.units.values())}).to_csv(
-                vpath.with_name(HELD_OUT_UNITS), sep="\t", index=False)
-            print(f"[setup] {name}: refit in {len(set(held_out.units.values()))} unit(s) "
-                  f"({HELD_OUT_UNITS})")
+
+            pd.DataFrame(
+                {
+                    "conditionId": [_relabel(c) for c in held_out.units],
+                    "unitId": list(held_out.units.values()),
+                }
+            ).to_csv(vpath.with_name(HELD_OUT_UNITS), sep="\t", index=False)
+            print(
+                f"[setup] {name}: refit in {len(set(held_out.units.values()))} unit(s) "
+                f"({HELD_OUT_UNITS})"
+            )
     return out
 
 
@@ -1330,8 +1549,9 @@ def _apply_param_overrides(problem, name: str, param_overrides: dict[str, dict] 
         return
     unknown = sorted(set(param_overrides) - set(problem.parameter_df.index))
     if unknown:
-        raise KeyError(f"{name}: param_overrides names parameters absent from the published "
-                       f"table: {unknown}")
+        raise KeyError(
+            f"{name}: param_overrides names parameters absent from the published table: {unknown}"
+        )
     for col in ("nominalValue", "lowerBound", "upperBound"):
         if col in problem.parameter_df.columns:
             problem.parameter_df[col] = problem.parameter_df[col].astype(float)
@@ -1340,35 +1560,41 @@ def _apply_param_overrides(problem, name: str, param_overrides: dict[str, dict] 
             problem.parameter_df.loc[pid, col] = val
     if "estimate" in problem.parameter_df.columns:
         problem.parameter_df["estimate"] = problem.parameter_df["estimate"].astype("int64")
-    print(f"[setup] {name}: reference is NOT pristine — param_overrides applied to "
-          f"{sorted(param_overrides)} (see BENCHMARK_NOTES.md)")
+    print(
+        f"[setup] {name}: reference is NOT pristine — param_overrides applied to "
+        f"{sorted(param_overrides)} (see BENCHMARK_NOTES.md)"
+    )
 
 
-def charge_hardcoded_parameters(ref: dict[str, Any],
-                                hardcoded: dict[str, str] | None) -> dict[str, Any]:
+def charge_hardcoded_parameters(
+    ref: dict[str, Any], hardcoded: dict[str, str] | None
+) -> dict[str, Any]:
     """Price the published model's FITTED literals into the reference's ``k`` (see
     ``write_reference_for``): one parameter per literal, the literals recorded on the result as
     ``hardcoded_constants`` so a reference whose ``k`` exceeds its estimated-row count is
     auditable. Pure, so the charge is the same whichever fit stage won."""
     if not hardcoded:
         return ref
-    return {**ref, "k": int(ref["k"]) + len(hardcoded),
-            "hardcoded_constants": sorted(hardcoded)}
+    return {**ref, "k": int(ref["k"]) + len(hardcoded), "hardcoded_constants": sorted(hardcoded)}
 
 
-def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
-                        n_workers: int | None = None,
-                        per_start_timeout: float | None = None,
-                        collection: Path | None = None,
-                        free_parameters: list[str] | None = None,
-                        param_overrides: dict[str, dict] | None = None,
-                        hardcoded_parameters: dict[str, str] | None = None,
-                        validation_yaml: str | None = None,
-                        transfer_yaml: str | None = None,
-                        validation_table: str | None = None,
-                        reference_patch: dict[str, Any] | None = None,
-                        training_measurements: str | None = None,
-                        ) -> dict[str, Any]:
+def write_reference_for(
+    *,
+    name: str,
+    example_dir: Path,
+    n_starts: int = 50,
+    n_workers: int | None = None,
+    per_start_timeout: float | None = None,
+    collection: Path | None = None,
+    free_parameters: list[str] | None = None,
+    param_overrides: dict[str, dict] | None = None,
+    hardcoded_parameters: dict[str, str] | None = None,
+    validation_yaml: str | None = None,
+    transfer_yaml: str | None = None,
+    validation_table: str | None = None,
+    reference_patch: dict[str, Any] | None = None,
+    training_measurements: str | None = None,
+) -> dict[str, Any]:
     """Regenerate the committed ``reference.json`` (the reference bar): fit the PRISTINE published
     PEtab problem EXACTLY as it ships. Run only via ``setup.py --refit`` — slow, and its output is
     committed.
@@ -1450,8 +1676,7 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     build_dir = Path(example_dir) / ".gen_build"
     # The pristine published problem (shipped SBML + full published parameter table + data),
     # flattened if it uses per-measurement output overrides — the same load materialize uses.
-    restated = (None if training_measurements is None
-                else Path(example_dir) / training_measurements)
+    restated = None if training_measurements is None else Path(example_dir) / training_measurements
     problem = _load_problem(name, collection, restated_measurements=restated)
     # param_overrides first: it repairs the published table (a broken noise model), and every
     # subsequent decision -- which rows count as already-estimated, which bounds a freed row gets
@@ -1473,32 +1698,51 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
         # initial values the export froze — is what every held-out check and refit runs against.
         stated = _stated_problem(name, pristine, reference_patch)
         held_out = _held_out_source(
-            name=name, validation_yaml=validation_yaml, validation_table=validation_table,
-            transfer_yaml=transfer_yaml, example_dir=example_dir, collection=collection,
-            published=stated)
+            name=name,
+            validation_yaml=validation_yaml,
+            validation_table=validation_table,
+            transfer_yaml=transfer_yaml,
+            example_dir=example_dir,
+            collection=collection,
+            published=stated,
+        )
     transfer = held_out is not None and held_out.parameter_df is not None
     # A fixed-θ set is scored at the vector the training refit lands on, inside it; a transfer set
     # is REFIT from the published point after it (`_transfer_reference`), so the refit gets none.
     fixed = None if transfer else held_out
     if fixed is not None and stated is not pristine:
-        raise ValueError(f"{name}: a reference patch is only applied where the reference is REFIT "
-                         f"(a transfer set). A fixed-θ set is scored on the pristine structure, "
-                         f"which would ignore the patch without saying so.")
+        raise ValueError(
+            f"{name}: a reference patch is only applied where the reference is REFIT "
+            f"(a transfer set). A fixed-θ set is scored on the pristine structure, "
+            f"which would ignore the patch without saying so."
+        )
 
     if not free_parameters:
         ref = write_reference_from_problem(
-            problem, build_dir=build_dir / "pristine",
-            model_name=f"{name}_pristine", path=problem_dir / "reference.json",
-            n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout,
+            problem,
+            build_dir=build_dir / "pristine",
+            model_name=f"{name}_pristine",
+            path=problem_dir / "reference.json",
+            n_starts=n_starts,
+            n_workers=n_workers,
+            per_start_timeout=per_start_timeout,
             held_out=fixed,
         )
     else:
         ref = _write_freed_reference(
-            name=name, problem=problem, problem_dir=problem_dir, build_dir=build_dir,
-            collection=collection, free_parameters=free_parameters,
-            param_overrides=param_overrides, held_out=fixed,
+            name=name,
+            problem=problem,
+            problem_dir=problem_dir,
+            build_dir=build_dir,
+            collection=collection,
+            free_parameters=free_parameters,
+            param_overrides=param_overrides,
+            held_out=fixed,
             restated_measurements=restated,
-            n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout)
+            n_starts=n_starts,
+            n_workers=n_workers,
+            per_start_timeout=per_start_timeout,
+        )
     # After both arms, so a freed reference pays for the published literals too, and rewritten
     # because charging changes the `k` the arm above already wrote to reference.json — as does the
     # transfer block below.
@@ -1507,20 +1751,39 @@ def write_reference_for(*, name: str, example_dir: Path, n_starts: int = 50,
     if transfer:
         # The collection's second problem is re-read as a problem (its observable set is its own);
         # a curated set is the published problem under the set's tables.
-        vprob = (_transfer_problem(
-                     name=name, transfer_yaml=transfer_yaml, collection=collection,
-                     published=stated, training_measurement_df=stated.measurement_df)
-                 if transfer_yaml else _held_out_problem(stated, held_out))
+        vprob = (
+            _transfer_problem(
+                name=name,
+                transfer_yaml=transfer_yaml,
+                collection=collection,
+                published=stated,
+                training_measurement_df=stated.measurement_df,
+            )
+            if transfer_yaml
+            else _held_out_problem(stated, held_out)
+        )
         ref["validation"] = _transfer_reference(
-            name=name, vprob=vprob, param_overrides=param_overrides, build_dir=build_dir,
-            n_starts=n_starts, units=held_out.units)
+            name=name,
+            vprob=vprob,
+            param_overrides=param_overrides,
+            build_dir=build_dir,
+            n_starts=n_starts,
+            units=held_out.units,
+        )
     if hardcoded_parameters or transfer:
         (problem_dir / "reference.json").write_text(json.dumps(ref, indent=2) + "\n")
     return ref
 
 
-def _transfer_reference(*, name: str, vprob, param_overrides: dict[str, dict] | None,
-                        build_dir: Path, n_starts: int, units=None) -> dict[str, Any]:
+def _transfer_reference(
+    *,
+    name: str,
+    vprob,
+    param_overrides: dict[str, dict] | None,
+    build_dir: Path,
+    n_starts: int,
+    units=None,
+) -> dict[str, Any]:
     """Refit the reference through the candidate's solver and budget, from the published point.
 
     Apply the training reference's parameter overrides so both sides use the same noise model.
@@ -1535,35 +1798,64 @@ def _transfer_reference(*, name: str, vprob, param_overrides: dict[str, dict] | 
 
     _apply_param_overrides(vprob, name, param_overrides)
     vprob.parameter_df = vprob.parameter_df.drop(
-        columns=[c for c in ("objectivePriorType", "objectivePriorParameters")
-                 if c in vprob.parameter_df.columns])
-    estimated = sorted(str(p) for p in vprob.parameter_df.index
-                       if int(float(vprob.parameter_df.loc[p, ESTIMATE])) == 1)
+        columns=[
+            c
+            for c in ("objectivePriorType", "objectivePriorParameters")
+            if c in vprob.parameter_df.columns
+        ]
+    )
+    estimated = sorted(
+        str(p)
+        for p in vprob.parameter_df.index
+        if int(float(vprob.parameter_df.loc[p, ESTIMATE])) == 1
+    )
     split = hashlib.sha1("\0".join(estimated).encode()).hexdigest()[:8]
-    print(f"[setup] {name}: refitting the reference structure on the transfer set "
-          f"({len(vprob.measurement_df)} rows, {len(estimated)} estimated parameters) ...")
+    print(
+        f"[setup] {name}: refitting the reference structure on the transfer set "
+        f"({len(vprob.measurement_df)} rows, {len(estimated)} estimated parameters) ..."
+    )
     try:
         out = validation_data.refit_problem(
-            vprob, build_dir=build_dir / f"pristine_transfer_{split}",
-            model_name=f"{name}_pristine_transfer", n_starts=n_starts, units=units)
+            vprob,
+            build_dir=build_dir / f"pristine_transfer_{split}",
+            model_name=f"{name}_pristine_transfer",
+            n_starts=n_starts,
+            units=units,
+        )
     except Exception as exc:  # noqa: BLE001 - report-only; preserve the training result
-        out = {"status": "error", "mode": validation_data.MODE_TRANSFER,
-               "reason": f"{type(exc).__name__}: {exc}"}
-        print(f"[setup] {name}: could not refit the reference on the transfer set "
-              f"({type(exc).__name__}: {exc}); the nll/k/n bar is still written, but no transfer "
-              f"bar — re-run --refit once the cause is fixed")
+        out = {
+            "status": "error",
+            "mode": validation_data.MODE_TRANSFER,
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+        print(
+            f"[setup] {name}: could not refit the reference on the transfer set "
+            f"({type(exc).__name__}: {exc}); the nll/k/n bar is still written, but no transfer "
+            f"bar — re-run --refit once the cause is fixed"
+        )
     else:
-        print(f"[setup] {name}: transfer reference: status={out.get('status')} "
-              f"nll={out.get('nll')} k={out.get('k')} n={out.get('n')}")
+        print(
+            f"[setup] {name}: transfer reference: status={out.get('status')} "
+            f"nll={out.get('nll')} k={out.get('k')} n={out.get('n')}"
+        )
     return {**out, "mode": validation_data.MODE_TRANSFER}
 
 
-def _write_freed_reference(*, name: str, problem, problem_dir: Path, build_dir: Path,
-                           collection: Path | None, free_parameters: list[str],
-                           param_overrides: dict[str, dict] | None, held_out,
-                           n_starts: int, n_workers: int | None,
-                           restated_measurements: Path | None = None,
-                           per_start_timeout: float | None) -> dict[str, Any]:
+def _write_freed_reference(
+    *,
+    name: str,
+    problem,
+    problem_dir: Path,
+    build_dir: Path,
+    collection: Path | None,
+    free_parameters: list[str],
+    param_overrides: dict[str, dict] | None,
+    held_out,
+    n_starts: int,
+    n_workers: int | None,
+    restated_measurements: Path | None = None,
+    per_start_timeout: float | None,
+) -> dict[str, Any]:
     """The ``REFERENCE_FREE_PARAMS`` arm of :func:`write_reference_for` (alkan, bachmann,
     raimundez): fit the published split and the freed one, keep the better, write the result."""
     import json
@@ -1604,14 +1896,15 @@ def _write_freed_reference(*, name: str, problem, problem_dir: Path, build_dir: 
         raise ValueError(
             f"{name}: free_parameters need finite PUBLISHED bounds bracketing their nominalValue, "
             f"but {unbounded} do not. Freeing them would fit inside a NaN/degenerate box and the "
-            "constrained optimum would not be a feasible point of the freed problem.")
-    already = [p for p in free_parameters
-               if int(float(problem.parameter_df.loc[p, ESTIMATE])) == 1]
+            "constrained optimum would not be a feasible point of the freed problem."
+        )
+    already = [p for p in free_parameters if int(float(problem.parameter_df.loc[p, ESTIMATE])) == 1]
     if already:
         raise ValueError(
             f"{name}: free_parameters must name parameters the published table FIXES, but "
             f"{already} are already estimated. Freeing them would make both reference stages fit "
-            "the same problem and take the luckier of two multistarts as the bar.")
+            "the same problem and take the luckier of two multistarts as the bar."
+        )
 
     # Fit BOTH the published problem and the freed one, and take the better.
     #
@@ -1632,16 +1925,22 @@ def _write_freed_reference(*, name: str, problem, problem_dir: Path, build_dir: 
     scratch = build_dir / "_reference_stages"
     scratch.mkdir(parents=True, exist_ok=True)
     ref_fixed = write_reference_from_problem(
-        problem, build_dir=build_dir / "pristine",
-        model_name=f"{name}_pristine", path=scratch / "published.json",
-        n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout,
+        problem,
+        build_dir=build_dir / "pristine",
+        model_name=f"{name}_pristine",
+        path=scratch / "published.json",
+        n_starts=n_starts,
+        n_workers=n_workers,
+        per_start_timeout=per_start_timeout,
         held_out=held_out,
     )
     freed = _load_problem(name, collection, restated_measurements=restated_measurements)
     _apply_param_overrides(freed, name, param_overrides)  # same table on both stages
     freed.parameter_df.loc[free_parameters, ESTIMATE] = 1
-    print(f"[setup] {name}: freeing {len(free_parameters)} published-fixed parameter(s) for the "
-          f"reference fit: {sorted(free_parameters)}")
+    print(
+        f"[setup] {name}: freeing {len(free_parameters)} published-fixed parameter(s) for the "
+        f"reference fit: {sorted(free_parameters)}"
+    )
     # Key the freed build directory to the free/fixed SPLIT. AMICI compiles a non-estimated
     # parameter as a model CONSTANT, so a build dir produced under a different split is silently
     # wrong for this one — it either raises ("does not support estimating ...") or, worse, fits a
@@ -1652,9 +1951,13 @@ def _write_freed_reference(*, name: str, problem, problem_dir: Path, build_dir: 
 
     split = hashlib.sha1("\0".join(sorted(free_parameters)).encode()).hexdigest()[:8]
     ref_free = write_reference_from_problem(
-        freed, build_dir=build_dir / f"pristine_freed_{split}",
-        model_name=f"{name}_pristine_freed", path=scratch / "freed.json",
-        n_starts=n_starts, n_workers=n_workers, per_start_timeout=per_start_timeout,
+        freed,
+        build_dir=build_dir / f"pristine_freed_{split}",
+        model_name=f"{name}_pristine_freed",
+        path=scratch / "freed.json",
+        n_starts=n_starts,
+        n_workers=n_workers,
+        per_start_timeout=per_start_timeout,
         held_out=held_out,
     )
 
@@ -1667,9 +1970,11 @@ def _write_freed_reference(*, name: str, problem, problem_dir: Path, build_dir: 
     winner = ref_fixed if ref_fixed["nll"] < ref_free["nll"] else ref_free
     ref = {**winner, "k": ref_free["k"], "n": ref_free["n"]}
     if ref_fixed["nll"] < ref_free["nll"]:
-        print(f"[setup] {name}: the freed multistart under-converged "
-              f"({ref_free['nll']:.4f} vs {ref_fixed['nll']:.4f} with the same parameters held at "
-              f"their published values); keeping the better, achievable point. Raise REFIT_N_STARTS "
-              f"if this persists.")
+        print(
+            f"[setup] {name}: the freed multistart under-converged "
+            f"({ref_free['nll']:.4f} vs {ref_fixed['nll']:.4f} with the same parameters held at "
+            f"their published values); keeping the better, achievable point. Raise REFIT_N_STARTS "
+            f"if this persists."
+        )
     (problem_dir / "reference.json").write_text(json.dumps(ref, indent=2) + "\n")
     return ref

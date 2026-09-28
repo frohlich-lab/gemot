@@ -27,8 +27,21 @@ from pathlib import Path
 import pytest
 
 #: Importing any of these means the module under test stopped being import-light.
-_HEAVY = ("mcp", "petab_mcp", "phoenix", "langchain", "langchain_core", "langchain_openai",
-          "deepagents", "langgraph", "openai", "wandb", "amici", "pypesto", "petab")
+_HEAVY = (
+    "mcp",
+    "petab_mcp",
+    "phoenix",
+    "langchain",
+    "langchain_core",
+    "langchain_openai",
+    "deepagents",
+    "langgraph",
+    "openai",
+    "wandb",
+    "amici",
+    "pypesto",
+    "petab",
+)
 
 _PROBE = """
 import sys
@@ -43,27 +56,31 @@ if leaked:
 def _assert_light(importline: str) -> None:
     proc = subprocess.run(
         [sys.executable, "-c", _PROBE.format(importline=importline, heavy=_HEAVY)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     assert proc.returncode == 0, f"`{importline}` is no longer import-light:\n{proc.stderr}"
 
 
-@pytest.mark.parametrize("importline", [
-    "import petab_harness",
-    "from petab_harness import agent",
-    "from petab_harness.agent import dedup, guards",
-    "from petab_harness.agent import sandbox",
-    "from petab_harness.agent import barebones",
-    "from petab_harness import prompts",
-    "from petab_harness import bio_sessions",
-    "from petab_harness import experiments",
-    "from petab_harness import analysis",
-    "from petab_harness import fit_budget",
-    "from petab_harness.explorer import bundle",
-    "from petab_harness.runner import endpoints",
-    "from petab_harness import neural_ode",
-    "from petab_harness.neural_ode import route, config, worker",
-])
+@pytest.mark.parametrize(
+    "importline",
+    [
+        "import petab_harness",
+        "from petab_harness import agent",
+        "from petab_harness.agent import dedup, guards",
+        "from petab_harness.agent import sandbox",
+        "from petab_harness.agent import barebones",
+        "from petab_harness import prompts",
+        "from petab_harness import bio_sessions",
+        "from petab_harness import experiments",
+        "from petab_harness import analysis",
+        "from petab_harness import fit_budget",
+        "from petab_harness.explorer import bundle",
+        "from petab_harness.runner import endpoints",
+        "from petab_harness import neural_ode",
+        "from petab_harness.neural_ode import route, config, worker",
+    ],
+)
 def test_import_is_light(importline):
     _assert_light(importline)
 
@@ -79,14 +96,19 @@ def test_the_agent_package_never_imports_the_server_package():
     over the AST, so no import is attempted here either.
     """
     offenders = []
-    for path in sorted((Path(__file__).parent.parent / "src" / "petab_harness" / "agent")
-                       .rglob("*.py")):
+    for path in sorted(
+        (Path(__file__).parent.parent / "src" / "petab_harness" / "agent").rglob("*.py")
+    ):
         for node in ast.walk(ast.parse(path.read_text())):
             module = (node.module if isinstance(node, ast.ImportFrom) else None) or ""
-            names = [a.name for a in getattr(node, "names", [])] if isinstance(
-                node, (ast.Import, ast.ImportFrom)) else []
+            names = (
+                [a.name for a in getattr(node, "names", [])]
+                if isinstance(node, (ast.Import, ast.ImportFrom))
+                else []
+            )
             if module.split(".")[0] == "petab_mcp" or any(
-                    n.split(".")[0] == "petab_mcp" for n in names):
+                n.split(".")[0] == "petab_mcp" for n in names
+            ):
                 offenders.append(f"{path.name}:{node.lineno}")
     assert not offenders, f"petab_harness.agent imports petab_mcp at {offenders}"
 
@@ -97,7 +119,8 @@ def _lazy_table(package):
     src = (Path(package.__path__[0]) / "__init__.py").read_text()
     for node in ast.walk(ast.parse(src)):
         if isinstance(node, ast.Assign) and any(
-                getattr(t, "id", None) == "_LAZY" for t in node.targets):
+            getattr(t, "id", None) == "_LAZY" for t in node.targets
+        ):
             return {k.value: v.value for k, v in zip(node.value.keys, node.value.values)}
     raise AssertionError(f"{package.__name__} has no _LAZY table")
 
@@ -144,8 +167,9 @@ def test_every_lazy_target_actually_defines_its_name(package_name):
     for name, target in _lazy_table(package).items():
         module = _resolve(root, target)
         assert module.is_file(), f"{package_name}._LAZY[{name!r}] -> missing {module}"
-        assert name in _toplevel_names(module), \
+        assert name in _toplevel_names(module), (
             f"{package_name}._LAZY[{name!r}] -> {module.name} does not define {name!r}"
+        )
 
 
 def test_all_and_lazy_agree():
@@ -157,8 +181,9 @@ def test_all_and_lazy_agree():
     for package in (petab_harness, petab_harness.runner):
         table = _lazy_table(package)
         for name in package.__all__:
-            assert name in table or name in vars(package), \
+            assert name in table or name in vars(package), (
                 f"{package.__name__}.__all__ names {name!r}, which nothing defines"
+            )
 
 
 def test_lazy_facade_resolves_by_getattr():
@@ -221,7 +246,7 @@ def test_fit_workers_honours_an_explicit_override():
     from petab_harness import fit_budget
 
     assert fit_budget.fit_workers(50, 1) == 1
-    assert fit_budget.fit_engine(50, 1) is None          # None == pyPESTO's sequential engine
+    assert fit_budget.fit_engine(50, 1) is None  # None == pyPESTO's sequential engine
     # ...and an override never invents parallelism beyond the number of starts.
     assert fit_budget.fit_workers(1, 99) == 1
 
@@ -270,21 +295,26 @@ def test_scripts_only_import_names_our_packages_actually_define():
             if node.level or node.module.split(".")[0] not in ("petab_mcp", "petab_harness"):
                 continue
             target = root / "src" / Path(node.module.replace(".", "/"))
-            source = (target.with_suffix(".py") if target.with_suffix(".py").is_file()
-                      else target / "__init__.py")
+            source = (
+                target.with_suffix(".py")
+                if target.with_suffix(".py").is_file()
+                else target / "__init__.py"
+            )
             if not source.is_file():
                 broken.append(f"{path.relative_to(root)}:{node.lineno} -> no module {node.module}")
                 continue
             defined = _toplevel_names(source)
             for alias in node.names:
                 # `from pkg import submodule` is legal without pkg/__init__ binding the name
-                if alias.name == "*" or (source.name == "__init__.py"
-                                         and (source.parent / f"{alias.name}.py").is_file()):
+                if alias.name == "*" or (
+                    source.name == "__init__.py" and (source.parent / f"{alias.name}.py").is_file()
+                ):
                     continue
                 if alias.name not in defined:
                     broken.append(
                         f"{path.relative_to(root)}:{node.lineno} -> "
-                        f"{node.module} does not define {alias.name!r}")
+                        f"{node.module} does not define {alias.name!r}"
+                    )
     assert not broken, "scripts import names that no longer exist:\n  " + "\n  ".join(broken)
 
 
@@ -302,10 +332,11 @@ def test_simulate_does_not_need_the_server_package():
     probe = (
         "import sys\n"
         "from petab_harness import simulate\n"
-        "simulate._ensure_swig_on_path()\n"   # the path that regressed: exercise it, not just import
+        "simulate._ensure_swig_on_path()\n"  # the path that regressed: exercise it, not just import
         "leaked = [m for m in sys.modules if m.split('.')[0] == 'petab_mcp']\n"
         "sys.exit('leaked petab_mcp: ' + ', '.join(sorted(leaked)[:3]) if leaked else 0)\n"
     )
     proc = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
     assert proc.returncode == 0, (
-        "petab_harness.simulate must not pull in the server package:\n" + proc.stderr)
+        "petab_harness.simulate must not pull in the server package:\n" + proc.stderr
+    )

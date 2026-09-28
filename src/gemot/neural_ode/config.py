@@ -60,8 +60,10 @@ class Config:
                 raise ConfigError(f"distil.{name} must be a positive integer")
         if "selection" in d and d["selection"] not in SELECTIONS:
             raise ConfigError(f"distil.selection must be one of {sorted(SELECTIONS)}")
-        for name, allowed in (("binary_operators", BINARY_OPERATORS),
-                              ("unary_operators", UNARY_OPERATORS)):
+        for name, allowed in (
+            ("binary_operators", BINARY_OPERATORS),
+            ("unary_operators", UNARY_OPERATORS),
+        ):
             if name in d and (not d[name] or set(d[name]) - allowed):
                 raise ConfigError(f"distil.{name} must be a non-empty subset of {sorted(allowed)}")
 
@@ -94,6 +96,8 @@ class Config:
     def distil_config(self, distil, supplied=None):
         """``distil.DistilConfig`` with :attr:`distil` applied and :attr:`pysr_interpreter` as its
         interpreter; a supplied config is the base."""
-        base = distil.DistilConfig(interpreter=self.pysr_interpreter) if supplied is None else supplied
+        base = (
+            distil.DistilConfig(interpreter=self.pysr_interpreter) if supplied is None else supplied
+        )
         overrides = {k: tuple(v) if k.endswith("_operators") else v for k, v in self.distil.items()}
         return dataclasses.replace(base, **overrides) if overrides else base

@@ -26,8 +26,12 @@ from .clock import _ToolClock
 from .. import benchmark
 from .provenance import _bic_reference, _now_iso, _reference_score
 from ..scenario import Baseline, JudgeContext, Scenario
-from .scoring import (_noise_sigma_flag, _reference_sigma_flag,
-                      _residual_structure_fields, _validation_fields)
+from .scoring import (
+    _noise_sigma_flag,
+    _reference_sigma_flag,
+    _residual_structure_fields,
+    _validation_fields,
+)
 
 
 async def _head_version(call) -> "int | None":
@@ -114,11 +118,15 @@ async def _restore_best_checkpoint(call, reference=None) -> None:
     if not clean:
         # Every candidate would fail the sigma gate. Score the plain best-scoring one: the run's
         # own lowest-scoring model is the honest thing to report, and the gate still fails it.
-        print(f"[judge] none of the run's {len(candidates)} fitted versions has a plausible noise "
-              f"sigma — scoring best-scoring v{fallback}")
+        print(
+            f"[judge] none of the run's {len(candidates)} fitted versions has a plausible noise "
+            f"sigma — scoring best-scoring v{fallback}"
+        )
     elif chosen != fallback:
-        print(f"[judge] scoring v{chosen} — the best-scoring version whose noise sigma is "
-              f"plausible (v{fallback} scores better but its sigma would fail the gate)")
+        print(
+            f"[judge] scoring v{chosen} — the best-scoring version whose noise sigma is "
+            f"plausible (v{fallback} scores better but its sigma would fail the gate)"
+        )
 
 
 def _candidate_k(params, final) -> "tuple[int, int, list[str]]":
@@ -139,9 +147,15 @@ def _candidate_k(params, final) -> "tuple[int, int, list[str]]":
     reads rather than copied off the server's ``k``, so the two stay independently derived yet
     equal. A summary that lacks the list (a server predating it) charges none.
     """
-    k_estimated = (sum(1 for p in params
-                       if isinstance(p, dict) and p.get("estimate") and p.get("in_model", True))
-                   if isinstance(params, list) else 0)
+    k_estimated = (
+        sum(
+            1
+            for p in params
+            if isinstance(p, dict) and p.get("estimate") and p.get("in_model", True)
+        )
+        if isinstance(params, list)
+        else 0
+    )
     hardcoded = final.get("hardcoded_constants") if isinstance(final, dict) else None
     hardcoded = [str(c) for c in hardcoded] if isinstance(hardcoded, list) else []
     return k_estimated + len(hardcoded), k_estimated, hardcoded
@@ -163,8 +177,11 @@ def _fitted_parameters(params) -> "dict[str, float] | None":
         return None
     out: dict[str, float] = {}
     for parameter in params:
-        if not (isinstance(parameter, dict) and parameter.get("estimate")
-                and parameter.get("in_model", True)):
+        if not (
+            isinstance(parameter, dict)
+            and parameter.get("estimate")
+            and parameter.get("in_model", True)
+        ):
             continue
         value = parameter.get("nominalValue")
         if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -190,8 +207,11 @@ def _stored_k_and_n(stored) -> "tuple[int | None, int | None]":
     if not isinstance(stored, dict):
         return None, None
     params = stored.get("parameters")
-    k = (sum(1 for p in params if isinstance(p, dict) and p.get("estimate"))
-         if isinstance(params, list) else None)
+    k = (
+        sum(1 for p in params if isinstance(p, dict) and p.get("estimate"))
+        if isinstance(params, list)
+        else None
+    )
     simulation = stored.get("simulation")
     n = simulation.get("n_data_points") if isinstance(simulation, dict) else None
     return k, (n if isinstance(n, int) else None)
@@ -232,8 +252,12 @@ async def _scoreable_versions(call) -> "list[int]":
     scored = []
     for v in rows:
         score, num = v.get(key), v.get("version")
-        if isinstance(score, (int, float)) and not isinstance(score, bool) \
-                and math.isfinite(score) and isinstance(num, int):
+        if (
+            isinstance(score, (int, float))
+            and not isinstance(score, bool)
+            and math.isfinite(score)
+            and isinstance(num, int)
+        ):
             scored.append((float(score), num))
     scored.sort()
     return [num for _, num in scored]
@@ -273,8 +297,11 @@ async def _restore(call, version: int, head: "int | None") -> bool:
     if version == head:
         return True
     try:
-        await call("restore_version", version=version,
-                   justification="scoring scan: evaluate this version before the judge scores")
+        await call(
+            "restore_version",
+            version=version,
+            justification="scoring scan: evaluate this version before the judge scores",
+        )
         return True
     except Exception as exc:  # pragma: no cover - skip a version we cannot restore
         print(f"[judge] could not restore v{version} ({type(exc).__name__}: {exc})")
@@ -297,8 +324,15 @@ async def _restore_checkpoint_only(call) -> None:
         print(f"[judge] restored best-scoring checkpoint v{best} (was HEAD v{head}) before scoring")
 
 
-async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta: dict,
-                 clock: "_ToolClock", t0: float) -> "tuple[int, dict]":
+async def _judge(
+    scenario: Scenario,
+    call,
+    baseline: Baseline,
+    work: Path,
+    meta: dict,
+    clock: "_ToolClock",
+    t0: float,
+) -> "tuple[int, dict]":
     """Judge the repaired model against the true model by the run's criterion (structure-agnostic).
 
     Success ⇔ the repaired model can't be rejected relative to the true (data-generating)
@@ -385,8 +419,11 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     # Keep None as None (an unreadable probe), distinct from -1 (nothing fit). A diff needs two
     # versions, so it is skipped unless HEAD is at least v1.
     head = await _head_version(call)
-    diff = (await call("diff_versions", from_version=0, to_version=head)
-            if head is not None and head > 0 else {})
+    diff = (
+        await call("diff_versions", from_version=0, to_version=head)
+        if head is not None and head > 0
+        else {}
+    )
     # The effective parameter count of the SCORED fit (identifiability.effective_parameter_count):
     # k_eff well below k says the data did not determine that many parameters. Read off the STORED
     # version, like the sigma reports in the scan above — it is on no result the agent sees, and
@@ -400,7 +437,9 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         k_eff = None
     errors = await call("get_errors", limit=20)
     # baseline.nll is None for a zero-shot build (no model shipped → nothing to score).
-    delta = (baseline.nll - final_nll) if (baseline.nll is not None and final_nll is not None) else None
+    delta = (
+        (baseline.nll - final_nll) if (baseline.nll is not None and final_nll is not None) else None
+    )
 
     # Estimated-noise-sigma plausibility of the SCORED model. A wrong model can reach a good score
     # by making the noise model implausible — inflating sigma to absorb misfit, or collapsing it to
@@ -447,8 +486,9 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     reference_sigma_flag = _reference_sigma_flag(noise_sigma_report, ref, k=k, n=n)
     noise_sigma_flag = reference_sigma_flag or _noise_sigma_flag(noise_sigma_report)
     sigma_basis = "reference" if reference_sigma_flag else "data_std"
-    sigma_implausible = bool(noise_sigma_flag
-                             and (noise_sigma_flag["inflated"] or noise_sigma_flag["collapsed"]))
+    sigma_implausible = bool(
+        noise_sigma_flag and (noise_sigma_flag["inflated"] or noise_sigma_flag["collapsed"])
+    )
 
     # Canonical BIC of candidate and reference, RECORDED for every run whatever the criterion
     # (docs/RATIONALE.md) even though the gate below follows the criterion.
@@ -464,8 +504,10 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         cand = crit.value(final_nll, k, n, k_eff) if (n and final_nll is not None) else None
         refv = _reference_score(ref, crit)
         criteria_scores[name] = {
-            "candidate": cand, "reference": refv,
-            "delta": (cand - refv) if (cand is not None and refv is not None) else None}
+            "candidate": cand,
+            "reference": refv,
+            "delta": (cand - refv) if (cand is not None and refv is not None) else None,
+        }
 
     # The GATE runs under the criterion the server actually ranked models by, learned from the
     # `criterion` the scored fit reports (docs/RATIONALE.md). An unreadable or absent label falls
@@ -478,14 +520,20 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         # The criterion has no value for the TRUE model — aicc is undefined at n <= k+1, tic needs
         # a k_eff the reference was written without — so it cannot grade against it either: fall
         # back to canonical BIC for BOTH sides and say so (docs/RATIONALE.md).
-        criterion_note = (f"{criterion.name} has no value for the reference "
-                          f"(k={ref.get('k')}, n={ref.get('n')}, k_eff={ref.get('k_eff')}) — "
-                          "graded by canonical bic")
+        criterion_note = (
+            f"{criterion.name} has no value for the reference "
+            f"(k={ref.get('k')}, n={ref.get('n')}, k_eff={ref.get('k_eff')}) — "
+            "graded by canonical bic"
+        )
         criterion, score_ref = None, bic_ref
-    score_cand = (criterion.value(final_nll, k, n, k_eff)
-                  if (criterion is not None and n and final_nll is not None) else bic_cand)
-    delta_score = ((score_cand - score_ref)
-                   if (score_cand is not None and score_ref is not None) else None)
+    score_cand = (
+        criterion.value(final_nll, k, n, k_eff)
+        if (criterion is not None and n and final_nll is not None)
+        else bic_cand
+    )
+    delta_score = (
+        (score_cand - score_ref) if (score_cand is not None and score_ref is not None) else None
+    )
     # One threshold for both: every criterion here is on the same deviance scale (2·Δnll), which
     # is what lets the benchmark's evidence bar carry over unchanged when the penalty is swapped.
     score_pass = delta_score is not None and delta_score <= scenario.bic_threshold
@@ -499,8 +547,17 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     dof = max(0, n - k)
     p_gof = chi2_gof_pvalue(chi2, dof)
 
-    ctx = JudgeContext(call=call, baseline=baseline, final_nll=final_nll, structure=structure,
-                       new_species=new_species, delta=delta, n=n, k=k, chi2=chi2)
+    ctx = JudgeContext(
+        call=call,
+        baseline=baseline,
+        final_nll=final_nll,
+        structure=structure,
+        new_species=new_species,
+        delta=delta,
+        n=n,
+        k=k,
+        chi2=chi2,
+    )
     diag_lines: list[str] = []
     diag_fields: dict = {}
     if scenario.diagnostics is not None:
@@ -520,9 +577,11 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     _dl = f"{delta:.6g}" if delta is not None else "n/a"
     _nll = f"{final_nll:.6g}" if final_nll is not None else "n/a (no valid fit)"
     _keff = f"  k_eff={k_eff:.3g}" if isinstance(k_eff, (int, float)) else ""
-    print(f"  fit: nll={_nll}  chi2={chi2:.6g}  k={k}{_keff}  n={n}  (baseline nll {_bl}, Δnll {_dl})"
-          if chi2 is not None else
-          f"  fit: nll={_nll}  k={k}{_keff}  n={n}  (baseline nll {_bl}, Δnll {_dl})")
+    print(
+        f"  fit: nll={_nll}  chi2={chi2:.6g}  k={k}{_keff}  n={n}  (baseline nll {_bl}, Δnll {_dl})"
+        if chi2 is not None
+        else f"  fit: nll={_nll}  k={k}{_keff}  n={n}  (baseline nll {_bl}, Δnll {_dl})"
+    )
     # `ljust(5) + " "` keeps the historic "BIC:  candidate" column (two spaces) byte-identical
     # while a longer label just takes the one space it needs.
     _label = criterion_label.upper()
@@ -530,8 +589,10 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     if criterion_note:
         print(f"  note: {criterion_note}")
     if delta_score is not None:
-        print(f"  {_col}candidate {score_cand:.6g} | true-model {score_ref:.6g} | "
-              f"Δ{_label} {delta_score:+.6g}  (accept if <= {scenario.bic_threshold:g})")
+        print(
+            f"  {_col}candidate {score_cand:.6g} | true-model {score_ref:.6g} | "
+            f"Δ{_label} {delta_score:+.6g}  (accept if <= {scenario.bic_threshold:g})"
+        )
     else:
         # A reference that parses but lacks nll/k/n makes the reference score None while `ref` is a
         # truthy dict — report that as "malformed", not "ok", so the real cause of the missing gate
@@ -541,20 +602,26 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     # Canonical BIC alongside whenever it is NOT the gate — recorded for every run
     # (docs/RATIONALE.md), and worth seeing next to the score that actually decided.
     if criterion_label != "bic" and delta_bic is not None:
-        print(f"  BIC:  candidate {bic_cand:.6g} | true-model {bic_ref:.6g} | "
-              f"ΔBIC {delta_bic:+.6g}  (recorded, not the gate)")
+        print(
+            f"  BIC:  candidate {bic_cand:.6g} | true-model {bic_ref:.6g} | "
+            f"ΔBIC {delta_bic:+.6g}  (recorded, not the gate)"
+        )
     if p_gof is not None:
-        print(f"  chi2 GoF:             p={p_gof:.3g} (dof={dof}) "
-              f"— {'consistent with noise' if p_gof >= 0.05 else 'worse than noise'}")
+        print(
+            f"  chi2 GoF:             p={p_gof:.3g} (dof={dof}) "
+            f"— {'consistent with noise' if p_gof >= 0.05 else 'worse than noise'}"
+        )
     if validation:
         # Printed next to ΔBIC because it is the same shape of comparison against the same true
         # model — on data neither side was fitted to.
         # Report-only; it is not part of the verdict.
         if validation.get("delta_nll") is not None:
-            print(f"  held-out (validation): nll {validation['nll']:.6g} | true-model "
-                  f"{validation['reference_nll']:.6g} | Δnll "
-                  f"{validation['delta_nll']:+.6g}  over {validation['n']} point(s) in "
-                  f"{validation.get('n_conditions')} unseen condition(s)  [report-only]")
+            print(
+                f"  held-out (validation): nll {validation['nll']:.6g} | true-model "
+                f"{validation['reference_nll']:.6g} | Δnll "
+                f"{validation['delta_nll']:+.6g}  over {validation['n']} point(s) in "
+                f"{validation.get('n_conditions')} unseen condition(s)  [report-only]"
+            )
             # Explicitly non-None AND non-zero on the reference side: the ratio below divides by
             # it, so zero has to be excluded on purpose rather than by the accident of a
             # truthiness test that reads like a None check.
@@ -562,15 +629,26 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
             if _vchi2 is not None and _rchi2 is not None and _rchi2 != 0:
                 # Ratio, not a p-value: the truth's own held-out reduced chi2 on fujita is 36.5, so
                 # an absolute goodness-of-fit test rejects both sides (see scoring._validation_fields).
-                print(f"  held-out chi2:        {_vchi2:.4g} vs true-model {_rchi2:.4g} "
-                      f"(x{_vchi2 / _rchi2:.2f})")
+                print(
+                    f"  held-out chi2:        {_vchi2:.4g} vs true-model {_rchi2:.4g} "
+                    f"(x{_vchi2 / _rchi2:.2f})"
+                )
         else:
-            print(f"  held-out (validation): {validation['status']}"
-                  + (f" — {validation['reason']}" if validation.get("reason") else "")
-                  + ("  (held-out n differs from the reference's — the difference is withheld)"
-                     if validation.get("n_mismatch") else "")
-                  + ("  (the reference block and the score are of different kinds — the "
-                     "difference is withheld)" if validation.get("mode_mismatch") else ""))
+            print(
+                f"  held-out (validation): {validation['status']}"
+                + (f" — {validation['reason']}" if validation.get("reason") else "")
+                + (
+                    "  (held-out n differs from the reference's — the difference is withheld)"
+                    if validation.get("n_mismatch")
+                    else ""
+                )
+                + (
+                    "  (the reference block and the score are of different kinds — the "
+                    "difference is withheld)"
+                    if validation.get("mode_mismatch")
+                    else ""
+                )
+            )
     # Server-side breakdown of the heavy compute: how much of the tool time was the one-time
     # AMICI compile vs the recurring pyPESTO fit (best-effort — a server without the tool, or
     # a failed call, just leaves these None). Fetched BEFORE the clock snapshot below so this
@@ -594,10 +672,14 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
     if clock.calls:
         breakdown = ""
         if compile_s is not None and fit_s is not None:
-            breakdown = (f" [compile {compile_s:.0f}s ×{n_compiles} + fit {fit_s:.0f}s ×{n_fits}"
-                         f" + other {max(0.0, compute_s - compile_s - fit_s):.0f}s]")
-        print(f"  time:                 total {wall:.0f}s | tool calls {compute_s:.0f}s "
-              f"({clock.calls} calls){breakdown} | LLM+overhead {llm_s:.0f}s")
+            breakdown = (
+                f" [compile {compile_s:.0f}s ×{n_compiles} + fit {fit_s:.0f}s ×{n_fits}"
+                f" + other {max(0.0, compute_s - compile_s - fit_s):.0f}s]"
+            )
+        print(
+            f"  time:                 total {wall:.0f}s | tool calls {compute_s:.0f}s "
+            f"({clock.calls} calls){breakdown} | LLM+overhead {llm_s:.0f}s"
+        )
     if errors:
         print(f"  rejected tool calls:  {len(errors)} (see get_errors)")
     ant_diff = diff.get("model_diff") if isinstance(diff, dict) else None
@@ -606,25 +688,36 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         for line in str(ant_diff).splitlines():
             print("    " + line)
     if success:
-        verdict = (f"not rejectable vs the true model (Δ{criterion_label} {delta_score:+.3g} <= "
-                   f"{scenario.bic_threshold:g}); the repair explains the data as well as the truth.")
+        verdict = (
+            f"not rejectable vs the true model (Δ{criterion_label} {delta_score:+.3g} <= "
+            f"{scenario.bic_threshold:g}); the repair explains the data as well as the truth."
+        )
     elif final_nll is None:
         verdict = "no valid fit (the model was never built or produced a non-finite objective)."
     elif delta_score is None:
-        verdict = (f"could not evaluate {criterion_label} "
-                   "(missing reference.json or no data points).")
+        verdict = (
+            f"could not evaluate {criterion_label} (missing reference.json or no data points)."
+        )
     elif score_pass and sigma_implausible:
         which = " and ".join(
-            w for w, on in (("inflated (absorbing misfit)", noise_sigma_flag["inflated"]),
-                            ("collapsed (overfitting the noise)", noise_sigma_flag["collapsed"]))
-            if on)
-        verdict = (f"{criterion_label} passes (Δ{criterion_label} {delta_score:+.3g}) but the "
-                   f"estimated noise sigma is {which} — the good score rests on an implausible "
-                   "noise model, so it does not count.")
+            w
+            for w, on in (
+                ("inflated (absorbing misfit)", noise_sigma_flag["inflated"]),
+                ("collapsed (overfitting the noise)", noise_sigma_flag["collapsed"]),
+            )
+            if on
+        )
+        verdict = (
+            f"{criterion_label} passes (Δ{criterion_label} {delta_score:+.3g}) but the "
+            f"estimated noise sigma is {which} — the good score rests on an implausible "
+            "noise model, so it does not count."
+        )
     else:
-        verdict = (f"rejectable: Δ{criterion_label} {delta_score:+.3g} > "
-                   f"{scenario.bic_threshold:g} — the fit is decisively worse than the true "
-                   "model.")
+        verdict = (
+            f"rejectable: Δ{criterion_label} {delta_score:+.3g} > "
+            f"{scenario.bic_threshold:g} — the fit is decisively worse than the true "
+            "model."
+        )
     print(f"\n  {'SUCCESS' if success else 'NOT FIXED'}: {verdict}")
     print("=" * 70)
 
@@ -706,5 +799,7 @@ async def _judge(scenario: Scenario, call, baseline: Baseline, work: Path, meta:
         **diag_fields,
     }
     (work / "result.json").write_text(json.dumps(result, indent=2))
-    print(f"  (machine-readable result -> {(work / 'result.json').relative_to(scenario.example_dir.parent)})")
+    print(
+        f"  (machine-readable result -> {(work / 'result.json').relative_to(scenario.example_dir.parent)})"
+    )
     return (0 if success else 1), result

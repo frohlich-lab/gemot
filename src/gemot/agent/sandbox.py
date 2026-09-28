@@ -45,9 +45,16 @@ SANDBOX_TMP_DIR = ".tmp"
 _SANDBOX_RO_DIRS = ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc")
 
 #: Variables copied into the sandbox when set (compute knobs); nothing else is inherited.
-_PASSTHROUGH_ENV = ("CC", "CXX", "AMICI_PARALLEL_COMPILE", "PETAB_MCP_FIT_N_WORKERS",
-                    "SLURM_CPUS_PER_TASK", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
-                    "MKL_NUM_THREADS")
+_PASSTHROUGH_ENV = (
+    "CC",
+    "CXX",
+    "AMICI_PARALLEL_COMPILE",
+    "PETAB_MCP_FIT_N_WORKERS",
+    "SLURM_CPUS_PER_TASK",
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+)
 
 #: Bound on the preflight's own commands, which do nothing but prove the sandbox starts.
 _PREFLIGHT_TIMEOUT_S = 60.0
@@ -94,14 +101,19 @@ def _sandbox_env(env_prefix: Path, n_cpus: int) -> dict[str, str]:
     return env
 
 
-def bwrap_argv(workspace: Path, env_prefix: Path, sandbox_env: dict[str, str],
-               command: str) -> list[str]:
+def bwrap_argv(
+    workspace: Path, env_prefix: Path, sandbox_env: dict[str, str], command: str
+) -> list[str]:
     """The full ``bwrap`` command line that runs ``command`` in the sandbox described above."""
     argv = [
         _bwrap_binary() or "bwrap",
         # No `--new-session`: the timeout kill relies on one process group (see _run_sandboxed).
-        "--unshare-all", "--die-with-parent",
-        "--proc", "/proc", "--dev", "/dev",
+        "--unshare-all",
+        "--die-with-parent",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
     ]
     for d in _SANDBOX_RO_DIRS:
         if os.path.isdir(d):
@@ -116,15 +128,21 @@ def bwrap_argv(workspace: Path, env_prefix: Path, sandbox_env: dict[str, str],
     return argv
 
 
-def _run_sandboxed(workspace: Path, env_prefix: Path, sandbox_env: dict[str, str],
-                   command: str, timeout: float) -> subprocess.CompletedProcess:
+def _run_sandboxed(
+    workspace: Path, env_prefix: Path, sandbox_env: dict[str, str], command: str, timeout: float
+) -> subprocess.CompletedProcess:
     """One command under bwrap, bounded by ``timeout``; raises ``subprocess.TimeoutExpired`` with
     the partial stdout when it overruns. The sandbox gets an empty host environment (``--setenv``
     only) and its own process group, which the timeout kills whole (see RATIONALE.md)."""
     proc = subprocess.Popen(  # noqa: S603 - argv list, no shell on the host side
         bwrap_argv(workspace, env_prefix, sandbox_env, command),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True,
-        env={}, cwd=str(workspace), start_new_session=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        env={},
+        cwd=str(workspace),
+        start_new_session=True,
     )
     try:
         out, err = proc.communicate(timeout=timeout)
@@ -145,7 +163,8 @@ def sandbox_preflight(workspace: Path, env_prefix: Path | None = None, *, n_cpus
     if bwrap is None:
         raise RuntimeError(
             "sandboxing an agent's shell needs bubblewrap (`bwrap`), and it is not on PATH. "
-            "There is deliberately no unsandboxed fallback.")
+            "There is deliberately no unsandboxed fallback."
+        )
     for d in (SANDBOX_HOME_DIR, SANDBOX_TMP_DIR):
         (workspace / d).mkdir(exist_ok=True)
     env = _sandbox_env(env_prefix, n_cpus)
@@ -159,21 +178,28 @@ def sandbox_preflight(workspace: Path, env_prefix: Path | None = None, *, n_cpus
     try:
         proc = _run_sandboxed(workspace, env_prefix, env, probe, _PREFLIGHT_TIMEOUT_S)
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"the sandbox preflight did not finish in {_PREFLIGHT_TIMEOUT_S:.0f}s") from exc
+        raise RuntimeError(
+            f"the sandbox preflight did not finish in {_PREFLIGHT_TIMEOUT_S:.0f}s"
+        ) from exc
     out = proc.stdout + proc.stderr
     if proc.returncode != 0 or "WORK_OK" not in out or "PY_OK" not in out:
         raise RuntimeError(
             "the sandbox does not start on this node (bwrap exit "
             f"{proc.returncode}): {out.strip()[-500:]!r}. Unprivileged user namespaces may be "
-            "disabled here; an agent shell does not run without them.")
+            "disabled here; an agent shell does not run without them."
+        )
     if "HOME_HIDDEN" not in out:
         raise RuntimeError("the sandbox can see the home directory — refusing to run the agent.")
-    version = subprocess.run([bwrap, "--version"], capture_output=True, text=True,
-                             check=False).stdout.strip()
-    return {"bwrap": version, "bwrap_path": bwrap,
-            "verified": ["workspace", "python", "home_hidden"],
-            "env_prefix": str(env_prefix), "ro_dirs": [d for d in _SANDBOX_RO_DIRS
-                                                        if os.path.isdir(d)]}
+    version = subprocess.run(
+        [bwrap, "--version"], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    return {
+        "bwrap": version,
+        "bwrap_path": bwrap,
+        "verified": ["workspace", "python", "home_hidden"],
+        "env_prefix": str(env_prefix),
+        "ro_dirs": [d for d in _SANDBOX_RO_DIRS if os.path.isdir(d)],
+    }
 
 
 def new_shell_audit() -> dict[str, Any]:
@@ -194,8 +220,15 @@ def sandbox_backend_class():
     from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 
     class _BwrapSandbox(FilesystemBackend, SandboxBackendProtocol):
-        def __init__(self, workspace: Path, *, env_prefix: Path, n_cpus: int, timeout: float,
-                     audit: dict[str, Any]) -> None:
+        def __init__(
+            self,
+            workspace: Path,
+            *,
+            env_prefix: Path,
+            n_cpus: int,
+            timeout: float,
+            audit: dict[str, Any],
+        ) -> None:
             super().__init__(root_dir=str(workspace), virtual_mode=True)
             self._workspace = Path(workspace)
             self._env_prefix = env_prefix
@@ -210,26 +243,36 @@ def sandbox_backend_class():
 
         def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
             if not command or not isinstance(command, str):
-                return ExecuteResponse(output="Error: Command must be a non-empty string.",
-                                       exit_code=1, truncated=False)
+                return ExecuteResponse(
+                    output="Error: Command must be a non-empty string.",
+                    exit_code=1,
+                    truncated=False,
+                )
             effective = float(timeout) if timeout else self._default_timeout
             audit = self._audit
             audit["n_shell_commands"] += 1
             audit["commands"].append(command[:_COMMAND_RECORD_CHARS])
             t0 = time.monotonic()
             try:
-                proc = _run_sandboxed(self._workspace, self._env_prefix, self._sandbox_env,
-                                      command, effective)
+                proc = _run_sandboxed(
+                    self._workspace, self._env_prefix, self._sandbox_env, command, effective
+                )
             except subprocess.TimeoutExpired as exc:
                 audit["n_timeouts"] += 1
                 audit["n_nonzero_exits"] += 1
                 partial = getattr(exc, "output", None) or getattr(exc, "stdout", None) or ""
-                partial = partial.decode(errors="replace") if isinstance(partial, bytes) else partial
+                partial = (
+                    partial.decode(errors="replace") if isinstance(partial, bytes) else partial
+                )
                 return ExecuteResponse(
-                    output=(f"{partial[-2000:]}\n\nError: command timed out after "
-                            f"{effective:.0f}s and was killed. Run long jobs in the background "
-                            "(`nohup ... > log 2>&1 &`) and poll the log."),
-                    exit_code=124, truncated=False)
+                    output=(
+                        f"{partial[-2000:]}\n\nError: command timed out after "
+                        f"{effective:.0f}s and was killed. Run long jobs in the background "
+                        "(`nohup ... > log 2>&1 &`) and poll the log."
+                    ),
+                    exit_code=124,
+                    truncated=False,
+                )
             finally:
                 audit["shell_seconds"] += time.monotonic() - t0
             parts = []
@@ -240,8 +283,10 @@ def sandbox_backend_class():
             output = "\n".join(parts) if parts else "<no output>"
             truncated = False
             if len(output) > _MAX_OUTPUT_BYTES:
-                output = output[:_MAX_OUTPUT_BYTES] + \
-                    f"\n\n... Output truncated at {_MAX_OUTPUT_BYTES} bytes."
+                output = (
+                    output[:_MAX_OUTPUT_BYTES]
+                    + f"\n\n... Output truncated at {_MAX_OUTPUT_BYTES} bytes."
+                )
                 truncated = True
             if proc.returncode != 0:
                 audit["n_nonzero_exits"] += 1
@@ -249,5 +294,3 @@ def sandbox_backend_class():
             return ExecuteResponse(output=output, exit_code=proc.returncode, truncated=truncated)
 
     return _BwrapSandbox
-
-

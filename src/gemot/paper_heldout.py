@@ -15,6 +15,7 @@ REFIT the candidate's structure on each held-out unit; raimundez is scored at it
 with only the new per-blot observation scalings solved, against the published control, because its held-out set is fixed rather than a transfer set. A
 ΔNLL is not the same quantity in the two cases and the figure does not pretend otherwise.
 """
+
 from __future__ import annotations
 
 import json
@@ -48,8 +49,10 @@ def read_input(root: Path) -> dict | None:
         return None
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("schema_version") != 1:
-        raise ValueError("unsupported held-out benchmarks schema; rebuild with "
-                         "slurm/_heldout_benchmarks_input.py")
+        raise ValueError(
+            "unsupported held-out benchmarks schema; rebuild with "
+            "slurm/_heldout_benchmarks_input.py"
+        )
     return payload
 
 
@@ -113,20 +116,39 @@ def _marginal(axis, arms, ylim, fontsize):
 
     offsets = np.linspace(0.32, -0.32, len(ARM_STYLE))
     for offset, (name, style) in zip(offsets, ARM_STYLE.items(), strict=True):
-        sample = [min(p["heldout_delta_nll"], ylim[1])
-                  for p in arms.get(name, {}).get("points", [])]
+        sample = [
+            min(p["heldout_delta_nll"], ylim[1]) for p in arms.get(name, {}).get("points", [])
+        ]
         if not sample:
             continue
         low, high, middle = min(sample), max(sample), float(np.median(sample))
-        axis.plot([offset, offset], [low, high], color=style["color"], linewidth=0.9,
-                  solid_capstyle="butt", zorder=3)
+        axis.plot(
+            [offset, offset],
+            [low, high],
+            color=style["color"],
+            linewidth=0.9,
+            solid_capstyle="butt",
+            zorder=3,
+        )
         for end in (low, high):
-            axis.plot([offset - 0.09, offset + 0.09], [end, end], color=style["color"],
-                      linewidth=0.9, zorder=3)
-        axis.plot([offset], [middle], marker=style["marker"], markersize=2.6,
-                  markerfacecolor=style["color"],
-                  markeredgecolor=shaded(style["color"]),
-                  markeredgewidth=0.4, linestyle="none", zorder=4)
+            axis.plot(
+                [offset - 0.09, offset + 0.09],
+                [end, end],
+                color=style["color"],
+                linewidth=0.9,
+                zorder=3,
+            )
+        axis.plot(
+            [offset],
+            [middle],
+            marker=style["marker"],
+            markersize=2.6,
+            markerfacecolor=style["color"],
+            markeredgecolor=shaded(style["color"]),
+            markeredgewidth=0.4,
+            linestyle="none",
+            zorder=4,
+        )
     axis.axhline(0, color=ZERO_INK, linestyle="--", linewidth=0.7, zorder=1)
     axis.set_xlim(-0.6, 0.6)
     # Transparent: a run past its cloud's right edge is drawn in the spacer and can reach into
@@ -147,6 +169,7 @@ TITLE_Y = 1.15
 
 def render(payload: dict, output, fontsize: float = BODY) -> None:
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
@@ -162,8 +185,9 @@ def render(payload: dict, output, fontsize: float = BODY) -> None:
     # smaller benchmarks occupy little of the axis; the clip keeps one runaway from making that
     # worse, and it is drawn outside the frame rather than dropped -- named by its place, not by
     # a printed value, as figure 3A draws its own.
-    every = [p["heldout_delta_nll"] for e in examples for a in e["arms"].values()
-             for p in a["points"]]
+    every = [
+        p["heldout_delta_nll"] for e in examples for a in e["arms"].values() for p in a["points"]
+    ]
     ylim, offscale = _clipped_limits(every)
     matplotlib.rcParams.update({"pdf.compression": 9, "svg.hashsalt": "heldout-benchmarks"})
     # Full ICLR text width, placed at 100%, so every size below is a size on the page. ONE row:
@@ -188,8 +212,16 @@ def render(payload: dict, output, fontsize: float = BODY) -> None:
     for index in range(len(examples)):
         columns.append(len(ratios))
         ratios += [1.0, 0.07, 0.16] if index == len(examples) - 1 else [1.0, 0.07, 0.16, 0.20]
-    grid = fig.add_gridspec(1, len(ratios), width_ratios=ratios, left=0.098, right=0.995,
-                            top=1 - above / page[1], bottom=below / page[1], wspace=0.0)
+    grid = fig.add_gridspec(
+        1,
+        len(ratios),
+        width_ratios=ratios,
+        left=0.098,
+        right=0.995,
+        top=1 - above / page[1],
+        bottom=below / page[1],
+        wspace=0.0,
+    )
     axes, margins = [], []
     for index, column in enumerate(columns):
         main = fig.add_subplot(grid[0, column], sharey=axes[0] if axes else None)
@@ -227,15 +259,28 @@ def render(payload: dict, output, fontsize: float = BODY) -> None:
             # edge when its ΔBIC is beyond the panel's, in the band over the frame when its ΔNLL
             # is beyond the shared scale, and in the corner where the two meet when both are.
             # Drawn like any other run -- where it sits is what says it is off the scale.
-            xs_drawn = [beside if p["training_dbic"] > xfence else p["training_dbic"]
-                        for p in arm["points"]]
-            ys_drawn = [over if offscale is not None and p["heldout_delta_nll"] > ylim[1]
-                        else p["heldout_delta_nll"] for p in arm["points"]]
-            axis.scatter(xs_drawn, ys_drawn, s=15, c=style["color"], marker=style["marker"],
-                         # Figure 3's outline: the mark's own hue, darker. White erased the
-                         # pale blinded step against the page.
-                         edgecolors=shaded(style["color"]), linewidths=0.5,
-                         zorder=3, clip_on=False)
+            xs_drawn = [
+                beside if p["training_dbic"] > xfence else p["training_dbic"] for p in arm["points"]
+            ]
+            ys_drawn = [
+                over
+                if offscale is not None and p["heldout_delta_nll"] > ylim[1]
+                else p["heldout_delta_nll"]
+                for p in arm["points"]
+            ]
+            axis.scatter(
+                xs_drawn,
+                ys_drawn,
+                s=15,
+                c=style["color"],
+                marker=style["marker"],
+                # Figure 3's outline: the mark's own hue, darker. White erased the
+                # pale blinded step against the page.
+                edgecolors=shaded(style["color"]),
+                linewidths=0.5,
+                zorder=3,
+                clip_on=False,
+            )
 
         _marginal(margin, arms, ylim, fontsize)
         axis.set_xlim(*xlim)
@@ -253,8 +298,15 @@ def render(payload: dict, output, fontsize: float = BODY) -> None:
         subtitle = f"{kind}" + (f" · n={size:,}" if size else "")
         # BASELINE-aligned, both halves: va="bottom" aligns the boxes' bottoms, and a 7.5 pt
         # bold name and a 6 pt label have different descents, so the two sat on different lines.
-        name = axis.text(0, TITLE_Y, entry["example"], transform=axis.transAxes, fontsize=TITLE,
-                         fontweight="bold", va="baseline")
+        name = axis.text(
+            0,
+            TITLE_Y,
+            entry["example"],
+            transform=axis.transAxes,
+            fontsize=TITLE,
+            fontweight="bold",
+            va="baseline",
+        )
         titles.append((axis, name, subtitle))
         axis.grid(axis="y", color=GRID, linewidth=0.5, zorder=0)
         axis.tick_params(labelsize=SMALL, length=2, pad=1.5)
@@ -266,25 +318,52 @@ def render(payload: dict, output, fontsize: float = BODY) -> None:
 
     # One label for the shared axis, centred on the whole left edge rather than repeated per row.
     axes[0].set_ylabel("Held-out ΔNLL\n(candidate − reference)", fontsize=BODY, labelpad=2)
-    fig.supxlabel("Training ΔBIC  (candidate − reference)", fontsize=BODY, y=0.0,
-                  va="bottom")
-
+    fig.supxlabel("Training ΔBIC  (candidate − reference)", fontsize=BODY, y=0.0, va="bottom")
 
     # The mode follows its name at the name's measured width, which needs a renderer.
     renderer = fig.canvas.get_renderer()
     for axis, name, subtitle in titles:
         end = name.get_window_extent(renderer).transformed(axis.transAxes.inverted()).x1
-        axis.text(end, TITLE_Y, "  " + subtitle, transform=axis.transAxes, fontsize=SMALL,
-                  color=MUTED, va="baseline")
+        axis.text(
+            end,
+            TITLE_Y,
+            "  " + subtitle,
+            transform=axis.transAxes,
+            fontsize=SMALL,
+            color=MUTED,
+            va="baseline",
+        )
 
-    handles = [Line2D([], [], color=s["color"], marker=s["marker"], linestyle="none",
-                      markersize=3.6, markeredgecolor=shaded(s["color"]),
-                      markeredgewidth=0.4,
-                      label=s["label"]) for s in ARM_STYLE.values()]
-    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 1.0), frameon=False,
-               fontsize=BODY, handletextpad=0.3, ncol=len(handles),
-               columnspacing=1.0, borderpad=0.0)
+    handles = [
+        Line2D(
+            [],
+            [],
+            color=s["color"],
+            marker=s["marker"],
+            linestyle="none",
+            markersize=3.6,
+            markeredgecolor=shaded(s["color"]),
+            markeredgewidth=0.4,
+            label=s["label"],
+        )
+        for s in ARM_STYLE.values()
+    ]
+    fig.legend(
+        handles=handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.0),
+        frameon=False,
+        fontsize=BODY,
+        handletextpad=0.3,
+        ncol=len(handles),
+        columnspacing=1.0,
+        borderpad=0.0,
+    )
     paper_style.check_fonts(fig)
-    fig.savefig(output, dpi=paper_style.DPI, facecolor="white",
-                metadata={"CreationDate": None} if str(output).endswith(".pdf") else None)
+    fig.savefig(
+        output,
+        dpi=paper_style.DPI,
+        facecolor="white",
+        metadata={"CreationDate": None} if str(output).endswith(".pdf") else None,
+    )
     plt.close(fig)

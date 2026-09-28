@@ -56,7 +56,8 @@ def test_the_printed_setting_actually_flips_each_arm(monkeypatch):
         assert var == a.env, f"{a.name}: setting names {var}, not its env var {a.env}"
         monkeypatch.setenv(var, value)
         assert a.enabled() is (not a.default_on), (
-            f"{a.name}: the documented setting `{a.setting}` did not flip it")
+            f"{a.name}: the documented setting `{a.setting}` did not flip it"
+        )
         assert not a.is_default()
         assert f"{a.name}=" in ablations.arm()
         monkeypatch.delenv(var)
@@ -67,7 +68,7 @@ def test_arm_names_only_the_deviations(monkeypatch):
     comparable to new ones the moment a switch is added."""
     monkeypatch.delenv("PETAB_BIO_LITERATURE", raising=False)
     monkeypatch.delenv("PETAB_DATA_REGIMES", raising=False)
-    assert ablations.arm() == "baseline"          # both at their defaults
+    assert ablations.arm() == "baseline"  # both at their defaults
     monkeypatch.setenv("PETAB_DATA_REGIMES", "1")
     assert ablations.arm() == "data_regimes=on"
     monkeypatch.setenv("PETAB_BIO_LITERATURE", "1")
@@ -77,7 +78,7 @@ def test_arm_names_only_the_deviations(monkeypatch):
 def test_unknown_ablation_raises_rather_than_reading_as_off():
     """A typo must not silently select the baseline — that is an A/B whose halves are identical."""
     with pytest.raises(KeyError, match="unknown ablation"):
-        ablations.enabled("data_regime")          # missing 's'
+        ablations.enabled("data_regime")  # missing 's'
 
 
 def test_state_records_every_switch_not_only_the_deviations(monkeypatch):
@@ -101,8 +102,12 @@ def test_cli_lists_every_arm_and_json_round_trips(capsys):
 
 def test_module_runs_as_a_script():
     """`python -m petab_harness.ablations` is the advertised entrypoint, so run it as one."""
-    out = subprocess.run([sys.executable, "-m", "petab_harness.ablations"],
-                         capture_output=True, text=True, check=True)
+    out = subprocess.run(
+        [sys.executable, "-m", "petab_harness.ablations"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     assert "Ablations" in out.stdout and "data_regimes" in out.stdout
 
 
@@ -121,44 +126,44 @@ _NOT_ABLATIONS = {
     "PETAB_BIO_CACHE_DIR": "plumbing: where a bio answer is read from, not what it says",
     "PETAB_MCP_BUILD_ROOT": "path for AMICI build artefacts",
     "PETAB_MCP_CRITERION": "the complexity penalty the server ranks models by "
-                           "(bic/caic/aic/aicc/hqc/tic). "
-                           "By the membership test above this IS an arm — it changes what answer "
-                           "the run prefers — but `Ablation` is binary (`default_on`/`enabled()`, "
-                           "`state() -> dict[str, bool]`, `arm()` off on/off) and cannot express a "
-                           "four-valued switch. It is RECORDED like one meanwhile: `criterion` "
-                           "rides on every fit result and lands in result.json, the metrics CSV, "
-                           "the W&B summary and the run span, so two criterion arms never pool. "
-                           "What it lacks is the catalogue entry, which needs a multi-valued "
-                           "Ablation — register it here the moment the registry grows one",
+    "(bic/caic/aic/aicc/hqc/tic). "
+    "By the membership test above this IS an arm — it changes what answer "
+    "the run prefers — but `Ablation` is binary (`default_on`/`enabled()`, "
+    "`state() -> dict[str, bool]`, `arm()` off on/off) and cannot express a "
+    "four-valued switch. It is RECORDED like one meanwhile: `criterion` "
+    "rides on every fit result and lands in result.json, the metrics CSV, "
+    "the W&B summary and the run span, so two criterion arms never pool. "
+    "What it lacks is the catalogue entry, which needs a multi-valued "
+    "Ablation — register it here the moment the registry grows one",
     "PETAB_MCP_PROVENANCE_DIR": "path for provenance logs",
     "PETAB_MCP_MAX_INPUT_TOKENS": "infrastructure: the model's real context window, fed to the "
-                                  "summarization middleware as a profile so its trigger is a "
-                                  "fraction of the true window instead of a flat 170k fallback — "
-                                  "changes when compaction fires, not what any answer is",
+    "summarization middleware as a profile so its trigger is a "
+    "fraction of the true window instead of a flat 170k fallback — "
+    "changes when compaction fires, not what any answer is",
     "PETAB_MCP_MAX_OUTPUT_TOKENS": "infrastructure, the output-side twin of MAX_INPUT_TOKENS: the "
-                                   "model's real max_completion_tokens, sent so a turn gets the "
-                                   "ceiling the model advertises rather than whatever default the "
-                                   "provider substitutes (Z.AI serves glm-5.3-flash at 65536, half "
-                                   "its stated 131072). Declared here rather than registered as an "
-                                   "arm because it does not change the task, the prompt, the tools "
-                                   "or the scoring — only how much room one reply has. Stated "
-                                   "plainly though: it CAN move an outcome, because a reply "
-                                   "truncated at the provider default emits nothing at all "
-                                   "(finish_reason 'length', no tool call). That is a capability "
-                                   "ceiling being set correctly, not a behavioural knob to A/B",
+    "model's real max_completion_tokens, sent so a turn gets the "
+    "ceiling the model advertises rather than whatever default the "
+    "provider substitutes (Z.AI serves glm-5.3-flash at 65536, half "
+    "its stated 131072). Declared here rather than registered as an "
+    "arm because it does not change the task, the prompt, the tools "
+    "or the scoring — only how much room one reply has. Stated "
+    "plainly though: it CAN move an outcome, because a reply "
+    "truncated at the provider default emits nothing at all "
+    "(finish_reason 'length', no tool call). That is a capability "
+    "ceiling being set correctly, not a behavioural knob to A/B",
     "PETAB_MCP_REFERENCE_VALIDATION": "server validation mode; also a run.py flag, not an arm",
     "PETAB_MCP_REPO_ROOT": "path override for repo_root()",
     "PETAB_MCP_SCRATCH": "where array_task.sh stages a task's working directory; read back by "
-                         "analysis.default_work_root() to find it again. Read-side only — by the "
-                         "time anything reads it here the run is over",
+    "analysis.default_work_root() to find it again. Read-side only — by the "
+    "time anything reads it here the run is over",
     "PETAB_MCP_SKILLS_DIR": "path to the skills directory",
     "PETAB_MCP_WORK_ROOT": "the shared-server refactor's name for PETAB_MCP_SCRATCH; same path, "
-                           "same read-side-only role",
+    "same read-side-only role",
     "PETAB_MCP_YAML": "path to the PEtab problem",
     "PETAB_REQUIRE_COLLECTOR": "refuse to fall back to a throwaway in-process Phoenix when no "
-                               "shared collector is configured — a safety interlock on the "
-                               "RECORD of a run, not on what the agent does, so it cannot move "
-                               "a result (a run either happens traced or does not happen)",
+    "shared collector is configured — a safety interlock on the "
+    "RECORD of a run, not on what the agent does, so it cannot move "
+    "a result (a run either happens traced or does not happen)",
     "PHOENIX_COLLECTOR_ENDPOINT": "telemetry endpoint",
     "PHOENIX_PROJECT_NAME": "telemetry project name",
     "WANDB_PROJECT": "telemetry project name",
@@ -180,19 +185,22 @@ def test_no_unregistered_environment_switch_gates_behaviour():
         for var in _ENV_READ.findall(path.read_text(encoding="utf-8", errors="replace")):
             found.setdefault(var, str(path.relative_to(SRC)))
 
-    unaccounted = {v: where for v, where in found.items()
-                   if v not in registered and v not in _NOT_ABLATIONS}
+    unaccounted = {
+        v: where for v, where in found.items() if v not in registered and v not in _NOT_ABLATIONS
+    }
     assert not unaccounted, (
         "environment variables read in src/ that are neither registered in petab_harness.ablations "
         "nor listed in _NOT_ABLATIONS:\n"
         + "\n".join(f"  {v}  ({where})" for v, where in sorted(unaccounted.items()))
         + "\nIf it changes what a run DOES, register it as an Ablation so it is discoverable and "
-          "lands in result.json. If not, add it to _NOT_ABLATIONS with the reason."
+        "lands in result.json. If not, add it to _NOT_ABLATIONS with the reason."
     )
 
 
-@pytest.mark.parametrize("spelling", ["0", "false", "FALSE", "no", "off", " Off ",
-                                      "1", "true", "yes", "on", "anything", None])
+@pytest.mark.parametrize(
+    "spelling",
+    ["0", "false", "FALSE", "no", "off", " Off ", "1", "true", "yes", "on", "anything", None],
+)
 def test_the_server_gate_agrees_with_the_registry(monkeypatch, spelling):
     """A duplicated predicate must agree with the registry on every spelling.
 
@@ -222,11 +230,14 @@ def test_the_server_gate_agrees_with_the_registry(monkeypatch, spelling):
     registry, server = out.stdout.split()
     assert registry == server, (
         f"PETAB_DATA_REGIMES={spelling!r}: registry says {registry}, "
-        f"petab_mcp.session says {server} — the duplicated predicate has drifted")
+        f"petab_mcp.session says {server} — the duplicated predicate has drifted"
+    )
 
 
-@pytest.mark.parametrize("spelling", ["0", "false", "FALSE", "no", "off", " Off ",
-                                      "1", "true", "yes", "on", "anything", None])
+@pytest.mark.parametrize(
+    "spelling",
+    ["0", "false", "FALSE", "no", "off", " Off ", "1", "true", "yes", "on", "anything", None],
+)
 def test_the_diff_edits_server_gate_agrees_with_the_registry(monkeypatch, spelling):
     """Same duplicated-predicate rule for the OTHER server-read arm: ``petab_mcp.server``
     reads PETAB_DIFF_EDITS itself (registration-time, to pick the make_changes schema), so the
@@ -251,16 +262,21 @@ def test_the_diff_edits_server_gate_agrees_with_the_registry(monkeypatch, spelli
     registry, server = out.stdout.split()
     assert registry == server, (
         f"PETAB_DIFF_EDITS={spelling!r}: registry says {registry}, "
-        f"petab_mcp.server says {server} — the duplicated predicate has drifted")
+        f"petab_mcp.server says {server} — the duplicated predicate has drifted"
+    )
 
 
 def test_registered_ablations_are_actually_read_somewhere():
     """The converse: a registered arm that nothing reads is a lie in the catalogue."""
-    text = "\n".join(p.read_text(encoding="utf-8", errors="replace")
-                     for p in SRC.rglob("*.py") if p.name != "ablations.py")
+    text = "\n".join(
+        p.read_text(encoding="utf-8", errors="replace")
+        for p in SRC.rglob("*.py")
+        if p.name != "ablations.py"
+    )
     for a in ablations.ABLATIONS:
         assert f'enabled("{a.name}")' in text or a.env in text, (
-            f"{a.name} is registered but never read outside the registry")
+            f"{a.name} is registered but never read outside the registry"
+        )
 
 
 def test_the_removed_bio_literature_flag_stays_removed():

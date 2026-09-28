@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+
 # -- the two-copy tolerance invariant ------------------------------------------------------
 def test_the_candidate_and_reference_fits_use_ONE_amici_tolerance():
     """`petab_mcp.fitting.FIT_AMICI_ATOL` (every candidate fit) and
@@ -56,12 +57,14 @@ def test_both_tolerance_constants_honour_the_same_env_override():
 # ---------------------------------------------------------------- needs_flattening: numeric overrides
 def _mdf(rows):
     import pandas as pd
+
     return pd.DataFrame(rows)
 
 
 def _problem(mdf):
     class _P:
         measurement_df = mdf
+
     return _P()
 
 
@@ -72,10 +75,22 @@ def test_numeric_per_timepoint_sigmas_do_not_force_flattening():
     observable count, and the same predicate gates the observable merge."""
     from petab_mcp.fitting import needs_flattening
 
-    mdf = _mdf([{"observableId": "a", "simulationConditionId": "c", "time": 0.0,
-                 "noiseParameters": 0.01},
-                {"observableId": "a", "simulationConditionId": "c", "time": 1.0,
-                 "noiseParameters": 0.02}])
+    mdf = _mdf(
+        [
+            {
+                "observableId": "a",
+                "simulationConditionId": "c",
+                "time": 0.0,
+                "noiseParameters": 0.01,
+            },
+            {
+                "observableId": "a",
+                "simulationConditionId": "c",
+                "time": 1.0,
+                "noiseParameters": 0.02,
+            },
+        ]
+    )
     assert needs_flattening(_problem(mdf)) is False
 
 
@@ -84,10 +99,22 @@ def test_numeric_per_timepoint_observable_parameters_do_force_flattening():
     between timepoints of one condition has nowhere to live."""
     from petab_mcp.fitting import needs_flattening
 
-    mdf = _mdf([{"observableId": "a", "simulationConditionId": "c", "time": 0.0,
-                 "observableParameters": 1.0},
-                {"observableId": "a", "simulationConditionId": "c", "time": 1.0,
-                 "observableParameters": 2.0}])
+    mdf = _mdf(
+        [
+            {
+                "observableId": "a",
+                "simulationConditionId": "c",
+                "time": 0.0,
+                "observableParameters": 1.0,
+            },
+            {
+                "observableId": "a",
+                "simulationConditionId": "c",
+                "time": 1.0,
+                "observableParameters": 2.0,
+            },
+        ]
+    )
     assert needs_flattening(_problem(mdf)) is True
 
 
@@ -95,8 +122,20 @@ def test_overrides_that_vary_only_across_conditions_are_taken_natively():
     """AMICI's parameter mapping is per condition, so this is not a flattening case."""
     from petab_mcp.fitting import needs_flattening
 
-    mdf = _mdf([{"observableId": "a", "simulationConditionId": "c1", "time": 0.0,
-                 "observableParameters": "s1"},
-                {"observableId": "a", "simulationConditionId": "c2", "time": 0.0,
-                 "observableParameters": "s2"}])
+    mdf = _mdf(
+        [
+            {
+                "observableId": "a",
+                "simulationConditionId": "c1",
+                "time": 0.0,
+                "observableParameters": "s1",
+            },
+            {
+                "observableId": "a",
+                "simulationConditionId": "c2",
+                "time": 0.0,
+                "observableParameters": "s2",
+            },
+        ]
+    )
     assert needs_flattening(_problem(mdf)) is False

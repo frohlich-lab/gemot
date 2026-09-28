@@ -4,6 +4,7 @@ Built against the REAL langchain ModelResponse class, not a stand-in: the first 
 detector read ``.messages`` off a dataclass whose field is ``.result`` and returned False on
 every call — an error a test with a hand-rolled fake would have reproduced instead of caught.
 """
+
 import asyncio
 
 import pytest
@@ -13,8 +14,11 @@ pytest.importorskip("langchain")
 from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage, ToolMessage
 
-from petab_harness.agent.guards import (_is_reasoning_runaway, _reasoning_runaway_guard,
-                                        new_guard_stats)
+from petab_harness.agent.guards import (
+    _is_reasoning_runaway,
+    _reasoning_runaway_guard,
+    new_guard_stats,
+)
 
 
 def _resp(content="", finish="length", tool_calls=None) -> ModelResponse:
@@ -27,6 +31,7 @@ def _resp(content="", finish="length", tool_calls=None) -> ModelResponse:
 
 
 # ---------------------------------------------------------------- detection
+
 
 def test_detects_the_measured_glm_signature():
     # finish_reason="length", content "", no tool call — the exact shape recorded on
@@ -67,6 +72,7 @@ def test_block_content_with_text_is_not_a_runaway():
 
 # ---------------------------------------------------------------- retry ladder
 
+
 class _Request:
     """The two things the guard touches on a ModelRequest: .model_settings and .override()."""
 
@@ -106,8 +112,8 @@ def test_ladder_is_bounded_when_every_effort_fails():
         return _resp(content="")  # runaway at every effort
 
     out = asyncio.run(guard.awrap_model_call(_Request(), handler))
-    assert _is_reasoning_runaway(out)          # handed back honestly, not swallowed
-    assert calls == 3                          # original + the two ladder rungs, then stop
+    assert _is_reasoning_runaway(out)  # handed back honestly, not swallowed
+    assert calls == 3  # original + the two ladder rungs, then stop
     # ONE event, however many rungs it took: `runaways` counts detections, `recovered` the
     # subset a retry rescued, so recovered/runaways is a real recovery rate in result.json.
     assert stats["reasoning_runaways"] == 1
@@ -136,10 +142,12 @@ def test_a_healthy_final_message_wins_over_an_earlier_truncated_one():
     # .result may carry more than one message. The verdict belongs to the TERMINAL model turn;
     # convicting on an earlier one made the ladder discard a good answer and re-call the model.
     truncated = AIMessage(content="", response_metadata={"finish_reason": "length"})
-    healthy = AIMessage(content="the model needs a Hill term",
-                        response_metadata={"finish_reason": "stop"})
+    healthy = AIMessage(
+        content="the model needs a Hill term", response_metadata={"finish_reason": "stop"}
+    )
     assert not _is_reasoning_runaway(
-        ModelResponse(result=[truncated, healthy], structured_response=None))
+        ModelResponse(result=[truncated, healthy], structured_response=None)
+    )
 
 
 def test_a_healthy_final_turn_without_finish_reason_still_wins():
@@ -149,7 +157,8 @@ def test_a_healthy_final_turn_without_finish_reason_still_wins():
     truncated = AIMessage(content="", response_metadata={"finish_reason": "length"})
     healthy = AIMessage(content="needs a Hill term", response_metadata={})
     assert not _is_reasoning_runaway(
-        ModelResponse(result=[truncated, healthy], structured_response=None))
+        ModelResponse(result=[truncated, healthy], structured_response=None)
+    )
 
 
 def test_a_trailing_tool_message_is_skipped():
@@ -159,7 +168,8 @@ def test_a_trailing_tool_message_is_skipped():
     truncated = AIMessage(content="", response_metadata={"finish_reason": "length"})
     trailing = ToolMessage(content="{}", tool_call_id="1")
     assert _is_reasoning_runaway(
-        ModelResponse(result=[truncated, trailing], structured_response=None))
+        ModelResponse(result=[truncated, trailing], structured_response=None)
+    )
 
 
 def test_a_failing_retry_falls_back_to_the_original_turn():
@@ -177,8 +187,8 @@ def test_a_failing_retry_falls_back_to_the_original_turn():
         raise ValueError("400: unsupported parameter reasoning_effort")
 
     out = asyncio.run(guard.awrap_model_call(_Request(), handler))
-    assert _is_reasoning_runaway(out)                       # the original, handed back
-    assert stats["reasoning_runaway_retry_errors"] == 1     # visible, not silent
+    assert _is_reasoning_runaway(out)  # the original, handed back
+    assert stats["reasoning_runaway_retry_errors"] == 1  # visible, not silent
     assert stats["reasoning_runaway_recovered"] == 0
 
 
@@ -198,6 +208,7 @@ def test_healthy_call_passes_through_untouched():
 
 
 # ------------------------------------------------- panel coverage + replay detection
+
 
 def test_every_subagent_carries_the_runaway_guard():
     # deepagents builds each subagent its OWN middleware stack, so the lead's list does not

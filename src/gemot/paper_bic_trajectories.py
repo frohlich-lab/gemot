@@ -15,6 +15,7 @@ plots, is marked as well, at the version the run ended on. The y axis is symmetr
 within ±10: the first versions of a run sit hundreds to thousands above the reference, and the
 part that matters is near zero.
 """
+
 from __future__ import annotations
 
 import json
@@ -35,8 +36,9 @@ def read_input(root: Path) -> dict | None:
         return None
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("schema_version") != 1:
-        raise ValueError("unsupported BIC trajectory schema; rebuild with "
-                         "slurm/_bic_trajectories_input.py")
+        raise ValueError(
+            "unsupported BIC trajectory schema; rebuild with slurm/_bic_trajectories_input.py"
+        )
     return payload
 
 
@@ -61,12 +63,18 @@ def envelope(runs: list[dict]):
     import numpy as np
 
     until = max(last_version(run) for run in runs)
-    curves = np.array([[np.nan if y is None else y for y in best_so_far(run["points"], until)]
-                       for run in runs], dtype=float)
+    curves = np.array(
+        [[np.nan if y is None else y for y in best_so_far(run["points"], until)] for run in runs],
+        dtype=float,
+    )
     versions = np.arange(until + 1)
     with np.errstate(all="ignore"):
-        return (versions, np.nanmedian(curves, axis=0), np.nanmin(curves, axis=0),
-                np.nanmax(curves, axis=0))
+        return (
+            versions,
+            np.nanmedian(curves, axis=0),
+            np.nanmin(curves, axis=0),
+            np.nanmax(curves, axis=0),
+        )
 
 
 def draw(axis, runs: list[dict], color: str, marker: str = "o", zorder: int = 3) -> None:
@@ -78,17 +86,40 @@ def draw(axis, runs: list[dict], color: str, marker: str = "o", zorder: int = 3)
         return
     versions, median, low, high = envelope(runs)
     keep = ~np.isnan(median)
-    axis.fill_between(versions[keep], low[keep], high[keep], color=color, alpha=0.22, lw=0,
-                      step="post", zorder=zorder)
-    axis.step(versions[keep], median[keep], where="post", color=shaded(color, 0.85), lw=1.0,
-              zorder=zorder + 1)
-    delivered = [(last_version(run), run["final_dbic"]) for run in runs
-                 if run.get("final_dbic") is not None]
+    axis.fill_between(
+        versions[keep],
+        low[keep],
+        high[keep],
+        color=color,
+        alpha=0.22,
+        lw=0,
+        step="post",
+        zorder=zorder,
+    )
+    axis.step(
+        versions[keep],
+        median[keep],
+        where="post",
+        color=shaded(color, 0.85),
+        lw=1.0,
+        zorder=zorder + 1,
+    )
+    delivered = [
+        (last_version(run), run["final_dbic"]) for run in runs if run.get("final_dbic") is not None
+    ]
     if delivered:
         xs, ys = zip(*delivered)
-        axis.scatter(xs, ys, s=7, marker=marker, facecolors="white",
-                     edgecolors=shaded(color, 0.85), linewidths=0.6, zorder=zorder + 2,
-                     clip_on=False)
+        axis.scatter(
+            xs,
+            ys,
+            s=7,
+            marker=marker,
+            facecolors="white",
+            edgecolors=shaded(color, 0.85),
+            linewidths=0.6,
+            zorder=zorder + 2,
+            clip_on=False,
+        )
 
 
 def delivered_only(axis, runs: list[dict], color: str, marker: str) -> None:
@@ -103,15 +134,22 @@ def delivered_only(axis, runs: list[dict], color: str, marker: str) -> None:
     finals = sorted(run["final_dbic"] for run in runs if run.get("final_dbic") is not None)
     axis.set_xlim(-1, 1)
     axis.tick_params(axis="x", bottom=False, labelbottom=False)
-    axis.set_xlabel("no version history", fontsize=SMALL, color=MUTED, style="italic",
-                    labelpad=2)
+    axis.set_xlabel("no version history", fontsize=SMALL, color=MUTED, style="italic", labelpad=2)
     if not finals:
         return
     axis.axhspan(finals[0], finals[-1], color=color, alpha=0.22, lw=0, zorder=3)
     axis.axhline(statistics.median(finals), color=shaded(color, 0.85), lw=1.0, zorder=4)
     step = 0.5 / max(len(finals) - 1, 1)
-    axis.scatter([-0.25 + step * i for i in range(len(finals))], finals, s=7, marker=marker,
-                 facecolors="white", edgecolors=shaded(color, 0.85), linewidths=0.6, zorder=5)
+    axis.scatter(
+        [-0.25 + step * i for i in range(len(finals))],
+        finals,
+        s=7,
+        marker=marker,
+        facecolors="white",
+        edgecolors=shaded(color, 0.85),
+        linewidths=0.6,
+        zorder=5,
+    )
 
 
 def style(axis, ylim) -> None:
@@ -148,8 +186,12 @@ def decade_ticks(axis, gap_pt: float = 8.5) -> None:
     from matplotlib.ticker import FixedLocator, FuncFormatter
 
     low, high = axis.get_ylim()
-    decades = [sign * 10 ** power for power in range(1, 8) for sign in (1, -1)
-               if low <= sign * 10 ** power <= high]
+    decades = [
+        sign * 10**power
+        for power in range(1, 8)
+        for sign in (1, -1)
+        if low <= sign * 10**power <= high
+    ]
     to_axes = axis.transScale + axis.transLimits
     height = axis.get_position().height * axis.figure.get_figheight() * 72
 
@@ -191,6 +233,7 @@ def _values(runs: list[dict]) -> list[float]:
 
 def _figure(width, height):
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -205,8 +248,12 @@ def _save(fig, output, paper_style) -> None:
     import matplotlib.pyplot as plt
 
     paper_style.check_fonts(fig)
-    fig.savefig(output, dpi=paper_style.DPI, facecolor=paper_style.SURFACE,
-                metadata={"CreationDate": None} if str(output).endswith(".pdf") else None)
+    fig.savefig(
+        output,
+        dpi=paper_style.DPI,
+        facecolor=paper_style.SURFACE,
+        metadata={"CreationDate": None} if str(output).endswith(".pdf") else None,
+    )
     plt.close(fig)
 
 
@@ -218,12 +265,33 @@ def _key(fig, entries, anchor, loc="upper right") -> None:
     handles = []
     for color, label in entries:
         handles.append(Line2D([], [], color=shaded(color, 0.85), lw=1.0, label=label))
-    handles += [Patch(facecolor=entries[0][0], alpha=0.22, lw=0, label="range"),
-                Line2D([], [], ls="", marker="o", ms=2.6, mfc="white", mew=0.6,
-                       mec=shaded(entries[0][0], 0.85), label="delivered")]
-    fig.legend(handles=handles, loc=loc, bbox_to_anchor=anchor, ncol=len(handles),
-               frameon=False, fontsize=SMALL, handlelength=1.4, handletextpad=0.5,
-               columnspacing=1.1, borderpad=0.0, borderaxespad=0.0)
+    handles += [
+        Patch(facecolor=entries[0][0], alpha=0.22, lw=0, label="range"),
+        Line2D(
+            [],
+            [],
+            ls="",
+            marker="o",
+            ms=2.6,
+            mfc="white",
+            mew=0.6,
+            mec=shaded(entries[0][0], 0.85),
+            label="delivered",
+        ),
+    ]
+    fig.legend(
+        handles=handles,
+        loc=loc,
+        bbox_to_anchor=anchor,
+        ncol=len(handles),
+        frameon=False,
+        fontsize=SMALL,
+        handlelength=1.4,
+        handletextpad=0.5,
+        columnspacing=1.1,
+        borderpad=0.0,
+        borderaxespad=0.0,
+    )
 
 
 def render_figure2(payload: dict, output, ncols: int = 6) -> None:
@@ -237,8 +305,16 @@ def render_figure2(payload: dict, output, ncols: int = 6) -> None:
     nrows = math.ceil(len(names) / ncols)
     height = 1.02 * nrows + 0.46
     fig, paper_style = _figure(_width(), height)
-    grid = fig.add_gridspec(nrows, ncols, left=0.075, right=0.985, top=1 - 0.30 / height,
-                            bottom=0.30 / height, wspace=0.46, hspace=0.62)
+    grid = fig.add_gridspec(
+        nrows,
+        ncols,
+        left=0.075,
+        right=0.985,
+        top=1 - 0.30 / height,
+        bottom=0.30 / height,
+        wspace=0.46,
+        hspace=0.62,
+    )
     for index, name in enumerate(names):
         axis = fig.add_subplot(grid[index // ncols, index % ncols])
         runs = groups[name]
@@ -267,8 +343,16 @@ def render_figure34(payload: dict, output) -> None:
     height = 4.05
     fig, paper_style = _figure(_width(), height)
     inch = 1 / height
-    outer = fig.add_gridspec(2, 1, height_ratios=(2.0, 1.0), hspace=0.62, left=0.105,
-                             right=0.985, top=1 - 0.52 * inch, bottom=0.30 * inch)
+    outer = fig.add_gridspec(
+        2,
+        1,
+        height_ratios=(2.0, 1.0),
+        hspace=0.62,
+        left=0.105,
+        right=0.985,
+        top=1 - 0.52 * inch,
+        bottom=0.30 * inch,
+    )
     top = outer[0].subgridspec(2, 4, wspace=0.16, hspace=0.42)
     ylim = _limits([v for spec in arms.values() for v in _values(spec["runs"])])
     by_cell = {(spec["code"][0], spec["support"]): spec for spec in arms.values()}
@@ -280,15 +364,41 @@ def render_figure34(payload: dict, output) -> None:
             axis = fig.add_subplot(top[row, column], sharey=shared)
             spec = by_cell.get((family, rung))
             if row == 0 and rung in support:
-                axis.annotate(support[rung], (0, 1), xycoords="axes fraction",
-                              xytext=(0, 13), textcoords="offset points", ha="left",
-                              va="baseline", fontsize=SMALL, color=MUTED)
+                axis.annotate(
+                    support[rung],
+                    (0, 1),
+                    xycoords="axes fraction",
+                    xytext=(0, 13),
+                    textcoords="offset points",
+                    ha="left",
+                    va="baseline",
+                    fontsize=SMALL,
+                    color=MUTED,
+                )
             if spec is None:
                 axis.set_axis_off()
-                axis.text(0.02, 1.0, f"{family}{rung}", transform=axis.transAxes, ha="left",
-                          va="bottom", fontsize=TITLE, fontweight="bold", color="#A7B0B6")
-                axis.text(0.5, 0.5, "not run", transform=axis.transAxes, ha="center",
-                          va="center", fontsize=SMALL, color=MUTED, style="italic")
+                axis.text(
+                    0.02,
+                    1.0,
+                    f"{family}{rung}",
+                    transform=axis.transAxes,
+                    ha="left",
+                    va="bottom",
+                    fontsize=TITLE,
+                    fontweight="bold",
+                    color="#A7B0B6",
+                )
+                axis.text(
+                    0.5,
+                    0.5,
+                    "not run",
+                    transform=axis.transAxes,
+                    ha="center",
+                    va="center",
+                    fontsize=SMALL,
+                    color=MUTED,
+                    style="italic",
+                )
                 continue
             shared = shared or axis
             style(axis, ylim)
@@ -300,18 +410,39 @@ def render_figure34(payload: dict, output) -> None:
             else:
                 delivered_only(axis, spec["runs"], color, marker)
             note = f"   + {len(spec['no_model'])} built no model" if spec["no_model"] else ""
-            axis.set_title(spec["code"], loc="left", fontsize=TITLE, pad=2.5,
-                           color=shaded(color, 0.85), fontweight="bold")
+            axis.set_title(
+                spec["code"],
+                loc="left",
+                fontsize=TITLE,
+                pad=2.5,
+                color=shaded(color, 0.85),
+                fontweight="bold",
+            )
             if note:
-                axis.annotate(note.strip(), (1, 1), xycoords="axes fraction", xytext=(0, 2.5),
-                              textcoords="offset points", ha="right", va="bottom",
-                              fontsize=SMALL, color=MUTED)
+                axis.annotate(
+                    note.strip(),
+                    (1, 1),
+                    xycoords="axes fraction",
+                    xytext=(0, 2.5),
+                    textcoords="offset points",
+                    ha="right",
+                    va="bottom",
+                    fontsize=SMALL,
+                    color=MUTED,
+                )
             if column and by_cell.get((family, rung - 1)) is not None:
                 axis.tick_params(labelleft=False)
         decade_ticks(shared)
         box = top[row, 0].get_position(fig)
-        fig.text(0.052, (box.y0 + box.y1) / 2, model.split("/")[-1], rotation=90, ha="center",
-                 va="center", fontsize=BODY)
+        fig.text(
+            0.052,
+            (box.y0 + box.y1) / 2,
+            model.split("/")[-1],
+            rotation=90,
+            ha="center",
+            va="center",
+            fontsize=BODY,
+        )
     bottom = outer[1].subgridspec(1, 4, wspace=0.42)
     for column, name in enumerate(blinded):
         axis = fig.add_subplot(bottom[0, column])
@@ -321,14 +452,27 @@ def render_figure34(payload: dict, output) -> None:
         axis.set_title(name, loc="left", fontsize=TITLE, fontweight="bold", pad=2.5)
         axis.xaxis.set_major_locator(MaxNLocator(nbins=3, integer=True))
         decade_ticks(axis)
-    for grid, letter, title, lift in ((outer[0], "A", "Figure 3 arms", 0.34),
-                                      (outer[1], "B", "Figure 4 benchmarks", 0.20)):
+    for grid, letter, title, lift in (
+        (outer[0], "A", "Figure 3 arms", 0.34),
+        (outer[1], "B", "Figure 4 benchmarks", 0.20),
+    ):
         y = grid.get_position(fig).y1 + lift * inch
-        fig.text(0.004, y, f"{letter}   {title}", ha="left", va="baseline", fontsize=TITLE + 0.5,
-                 fontweight="bold")
+        fig.text(
+            0.004,
+            y,
+            f"{letter}   {title}",
+            ha="left",
+            va="baseline",
+            fontsize=TITLE + 0.5,
+            fontweight="bold",
+        )
         if letter == "B":
-            _key(fig, [(VISIBLE, "O1  Biology visible"), (BLINDED, "O4  Biology blinded")],
-                 (0.985, y), loc="lower right")
+            _key(
+                fig,
+                [(VISIBLE, "O1  Biology visible"), (BLINDED, "O4  Biology blinded")],
+                (0.985, y),
+                loc="lower right",
+            )
     fig.supxlabel(X_LABEL, fontsize=BODY, y=0.03 * inch)
     fig.supylabel(Y_LABEL, fontsize=BODY, x=0.004)
     _save(fig, output, paper_style)

@@ -112,8 +112,10 @@ class DistilResult:
 
     def summary(self) -> str:
         lines = [f"{self.problem_name} [{self.config.key()}] {self.n_constants} constants"]
-        lines += [f"  d{n}/dt = {e}   (field R^2 = {r:.4f})" for n, e, r in
-                  zip(self.state_names, self.expressions, self.field_r2)]
+        lines += [
+            f"  d{n}/dt = {e}   (field R^2 = {r:.4f})"
+            for n, e, r in zip(self.state_names, self.expressions, self.field_r2)
+        ]
         return "\n".join((*lines, *(f"  warning: {w}" for w in self.warnings)))
 
 
@@ -121,7 +123,9 @@ class RegressionUnavailable(RuntimeError):
     """The regression could not run at all, as opposed to running and finding little."""
 
 
-def distil(problem: Problem, result: T.TrainResult, config: DistilConfig | None = None) -> DistilResult:
+def distil(
+    problem: Problem, result: T.TrainResult, config: DistilConfig | None = None
+) -> DistilResult:
     """Regress every state's derivative from the trained field and emit the models.
 
     Without PySR the result comes back with ``pysr_available`` false and zero-expression
@@ -137,19 +141,39 @@ def distil(problem: Problem, result: T.TrainResult, config: DistilConfig | None 
     try:
         outputs = _regress(features, derivatives, placeholders, config)
     except RegressionUnavailable as why:
-        return DistilResult(problem.name, config, names, tuple(sp.Integer(0) for _ in names),
-                            tuple(float("nan") for _ in names), "", 0, pysr_available=False,
-                            warnings=[f"the symbolic regression did not run: {why}"])
+        return DistilResult(
+            problem.name,
+            config,
+            names,
+            tuple(sp.Integer(0) for _ in names),
+            tuple(float("nan") for _ in names),
+            "",
+            0,
+            pysr_available=False,
+            warnings=[f"the symbolic regression did not run: {why}"],
+        )
     expressions = tuple(sp.sympify(o["selected"]).subs(back) for o in outputs)
-    fronts = [[(int(c), sp.sympify(text).subs(back), float(r2)) for c, text, r2 in o["front"]] for o in outputs]
+    fronts = [
+        [(int(c), sp.sympify(text).subs(back), float(r2)) for c, text, r2 in o["front"]]
+        for o in outputs
+    ]
     starts = _starts(result, trajectories)
     emitted = emit(problem, staged, names, expressions, starts)
-    return DistilResult(problem.name, config, names, expressions, tuple(float(o["r2"]) for o in outputs),
-                        emitted[0], emitted[1], candidates=_candidates(problem, staged, names, fronts, starts))
+    return DistilResult(
+        problem.name,
+        config,
+        names,
+        expressions,
+        tuple(float(o["r2"]) for o in outputs),
+        emitted[0],
+        emitted[1],
+        candidates=_candidates(problem, staged, names, fronts, starts),
+    )
 
 
-def sample(problem: Problem, result: T.TrainResult, config: DistilConfig,
-           trajectories: dict | None = None) -> tuple[np.ndarray, np.ndarray, tuple[str, ...]]:
+def sample(
+    problem: Problem, result: T.TrainResult, config: DistilConfig, trajectories: dict | None = None
+) -> tuple[np.ndarray, np.ndarray, tuple[str, ...]]:
     """``(features, derivatives, variables)`` in the network's normalised units: rows drawn from
     the dense trajectories with jitter, each carrying its experiment's inputs and the protocol
     value at its time; the derivatives are the network's outputs there."""
@@ -189,9 +213,15 @@ def sample(problem: Problem, result: T.TrainResult, config: DistilConfig,
         if name in by_name:
             columns.append(by_name[name] / staged.scales[name])
         elif name in problem.inputs:
-            columns.append(np.array([problem.condition_values[e][name] for e in experiments[draw]]) / staged.scales[name])
+            columns.append(
+                np.array([problem.condition_values[e][name] for e in experiments[draw]])
+                / staged.scales[name]
+            )
         else:
-            columns.append(_protocol_values(problem, name, times[draw], experiments[draw]) / staged.scales[name])
+            columns.append(
+                _protocol_values(problem, name, times[draw], experiments[draw])
+                / staged.scales[name]
+            )
     features = np.stack(columns, axis=1)
     network = result.problem.model.nns[S.NETWORK_ID]
     derivatives = np.asarray(network.forward(_network_inputs(features, staged)))
@@ -221,7 +251,9 @@ def _network_inputs(features: np.ndarray, staged: S.Staged) -> np.ndarray:
     return np.concatenate([features, np.stack(products, axis=1)], axis=1)
 
 
-def _protocol_values(problem: Problem, target: str, times: np.ndarray, experiments: np.ndarray) -> np.ndarray:
+def _protocol_values(
+    problem: Problem, target: str, times: np.ndarray, experiments: np.ndarray
+) -> np.ndarray:
     """A protocol's value at each sample, from its formula over time and its condition columns."""
     from petab.math import sympify_petab  # noqa: PLC0415
 
@@ -235,24 +267,47 @@ def _protocol_values(problem: Problem, target: str, times: np.ndarray, experimen
 
 def _regress(features, derivatives, placeholders, config: DistilConfig) -> list[dict]:
     """The worker, by file path, in ``config.interpreter``; its stderr tail is the failure's reason."""
-    settings = {"niterations": config.niterations, "population_size": config.population_size,
-                "maxsize": config.maxsize, "parsimony": config.parsimony,
-                "binary_operators": [HILL_OPERATOR if op == "hill" else op for op in config.binary_operators],
-                "unary_operators": list(config.unary_operators),
-                "seed": config.seed, "selection": config.selection, "placeholders": list(placeholders),
-                "workers": config.workers, "parallelism": config.parallelism, "procs": config.procs}
+    settings = {
+        "niterations": config.niterations,
+        "population_size": config.population_size,
+        "maxsize": config.maxsize,
+        "parsimony": config.parsimony,
+        "binary_operators": [
+            HILL_OPERATOR if op == "hill" else op for op in config.binary_operators
+        ],
+        "unary_operators": list(config.unary_operators),
+        "seed": config.seed,
+        "selection": config.selection,
+        "placeholders": list(placeholders),
+        "workers": config.workers,
+        "parallelism": config.parallelism,
+        "procs": config.procs,
+    }
     with tempfile.TemporaryDirectory(prefix="neural_ode_pysr_") as directory:
         root = Path(directory)
         np.savez(root / "in.npz", features=features, derivatives=derivatives)
-        (root / "settings.json").write_text(json.dumps({**settings, "output_directory": str(root / "pysr")}))
-        command = [config.interpreter or sys.executable, str(Path(__file__).with_name("pysr_worker.py")),
-                   str(root / "in.npz"), str(root / "settings.json"), str(root / "out.json")]
+        (root / "settings.json").write_text(
+            json.dumps({**settings, "output_directory": str(root / "pysr")})
+        )
+        command = [
+            config.interpreter or sys.executable,
+            str(Path(__file__).with_name("pysr_worker.py")),
+            str(root / "in.npz"),
+            str(root / "settings.json"),
+            str(root / "out.json"),
+        ]
         try:
-            completed = subprocess.run(command, capture_output=True, text=True, timeout=config.timeout_seconds)
+            completed = subprocess.run(
+                command, capture_output=True, text=True, timeout=config.timeout_seconds
+            )
         except subprocess.TimeoutExpired as why:
-            raise RegressionUnavailable(f"the PySR worker exceeded {config.timeout_seconds:.0f}s") from why
+            raise RegressionUnavailable(
+                f"the PySR worker exceeded {config.timeout_seconds:.0f}s"
+            ) from why
         if completed.returncode != 0 or not (root / "out.json").is_file():
-            tail = " | ".join((completed.stderr or completed.stdout or "").strip().splitlines()[-6:])
+            tail = " | ".join(
+                (completed.stderr or completed.stdout or "").strip().splitlines()[-6:]
+            )
             raise RegressionUnavailable(f"the PySR worker exited {completed.returncode}: {tail}")
         return json.loads((root / "out.json").read_text())
 
@@ -283,11 +338,17 @@ def _candidates(problem, staged, names, fronts, starts) -> tuple[Candidate, ...]
         seen.add(signature)
         expressions = tuple(e for _, e, _ in picks)
         antimony, n_constants = emit(problem, staged, names, expressions, starts)
-        out.append(Candidate(budget, expressions, signature, tuple(r for _, _, r in picks), n_constants, antimony))
+        out.append(
+            Candidate(
+                budget, expressions, signature, tuple(r for _, _, r in picks), n_constants, antimony
+            )
+        )
     return tuple(out)
 
 
-def emit(problem: Problem, staged: S.Staged, names, expressions, starts: dict[str, float]) -> tuple[str, int]:
+def emit(
+    problem: Problem, staged: S.Staged, names, expressions, starts: dict[str, float]
+) -> tuple[str, int]:
     """The system as Antimony in data units, with rate rules: a distilled derivative is not a sum
     of fluxes, so no stoichiometry is invented. Returns the text and its constant count."""
     rendered, constants = _data_units(staged, names, expressions)
@@ -299,8 +360,10 @@ def emit(problem: Problem, staged: S.Staged, names, expressions, starts: dict[st
     # observables apply unchanged, so the state is emitted under its own id and the readout becomes
     # the identity rule onto it -- the same model, in the shape the judge accepts.
     emitted = {name: _species_id(name, species, problem) for name in species}
-    lines = [f"model {_identifier(problem.name)}_distilled",
-             f"  species {', '.join(emitted[name] for name in species)};"]
+    lines = [
+        f"model {_identifier(problem.name)}_distilled",
+        f"  species {', '.join(emitted[name] for name in species)};",
+    ]
     for name in species:
         lines.append(f"  {emitted[name]} = {starts.get(name, 0.0):.10g};")
     if problem.inputs:
@@ -321,11 +384,16 @@ def emit(problem: Problem, staged: S.Staged, names, expressions, starts: dict[st
     return "\n".join((*lines, "end", "")), len(constants)
 
 
-def _data_units(staged: S.Staged, names, expressions) -> tuple[list[sp.Expr], list[tuple[str, float]]]:
+def _data_units(
+    staged: S.Staged, names, expressions
+) -> tuple[list[sp.Expr], list[tuple[str, float]]]:
     """Each normalised derivative rewritten in data units, with its non-integer constants named
     ``c0, c1, ...`` across the whole system, one name per magnitude."""
-    substitutions = {sp.Symbol(v): sp.Symbol(v) / sp.Float(staged.scales[v]) for v in staged.field_inputs
-                     if staged.scales[v] != 1.0}
+    substitutions = {
+        sp.Symbol(v): sp.Symbol(v) / sp.Float(staged.scales[v])
+        for v in staged.field_inputs
+        if staged.scales[v] != 1.0
+    }
     constants: list[tuple[str, float]] = []
     rendered = []
     for name, expression in zip(names, expressions):
@@ -369,7 +437,7 @@ def _species_id(name: str, states, problem: Problem) -> str:
     if not name.startswith(READOUT_PREFIX):
         return name
     taken = {*states, *problem.inputs, *(item.target for item in problem.timed_inputs)}
-    candidate = base = f"s_{name[len(READOUT_PREFIX):]}"
+    candidate = base = f"s_{name[len(READOUT_PREFIX) :]}"
     while candidate in taken:
         candidate = f"{base}_"
     return candidate

@@ -32,21 +32,55 @@ from . import paths
 
 # Outcome columns copied straight from result.json.
 _RESULT_FIELDS = (
-    "scenario", "example_version", "model", "driver", "success", "stop_reason",
-    "baseline_nll", "final_nll", "delta",
-    "chi2", "chi2_dof", "chi2_gof_pvalue",
-    "k", "k_estimated", "n", "k_eff", "bic", "bic_reference", "delta_bic", "bic_threshold",
-    "criterion", "criterion_note", "criterion_value", "criterion_reference", "delta_criterion",
-    "head_version", "n_errors", "n_tool_errors", "tool_calls",
+    "scenario",
+    "example_version",
+    "model",
+    "driver",
+    "success",
+    "stop_reason",
+    "baseline_nll",
+    "final_nll",
+    "delta",
+    "chi2",
+    "chi2_dof",
+    "chi2_gof_pvalue",
+    "k",
+    "k_estimated",
+    "n",
+    "k_eff",
+    "bic",
+    "bic_reference",
+    "delta_bic",
+    "bic_threshold",
+    "criterion",
+    "criterion_note",
+    "criterion_value",
+    "criterion_reference",
+    "delta_criterion",
+    "head_version",
+    "n_errors",
+    "n_tool_errors",
+    "tool_calls",
     # Edits the server REFUSED. Flat columns, not the nested `edit_rejects` dict from result.json:
     # DictWriter has no representation for a dict (it would stringify), and a name missing from
     # this tuple is dropped SILENTLY by extrasaction="ignore" below — which is exactly how this
     # metric was invisible in the history despite being written to every result.json.
-    "edits_attempted", "edits_rejected", "edits_fit_reverted", "edit_reject_rate",
+    "edits_attempted",
+    "edits_rejected",
+    "edits_fit_reverted",
+    "edit_reject_rate",
     "edit_reject_top_cause",
-    "wall_seconds", "compute_seconds", "llm_seconds",
-    "compile_seconds", "fit_seconds", "n_compiles", "n_fits",
-    "git_sha", "recursion_limit", "n_starts", "temperature",
+    "wall_seconds",
+    "compute_seconds",
+    "llm_seconds",
+    "compile_seconds",
+    "fit_seconds",
+    "n_compiles",
+    "n_fits",
+    "git_sha",
+    "recursion_limit",
+    "n_starts",
+    "temperature",
     # `git_sha` ends in `+dirty` whenever the tree had uncommitted changes, which means it does NOT
     # pin the code: the whole Aug 8-10 sweep recorded one sha across jobs whose behaviour differed.
     # This is the column you group by to tell "different code" from "different model". Flat, for
@@ -58,7 +92,8 @@ _RESULT_FIELDS = (
     # so a missing column looks like a missing value). `prompt_group_versions` deliberately does
     # NOT get a column: a flat key is what you group a sweep BY, and the per-group hashes answer
     # the follow-up question — which group moved — which is read from result.json.
-    "prompt_version", "skills_version",
+    "prompt_version",
+    "skills_version",
     # The arm. Same argument as `prompt_version` above, for the switches that change behaviour
     # WITHOUT changing prompt text (`bio_cache`, `omnipath_local`): those move neither git_sha nor
     # prompt_version, so this is the only column that can split them. Flat and canonical
@@ -75,9 +110,13 @@ _RESULT_FIELDS = (
     # differ whenever `provider.only` names more than one endpoint. `served_drifted` is the column
     # to filter a benchmark on: a run split across two endpoints is not one measurement, and until
     # now nothing in the history could say whether that had happened.
-    "served_provider", "served_n_distinct", "served_drifted",
-    "run_started_at", "run_ended_at",
-    "phoenix_project", "phoenix_trace_id",
+    "served_provider",
+    "served_n_distinct",
+    "served_drifted",
+    "run_started_at",
+    "run_ended_at",
+    "phoenix_project",
+    "phoenix_trace_id",
 )
 
 # The HELD-OUT (validation) score, flattened out of the nested `validation` block. Same reason as
@@ -88,9 +127,18 @@ _RESULT_FIELDS = (
 # `val_delta_nll` worth averaging.
 # `val_mode` says which comparison the row is (`fixed`: the fitted point evaluated on unseen
 # conditions), so a later kind of check cannot be mistaken for this one.
-_VALIDATION_FIELDS = ("val_status", "val_mode", "val_reference_status", "val_nll",
-                      "val_reference_nll", "val_delta_nll", "val_n", "val_reference_n", "val_chi2",
-                      "val_reference_chi2")
+_VALIDATION_FIELDS = (
+    "val_status",
+    "val_mode",
+    "val_reference_status",
+    "val_nll",
+    "val_reference_nll",
+    "val_delta_nll",
+    "val_n",
+    "val_reference_n",
+    "val_chi2",
+    "val_reference_chi2",
+)
 
 # The replicate lack-of-fit verdict, flattened out of the nested `residual_structure` block for the
 # same reason the edit rejects are: a sweep groups by flat columns. `lof_weak` is the one this exists
@@ -102,13 +150,26 @@ _LOF_FIELDS = ("lof_status", "lof_weak", "lof_df")
 # below can expand them. build_row copies only the flat _RESULT_FIELDS, so without this the flatteners
 # saw nothing on the collect() path and every column derived from a nested block stayed empty —
 # silently, which is the failure mode the _RESULT_FIELDS comment above warns about.
-_NESTED_SOURCE_FIELDS = ("edit_rejects", "residual_structure", "git_diff",
-                         "openrouter_endpoints", "validation")
+_NESTED_SOURCE_FIELDS = (
+    "edit_rejects",
+    "residual_structure",
+    "git_diff",
+    "openrouter_endpoints",
+    "validation",
+)
 
 # Columns derived from the Phoenix trace (token usage + span breakdown).
 _PHOENIX_FIELDS = (
-    "n_spans", "n_llm_calls", "n_tool_spans", "n_agent_spans", "n_span_errors",
-    "tokens_prompt", "tokens_completion", "tokens_total", "trace_model", "phoenix_note",
+    "n_spans",
+    "n_llm_calls",
+    "n_tool_spans",
+    "n_agent_spans",
+    "n_span_errors",
+    "tokens_prompt",
+    "tokens_completion",
+    "tokens_total",
+    "trace_model",
+    "phoenix_note",
 )
 
 HISTORY_FIELDS = _RESULT_FIELDS + _LOF_FIELDS + _VALIDATION_FIELDS + _PHOENIX_FIELDS
@@ -122,8 +183,6 @@ def _parse_iso(value: str | None) -> dt.datetime | None:
         return dt.datetime.fromisoformat(value)
     except Exception:
         return None
-
-
 
 
 def phoenix_trace_metrics(
@@ -179,13 +238,17 @@ def phoenix_trace_metrics(
         uniq = df[tid_col].dropna().unique().tolist()
         if len(uniq) == 1:
             sub = df[df[tid_col] == uniq[0]]
-            note = ("matched single trace in window" if not trace_id
-                    else f"trace {trace_id} not found; used the single trace in the window")
+            note = (
+                "matched single trace in window"
+                if not trace_id
+                else f"trace {trace_id} not found; used the single trace in the window"
+            )
         elif not uniq:
             return {"phoenix_note": "no trace ids in window"}
         elif trace_id:
-            return {"phoenix_note":
-                    f"trace {trace_id} not found among {len(uniq)} traces in the window"}
+            return {
+                "phoenix_note": f"trace {trace_id} not found among {len(uniq)} traces in the window"
+            }
         elif "start_time" in df.columns:
             non_null = df[df[tid_col].notna()]
             latest = non_null.sort_values("start_time").iloc[-1][tid_col]
@@ -201,8 +264,11 @@ def phoenix_trace_metrics(
         sub = df
         note = "no trace id column; summed the query window (unverified)"
 
-    kinds = sub["attributes.openinference.span.kind"] if \
-        "attributes.openinference.span.kind" in sub.columns else None
+    kinds = (
+        sub["attributes.openinference.span.kind"]
+        if "attributes.openinference.span.kind" in sub.columns
+        else None
+    )
 
     def _kcount(kind: str) -> int:
         return int((kinds == kind).sum()) if kinds is not None else 0
@@ -227,7 +293,8 @@ def phoenix_trace_metrics(
         "n_tool_spans": _kcount("TOOL"),
         "n_agent_spans": _kcount("AGENT"),
         "n_span_errors": int((sub["status_code"] == "ERROR").sum())
-        if "status_code" in sub.columns else 0,
+        if "status_code" in sub.columns
+        else 0,
         "tokens_prompt": _tok("prompt"),
         "tokens_completion": _tok("completion"),
         "tokens_total": _tok("total"),
@@ -243,12 +310,15 @@ def build_row(result: dict[str, Any], *, phoenix_base_url: str | None = None) ->
     row.update({k: None for k in _PHOENIX_FIELDS})
     project = result.get("phoenix_project")
     if phoenix_base_url and project:
-        row.update(phoenix_trace_metrics(
-            phoenix_base_url, project,
-            trace_id=result.get("phoenix_trace_id"),
-            started_at=result.get("run_started_at"),
-            ended_at=result.get("run_ended_at"),
-        ))
+        row.update(
+            phoenix_trace_metrics(
+                phoenix_base_url,
+                project,
+                trace_id=result.get("phoenix_trace_id"),
+                started_at=result.get("run_started_at"),
+                ended_at=result.get("run_ended_at"),
+            )
+        )
     return row
 
 
@@ -264,12 +334,14 @@ def _flatten_edit_rejects(row: dict) -> dict:
         return row
     causes = rejects.get("by_cause") or {}
     top = max(causes, key=causes.get) if causes else None
-    return {**row,
-            "edits_attempted": rejects.get("attempted"),
-            "edits_rejected": rejects.get("rejected"),
-            "edits_fit_reverted": rejects.get("fit_reverted"),
-            "edit_reject_rate": rejects.get("reject_rate"),
-            "edit_reject_top_cause": top}
+    return {
+        **row,
+        "edits_attempted": rejects.get("attempted"),
+        "edits_rejected": rejects.get("rejected"),
+        "edits_fit_reverted": rejects.get("fit_reverted"),
+        "edit_reject_rate": rejects.get("reject_rate"),
+        "edit_reject_top_cause": top,
+    }
 
 
 def _flatten_git_diff(row: dict) -> dict:
@@ -311,13 +383,19 @@ def _flatten_served_endpoints(row: dict) -> dict:
     # case as the useless "OpenAI+OpenAI" and hides the thing that actually differed.
     # Unattributed calls are LEFT OUT rather than stringified: `str(None)` writes the literal
     # "None", which is indistinguishable from a real endpoint name when grouping a sweep.
-    names = sorted({f"{s['provider']}/{s['service_tier']}" if s.get("service_tier")
-                    else str(s["provider"])
-                    for s in served if s.get("provider") is not None})
-    return {**row,
-            "served_provider": "+".join(names) if names else None,
-            "served_n_distinct": ep.get("n_distinct"),
-            "served_drifted": ep.get("drifted")}
+    names = sorted(
+        {
+            f"{s['provider']}/{s['service_tier']}" if s.get("service_tier") else str(s["provider"])
+            for s in served
+            if s.get("provider") is not None
+        }
+    )
+    return {
+        **row,
+        "served_provider": "+".join(names) if names else None,
+        "served_n_distinct": ep.get("n_distinct"),
+        "served_drifted": ep.get("drifted"),
+    }
 
 
 def _flatten_replicate_lof(row: dict) -> dict:
@@ -334,16 +412,23 @@ def _flatten_replicate_lof(row: dict) -> dict:
         return row
     lof = rolled.get("replicate_lack_of_fit")
     if not isinstance(lof, dict):
-        return ({**row, "lof_status": "unknown"}
-                if rolled.get("rollup_status") == "unavailable" else row)
+        return (
+            {**row, "lof_status": "unknown"}
+            if rolled.get("rollup_status") == "unavailable"
+            else row
+        )
     # `weak` and `lof_df` are OMITTED from the verdict when they say nothing (see
     # data_access._LOF_OMIT_WHEN_EMPTY_KEYS). `lof_weak` is written only where there IS a counted df
     # to qualify: coercing an absent one to False would record "the arm ran and its pass was solid"
     # for an arm that never ran, or whose structural count could not be taken — the same over-claim
     # data_access.residual_flag refuses when it reports None rather than False for an untested arm.
     lof_df = lof.get("lof_df")
-    return {**row, "lof_status": lof.get("status"), "lof_df": lof_df,
-            "lof_weak": None if lof_df is None else bool(lof.get("weak"))}
+    return {
+        **row,
+        "lof_status": lof.get("status"),
+        "lof_df": lof_df,
+        "lof_weak": None if lof_df is None else bool(lof.get("weak")),
+    }
 
 
 def flatten_validation(row: dict) -> dict:
@@ -369,22 +454,24 @@ def flatten_validation(row: dict) -> dict:
     block = row.get("validation")
     if not isinstance(block, dict):
         return {}
-    return {"val_status": block.get("status"),
-            # The REFERENCE's status, not the candidate's: `error` here means the refit could not
-            # score the held-out set at all, which is a different row from "no bar was ever fit".
-            "val_reference_status": block.get("reference_status"),
-            "val_nll": block.get("nll"),
-            "val_reference_nll": block.get("reference_nll"),
-            "val_delta_nll": block.get("delta_nll"),
-            "val_n": block.get("n"),
-            # The reference's own point count, so a blank `val_delta_nll` is DIAGNOSABLE from the
-            # CSV: the commonest reason to withhold the difference is that the two sides counted
-            # different numbers of held-out points (`n_mismatch`), and without this column that
-            # shows only as an unexplained gap in the one figure a sweep averages.
-            "val_reference_n": block.get("reference_n"),
-            "val_chi2": block.get("chi2"),
-            "val_reference_chi2": block.get("reference_chi2"),
-            "val_mode": block.get("mode")}
+    return {
+        "val_status": block.get("status"),
+        # The REFERENCE's status, not the candidate's: `error` here means the refit could not
+        # score the held-out set at all, which is a different row from "no bar was ever fit".
+        "val_reference_status": block.get("reference_status"),
+        "val_nll": block.get("nll"),
+        "val_reference_nll": block.get("reference_nll"),
+        "val_delta_nll": block.get("delta_nll"),
+        "val_n": block.get("n"),
+        # The reference's own point count, so a blank `val_delta_nll` is DIAGNOSABLE from the
+        # CSV: the commonest reason to withhold the difference is that the two sides counted
+        # different numbers of held-out points (`n_mismatch`), and without this column that
+        # shows only as an unexplained gap in the one figure a sweep averages.
+        "val_reference_n": block.get("reference_n"),
+        "val_chi2": block.get("chi2"),
+        "val_reference_chi2": block.get("reference_chi2"),
+        "val_mode": block.get("mode"),
+    }
 
 
 #: Flatteners that return only THEIR OWN keys, merged into the row rather than replacing it. The
@@ -408,8 +495,7 @@ _KEY_FLATTENERS = ("flatten_validation",)
 # `assert` statement: `python -O` would strip it and take the fail-fast with it.
 _unknown_flatteners = [n for n in _KEY_FLATTENERS if n not in globals()]
 if _unknown_flatteners:  # pragma: no cover - import-time wiring check
-    raise NameError(f"metrics._KEY_FLATTENERS names undefined flattener(s): "
-                    f"{_unknown_flatteners}")
+    raise NameError(f"metrics._KEY_FLATTENERS names undefined flattener(s): {_unknown_flatteners}")
 del _unknown_flatteners
 
 
@@ -462,7 +548,8 @@ def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HIST
             writer.writeheader()
         for row in rows:
             row = _flatten_served_endpoints(
-                _flatten_git_diff(_flatten_replicate_lof(_flatten_edit_rejects(row))))
+                _flatten_git_diff(_flatten_replicate_lof(_flatten_edit_rejects(row)))
+            )
             for name in _KEY_FLATTENERS:
                 row = {**row, **globals()[name](row)}
             writer.writerow({k: row.get(k) for k in fields})
@@ -506,8 +593,20 @@ def summarize(rows: list[dict[str, Any]]) -> str:
     """A compact across-example table + (when a scenario has repeats) its success rate."""
     if not rows:
         return "(no runs found)"
-    header = ("scenario", "ver", "verdict", "ΔBIC", "chi2 p", "tokens", "tools", "errs",
-              "wall_s", "temp", "code", "model")
+    header = (
+        "scenario",
+        "ver",
+        "verdict",
+        "ΔBIC",
+        "chi2 p",
+        "tokens",
+        "tools",
+        "errs",
+        "wall_s",
+        "temp",
+        "code",
+        "model",
+    )
     lines = [
         f"{header[0]:<16} {header[1]:>3} {header[2]:<7} {header[3]:>9} {header[4]:>8} "
         f"{header[5]:>9} {header[6]:>5} {header[7]:>4} {header[8]:>7} {header[9]:>5} "

@@ -5,10 +5,17 @@ Routing exists to stop a request silently landing on an endpoint that is far mor
 providers, on a workload that is ~97% prompt tokens). None of that surfaces as a failure --
 the run succeeds and the bill arrives later -- so the invariants are pinned here.
 """
+
 import pytest
 
-from petab_harness.models import (MODELS, _CACHING, _ROUTING, caching_config,
-                                  provider_routing, resolve)
+from petab_harness.models import (
+    MODELS,
+    _CACHING,
+    _ROUTING,
+    caching_config,
+    provider_routing,
+    resolve,
+)
 
 
 def test_every_pinned_id_is_one_we_actually_use():
@@ -77,6 +84,7 @@ def test_resolve_maps_the_alias_to_the_pinned_id():
 
 # ------------------------------------------------------------------ reasoning config
 
+
 def test_every_reasoning_entry_names_a_model_on_the_panel():
     """Same orphan check as the routing table: `_REASONING` is keyed by model ID, so an entry for
     a model no longer in MODELS is dead config that silently does nothing."""
@@ -111,13 +119,15 @@ def test_extra_body_carries_routing_and_reasoning_independently():
     from petab_harness.agent.driver import _extra_body
 
     luna = _extra_body("openai/gpt-5.6-luna-pro")
-    assert set(luna) == {"provider", "usage"}, \
+    assert set(luna) == {"provider", "usage"}, (
         "pinned but no reasoning entry -> the pin and the cost flag, nothing else"
+    )
     assert luna["provider"]["only"] == ["openai"]
     assert luna["usage"] == {"include": True}
 
-    assert _extra_body("some/unpinned-model") == {"usage": {"include": True}}, \
+    assert _extra_body("some/unpinned-model") == {"usage": {"include": True}}, (
         "neither -> the cost flag alone"
+    )
 
 
 def test_extra_body_includes_reasoning_when_a_model_has_it(monkeypatch):
@@ -132,6 +142,7 @@ def test_extra_body_includes_reasoning_when_a_model_has_it(monkeypatch):
 
 # ------------------------------------------------------------------ prompt caching
 
+
 def test_every_caching_entry_names_a_model_on_the_panel():
     """An entry for a model no longer in MODELS is dead config that silently does nothing."""
     in_use = set(MODELS.values())
@@ -142,10 +153,16 @@ def test_every_caching_entry_names_a_model_on_the_panel():
 def test_implicitly_caching_models_ask_for_nothing():
     """An entry is not free on a provider that already caches: Gemini would start billing the
     writes that implicit caching gives us at zero."""
-    for model_id in ("z-ai/glm-5.3-flash", "openai/gpt-5.6-luna", "deepseek/deepseek-v4-flash",
-                     "google/gemini-3.6-flash", "google/gemini-3.1-pro-preview"):
+    for model_id in (
+        "z-ai/glm-5.3-flash",
+        "openai/gpt-5.6-luna",
+        "deepseek/deepseek-v4-flash",
+        "google/gemini-3.6-flash",
+        "google/gemini-3.1-pro-preview",
+    ):
         assert caching_config(model_id) is None, (
-            f"{model_id} caches implicitly -- asking explicitly can only add cost")
+            f"{model_id} caches implicitly -- asking explicitly can only add cost"
+        )
     assert caching_config("some/model-we-never-heard-of") is None
 
 
@@ -155,7 +172,8 @@ def test_cache_control_asks_for_the_one_hour_ttl():
     for model_id, block in _CACHING.items():
         assert block.get("type") == "ephemeral", f"{model_id}: unknown cache_control type"
         assert block.get("ttl") == "1h", (
-            f"{model_id} would fall back to the 5-minute TTL, which expires inside a single fit")
+            f"{model_id} would fall back to the 5-minute TTL, which expires inside a single fit"
+        )
 
 
 @pytest.mark.parametrize("model_id", sorted(_CACHING))
@@ -165,7 +183,8 @@ def test_an_explicitly_cached_model_is_pinned_to_exactly_one_endpoint(model_id):
     block = provider_routing(model_id)
     assert block is not None, f"{model_id} asks for caching but routes by default"
     assert block.get("only") and len(block["only"]) == 1, (
-        f"{model_id} may fail over to a second endpoint, which is a second (cold) cache")
+        f"{model_id} may fail over to a second endpoint, which is a second (cold) cache"
+    )
     assert "order" not in block, f"{model_id} has a fallback order, so it has a fallback cache"
 
 
@@ -176,12 +195,17 @@ def test_a_blank_text_block_does_not_capture_the_breakpoint():
     from petab_harness.agent.driver import _apply_cache_breakpoints
 
     cfg = {"type": "ephemeral", "ttl": "1h"}
-    payload = {"messages": [
-        {"role": "system", "content": "system text"},
-        {"role": "tool", "tool_call_id": "c1", "content": "tool output"},
-        {"role": "assistant", "content": [{"type": "text", "text": "  "}],
-         "tool_calls": [{"id": "c2"}]},
-    ]}
+    payload = {
+        "messages": [
+            {"role": "system", "content": "system text"},
+            {"role": "tool", "tool_call_id": "c1", "content": "tool output"},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "  "}],
+                "tool_calls": [{"id": "c2"}],
+            },
+        ]
+    }
     _apply_cache_breakpoints(payload, cfg)
     system, tool, assistant = payload["messages"]
     assert assistant["content"] == [{"type": "text", "text": "  "}], "blank block left alone"
@@ -204,12 +228,14 @@ def test_breakpoints_land_on_the_system_message_and_the_last_message():
     from petab_harness.agent.driver import _apply_cache_breakpoints
 
     cfg = {"type": "ephemeral", "ttl": "1h"}
-    payload = {"messages": [
-        {"role": "system", "content": "system text"},
-        {"role": "user", "content": "task"},
-        {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},
-        {"role": "tool", "tool_call_id": "c1", "content": "tool output"},
-    ]}
+    payload = {
+        "messages": [
+            {"role": "system", "content": "system text"},
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "tool output"},
+        ]
+    }
     _apply_cache_breakpoints(payload, cfg)
     system, user, assistant, tool = payload["messages"]
     assert system["content"] == [{"type": "text", "text": "system text", "cache_control": cfg}]
@@ -225,14 +251,20 @@ def test_breakpoints_skip_a_contentless_tail_and_mark_existing_blocks():
     from petab_harness.agent.driver import _apply_cache_breakpoints
 
     cfg = {"type": "ephemeral"}
-    payload = {"messages": [
-        {"role": "system", "content": [{"type": "text", "text": "s"}]},
-        {"role": "user", "content": "task"},
-        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
-    ]}
+    payload = {
+        "messages": [
+            {"role": "system", "content": [{"type": "text", "text": "s"}]},
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+        ]
+    }
     _apply_cache_breakpoints(payload, cfg)
-    assert payload["messages"][0]["content"] == [{"type": "text", "text": "s", "cache_control": cfg}]
-    assert payload["messages"][1]["content"] == [{"type": "text", "text": "task", "cache_control": cfg}]
+    assert payload["messages"][0]["content"] == [
+        {"type": "text", "text": "s", "cache_control": cfg}
+    ]
+    assert payload["messages"][1]["content"] == [
+        {"type": "text", "text": "task", "cache_control": cfg}
+    ]
 
 
 def test_the_request_langchain_builds_actually_carries_the_breakpoints():
@@ -249,22 +281,38 @@ def test_the_request_langchain_builds_actually_carries_the_breakpoints():
     from petab_harness.agent.driver import _chat_model_class, _extra_body
 
     model_id = "anthropic/claude-sonnet-5"
-    llm = _chat_model_class()(name="ChatOpenAI", model=model_id, api_key="sk-not-a-real-key",
-                              base_url="https://openrouter.ai/api/v1",
-                              extra_body=_extra_body(model_id))
-    payload = llm._get_request_payload([
-        SystemMessage(content="system text"), HumanMessage(content="task"),
-        AIMessage(content="", tool_calls=[{"name": "execute", "args": {}, "id": "c1",
-                                           "type": "tool_call"}]),
-        ToolMessage(content="tool output", tool_call_id="c1")], stop=None)
-    marked = [m["role"] for m in payload["messages"]
-              if isinstance(m.get("content"), list)
-              and any(b.get("cache_control") for b in m["content"])]
+    llm = _chat_model_class()(
+        name="ChatOpenAI",
+        model=model_id,
+        api_key="sk-not-a-real-key",
+        base_url="https://openrouter.ai/api/v1",
+        extra_body=_extra_body(model_id),
+    )
+    payload = llm._get_request_payload(
+        [
+            SystemMessage(content="system text"),
+            HumanMessage(content="task"),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "execute", "args": {}, "id": "c1", "type": "tool_call"}],
+            ),
+            ToolMessage(content="tool output", tool_call_id="c1"),
+        ],
+        stop=None,
+    )
+    marked = [
+        m["role"]
+        for m in payload["messages"]
+        if isinstance(m.get("content"), list) and any(b.get("cache_control") for b in m["content"])
+    ]
     assert marked == ["system", "tool"]
     assert payload["extra_body"]["provider"] == {"only": ["google-vertex/global"]}
     # a model with no caching entry is untouched
-    plain = _chat_model_class()(name="ChatOpenAI", model="openai/gpt-5.6-luna-pro",
-                                api_key="sk-not-a-real-key",
-                                base_url="https://openrouter.ai/api/v1")
+    plain = _chat_model_class()(
+        name="ChatOpenAI",
+        model="openai/gpt-5.6-luna-pro",
+        api_key="sk-not-a-real-key",
+        base_url="https://openrouter.ai/api/v1",
+    )
     out = plain._get_request_payload([SystemMessage(content="s")], stop=None)
     assert out["messages"][0]["content"] == "s"

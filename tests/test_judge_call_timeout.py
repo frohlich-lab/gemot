@@ -22,8 +22,7 @@ import pytest
 
 from petab_harness.agent.circuit_breaker import _is_call_timeout, _is_transport_error
 from petab_harness.fit_budget import fit_time_budget
-from petab_harness.runner.clock import (NON_FIT_CALL_TIMEOUT_S, _make_call,
-                                        _wrap_call_timeout)
+from petab_harness.runner.clock import NON_FIT_CALL_TIMEOUT_S, _make_call, _wrap_call_timeout
 
 DEFAULT_N_STARTS = 50
 
@@ -37,8 +36,9 @@ def _rosenbrock_multistart(n_starts: int) -> float:
     best = float("inf")
     for _ in range(n_starts):
         x0 = rng.uniform(-2.0, 2.0, size=6)
-        res = minimize(lambda x: sum(100.0 * (x[1:] - x[:-1] ** 2) ** 2 + (1 - x[:-1]) ** 2),
-                       x0, method="BFGS")
+        res = minimize(
+            lambda x: sum(100.0 * (x[1:] - x[:-1] ** 2) ** 2 + (1 - x[:-1]) ** 2), x0, method="BFGS"
+        )
         best = min(best, float(res.fun))
     return best
 
@@ -74,6 +74,7 @@ def _server():
 
 async def _session():
     from mcp.shared.memory import create_connected_server_and_client_session
+
     return create_connected_server_and_client_session(_server()._mcp_server)
 
 
@@ -81,6 +82,7 @@ async def _session():
 def test_a_fit_that_finishes_inside_its_budget_returns_normally(n_starts):
     """The control. Without this, a test asserting "it times out" also passes when the tool is
     simply broken."""
+
     async def go():
         async with await _session() as s:
             _wrap_call_timeout(s, DEFAULT_N_STARTS)
@@ -94,12 +96,14 @@ def test_an_overrunning_fit_raises_a_BARE_McpError_408_that_the_classifier_catch
     """The shape assertion. `_is_call_timeout` reads `type(exc).__name__` and `exc.error.code`,
     so it only works if mcp hands the timeout up unwrapped — assert that directly, because the
     stop_reason recorded in result.json cannot distinguish it."""
+
     async def go():
         async with await _session() as s:
             with pytest.raises(BaseException) as ei:
                 # 200 starts against a 50ms budget: the cut fires long before the fit ends.
-                await s.call_tool("make_changes", {"n_starts": 200},
-                                  read_timeout_seconds=timedelta(seconds=0.05))
+                await s.call_tool(
+                    "make_changes", {"n_starts": 200}, read_timeout_seconds=timedelta(seconds=0.05)
+                )
             return ei.value
 
     exc = asyncio.run(go())
@@ -117,6 +121,7 @@ def _budgets_reaching_the_transport(calls):
     The spy goes on BEFORE `_wrap_call_timeout`, so it sees the final value rather than what the
     caller passed.
     """
+
     async def go():
         async with await _session() as s:
             seen: list[float | None] = []
@@ -145,7 +150,8 @@ def test_a_call_that_cannot_fit_is_not_given_a_fit_budget():
     `read_timeout_seconds` sets `override` and DISCARDS the `in_flight` queue term, and two
     earlier attempts bounded individual handles exactly that way."""
     read, fit = _budgets_reaching_the_transport(
-        [("get_progress", {}), ("make_changes", {"n_starts": 1})])
+        [("get_progress", {}), ("make_changes", {"n_starts": 1})]
+    )
 
     assert read == NON_FIT_CALL_TIMEOUT_S
     assert fit == fit_time_budget(DEFAULT_N_STARTS)
@@ -158,6 +164,7 @@ def test_a_read_queued_behind_a_live_fit_still_gets_to_outwait_it():
     answered until the fit ends — bounding it at NON_FIT_CALL_TIMEOUT_S alone would 408 a
     perfectly healthy call. The finish gate reads through this path from inside a super-step, and
     five such refusals relabel a fully fitted run `no_model_built`."""
+
     def _read_budget_while_fitting(fit_args):
         async def go():
             async with await _session() as s:
@@ -172,7 +179,7 @@ def test_a_read_queued_behind_a_live_fit_still_gets_to_outwait_it():
                 _wrap_call_timeout(s, DEFAULT_N_STARTS)
                 call = _make_call(s)
                 fit = asyncio.create_task(call("make_changes", **fit_args))
-                await asyncio.sleep(0)      # let the fit arm and register in `in_flight`
+                await asyncio.sleep(0)  # let the fit arm and register in `in_flight`
                 await call("get_progress")
                 await fit
                 return seen
@@ -180,13 +187,15 @@ def test_a_read_queued_behind_a_live_fit_still_gets_to_outwait_it():
         return asyncio.run(go())[1]
 
     assert _read_budget_while_fitting({"n_starts": 4}) > NON_FIT_CALL_TIMEOUT_S, (
-        "a read queued behind a fit must outwait it, not just its own bound")
+        "a read queued behind a fit must outwait it, not just its own bound"
+    )
     # The case that actually dominates: the server's docstring tells the model to OMIT n_starts
     # unless it wants more than the default, so most real fits carry no count. Those were sized
     # correctly for themselves but never registered in `in_flight`, leaving a concurrent read on
     # a flat 900s against a server whose event loop was held for thousands of seconds.
     assert _read_budget_while_fitting({}) > NON_FIT_CALL_TIMEOUT_S, (
-        "a fit that omitted n_starts must still be visible to the queue term")
+        "a fit that omitted n_starts must still be visible to the queue term"
+    )
 
 
 # --- liveness -------------------------------------------------------------------------------
@@ -201,9 +210,9 @@ def test_liveness_reads_popen_semantics_not_truthiness():
     inverted; `bool(poll())` would read None as False and call every healthy server dead."""
     from petab_harness.agent.driver import _server_is_alive
 
-    assert _server_is_alive(lambda: None) is True      # running
-    assert _server_is_alive(lambda: 0) is False        # exited cleanly
-    assert _server_is_alive(lambda: -9) is False       # SIGKILL — the OOM case
+    assert _server_is_alive(lambda: None) is True  # running
+    assert _server_is_alive(lambda: 0) is False  # exited cleanly
+    assert _server_is_alive(lambda: -9) is False  # SIGKILL — the OOM case
 
 
 def test_no_signal_is_not_evidence_of_death():
@@ -233,5 +242,5 @@ def test_liveness_against_a_real_process():
     finally:
         proc.send_signal(signal.SIGKILL)
         proc.wait(timeout=10)
-    assert proc.poll() == -9          # what bachmann 52859568_0 recorded as server_returncode
+    assert proc.poll() == -9  # what bachmann 52859568_0 recorded as server_returncode
     assert _server_is_alive(proc.poll) is False

@@ -28,7 +28,13 @@ def test_training_fits_counts_and_simulates(tmp_path):
 
     trajectories = T.trajectories(result, n_times=10)
     assert set(trajectories) == {"c_lo", "c_hi"}
-    assert trajectories["c_lo"]["states"].shape == (10, 5) and T.state_names(result) == ("P", "Q", "S", "E", "z1")
+    assert trajectories["c_lo"]["states"].shape == (10, 5) and T.state_names(result) == (
+        "P",
+        "Q",
+        "S",
+        "E",
+        "z1",
+    )
     assert trajectories["c_hi"]["times"][-1] == pytest.approx(problem.horizon)
     # The dosed starts are the condition table's, so the simulated start is the dose.
     assert trajectories["c_hi"]["states"][0, 2] == pytest.approx(8.0)
@@ -52,20 +58,34 @@ def test_curriculum_multiple_shooting_runs_its_stages_and_ends_single_shooting(t
     assert windows and all("_PARAMETER_" in p for p in windows) and (stage1 / "net1.py").exists()
     # Five time points split [0, 0.5] and [0.5, 2]; a window start begins at the datum measured
     # where the window starts (P at t=0.5 in c_hi is 0.9), an unmeasured state at its guess.
-    assert pd.read_csv(stage1 / "experiments.tsv", sep="\t").query("experimentId == 'WINDOW1_EXPERIMENT_c_hi'")["time"].min() == 0.5
-    assert float(parameters.loc["WINDOW1_EXPERIMENT_c_hi_PARAMETER_P", "nominalValue"]) == pytest.approx(0.9)
-    assert float(parameters.loc["WINDOW1_EXPERIMENT_c_hi_PARAMETER_S", "nominalValue"]) == pytest.approx(
-        0.1 * problem.scales["S"])
+    assert (
+        pd.read_csv(stage1 / "experiments.tsv", sep="\t")
+        .query("experimentId == 'WINDOW1_EXPERIMENT_c_hi'")["time"]
+        .min()
+        == 0.5
+    )
+    assert float(
+        parameters.loc["WINDOW1_EXPERIMENT_c_hi_PARAMETER_P", "nominalValue"]
+    ) == pytest.approx(0.9)
+    assert float(
+        parameters.loc["WINDOW1_EXPERIMENT_c_hi_PARAMETER_S", "nominalValue"]
+    ) == pytest.approx(0.1 * problem.scales["S"])
 
 
 def test_windows_are_ignored_under_preequilibration_and_reduced_on_sparse_data(tmp_path):
     problem = P.load(write_problem(tmp_path / "pre", preequilibration=True), dosed=("S",))
     config = T.TrainConfig(width=4, depth=1, steps=5, n_restarts=1, n_windows=3, patience=1000)
     result = T.train(problem, tmp_path / "run", config)
-    assert len(result.stage_objectives) == 1 and result.notes and "refuses preequilibration" in result.notes[0]
+    assert (
+        len(result.stage_objectives) == 1
+        and result.notes
+        and "refuses preequilibration" in result.notes[0]
+    )
     # Five time points have four gaps, so six windows cannot all have length; the count drops.
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
-    stages, notes = T._curriculum(problem, T.stage_only(problem, tmp_path / "sparse", config), replace(config, n_windows=6))
+    stages, notes = T._curriculum(
+        problem, T.stage_only(problem, tmp_path / "sparse", config), replace(config, n_windows=6)
+    )
     assert 2 <= len(stages) <= 4 and notes and "n_windows=6 reduced to" in notes[0]
 
 
@@ -102,12 +122,13 @@ def test_fides_restarts_are_not_failures_and_share_one_compiled_gradient(tmp_pat
 
     monkeypatch.setattr(T.eqx, "filter_jit", counting)
     restarts = 4
-    config = T.TrainConfig(width=4, depth=1, steps=20, n_restarts=restarts, patience=1000,
-                           optimiser="fides")
+    config = T.TrainConfig(
+        width=4, depth=1, steps=20, n_restarts=restarts, patience=1000, optimiser="fides"
+    )
     result = T.train(problem, tmp_path / "run", config)
 
     assert not result.solver_failed and math.isfinite(result.nll)
-    assert result.restart_failures == ()          # a converged restart is not a failed one
+    assert result.restart_failures == ()  # a converged restart is not a failed one
     assert result.config.key().endswith("_fides_s0")
     # The compilations belong to the stepper, one per curriculum stage -- NOT one per restart, so
     # the count must not grow with `restarts`.
@@ -122,7 +143,9 @@ def test_the_horizon_curriculum_grows_the_window_and_carries_the_weights(tmp_pat
     import pandas as pd
 
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
-    config = T.TrainConfig(width=4, depth=1, steps=21, n_restarts=1, horizon_stages=3, patience=1000)
+    config = T.TrainConfig(
+        width=4, depth=1, steps=21, n_restarts=1, horizon_stages=3, patience=1000
+    )
     result = T.train(problem, tmp_path / "run", config)
     assert config.key() == "aug0_w4d1_cl3_s0" and result.notes == ()
     # One objective per stage, and the weights carry across them: the loop seeds `networks` once
@@ -151,8 +174,11 @@ def test_a_curriculum_is_one_kind_or_the_other(tmp_path):
     would run a sweep arm labelled as a horizon curriculum that had never built one."""
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
     with pytest.raises(ValueError, match="both build a"):
-        T.train(problem, tmp_path / "run",
-                T.TrainConfig(width=4, depth=1, steps=9, n_restarts=1, n_windows=2, horizon_stages=3))
+        T.train(
+            problem,
+            tmp_path / "run",
+            T.TrainConfig(width=4, depth=1, steps=9, n_restarts=1, n_windows=2, horizon_stages=3),
+        )
 
 
 def test_the_saved_bundle_carries_the_fitted_weights_not_the_staged_ones(tmp_path):
@@ -165,39 +191,64 @@ def test_the_saved_bundle_carries_the_fitted_weights_not_the_staged_ones(tmp_pat
     from petab_harness.neural_ode import stage as S
 
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
-    result = T.train(problem, tmp_path / "run", T.TrainConfig(width=4, depth=1, steps=8, n_restarts=1,
-                                                              patience=1000))
+    result = T.train(
+        problem,
+        tmp_path / "run",
+        T.TrainConfig(width=4, depth=1, steps=8, n_restarts=1, patience=1000),
+    )
     bundle = T.save_bundle(result, tmp_path / "bundle")
 
     def arrays(path):
         out = {}
         with h5py.File(path) as handle:
-            handle.visititems(lambda name, o: out.__setitem__(name, np.array(o))
-                              if getattr(o, "shape", None) else None)
+            handle.visititems(
+                lambda name, o: (
+                    out.__setitem__(name, np.array(o)) if getattr(o, "shape", None) else None
+                )
+            )
         return out
 
-    staged, saved = arrays(result.staged.directory / "net1_ps.hdf5"), arrays(bundle / "net1_ps.hdf5")
+    staged, saved = (
+        arrays(result.staged.directory / "net1_ps.hdf5"),
+        arrays(bundle / "net1_ps.hdf5"),
+    )
     assert staged and set(staged) == set(saved), "the bundle must hold the same layers"
-    assert any(not np.allclose(staged[k], saved[k]) for k in staged), \
+    assert any(not np.allclose(staged[k], saved[k]) for k in staged), (
         "the bundle holds the STAGED weights: the fit was thrown away"
+    )
     # And what it holds is the fit itself, layer for layer, not merely something different.
     trained = result.problem.model.nns[S.NETWORK_ID].layers
     for name, layer in trained.items():
-        assert np.allclose(saved[f"parameters/{S.NETWORK_ID}/{name}/weight"], np.asarray(layer.weight))
+        assert np.allclose(
+            saved[f"parameters/{S.NETWORK_ID}/{name}/weight"], np.asarray(layer.weight)
+        )
         assert np.allclose(saved[f"parameters/{S.NETWORK_ID}/{name}/bias"], np.asarray(layer.bias))
 
 
 def test_checkpoints_record_the_best_so_far_and_reconstruct_a_scorable_result(tmp_path):
     """A checkpoint must be what a SHORTER run would have returned, not the current iterate."""
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
-    config = T.TrainConfig(width=4, depth=1, n_augmented=1, steps=20, n_restarts=2, patience=1000,
-                           checkpoints=(5, 10, 20))
+    config = T.TrainConfig(
+        width=4,
+        depth=1,
+        n_augmented=1,
+        steps=20,
+        n_restarts=2,
+        patience=1000,
+        checkpoints=(5, 10, 20),
+    )
     result = T.train(problem, tmp_path / "run", config)
     assert not result.solver_failed
 
     # One per (restart, checkpoint), in the order taken.
     assert [(c.restart, c.steps) for c in result.checkpoints] == [
-        (0, 5), (0, 10), (0, 20), (1, 5), (1, 10), (1, 20)]
+        (0, 5),
+        (0, 10),
+        (0, 20),
+        (1, 5),
+        (1, 10),
+        (1, 20),
+    ]
     # Best-so-far can only improve along a restart, and the last must equal what the restart
     # reached -- the whole point is that checkpoint k stands in for a run of length k.
     for restart in (0, 1):
@@ -217,19 +268,30 @@ def test_checkpoints_record_the_best_so_far_and_reconstruct_a_scorable_result(tm
 def test_checkpoints_are_refused_where_a_step_is_not_a_budget(tmp_path):
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
     with pytest.raises(ValueError, match="checkpoints need optimiser='adam'"):
-        T.train(problem, tmp_path / "a",
-                T.TrainConfig(width=4, depth=1, steps=20, optimiser="fides", checkpoints=(5,)))
+        T.train(
+            problem,
+            tmp_path / "a",
+            T.TrainConfig(width=4, depth=1, steps=20, optimiser="fides", checkpoints=(5,)),
+        )
     with pytest.raises(ValueError, match="fall outside"):
-        T.train(problem, tmp_path / "b",
-                T.TrainConfig(width=4, depth=1, steps=20, checkpoints=(5, 999)))
+        T.train(
+            problem, tmp_path / "b", T.TrainConfig(width=4, depth=1, steps=20, checkpoints=(5, 999))
+        )
 
 
 def test_no_checkpoints_is_the_default_and_costs_nothing(tmp_path):
     """The negative control: without the flag the run is unchanged and records nothing."""
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
     plain = T.TrainConfig(width=4, depth=1, n_augmented=1, steps=20, n_restarts=1, patience=1000)
-    marked = T.TrainConfig(width=4, depth=1, n_augmented=1, steps=20, n_restarts=1, patience=1000,
-                           checkpoints=(5, 10, 20))
+    marked = T.TrainConfig(
+        width=4,
+        depth=1,
+        n_augmented=1,
+        steps=20,
+        n_restarts=1,
+        patience=1000,
+        checkpoints=(5, 10, 20),
+    )
     a, b = T.train(problem, tmp_path / "a", plain), T.train(problem, tmp_path / "b", marked)
     assert a.checkpoints == () and len(b.checkpoints) == 3
     # Checkpointing must not perturb the trajectory: same seed, same optimum, same key.
@@ -240,8 +302,16 @@ def test_no_checkpoints_is_the_default_and_costs_nothing(tmp_path):
 def test_an_early_stop_truncates_the_curve_rather_than_faking_the_tail(tmp_path):
     """Patience ends the run, so checkpoints past the stop describe no run and must not appear."""
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
-    config = T.TrainConfig(width=4, depth=1, n_augmented=1, steps=40, n_restarts=1,
-                           patience=1, min_improvement=1e9, checkpoints=(2, 20, 40))
+    config = T.TrainConfig(
+        width=4,
+        depth=1,
+        n_augmented=1,
+        steps=40,
+        n_restarts=1,
+        patience=1,
+        min_improvement=1e9,
+        checkpoints=(2, 20, 40),
+    )
     result = T.train(problem, tmp_path / "run", config)
     taken = result.steps_run
     assert taken < 40, "patience=1 with an unreachable min_improvement should stop almost at once"

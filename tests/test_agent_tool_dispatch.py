@@ -14,10 +14,7 @@ is not a dependency of the petab-mcp package (only of the examples harness).
 from __future__ import annotations
 
 
-
 from petab_harness import agent, scenario
-
-
 
 
 # --------------------------------------------------------------------- pure de-dup helpers
@@ -30,8 +27,9 @@ def test_tool_call_key_ignores_id_and_arg_order():
 def test_tool_call_key_distinguishes_name_and_args():
     base = {"name": "get_fit_summary", "args": {}}
     assert agent._tool_call_key(base) != agent._tool_call_key({"name": "get_errors", "args": {}})
-    assert agent._tool_call_key({"name": "f", "args": {"x": 1}}) != \
-        agent._tool_call_key({"name": "f", "args": {"x": 2}})
+    assert agent._tool_call_key({"name": "f", "args": {"x": 1}}) != agent._tool_call_key(
+        {"name": "f", "args": {"x": 2}}
+    )
 
 
 def test_tool_call_key_handles_non_serialisable_args():
@@ -43,9 +41,9 @@ def test_tool_call_key_handles_non_serialisable_args():
 def test_dedupe_drops_exact_duplicates_keeping_first():
     calls = [
         {"name": "a", "args": {"x": 1}, "id": "1"},
-        {"name": "a", "args": {"x": 1}, "id": "2"},   # dup of #1
-        {"name": "a", "args": {"x": 2}, "id": "3"},   # different args
-        {"name": "b", "args": {"x": 1}, "id": "4"},   # different name
+        {"name": "a", "args": {"x": 1}, "id": "2"},  # dup of #1
+        {"name": "a", "args": {"x": 2}, "id": "3"},  # different args
+        {"name": "b", "args": {"x": 1}, "id": "4"},  # different name
     ]
     kept, dropped = agent._dedupe_tool_calls(calls)
     assert dropped == 1
@@ -116,13 +114,19 @@ def _fixtures():
         return "model_authored: false"
 
     def run(scripted_msgs, *, max_idle_steps=3, return_messages=False):
-        stats = {"tools_executed": 0, "dropped_dup_tool_calls": 0,
-                 "idle_nudges": 0, "gave_up_no_tools": False}
+        stats = {
+            "tools_executed": 0,
+            "dropped_dup_tool_calls": 0,
+            "idle_nudges": 0,
+            "gave_up_no_tools": False,
+        }
         guard = agent._tool_dispatch_guard(stats, max_idle_steps=max_idle_steps)
-        graph = create_agent(ToolFakeModel(responses=scripted_msgs),
-                             tools=[describe_problem], middleware=[guard])
-        out = graph.invoke({"messages": [HumanMessage(content="build a model")]},
-                           config={"recursion_limit": 50})
+        graph = create_agent(
+            ToolFakeModel(responses=scripted_msgs), tools=[describe_problem], middleware=[guard]
+        )
+        out = graph.invoke(
+            {"messages": [HumanMessage(content="build a model")]}, config={"recursion_limit": 50}
+        )
         return (stats, out["messages"]) if return_messages else stats
 
     return run, AIMessage
@@ -130,17 +134,22 @@ def _fixtures():
 
 def _call(id_="c1"):
     _, AIMessage = _fixtures()
-    return AIMessage(content="", tool_calls=[
-        {"name": "describe_problem", "args": {}, "id": id_, "type": "tool_call"}])
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": "describe_problem", "args": {}, "id": id_, "type": "tool_call"}],
+    )
 
 
 @requires_langchain
 def test_duplicate_tool_calls_in_a_batch_execute_once():
     run, AIMessage = _fixtures()
-    dup_batch = AIMessage(content="", tool_calls=[
-        {"name": "describe_problem", "args": {}, "id": "c1", "type": "tool_call"},
-        {"name": "describe_problem", "args": {}, "id": "c2", "type": "tool_call"},
-    ])
+    dup_batch = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "describe_problem", "args": {}, "id": "c1", "type": "tool_call"},
+            {"name": "describe_problem", "args": {}, "id": "c2", "type": "tool_call"},
+        ],
+    )
     stats = run([dup_batch, AIMessage(content="done — fit adequate")])
     assert stats["dropped_dup_tool_calls"] == 1
     assert stats["tools_executed"] == 1
@@ -162,12 +171,15 @@ def test_nudge_rescues_a_run_that_starts_by_stalling():
     # Two text-only turns, then the model finally emits a real tool call and finishes: the
     # push-back keeps the loop alive so the proposed tool call actually fires.
     run, AIMessage = _fixtures()
-    stats = run([
-        AIMessage(content="let me think about the mechanism"),
-        AIMessage(content="still reasoning, no action yet"),
-        _call(),
-        AIMessage(content="fit adequate, finishing"),
-    ], max_idle_steps=3)
+    stats = run(
+        [
+            AIMessage(content="let me think about the mechanism"),
+            AIMessage(content="still reasoning, no action yet"),
+            _call(),
+            AIMessage(content="fit adequate, finishing"),
+        ],
+        max_idle_steps=3,
+    )
     assert stats["tools_executed"] == 1
     assert stats["idle_nudges"] == 2
     assert stats["gave_up_no_tools"] is False
@@ -194,12 +206,20 @@ def test_dedupe_also_collapses_the_raw_additional_kwargs_copy():
             {"name": "describe_problem", "args": {}, "id": "dup", "type": "tool_call"},
             {"name": "describe_problem", "args": {}, "id": "dup", "type": "tool_call"},
         ],
-        additional_kwargs={"tool_calls": [
-            {"id": "dup", "type": "function",
-             "function": {"name": "describe_problem", "arguments": "{}"}},
-            {"id": "dup", "type": "function",
-             "function": {"name": "describe_problem", "arguments": "{}"}},
-        ]},
+        additional_kwargs={
+            "tool_calls": [
+                {
+                    "id": "dup",
+                    "type": "function",
+                    "function": {"name": "describe_problem", "arguments": "{}"},
+                },
+                {
+                    "id": "dup",
+                    "type": "function",
+                    "function": {"name": "describe_problem", "arguments": "{}"},
+                },
+            ]
+        },
     )
     stats, messages = run([dup_batch, AIMessage(content="done")], return_messages=True)
     assert stats["tools_executed"] == 1

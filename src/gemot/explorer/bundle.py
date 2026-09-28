@@ -61,18 +61,20 @@ def _assistant_from_output(output_messages: Any) -> dict:
                 args = json.loads(args) if isinstance(args, str) else args
             except Exception:
                 pass
-            calls.append({
-                "id": tc.get("tool_call.id"),
-                "name": tc.get("tool_call.function.name"),
-                "args": args,
-            })
+            calls.append(
+                {
+                    "id": tc.get("tool_call.id"),
+                    "name": tc.get("tool_call.function.name"),
+                    "args": args,
+                }
+            )
     return {"text": text, "tool_calls": calls}
 
 
 def _system_prompt(msg_list) -> str:
     """The first system message's text from an LLM span's ``llm.input_messages`` (the persona:
     the lead and each analyst subagent run under a distinct, stable system prompt)."""
-    for m in (msg_list if msg_list is not None else []):
+    for m in msg_list if msg_list is not None else []:
         if isinstance(m, dict) and m.get("message.role") == "system":
             return _msg_text(m).strip()
     return ""
@@ -84,7 +86,9 @@ def _emits_task(out_msgs) -> bool:
     return any(tc.get("name") == "task" for tc in _assistant_from_output(out_msgs)["tool_calls"])
 
 
-def _match_pending_subagent(system_prompt: str, emitted: list[dict]) -> tuple[str | None, str | None]:
+def _match_pending_subagent(
+    system_prompt: str, emitted: list[dict]
+) -> tuple[str | None, str | None]:
     """Best-effort (subagent_type, description) for an in-progress analyst, by matching the
     lead's emitted ``task`` calls against the analyst's persona prompt (e.g. subagent_type
     ``mathematician`` ↔ a prompt beginning "You are a mathematician…").
@@ -171,15 +175,33 @@ class _Trace:
         for s in self._sorted([i for i in scope_ids if i not in exclude]):
             if s["kind"] == "LLM":
                 a = _assistant_from_output(s["out_msgs"])
-                items.append({"type": "assistant", "text": a["text"],
-                              "tool_calls": a["tool_calls"], "model": s["model"],
-                              "tokens": {"prompt": s["tok_prompt"], "completion": s["tok_completion"],
-                                         "cache_read": s["tok_cache"], "total": s["tok_total"]},
-                              "_id": s["id"], "start": s["start"]})
+                items.append(
+                    {
+                        "type": "assistant",
+                        "text": a["text"],
+                        "tool_calls": a["tool_calls"],
+                        "model": s["model"],
+                        "tokens": {
+                            "prompt": s["tok_prompt"],
+                            "completion": s["tok_completion"],
+                            "cache_read": s["tok_cache"],
+                            "total": s["tok_total"],
+                        },
+                        "_id": s["id"],
+                        "start": s["start"],
+                    }
+                )
             elif s["kind"] == "TOOL":
-                items.append({"type": "tool", "name": s["tool_name"] or s["name"],
-                              "args": _jload(s["in"]), "result": _jload(s["out"]),
-                              "_id": s["id"], "start": s["start"]})
+                items.append(
+                    {
+                        "type": "tool",
+                        "name": s["tool_name"] or s["name"],
+                        "args": _jload(s["in"]),
+                        "result": _jload(s["out"]),
+                        "_id": s["id"],
+                        "start": s["start"],
+                    }
+                )
         return items
 
 
@@ -193,12 +215,15 @@ def _isnull(v) -> bool:
 def _fetch_trace_df(trace_id: str, base_url: str, project: str):
     from phoenix.client import Client
     from phoenix.client.types.spans import SpanQuery
+
     client = Client(base_url=base_url)
     q = SpanQuery().where(f"trace_id == '{trace_id}'")
     return client.spans.get_spans_dataframe(query=q, project_name=project, timeout=120)
 
 
-def load_turns(trace_id: str, base_url: str, project: str, df=None) -> tuple[list[dict], dict, dict]:
+def load_turns(
+    trace_id: str, base_url: str, project: str, df=None
+) -> tuple[list[dict], dict, dict]:
     """Return (turns, totals, phoenix_status) for a trace. Degrades to empty on any failure.
 
     ``df`` may be a pre-fetched spans dataframe (so a caller can reuse it for variant
@@ -227,8 +252,11 @@ def load_turns(trace_id: str, base_url: str, project: str, df=None) -> tuple[lis
     # only agent that emits `task` tool calls, so its system prompt is a reliable signature:
     # any LLM span NOT under a completed task whose system prompt isn't the lead's is an
     # in-progress analyst. (Empty lead-prompt set ⇒ no delegation has started ⇒ no orphans.)
-    lead_prompts = {_system_prompt(s["in_msgs"]) for sid, s in tr.by_id.items()
-                    if s["kind"] == "LLM" and _emits_task(s["out_msgs"])}
+    lead_prompts = {
+        _system_prompt(s["in_msgs"])
+        for sid, s in tr.by_id.items()
+        if s["kind"] == "LLM" and _emits_task(s["out_msgs"])
+    }
     orphan_analyst_ids = []
     if lead_prompts:
         for sid, s in tr.by_id.items():
@@ -240,14 +268,23 @@ def load_turns(trace_id: str, base_url: str, project: str, df=None) -> tuple[lis
     # Lead timeline = every span EXCEPT those inside a completed task subtree, the in-progress
     # analyst spans just identified (task spans themselves stay, to render the delegation),
     # minus plumbing.
-    exclude = all_analyst_ids | set(orphan_analyst_ids) | {
-        sid for sid, s in tr.by_id.items()
-        if s["kind"] == "CHAIN" or (s["name"] in _PLUMBING) or
-        (s["kind"] == "AGENT")  # middleware "*.before_agent" etc.
-    }
+    exclude = (
+        all_analyst_ids
+        | set(orphan_analyst_ids)
+        | {
+            sid
+            for sid, s in tr.by_id.items()
+            if s["kind"] == "CHAIN"
+            or (s["name"] in _PLUMBING)
+            or (s["kind"] == "AGENT")  # middleware "*.before_agent" etc.
+        }
+    )
     lead_items = tr.timeline(list(tr.by_id.keys()), exclude)
-    inner_ex = {s for s, sp in tr.by_id.items()
-                if sp["kind"] in ("CHAIN", "AGENT") or sp["name"] in _PLUMBING}
+    inner_ex = {
+        s
+        for s, sp in tr.by_id.items()
+        if sp["kind"] in ("CHAIN", "AGENT") or sp["name"] in _PLUMBING
+    }
 
     analyst_turn_count = 0
     analyst_tokens = _zero()
@@ -259,7 +296,9 @@ def load_turns(trace_id: str, base_url: str, project: str, df=None) -> tuple[lis
                 sub_items = tr.timeline(list(sub), inner_ex)
                 args = it.get("args") or {}
                 it["delegation"] = {
-                    "subagent_type": (args.get("subagent_type") if isinstance(args, dict) else None),
+                    "subagent_type": (
+                        args.get("subagent_type") if isinstance(args, dict) else None
+                    ),
                     "description": (args.get("description") if isinstance(args, dict) else None),
                     "items": sub_items,
                 }
@@ -270,22 +309,35 @@ def load_turns(trace_id: str, base_url: str, project: str, df=None) -> tuple[lis
     # the panel spawns the three analysts concurrently) attached to the lead's spawning turn,
     # rather than letting its turns show up as lead turns.
     if orphan_analyst_ids:
-        emitted = [tc.get("args") for it in lead_items if it["type"] == "assistant"
-                   for tc in (it.get("tool_calls") or [])
-                   if tc.get("name") == "task" and isinstance(tc.get("args"), dict)]
+        emitted = [
+            tc.get("args")
+            for it in lead_items
+            if it["type"] == "assistant"
+            for tc in (it.get("tool_calls") or [])
+            if tc.get("name") == "task" and isinstance(tc.get("args"), dict)
+        ]
         by_prompt: dict[str, list[str]] = {}
         for sid in orphan_analyst_ids:
             by_prompt.setdefault(_system_prompt(tr.by_id[sid]["in_msgs"]), []).append(sid)
         for sp, ids in by_prompt.items():
             sub_items = tr.timeline(ids, inner_ex)
             st, desc = _match_pending_subagent(sp, emitted)
-            lead_items.append({
-                "type": "tool", "name": "task", "_id": None, "result": None,
-                "args": {"subagent_type": st, "description": desc},
-                "start": min((tr.by_id[i]["start"] for i in ids), default=None),
-                "delegation": {"subagent_type": st, "description": desc,
-                               "items": sub_items, "in_progress": True},
-            })
+            lead_items.append(
+                {
+                    "type": "tool",
+                    "name": "task",
+                    "_id": None,
+                    "result": None,
+                    "args": {"subagent_type": st, "description": desc},
+                    "start": min((tr.by_id[i]["start"] for i in ids), default=None),
+                    "delegation": {
+                        "subagent_type": st,
+                        "description": desc,
+                        "items": sub_items,
+                        "in_progress": True,
+                    },
+                }
+            )
             analyst_turn_count += sum(1 for x in sub_items if x["type"] == "assistant")
             _accumulate(analyst_tokens, sub_items)
         # Re-sort by start so each in-progress delegation lands right after the lead turn that
@@ -332,14 +384,27 @@ def _group_turns(items: list[dict]) -> list[dict]:
         if it["type"] == "assistant":
             if cur is not None:
                 turns.append(cur)
-            cur = {"kind": "lead", "text": it["text"], "model": it["model"],
-                   "tokens": it["tokens"], "tools": [], "start": it["start"]}
+            cur = {
+                "kind": "lead",
+                "text": it["text"],
+                "model": it["model"],
+                "tokens": it["tokens"],
+                "tools": [],
+                "start": it["start"],
+            }
         else:  # tool
             if cur is None:  # a tool before any assistant (rare) -> standalone turn
-                cur = {"kind": "lead", "text": "", "model": None,
-                       "tokens": _empty_tokens(), "tools": [], "start": it["start"]}
-            cur["tools"].append({k: it[k] for k in ("name", "args", "result", "delegation", "start")
-                                 if k in it})
+                cur = {
+                    "kind": "lead",
+                    "text": "",
+                    "model": None,
+                    "tokens": _empty_tokens(),
+                    "tools": [],
+                    "start": it["start"],
+                }
+            cur["tools"].append(
+                {k: it[k] for k in ("name", "args", "result", "delegation", "start") if k in it}
+            )
     if cur is not None:
         turns.append(cur)
     for i, t in enumerate(turns):
@@ -365,8 +430,14 @@ def _accumulate(acc: dict, items: list[dict]) -> None:
 
 
 def _empty_totals():
-    return {"lead": _zero(), "analyst": _zero(), "total": _zero(),
-            "lead_turns": 0, "analyst_turns": 0, "tool_calls": 0}
+    return {
+        "lead": _zero(),
+        "analyst": _zero(),
+        "total": _zero(),
+        "lead_turns": 0,
+        "analyst_turns": 0,
+        "tool_calls": 0,
+    }
 
 
 def _tally(lead_items, analyst_tokens: dict, analyst_turns: int) -> dict:
@@ -382,8 +453,10 @@ def _tally(lead_items, analyst_tokens: dict, analyst_turns: int) -> dict:
 
 # ---------------------------------------------------------------- on-disk variants
 
+
 def _read_tsv(path: Path) -> list[dict]:
     import csv
+
     with path.open() as fh:
         return list(csv.DictReader(fh, delimiter="\t"))
 
@@ -422,30 +495,34 @@ def load_variants(run_dir: Path, n_data_points: int | None) -> list[dict]:
         sim = _safe_json(d / "simulations.json") or {}
         n = sim.get("n_data_points") or n_data_points
         nll = meta.get("neg_log_likelihood")
-        k = _k_from_params(params) if params else (
-            len(meta.get("fitted_parameters") or {}) or None)
+        k = _k_from_params(params) if params else (len(meta.get("fitted_parameters") or {}) or None)
         # ONE BIC definition, in `petab_mcp.criteria`. It returns None for any missing or
         # impossible input, so no separate guard is needed here.
         from petab_mcp.criteria import CANONICAL
 
         bic = CANONICAL["bic"].value(nll, k, n)
-        variants.append({
-            "index": len(variants),
-            "version": meta.get("version", _vnum(d.name)),
-            "label": meta.get("label"),
-            "kind": meta.get("kind"),
-            "nll": nll,
-            "chi2": meta.get("chi2"),
-            "bic": bic,
-            "k": k,
-            "n": n,
-            "is_new_best": meta.get("is_new_best"),
-            "timestamp": meta.get("timestamp"),
-            "antimony": _safe_read(d / "model.ant"),
-            "params": params,
-            "justification": justif.get(int(meta.get("version", _vnum(d.name))) if
-                                        str(meta.get("version", "")).strip() != "" else _vnum(d.name)),
-        })
+        variants.append(
+            {
+                "index": len(variants),
+                "version": meta.get("version", _vnum(d.name)),
+                "label": meta.get("label"),
+                "kind": meta.get("kind"),
+                "nll": nll,
+                "chi2": meta.get("chi2"),
+                "bic": bic,
+                "k": k,
+                "n": n,
+                "is_new_best": meta.get("is_new_best"),
+                "timestamp": meta.get("timestamp"),
+                "antimony": _safe_read(d / "model.ant"),
+                "params": params,
+                "justification": justif.get(
+                    int(meta.get("version", _vnum(d.name)))
+                    if str(meta.get("version", "")).strip() != ""
+                    else _vnum(d.name)
+                ),
+            }
+        )
     return variants
 
 
@@ -516,27 +593,30 @@ def load_variants_from_spans(df, n_default: int | None) -> list[dict]:
             continue
         fit = _fit_block(res)
         improvement = fit.get("improvement") or {}
-        variants.append({
-            "index": len(variants),
-            "version": res.get("version"),
-            "label": "fit", "kind": "fit",
-            "nll": fit.get("neg_log_likelihood"),
-            "chi2": fit.get("chi2"),
-            "bic": fit.get("bic"),
-            # `k` (n_estimated + hardcoded constants) where the payload carries it; older
-            # traces only have n_estimated, which was k then.
-            "k": fit.get("k") if fit.get("k") is not None else fit.get("n_estimated"),
-            "n": fit.get("n_data_points") or n_default,
-            "is_new_best": improvement.get("is_new_best"),
-            # The FIT's timestamp — a variant IS a fit snapshot, and that is what the on-disk
-            # version store is keyed on. In the nested (pre-flattening) trace shape
-            # `res.event_timestamp` is the earlier EDIT event, so preferring it would skew
-            # time-based ordering against the version store.
-            "timestamp": fit.get("event_timestamp") or res.get("event_timestamp"),
-            "antimony": last_ant,
-            "params": [],
-            "justification": res.get("justification") or last_justif,
-        })
+        variants.append(
+            {
+                "index": len(variants),
+                "version": res.get("version"),
+                "label": "fit",
+                "kind": "fit",
+                "nll": fit.get("neg_log_likelihood"),
+                "chi2": fit.get("chi2"),
+                "bic": fit.get("bic"),
+                # `k` (n_estimated + hardcoded constants) where the payload carries it; older
+                # traces only have n_estimated, which was k then.
+                "k": fit.get("k") if fit.get("k") is not None else fit.get("n_estimated"),
+                "n": fit.get("n_data_points") or n_default,
+                "is_new_best": improvement.get("is_new_best"),
+                # The FIT's timestamp — a variant IS a fit snapshot, and that is what the on-disk
+                # version store is keyed on. In the nested (pre-flattening) trace shape
+                # `res.event_timestamp` is the earlier EDIT event, so preferring it would skew
+                # time-based ordering against the version store.
+                "timestamp": fit.get("event_timestamp") or res.get("event_timestamp"),
+                "antimony": last_ant,
+                "params": [],
+                "justification": res.get("justification") or last_justif,
+            }
+        )
     return variants
 
 
@@ -563,6 +643,7 @@ def _safe_read(p: Path) -> str | None:
 
 # ---------------------------------------------------------------- assembly + variant<->turn
 
+
 def _vnum_of(x) -> int | None:
     try:
         return int(x)
@@ -583,8 +664,8 @@ def _map_variants_to_turns(turns: list[dict], variants: list[dict]) -> None:
     in effect while viewing each turn)."""
     by_version = {vn: v for v in variants if (vn := _vnum_of(v.get("version"))) is not None}
 
-    produced_by_turn: dict[int, dict] = {}   # turn index -> the variant that turn committed
-    matched: set[int] = set()                # variant indices reached by some turn
+    produced_by_turn: dict[int, dict] = {}  # turn index -> the variant that turn committed
+    matched: set[int] = set()  # variant indices reached by some turn
     for t in turns:
         last_v = None
         for tc in t.get("tools", []):
@@ -646,21 +727,28 @@ def _jsonsafe(o):
         return str(o)
 
 
-def build_bundle(run_id: str, *, run_dir: Path, meta: dict,
-                 phoenix_base_url: str, project: str | None) -> dict:
+def build_bundle(
+    run_id: str, *, run_dir: Path, meta: dict, phoenix_base_url: str, project: str | None
+) -> dict:
     """Assemble the full view model for one run (JSON-safe)."""
     project = project or meta.get("phoenix_project") or "default"
     trace_id = meta.get("phoenix_trace_id") or run_id
     variants = load_variants(run_dir, meta.get("n"))
-    turns, totals, phoenix = ([], _empty_totals(), {"ok": False, "trace_id": trace_id,
-                                                     "note": "no phoenix_trace_id"})
+    turns, totals, phoenix = (
+        [],
+        _empty_totals(),
+        {"ok": False, "trace_id": trace_id, "note": "no phoenix_trace_id"},
+    )
     if meta.get("phoenix_trace_id"):
         df = None
         try:
             df = _fetch_trace_df(trace_id, phoenix_base_url, project)
         except Exception as exc:
-            phoenix = {"ok": False, "trace_id": trace_id,
-                       "note": f"could not read Phoenix trace: {type(exc).__name__}: {exc}"}
+            phoenix = {
+                "ok": False,
+                "trace_id": trace_id,
+                "note": f"could not read Phoenix trace: {type(exc).__name__}: {exc}",
+            }
         if df is not None:
             turns, totals, phoenix = load_turns(trace_id, phoenix_base_url, project, df=df)
             # If the on-disk store was wiped, rebuild the variant trajectory from the trace's
@@ -670,11 +758,13 @@ def build_bundle(run_id: str, *, run_dir: Path, meta: dict,
                 for v in variants:
                     v["from_trace"] = True
     _map_variants_to_turns(turns, variants)
-    return _jsonsafe({
-        "run_id": run_id,
-        "meta": meta,
-        "variants": variants,
-        "turns": turns,
-        "totals": totals,
-        "phoenix": phoenix,
-    })
+    return _jsonsafe(
+        {
+            "run_id": run_id,
+            "meta": meta,
+            "variants": variants,
+            "turns": turns,
+            "totals": totals,
+            "phoenix": phoenix,
+        }
+    )

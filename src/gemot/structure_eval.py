@@ -79,16 +79,18 @@ def _state_successors(de) -> dict[str, set[str]]:
     """
     states = [str(s) for s in de.sym("x")]
     n = len(states)
-    expl = de.eq("dxdotdx_explicit")   # (n, n)
-    dxdotdw = de.eq("dxdotdw")         # (n, nw)
-    dwdx = de.eq("dwdx")               # (nw, n)
-    dwdw = de.eq("dwdw")               # (nw, nw)
+    expl = de.eq("dxdotdx_explicit")  # (n, n)
+    dxdotdw = de.eq("dxdotdw")  # (n, nw)
+    dwdx = de.eq("dwdx")  # (nw, n)
+    dwdw = de.eq("dwdw")  # (nw, nw)
     nw = dxdotdw.cols
 
     # nodes: ("x", i) and ("w", k). adjacency = "influences" (src -> dst).
     adj: dict[tuple, set[tuple]] = {}
+
     def add(src, dst):
         adj.setdefault(src, set()).add(dst)
+
     for i in range(n):
         for j in range(n):
             if _nonzero(expl, i, j):
@@ -135,17 +137,19 @@ def _observable_states(de) -> dict[str, set[str]]:
     dydx = de.eq("dydx")
     shape = (dydx.rows, dydx.cols)
     if shape == (len(obs), len(states)):
+
         def reads(o: int, i: int) -> bool:
             return _nonzero(dydx, o, i)
     elif shape == (len(states), len(obs)):
+
         def reads(o: int, i: int) -> bool:
             return _nonzero(dydx, i, o)
     else:
         raise ValueError(
             f"dydx has shape {shape}, which matches neither (n_observables, n_states) "
-            f"{(len(obs), len(states))} nor its transpose")
-    return {obs[o]: {states[i] for i in range(len(states)) if reads(o, i)}
-            for o in range(len(obs))}
+            f"{(len(obs), len(states))} nor its transpose"
+        )
+    return {obs[o]: {states[i] for i in range(len(states)) if reads(o, i)} for o in range(len(obs))}
 
 
 def observable_coupling(de) -> list[list[str]]:
@@ -173,7 +177,9 @@ def coupling_from_sbml(sbml_str: str, observable_formulas: dict[str, str]) -> li
 
 
 def coupling_jaccard(
-    cand: list[list[str]] | None, ref: list[list[str]] | None, n_observables: int,
+    cand: list[list[str]] | None,
+    ref: list[list[str]] | None,
+    n_observables: int,
 ) -> float | None:
     """Jaccard of two coupling edge sets. ``None`` when < 2 observables (no off-diagonal to
     compare). Two empty sets over ≥ 2 observables AGREE (no cross-coupling) → 1.0."""
@@ -223,7 +229,7 @@ def _true_antimony(example: str) -> str:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         for attr in ("TRUTH_ANT", "TRUE_ANT"):
-            if (ant := getattr(mod, attr, None)):
+            if ant := getattr(mod, attr, None):
                 return ant
     raise ValueError(f"{example}: no TRUTH_ANT/TRUE_ANT in generate_data.py or run.py")
 
@@ -238,8 +244,9 @@ def reference_coupling(example: str) -> tuple[list[list[str]], int]:
     return coupling_from_sbml(sbml, obs), len(obs)
 
 
-def evaluate_model_ant(example: str, model_ant: str,
-                       ref: tuple[list[list[str]], int] | None = None) -> dict[str, Any]:
+def evaluate_model_ant(
+    example: str, model_ant: str, ref: tuple[list[list[str]], int] | None = None
+) -> dict[str, Any]:
     """Score a candidate ``model.ant`` for ``example`` against the reference structure. Returns
     ``{jaccard, n_observables, candidate_coupling, reference_coupling}`` (jaccard ``None`` when
     < 2 observables). ``ref`` may be passed pre-computed to avoid recomputing it per run."""
@@ -282,8 +289,9 @@ def _final_model_ant(run_dir: Path) -> str | None:
     return None
 
 
-def batch(archive_root: str | Path = _EXAMPLES_ROOT / "_runs_archive",
-          examples: set[str] | None = None) -> list[dict[str, Any]]:
+def batch(
+    archive_root: str | Path = _EXAMPLES_ROOT / "_runs_archive", examples: set[str] | None = None
+) -> list[dict[str, Any]]:
     """Evaluate every archived run (optionally filtered to ``examples``). Reference coupling is
     computed once per example and reused. Returns a list of per-run result dicts."""
     archive_root = Path(archive_root)
@@ -296,7 +304,9 @@ def batch(archive_root: str | Path = _EXAMPLES_ROOT / "_runs_archive",
         try:
             result = json.loads(rj.read_text())
         except Exception as exc:
-            rows.append({"run": run_dir.name, "example": "", "error": f"{type(exc).__name__}: {exc}"})
+            rows.append(
+                {"run": run_dir.name, "example": "", "error": f"{type(exc).__name__}: {exc}"}
+            )
             continue
         ex = result.get("scenario")
         if not ex or (examples and ex not in examples):
@@ -309,19 +319,30 @@ def batch(archive_root: str | Path = _EXAMPLES_ROOT / "_runs_archive",
                 ref_cache[ex] = reference_coupling(ex)
             ev = evaluate_model_ant(ex, model_ant, ref=ref_cache[ex])
         except Exception as exc:  # noqa: BLE001 - one bad run must not abort the batch
-            rows.append({"run": run_dir.name, "example": ex, "error": f"{type(exc).__name__}: {exc}"})
+            rows.append(
+                {"run": run_dir.name, "example": ex, "error": f"{type(exc).__name__}: {exc}"}
+            )
             continue
-        rows.append({"run": run_dir.name, "example": ex, "success": result.get("success"),
-                     "delta_bic": result.get("delta_bic"), "jaccard": ev["jaccard"],
-                     "n_observables": ev["n_observables"]})
+        rows.append(
+            {
+                "run": run_dir.name,
+                "example": ex,
+                "success": result.get("success"),
+                "delta_bic": result.get("delta_bic"),
+                "jaccard": ev["jaccard"],
+                "n_observables": ev["n_observables"],
+            }
+        )
     return rows
 
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    p = argparse.ArgumentParser(description="Post-hoc structure-recovery (Jacobian-sparsity "
-                                            "observable-coupling Jaccard) over archived runs.")
+    p = argparse.ArgumentParser(
+        description="Post-hoc structure-recovery (Jacobian-sparsity "
+        "observable-coupling Jaccard) over archived runs."
+    )
     p.add_argument("--archive", default=str(_EXAMPLES_ROOT / "_runs_archive"))
     p.add_argument("--examples", nargs="*", default=None, help="restrict to these examples")
     args = p.parse_args(argv)
@@ -333,8 +354,10 @@ def main(argv: list[str] | None = None) -> int:
             continue
         db = f"{r['delta_bic']:+.1f}" if isinstance(r.get("delta_bic"), (int, float)) else "—"
         jac = f"{r['jaccard']:.2f}" if r.get("jaccard") is not None else "N/A"
-        print(f"{r['run']:<34}{r['example']:<11}{str(r.get('success')):>5}{db:>9}"
-              f"{r.get('n_observables', 0):>6}{jac:>9}")
+        print(
+            f"{r['run']:<34}{r['example']:<11}{str(r.get('success')):>5}{db:>9}"
+            f"{r.get('n_observables', 0):>6}{jac:>9}"
+        )
     return 0
 
 

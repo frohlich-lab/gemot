@@ -26,10 +26,16 @@ def _recorder():
 def test_the_whole_build_is_one_call_with_the_tool_s_argument_names():
     entries = [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3}]
     calls, call = _recorder()
-    asyncio.run(build_true_model(
-        call, antimony="model m end", justification="j", n_starts=5,
-        changes=entries, change_justification="tighten",
-    ))
+    asyncio.run(
+        build_true_model(
+            call,
+            antimony="model m end",
+            justification="j",
+            n_starts=5,
+            changes=entries,
+            change_justification="tighten",
+        )
+    )
 
     assert [n for n, _ in calls] == ["make_changes"]
     kwargs = calls[0][1]

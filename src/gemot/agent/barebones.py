@@ -43,8 +43,11 @@ from .driver import (
 )
 from ..prompts import BAREBONES_BIO_TOOLS_TMPL
 from .biocurator import LITERATURE_BIO_TOOLS, discover_bio_tools
-from .circuit_breaker import (_disabled_tool_filter, _new_breaker_state,
-                              _wrap_tools_with_circuit_breaker)
+from .circuit_breaker import (
+    _disabled_tool_filter,
+    _new_breaker_state,
+    _wrap_tools_with_circuit_breaker,
+)
 from .guards import _reasoning_runaway_guard, new_guard_stats
 from .literature import _wrap_literature_recorder
 from .sandbox import default_env_prefix, new_shell_audit, sandbox_backend_class
@@ -61,11 +64,16 @@ def _final_reply(state: Any) -> str | None:
         return None
     msgs = state.get("messages") or []
     for msg in reversed(msgs):
-        if getattr(msg, "type", None) == "ai" or (isinstance(msg, dict) and msg.get("role") == "assistant"):
-            content = getattr(msg, "content", None) if not isinstance(msg, dict) else msg.get("content")
+        if getattr(msg, "type", None) == "ai" or (
+            isinstance(msg, dict) and msg.get("role") == "assistant"
+        ):
+            content = (
+                getattr(msg, "content", None) if not isinstance(msg, dict) else msg.get("content")
+            )
             if isinstance(content, list):
-                content = "\n".join(str(b.get("text", "")) if isinstance(b, dict) else str(b)
-                                    for b in content)
+                content = "\n".join(
+                    str(b.get("text", "")) if isinstance(b, dict) else str(b) for b in content
+                )
             text = str(content or "").strip()
             return text[:_FINAL_REPLY_CHARS] if text else None
     return None
@@ -103,22 +111,33 @@ async def run_barebones(
 
     audit = new_shell_audit()
     backend = sandbox_backend_class()(
-        workspace, env_prefix=default_env_prefix(), n_cpus=n_cpus, timeout=execute_timeout_s,
-        audit=audit)
+        workspace,
+        env_prefix=default_env_prefix(),
+        n_cpus=n_cpus,
+        timeout=execute_timeout_s,
+        audit=audit,
+    )
 
-    bio_tools = await discover_bio_tools(bio_sessions, literature=bio_literature,
-                                         holder="the barebones agent")
+    bio_tools = await discover_bio_tools(
+        bio_sessions, literature=bio_literature, holder="the barebones agent"
+    )
     bio_names = sorted(n for t in bio_tools if (n := getattr(t, "name", None)))
     breaker_state = _new_breaker_state()
-    _wrap_tools_with_circuit_breaker(bio_tools, breaker_state, transport_disable_names=set(bio_names))
+    _wrap_tools_with_circuit_breaker(
+        bio_tools, breaker_state, transport_disable_names=set(bio_names)
+    )
     literature_log: list = []
     _wrap_literature_recorder(
-        [t for t in bio_tools if getattr(t, "name", None) in LITERATURE_BIO_TOOLS], literature_log)
+        [t for t in bio_tools if getattr(t, "name", None) in LITERATURE_BIO_TOOLS], literature_log
+    )
     if bio_tools:
         system_prompt = system_prompt + BAREBONES_BIO_TOOLS_TMPL.format(
-            n=len(bio_names), names=", ".join(bio_names))
-    print(f"[null] {len(bio_names)} bio knowledge tool(s)"
-          + (f": {bio_names}" if bio_names else " (none resolved)"))
+            n=len(bio_names), names=", ".join(bio_names)
+        )
+    print(
+        f"[null] {len(bio_names)} bio knowledge tool(s)"
+        + (f": {bio_names}" if bio_names else " (none resolved)")
+    )
 
     guard_stats: dict[str, Any] = new_guard_stats()
     max_input_tokens = _env_token_limit("PETAB_MCP_MAX_INPUT_TOKENS", 1_048_576, minimum=1)
@@ -143,10 +162,17 @@ async def run_barebones(
     from json import JSONDecodeError
 
     from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
-    _TRANSIENT_ERRORS: tuple = (APIConnectionError, APITimeoutError, InternalServerError,
-                                RateLimitError, JSONDecodeError)
+
+    _TRANSIENT_ERRORS: tuple = (
+        APIConnectionError,
+        APITimeoutError,
+        InternalServerError,
+        RateLimitError,
+        JSONDecodeError,
+    )
     with contextlib.suppress(Exception):
         import httpx
+
         _TRANSIENT_ERRORS = _TRANSIENT_ERRORS + (httpx.TransportError,)
 
     # deepagents' own `general-purpose` subagent stays ON (RATIONALE.md); recorded, not assumed,
@@ -155,16 +181,22 @@ async def run_barebones(
     guard_stats["general_purpose_subagent"] = gp_enabled
     guard_stats["subagent_names"] = ["general-purpose"] if gp_enabled is not False else []
     if gp_enabled is False:
-        print("[null] WARNING: deepagents' `general-purpose` subagent is disabled in this "
-              "process — this run is not the stock agent.")
+        print(
+            "[null] WARNING: deepagents' `general-purpose` subagent is disabled in this "
+            "process — this run is not the stock agent."
+        )
 
     checkpointer = None
     with contextlib.suppress(Exception):
         from langgraph.checkpoint.memory import MemorySaver
+
         checkpointer = MemorySaver()
 
     agent = create_deep_agent(
-        model=llm, tools=bio_tools, system_prompt=system_prompt, backend=backend,
+        model=llm,
+        tools=bio_tools,
+        system_prompt=system_prompt,
+        backend=backend,
         # Infrastructure only: the runaway guard and the breaker's disabled-tool filter.
         middleware=[_disabled_tool_filter(breaker_state), _reasoning_runaway_guard(guard_stats)],
         **({"checkpointer": checkpointer} if checkpointer is not None else {}),
@@ -179,8 +211,9 @@ async def run_barebones(
     step_limit_base = max(_STEP_STALL_TIMEOUT_S, execute_timeout_s * FIT_WATCHDOG_MARGIN)
     deadline = (time.monotonic() + max_wall_seconds) if max_wall_seconds is not None else None
     # Reserve one step of headroom, as the panel driver does.
-    step_headroom = (min(execute_timeout_s, max_wall_seconds * 0.5)
-                     if max_wall_seconds is not None else 0.0)
+    step_headroom = (
+        min(execute_timeout_s, max_wall_seconds * 0.5) if max_wall_seconds is not None else 0.0
+    )
     soft_deadline = (deadline - step_headroom) if deadline is not None else None
 
     stream_input: Any = {"messages": [{"role": "user", "content": task}]}
@@ -201,8 +234,11 @@ async def run_barebones(
             while True:
                 try:
                     step_limit = step_limit_base * stall_backoff
-                    step_wait = step_limit if deadline is None else max(
-                        1.0, min(step_limit, deadline - time.monotonic()))
+                    step_wait = (
+                        step_limit
+                        if deadline is None
+                        else max(1.0, min(step_limit, deadline - time.monotonic()))
+                    )
                     state = await asyncio.wait_for(agen.__anext__(), timeout=step_wait)
                 except StopAsyncIteration:
                     break
@@ -217,19 +253,26 @@ async def run_barebones(
                 if soft_deadline is not None and time.monotonic() >= soft_deadline:
                     wall_budget_exceeded = True
                     break
-                if (max_run_tokens is not None
-                        and token_accountant.prompt + token_accountant.completion >= max_run_tokens):
+                if (
+                    max_run_tokens is not None
+                    and token_accountant.prompt + token_accountant.completion >= max_run_tokens
+                ):
                     token_budget_exceeded = True
                     break
                 if token_accountant.max_prompt >= 0.90 * max_input_tokens:
-                    early_stopped = ("context_window_approached: largest prompt "
-                                     f"{token_accountant.max_prompt:,} tokens >= 90% of the "
-                                     f"{max_input_tokens:,}-token window")
+                    early_stopped = (
+                        "context_window_approached: largest prompt "
+                        f"{token_accountant.max_prompt:,} tokens >= 90% of the "
+                        f"{max_input_tokens:,}-token window"
+                    )
                     break
             stop_reason = (
-                "wall_time_budget_exceeded" if wall_budget_exceeded
-                else "token_budget_exceeded" if token_budget_exceeded
-                else f"early_stop: {early_stopped}" if early_stopped
+                "wall_time_budget_exceeded"
+                if wall_budget_exceeded
+                else "token_budget_exceeded"
+                if token_budget_exceeded
+                else f"early_stop: {early_stopped}"
+                if early_stopped
                 else "completed"
             )
         except asyncio.TimeoutError:
@@ -237,8 +280,10 @@ async def run_barebones(
                 wall_budget_exceeded = True
                 stop_reason = "wall_time_budget_exceeded"
             else:
-                retriable = (f"stalled: no step completed in {step_wait:.0f}s "
-                             "(hung provider call or wedged shell command)")
+                retriable = (
+                    f"stalled: no step completed in {step_wait:.0f}s "
+                    "(hung provider call or wedged shell command)"
+                )
         except _TRANSIENT_ERRORS as exc:
             retriable = f"{type(exc).__name__}: {exc}"
         except Exception as exc:
@@ -253,13 +298,17 @@ async def run_barebones(
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(agen.aclose(), timeout=10)
         if wall_budget_exceeded:
-            print(f"[null] wall-time budget ({max_wall_seconds:.0f}s) reached — stopping at this "
-                  "step boundary; the judge scores whatever is on disk.")
+            print(
+                f"[null] wall-time budget ({max_wall_seconds:.0f}s) reached — stopping at this "
+                "step boundary; the judge scores whatever is on disk."
+            )
             break
         if token_budget_exceeded:
-            print(f"[null] token budget exceeded: "
-                  f"{token_accountant.prompt + token_accountant.completion:,} tokens over "
-                  f"{max_run_tokens:,} in {token_accountant.n_calls} LLM calls — stopping.")
+            print(
+                f"[null] token budget exceeded: "
+                f"{token_accountant.prompt + token_accountant.completion:,} tokens over "
+                f"{max_run_tokens:,} in {token_accountant.n_calls} LLM calls — stopping."
+            )
             break
         if early_stopped is not None:
             print(f"[null] early-stop: {early_stopped}")
@@ -269,8 +318,10 @@ async def run_barebones(
         if soft_deadline is not None and time.monotonic() >= soft_deadline:
             stop_reason = f"wall_time_budget_exceeded (during retry: {retriable})"
             break
-        if (max_run_tokens is not None
-                and token_accountant.prompt + token_accountant.completion >= max_run_tokens):
+        if (
+            max_run_tokens is not None
+            and token_accountant.prompt + token_accountant.completion >= max_run_tokens
+        ):
             stop_reason = "token_budget_exceeded"
             break
         if resume_left <= 0:
@@ -280,17 +331,23 @@ async def run_barebones(
         if retriable.startswith("stalled:"):
             stall_backoff *= 2.0
         backoff = min(5.0 * (_RUN_RESUME_ATTEMPTS - resume_left), 30.0)
-        print(f"[null] {retriable} — resuming from last checkpoint in {backoff:.0f}s "
-              f"({resume_left} resume(s) left, stall window x{stall_backoff:.0f})")
+        print(
+            f"[null] {retriable} — resuming from last checkpoint in {backoff:.0f}s "
+            f"({resume_left} resume(s) left, stall window x{stall_backoff:.0f})"
+        )
         await asyncio.sleep(backoff)
         stream_input = None
 
     token_usage = token_accountant.totals()
     if token_usage["n_llm_calls"] == 0 and audit["n_shell_commands"] > 0:
-        print("[null] WARNING: token accounting captured 0 LLM calls despite shell activity — "
-              "token_usage in result.json is understated.")
-    print(f"[null] {audit['n_shell_commands']} shell command(s), "
-          f"{audit['shell_seconds']:.0f}s in the sandbox, {token_usage['n_llm_calls']} LLM call(s)")
+        print(
+            "[null] WARNING: token accounting captured 0 LLM calls despite shell activity — "
+            "token_usage in result.json is understated."
+        )
+    print(
+        f"[null] {audit['n_shell_commands']} shell command(s), "
+        f"{audit['shell_seconds']:.0f}s in the sandbox, {token_usage['n_llm_calls']} LLM call(s)"
+    )
     return {
         "stop_reason": stop_reason,
         "final_reply": final_reply,

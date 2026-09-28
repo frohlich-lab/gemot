@@ -230,8 +230,9 @@ def apply_amici_solver_defaults(problem, atol: float | None = None) -> None:
     a raise here would take down every fit path at once."""
     value = FIT_AMICI_ATOL if atol is None else float(atol)
     solver = getattr(getattr(problem, "objective", None), "amici_solver", None)
-    setter = (getattr(solver, "set_absolute_tolerance", None)
-              or getattr(solver, "setAbsoluteTolerance", None))
+    setter = getattr(solver, "set_absolute_tolerance", None) or getattr(
+        solver, "setAbsoluteTolerance", None
+    )
     if setter is not None:
         setter(value)
 
@@ -253,6 +254,7 @@ def fides_maxtime_options(per_start_timeout: float | None = None) -> dict:
     timeout = FIT_PER_START_TIMEOUT_S if per_start_timeout is None else float(per_start_timeout)
     try:
         import fides
+
         return {fides.Options.MAXTIME: timeout}
     except Exception:  # noqa: BLE001 - no fides / no MAXTIME on this version: run uncapped
         return {}
@@ -269,6 +271,7 @@ def fit_engine(n_starts: int, n_workers: int | None = None):
         return None
     try:
         from pypesto.engine import MultiProcessEngine
+
         return MultiProcessEngine(n_procs=workers)
     except Exception:  # noqa: BLE001 - parallel engine unavailable: fall back to sequential
         return None
