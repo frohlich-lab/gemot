@@ -94,16 +94,16 @@ def _git_diff_digest(path: Path) -> dict | None:
     }
 
 
-def _server_provenance() -> dict | None:
-    """Which petab-mcp code served the run. The server is installed from its own repository, so
-    ``git_sha`` does not cover it: record the commit a git install was made from, or an editable
-    checkout's own ``git_sha`` and ``git_diff``. ``None`` when the server is not installed.
-    Best-effort, like the git helpers above."""
+def _installed_provenance(name: str) -> dict | None:
+    """Which code of the installed distribution ``name`` ran. gemot and the server are installed
+    from their own repositories, so ``git_sha`` (the checkout's) covers neither: record the commit a
+    git install was made from, or an editable checkout's own ``git_sha`` and ``git_diff``. ``None``
+    when it is not installed. Best-effort, like the git helpers above."""
     import urllib.parse
     from importlib.metadata import PackageNotFoundError, distribution
 
     try:
-        dist = distribution("petab-mcp")
+        dist = distribution(name)
     except PackageNotFoundError:
         return None
     try:
@@ -270,7 +270,8 @@ def _base_meta(
         "example_version": scenario.version,
         # What `git_sha`'s `+dirty` suffix only hinted at: see `_git_diff_digest`. None when clean.
         "git_diff": _git_diff_digest(scenario.example_dir),
-        "server_code": _server_provenance(),
+        "server_code": _installed_provenance("petab-mcp"),
+        "harness_code": _installed_provenance("gemot"),
         "prompt_version": prompt_version(),
         "prompt_group_versions": prompt_group_versions(),
         # the skills are instructions the panel reads (prompts step 0), so they are

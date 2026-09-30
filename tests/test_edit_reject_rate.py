@@ -280,12 +280,13 @@ def test_git_diff_digest_fingerprints_an_uncommitted_tree(tmp_path):
 
 
 def test_the_run_records_which_server_code_served_it(tmp_path, monkeypatch):
-    """`git_sha` covers this checkout only; the server is installed from its own repository, so a
-    server edit would otherwise leave two runs indistinguishable in the record."""
+    """`git_sha` covers the benchmark checkout only; gemot and the server are installed from their
+    own repositories, so an edit to either would otherwise leave two runs indistinguishable in the
+    record."""
     import importlib.metadata
     import subprocess
 
-    from gemot.runner.provenance import _git_sha, _server_provenance
+    from gemot.runner.provenance import _git_sha, _installed_provenance
 
     class _Dist:
         version = "0.1.0"
@@ -302,7 +303,7 @@ def test_the_run_records_which_server_code_served_it(tmp_path, monkeypatch):
     installed(
         {"url": "https://example.org/s.git", "vcs_info": {"vcs": "git", "commit_id": "c0ffee"}}
     )
-    assert _server_provenance() == {"version": "0.1.0", "commit": "c0ffee"}
+    assert _installed_provenance("petab-mcp") == {"version": "0.1.0", "commit": "c0ffee"}
 
     def git(*a):
         subprocess.check_call(["git", *a], cwd=tmp_path, stdout=subprocess.DEVNULL)
@@ -313,7 +314,7 @@ def test_the_run_records_which_server_code_served_it(tmp_path, monkeypatch):
     git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "x")
     (tmp_path / "server.py").write_text("edited\n")
     installed({"url": tmp_path.as_uri(), "dir_info": {"editable": True}})
-    code = _server_provenance()
+    code = _installed_provenance("gemot")
     assert code["git_sha"] == _git_sha(tmp_path) and code["git_sha"].endswith("+dirty")
     assert code["git_diff"]["files"] == ["server.py"]
 
