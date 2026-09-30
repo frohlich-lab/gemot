@@ -38,7 +38,7 @@ requires_harness = pytest.mark.skipif(
 
 
 def _load_agent_module():
-    from petab_harness import agent
+    from gemot import agent
 
     return agent
 
@@ -293,8 +293,8 @@ def test_result_json_carries_every_key_the_driver_returns(monkeypatch, tmp_path)
     import json
     from types import SimpleNamespace
 
-    from petab_harness.runner.failure import _write_degraded_result
-    from petab_harness.runner.provenance import _agent_meta
+    from gemot.runner.failure import _write_degraded_result
+    from gemot.runner.provenance import _agent_meta
 
     mod = _load_agent_module()
     agent_out, graph = _run(mod, monkeypatch, _Probe(model_authored=True))

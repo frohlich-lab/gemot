@@ -18,7 +18,7 @@ import pytest
 
 pytest.importorskip("mcp", reason="harness-only dependency")
 
-from petab_harness.runner import barebones as R  # noqa: E402
+from gemot.runner import barebones as R  # noqa: E402
 
 TOY = Path(__file__).parent / "data" / "toy_v1"
 
@@ -61,7 +61,7 @@ def test_the_agent_dir_holds_only_the_problem_even_after_the_live_marker(tmp_pat
     """The live-run marker carries the reference score (`reference`, `bic_reference`), and the
     server logs and result.json land beside it; all of that is written to `work/`, which is NOT
     the mount — the agent sees `work/agent/` and nothing above it."""
-    from petab_harness.runner.provenance import _write_live_marker
+    from gemot.runner.provenance import _write_live_marker
 
     work = _workspace(tmp_path)
     staged = R.stage_workspace(work)
@@ -237,7 +237,7 @@ def test_unscoreable_result_is_a_loss_not_an_abort(tmp_path):
 
 # --------------------------------------------------------------------------- wiring
 def test_prompt_template_formats_and_is_tracked():
-    from petab_harness import prompts as P
+    from gemot import prompts as P
 
     text = P.BAREBONES_SYSTEM_PROMPT_TMPL.format(execute_timeout=1234.0, n_cpus=8, n_starts=100)
     assert "1234s" in text and "8 CPU" in text and "100 starts" in text
@@ -256,36 +256,9 @@ def test_prompt_template_formats_and_is_tracked():
         assert treatment not in text
 
 
-def _known_constants_of_every_example() -> dict[str, str]:
-    """Each example's KNOWN_CONSTANTS literal, read by AST (importing a run.py pulls in AMICI)."""
-    import ast
-
-    out = {}
-    for f in sorted((Path(__file__).parents[1] / "examples").glob("*/run.py")):
-        for node in ast.parse(f.read_text()).body:
-            if isinstance(node, ast.Assign) and any(
-                getattr(t, "id", None) == "KNOWN_CONSTANTS" for t in node.targets
-            ):
-                assert isinstance(node.value, ast.Constant), (
-                    f"{f}: KNOWN_CONSTANTS is not a literal"
-                )
-                out[f.parent.name] = node.value.value
-    assert out, "no example defines KNOWN_CONSTANTS"
-    return out
-
-
-def test_every_example_note_is_problem_specific_and_tool_free():
-    """A scenario's KNOWN_CONSTANTS carries facts about THAT problem: no harness tool name (the
-    null has files, not tools) and no copy of the readout-mapping instruction, which each driver
-    owns for itself (`KNOWN_CONSTANTS_READOUT_NOTE` for the lead, `BAREBONES_TASK` for the null)."""
-    for name, note in _known_constants_of_every_example().items():
-        assert R.check_note_is_tool_free(note) == note, name
-        assert "MEASUREMENT MAPPINGS" not in note, name
-
-
 def test_the_lead_still_gets_the_readout_note_with_its_constants():
-    from petab_harness import prompts as P
-    from petab_harness.scenario import Scenario
+    from gemot import prompts as P
+    from gemot.scenario import Scenario
 
     kw = dict(problem_dir=Path("/x/problem"), scripted_fix=None)
     with_note = Scenario(name="a", known_constants="KNOWN CONSTANTS: k.", **kw).agent_task
@@ -335,7 +308,7 @@ def test_bio_tool_discovery_is_the_panels_allowlist(monkeypatch):
     import asyncio
     from langchain_core.tools import StructuredTool
     import langchain_mcp_adapters.tools as lmt
-    from petab_harness.agent import biocurator as B
+    from gemot.agent import biocurator as B
 
     def _tool(name):
         return StructuredTool.from_function(func=(lambda: ""), name=name, description=name)
@@ -368,8 +341,8 @@ def test_bio_tool_discovery_is_the_panels_allowlist(monkeypatch):
 
 
 def test_cli_accepts_the_barebones_driver_and_dispatches_to_its_pipeline(monkeypatch, tmp_path):
-    from petab_harness.runner import cli
-    from petab_harness.runner import barebones as rb
+    from gemot.runner import cli
+    from gemot.runner import barebones as rb
 
     class _S:
         name = "toy"
@@ -403,48 +376,3 @@ def test_biology_blind_is_rejected_before_workspace_cleanup(monkeypatch):
     monkeypatch.setattr(R, "cleanup", _unexpected_cleanup)
     with pytest.raises(SystemExit, match=r"PETAB_BIOLOGY_BLIND=1.*--driver barebones"):
         asyncio.run(R._main_async_barebones(SimpleNamespace(), SimpleNamespace()))
-
-
-def test_sweep_keeps_the_model_grid_for_the_null_arm():
-    """`build_combos` collapses models/temperatures for `scripted` only: the null arm is an LLM
-    driver and must sweep the same example x model grid as `deepagents`, or it cannot be paired."""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "make_sweep", Path(__file__).parents[1] / "slurm" / "make_sweep.py"
-    )
-    ms = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(ms)
-    combos = ms.build_combos(
-        ["enzyme_kinetics"],
-        ["a/m1", "b/m2"],
-        [0.0],
-        2,
-        "barebones",
-        100,
-        250,
-        3600.0,
-        match_refit_starts=False,
-    )
-    assert len(combos) == 4 and {c["model"] for c in combos} == {"a/m1", "b/m2"}
-    assert all(c["driver"] == "barebones" for c in combos)
-    scripted = ms.build_combos(
-        ["enzyme_kinetics"],
-        ["a/m1", "b/m2"],
-        [0.0],
-        1,
-        "scripted",
-        100,
-        250,
-        3600.0,
-        match_refit_starts=False,
-    )
-    assert len(scripted) == 1
-
-
-def test_array_task_passes_the_model_to_every_llm_driver():
-    """array_task.sh used to add --model/--temperature for `deepagents` only; a barebones combo
-    would have run on the default model whatever the sweep asked for."""
-    text = (Path(__file__).parents[1] / "slurm" / "array_task.sh").read_text()
-    assert '"$DRIVER" != "scripted"' in text
-    assert '"$DRIVER" == "deepagents"' not in text

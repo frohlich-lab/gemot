@@ -1,13 +1,13 @@
 """The neural route from the command line: fit and score one field, or propose models.
 
-    python -m petab_harness.neural_ode fit examples/fujita/problem --out runs/fujita \\
+    python -m gemot.neural_ode fit examples/fujita/problem --out runs/fujita \\
         [--windows 5 --horizon-stages 4 --steps 1600 --restarts 2 --aug 0 --width 32 --depth 2 --seed 0] \\
         [--dosed S] [--shared-ics] [--clock] [--multiplicative] \\
         [--heldout PATH | --no-heldout] [--reference PATH]
-    python -m petab_harness.neural_ode propose examples/fujita/problem --out runs/fujita \\
+    python -m gemot.neural_ode propose examples/fujita/problem --out runs/fujita \\
         [--config neural.json] [--interpreter PY] [--pysr-interpreter PY] [--seconds 8400] \\
         [--threads 16] [--dosed S]
-    python -m petab_harness.neural_ode score runs/fujita/proposals.json --example examples/fujita \\
+    python -m gemot.neural_ode score runs/fujita/proposals.json --example examples/fujita \\
         --out runs/fujita/judge [--n-starts 50] [--only selected,c7]
 
 ``fit`` writes ``<out>/result.json`` -- the field's training nll, its ``k`` (the scalars PEtab
@@ -40,7 +40,7 @@ METHOD = "neural_ode"
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m petab_harness.neural_ode",
+        prog="python -m gemot.neural_ode",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

@@ -131,7 +131,7 @@ def _model_less_problem(work: Path) -> Path:
 async def _probe_diagnosis(fx):
     """The finish gate's own read, through the harness helper it uses — the path where a compile was
     charged to NO clock, since the driver's probe is deliberately un-timed."""
-    from petab_harness.agent.probe import _current_diagnosis
+    from gemot.agent.probe import _current_diagnosis
 
     async def reader(name, args):
         return await fx.mcp.call_tool(name, args)

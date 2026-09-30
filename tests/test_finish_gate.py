@@ -1,4 +1,4 @@
-"""Tests for the lead's finish gate (petab_harness.agent `_finish_tool`).
+"""Tests for the lead's finish gate (gemot.agent `_finish_tool`).
 
 The gate must: refuse a finish when there is no valid fit; refuse when the working model has
 edits since its last fit (stale metrics); and otherwise require TWO finish calls — the first
@@ -14,8 +14,8 @@ import pytest
 
 pytest.importorskip("langchain_core", reason="harness-only dependency")
 
-from petab_harness import agent as _agent  # noqa: E402
-from petab_harness import prompts  # noqa: E402
+from gemot import agent as _agent  # noqa: E402
+from gemot import prompts  # noqa: E402
 
 
 class _FakeResult:

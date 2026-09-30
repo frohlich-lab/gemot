@@ -8,7 +8,7 @@ where the type floor is checked on save.
 
 import numpy as np
 
-from petab_harness import paper_bic_trajectories as trajectories
+from gemot import paper_bic_trajectories as trajectories
 
 
 def _run(points, head, final):

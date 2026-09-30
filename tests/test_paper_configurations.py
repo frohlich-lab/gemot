@@ -5,7 +5,7 @@ that agree on a setting show it once, runs that differ show every value with its
 harness appears under the paper's names, and the grid's small values are written in full.
 """
 
-from petab_harness import paper_configurations as pc
+from gemot import paper_configurations as pc
 
 
 def _run(**kw):

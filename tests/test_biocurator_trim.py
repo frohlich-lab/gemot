@@ -1,5 +1,5 @@
 """Tests for the biocurator's EuropePMC payload trim (``_trim_europepmc_search`` in
-``petab_harness.agent.literature``).
+``gemot.agent.literature``).
 
 ``get_europepmc_articles`` returns ``resultType=core`` records — for each hit the FULL
 bibliographic record (author/affiliation/MeSH/grant/chemical lists, cross-references, full-text
@@ -15,7 +15,7 @@ import pytest
 
 pytest.importorskip("langchain_core", reason="harness-only dependency")
 
-from petab_harness.agent import literature as _literature  # noqa: E402
+from gemot.agent import literature as _literature  # noqa: E402
 
 
 def _core_payload():

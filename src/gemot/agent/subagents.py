@@ -18,7 +18,7 @@ Why several analysts instead of one:
   breakdown and reports *where* and *how* the fit fails (bias, drift, shape/timing mismatch)
   without claiming a mechanism.
 
-The personas (in :mod:`petab_harness.prompts`) teach an analyst HOW to reason about building and
+The personas (in :mod:`gemot.prompts`) teach an analyst HOW to reason about building and
 refining a dynamic model — its lens, its tools, and the report it must return — but deliberately
 give NO hints about any particular problem's answer (no named rate-law forms, no data
 fingerprints); the panel has to discover the mechanism from the data. The lead's own prompt and

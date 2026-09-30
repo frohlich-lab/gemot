@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
-from petab_harness.runner import (  # noqa: E402
+from gemot.runner import (  # noqa: E402
     _NOISE_SIGMA_COLLAPSE_FRACTION,
     _judge,
     _reference_sigma_flag,

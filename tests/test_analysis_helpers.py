@@ -1,4 +1,4 @@
-"""`petab_harness.analysis`: the shared primitives every sweep report and trace review reads.
+"""`gemot.analysis`: the shared primitives every sweep report and trace review reads.
 
 Fixtures build a sweep's results tree, a run's version store and an in-memory Phoenix `spans` table
 from scratch, so these run in milliseconds with nothing installed but the harness — the same
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from petab_harness import analysis as A
+from gemot import analysis as A
 
 
 def _write_task(root: Path, task: str, result: dict | None, combo: dict) -> Path:
@@ -722,7 +722,7 @@ def test_cli_summary_and_rows(results_root, capsys):
 
 def test_the_module_is_import_light():
     probe = (
-        "import sys; import petab_harness.analysis; "
+        "import sys; import gemot.analysis; "
         "bad = [m for m in ('mcp','petab_mcp','phoenix','pandas','numpy','matplotlib') "
         "if m in {x.split('.')[0] for x in sys.modules}]; "
         "sys.exit('leaked: ' + ','.join(bad) if bad else 0)"

@@ -30,7 +30,7 @@ Used to derive ``TRUE_ANT`` for ``isensee`` (6 zeros + 4 unit prodrug ratios), `
 zeros -> 10 reactions, 12 rate laws) and ``raimundez`` (7 zeros, all in assignment rules). Always
 re-verify the result against the pristine problem's objective after pruning.
 
-    python -m petab_harness.prune_fixed_terms <BenchmarkName> <out.ant> <param> [<param> ...]
+    python -m gemot.prune_fixed_terms <BenchmarkName> <out.ant> <param> [<param> ...]
 """
 
 from __future__ import annotations
@@ -144,7 +144,7 @@ def prune(name: str, fixed_params: list[str], collection: Path | None = None) ->
     import sympy as sp
     from petab.v1.C import NOMINAL_VALUE
 
-    from petab_harness.benchmark import _load_problem
+    from gemot.benchmark import _load_problem
 
     prob = _load_problem(name, collection)
     doc = libsbml.readSBMLFromString(libsbml.writeSBMLToString(prob.sbml_document))

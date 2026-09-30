@@ -9,13 +9,13 @@ the RESULT report, live here and are identical across examples.
 
 An example's ``run.py`` just builds a :class:`Scenario` and calls :func:`run_scenario`.
 This is an installed package (``pip install -e .`` from the repo root), so that is a plain
-``from petab_harness import Scenario, run_scenario`` — no ``sys.path`` bootstrap.
+``from gemot import Scenario, run_scenario`` — no ``sys.path`` bootstrap.
 
-Every agent-facing prompt lives in :mod:`petab_harness.prompts`; the deepagents driver is
-:mod:`petab_harness.agent` and the pipeline + judge + CLI is :mod:`petab_harness.runner`.
+Every agent-facing prompt lives in :mod:`gemot.prompts`; the deepagents driver is
+:mod:`gemot.agent` and the pipeline + judge + CLI is :mod:`gemot.runner`.
 
 Importing this package is deliberately CHEAP: the names below are resolved lazily (PEP
-562), so ``import petab_harness.agent.dedup`` pulls in no ``mcp``, ``petab_mcp``, phoenix
+562), so ``import gemot.agent.dedup`` pulls in no ``mcp``, ``petab_mcp``, phoenix
 or langchain. Several submodules here are heavy and the unit tests bind to the light ones;
 do NOT add an eager ``from .runner import ...`` back — ``tests/test_import_lightness.py``
 guards this.

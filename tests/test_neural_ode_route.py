@@ -11,9 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from petab_harness.neural_ode import route as R
-from petab_harness.neural_ode import worker as W
-from petab_harness.neural_ode.config import Config, ConfigError
+from gemot.neural_ode import route as R
+from gemot.neural_ode import worker as W
+from gemot.neural_ode.config import Config, ConfigError
 
 
 @dataclass(frozen=True)
@@ -234,12 +234,15 @@ def test_the_parent_passes_an_earlier_clock_the_config_and_the_env_and_reads_pro
     assert captured["timeout"] == 100.0 and float(command[command.index("--seconds") + 1]) == 90.0
     # The config crosses whole, the PySR interpreter and the dosing convention included.
     assert Config.load(command[command.index("--config") + 1]) == config
-    assert env["OMP_NUM_THREADS"] == "4" and env["PYTHONPATH"].split(":")[0].endswith("src")
-    # The worker imports petab_mcp, which its interpreter need not have: it gets this one's.
+    assert env["OMP_NUM_THREADS"] == "4"
+    # The worker's interpreter need not have gemot or petab_mcp: it gets this one's, nothing else.
+    import gemot
     from conftest import SERVER_SRC
 
-    server = Path(env["PYTHONPATH"].split(":")[1]) / "petab_mcp"
-    assert server.resolve() == SERVER_SRC.resolve()
+    packages = Path(env["PYTHONPATH"].split(":")[0])
+    assert sorted(p.name for p in packages.iterdir()) == ["gemot", "petab_mcp"]
+    assert (packages / "gemot").resolve() == Path(gemot.__file__).resolve().parent
+    assert (packages / "petab_mcp").resolve() == SERVER_SRC.resolve()
     assert outcome.proposals[0].record == {
         "jax_interpreter": "/jax/python",
         "ran_out_of_process": True,
@@ -308,7 +311,7 @@ def test_the_worker_never_delegates_again_and_the_real_round_trip_carries_an_out
 
 
 def test_the_command_line_writes_the_outcome_and_exits_one_on_a_refusal(monkeypatch, tmp_path):
-    from petab_harness.neural_ode import __main__ as cli
+    from gemot.neural_ode import __main__ as cli
 
     problem = _write_problem(tmp_path / "toy" / "problem", [0.0, 1.0])
     seen = {}

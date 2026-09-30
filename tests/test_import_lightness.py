@@ -1,4 +1,4 @@
-"""``petab_harness`` must stay cheap to import.
+"""``gemot`` must stay cheap to import.
 
 The harness's top-level ``__init__`` resolves its public names lazily (PEP 562) and every
 module the unit tests bind to — the agent's guards, the explorer's bundle reader, the bio
@@ -65,20 +65,20 @@ def _assert_light(importline: str) -> None:
 @pytest.mark.parametrize(
     "importline",
     [
-        "import petab_harness",
-        "from petab_harness import agent",
-        "from petab_harness.agent import dedup, guards",
-        "from petab_harness.agent import sandbox",
-        "from petab_harness.agent import barebones",
-        "from petab_harness import prompts",
-        "from petab_harness import bio_sessions",
-        "from petab_harness import experiments",
-        "from petab_harness import analysis",
-        "from petab_harness import fit_budget",
-        "from petab_harness.explorer import bundle",
-        "from petab_harness.runner import endpoints",
-        "from petab_harness import neural_ode",
-        "from petab_harness.neural_ode import route, config, worker",
+        "import gemot",
+        "from gemot import agent",
+        "from gemot.agent import dedup, guards",
+        "from gemot.agent import sandbox",
+        "from gemot.agent import barebones",
+        "from gemot import prompts",
+        "from gemot import bio_sessions",
+        "from gemot import experiments",
+        "from gemot import analysis",
+        "from gemot import fit_budget",
+        "from gemot.explorer import bundle",
+        "from gemot.runner import endpoints",
+        "from gemot import neural_ode",
+        "from gemot.neural_ode import route, config, worker",
     ],
 )
 def test_import_is_light(importline):
@@ -96,9 +96,7 @@ def test_the_agent_package_never_imports_the_server_package():
     over the AST, so no import is attempted here either.
     """
     offenders = []
-    for path in sorted(
-        (Path(__file__).parent.parent / "src" / "petab_harness" / "agent").rglob("*.py")
-    ):
+    for path in sorted((Path(__file__).parent.parent / "src" / "gemot" / "agent").rglob("*.py")):
         for node in ast.walk(ast.parse(path.read_text())):
             module = (node.module if isinstance(node, ast.ImportFrom) else None) or ""
             names = (
@@ -110,7 +108,7 @@ def test_the_agent_package_never_imports_the_server_package():
                 n.split(".")[0] == "petab_mcp" for n in names
             ):
                 offenders.append(f"{path.name}:{node.lineno}")
-    assert not offenders, f"petab_harness.agent imports petab_mcp at {offenders}"
+    assert not offenders, f"gemot.agent imports petab_mcp at {offenders}"
 
 
 def _lazy_table(package):
@@ -127,7 +125,7 @@ def _lazy_table(package):
 
 def _resolve(root, target):
     """``'.scenario'`` -> ``scenario.py``; ``'.runner'`` -> ``runner/__init__.py`` (a _LAZY
-    target may itself be a package — ``petab_harness._LAZY['run_scenario']`` is one)."""
+    target may itself be a package — ``gemot._LAZY['run_scenario']`` is one)."""
     stem = target.lstrip(".")
     return (root / stem / "__init__.py") if (root / stem).is_dir() else (root / f"{stem}.py")
 
@@ -156,7 +154,7 @@ def _toplevel_names(path):
     return names
 
 
-@pytest.mark.parametrize("package_name", ["petab_harness", "petab_harness.runner"])
+@pytest.mark.parametrize("package_name", ["gemot", "gemot.runner"])
 def test_every_lazy_target_actually_defines_its_name(package_name):
     """A ``_LAZY`` entry pointing at the wrong module is invisible until something asks for that
     name — at which point every ``run.py`` dies at import. Checked statically (over the target
@@ -175,10 +173,10 @@ def test_every_lazy_target_actually_defines_its_name(package_name):
 def test_all_and_lazy_agree():
     """``__all__`` is hand-written; a name added to one and not the other reads as public but
     raises AttributeError (or vice versa: resolvable but undocumented)."""
-    import petab_harness
-    import petab_harness.runner
+    import gemot
+    import gemot.runner
 
-    for package in (petab_harness, petab_harness.runner):
+    for package in (gemot, gemot.runner):
         table = _lazy_table(package)
         for name in package.__all__:
             assert name in table or name in vars(package), (
@@ -187,22 +185,22 @@ def test_all_and_lazy_agree():
 
 
 def test_lazy_facade_resolves_by_getattr():
-    """The laziness must not cost the ergonomics: ``from petab_harness import Scenario`` still
+    """The laziness must not cost the ergonomics: ``from gemot import Scenario`` still
     works — it just imports ``scenario`` on first access instead of at package import.
 
     Unlike the static checks above this really drives ``__getattr__``, so it is limited to the
     scenario-backed names; the runner-backed ones need an MCP client to resolve."""
-    import petab_harness
+    import gemot
 
-    for name, target in _lazy_table(petab_harness).items():
+    for name, target in _lazy_table(gemot).items():
         if target != ".scenario":
             continue
-        assert getattr(petab_harness, name) is not None
-    assert "Scenario" in dir(petab_harness)
+        assert getattr(gemot, name) is not None
+    assert "Scenario" in dir(gemot)
 
 
 # --------------------------------------------------------------- the fit-budget duplication
-# `petab_harness.fit_budget` re-implements six things `petab_mcp.fitting` also defines
+# `gemot.fit_budget` re-implements six things `petab_mcp.fitting` also defines
 # (_env_float/_env_int, the default worker count, FIT_PER_START_TIMEOUT_S, FIT_N_WORKERS,
 # fides_maxtime_options, fit_engine). That duplication looks removable but is NOT: `_HEAVY`
 # above lists `petab_mcp`, so importing ANY petab_mcp module from fit_budget -- including a
@@ -215,7 +213,7 @@ def test_lazy_facade_resolves_by_getattr():
 # is exactly the bug the two files' cross-referencing comments warn about.
 def test_fit_budget_matches_the_server():
     """The harness's fit budget must agree with the server's, or a healthy fit gets killed."""
-    from petab_harness import fit_budget
+    from gemot import fit_budget
 
     from petab_mcp import fitting
 
@@ -243,7 +241,7 @@ def test_fit_workers_honours_an_explicit_override():
     """
     import os
 
-    from petab_harness import fit_budget
+    from gemot import fit_budget
 
     assert fit_budget.fit_workers(50, 1) == 1
     assert fit_budget.fit_engine(50, 1) is None  # None == pyPESTO's sequential engine
@@ -262,68 +260,6 @@ def test_fit_workers_honours_an_explicit_override():
         os.environ.pop("PETAB_MCP_FIT_N_WORKERS", None)
 
 
-# ------------------------------------------------------- out-of-tree importers of our packages
-# CI runs pytest, not the scripts under slurm/ and examples/. So when a symbol is deleted from
-# src/, a script that imported it stays broken until someone runs it -- which for a slurm job or
-# a one-off trace-review probe can be a long time, and (for anything AMICI-backed) only after
-# paying for a model compile. This has now happened twice on one branch: `fitting._run_fit(seed=)`
-# and `from petab_mcp.model import SbmlModel`.
-#
-# Resolve every such import statically, against the target module's SOURCE -- no importing, so
-# this stays cheap and needs none of the heavy deps those scripts want.
-#
-# LIMIT, stated plainly: this catches the IMPORT class only. A call site passing a keyword
-# argument that no longer exists (the `seed=` break) still slips through -- checking that would
-# need real signature binding, which needs the imports this test exists to avoid.
-def _repo_scripts():
-    root = Path(__file__).resolve().parents[1]
-    for pattern in ("slurm/**/*.py", "examples/**/*.py"):
-        for path in root.glob(pattern):
-            # skip AMICI's generated SWIG wrappers under <example>/.amici_build/
-            if ".amici_build" not in path.parts and "_runs_archive" not in path.parts:
-                yield root, path
-
-
-def test_scripts_only_import_names_our_packages_actually_define():
-    """`from petab_mcp.X import Y` / `from petab_harness.X import Y` in slurm/ and examples/ must
-    name something module X really binds."""
-    from conftest import SERVER_SRC
-
-    broken = []
-    for root, path in _repo_scripts():
-        for node in ast.walk(ast.parse(path.read_text())):
-            if not isinstance(node, ast.ImportFrom) or not node.module:
-                continue
-            if node.level or node.module.split(".")[0] not in ("petab_mcp", "petab_harness"):
-                continue
-            # the server is installed from its own repository, not under src/
-            packages = (
-                SERVER_SRC.parent if node.module.split(".")[0] == "petab_mcp" else root / "src"
-            )
-            target = packages / Path(node.module.replace(".", "/"))
-            source = (
-                target.with_suffix(".py")
-                if target.with_suffix(".py").is_file()
-                else target / "__init__.py"
-            )
-            if not source.is_file():
-                broken.append(f"{path.relative_to(root)}:{node.lineno} -> no module {node.module}")
-                continue
-            defined = _toplevel_names(source)
-            for alias in node.names:
-                # `from pkg import submodule` is legal without pkg/__init__ binding the name
-                if alias.name == "*" or (
-                    source.name == "__init__.py" and (source.parent / f"{alias.name}.py").is_file()
-                ):
-                    continue
-                if alias.name not in defined:
-                    broken.append(
-                        f"{path.relative_to(root)}:{node.lineno} -> "
-                        f"{node.module} does not define {alias.name!r}"
-                    )
-    assert not broken, "scripts import names that no longer exist:\n  " + "\n  ".join(broken)
-
-
 def test_simulate_does_not_need_the_server_package():
     """``simulate.py`` may import ``petab``/``amici`` — it is a simulation module — but NOT
     ``petab_mcp``.
@@ -337,12 +273,12 @@ def test_simulate_does_not_need_the_server_package():
     """
     probe = (
         "import sys\n"
-        "from petab_harness import simulate\n"
+        "from gemot import simulate\n"
         "simulate._ensure_swig_on_path()\n"  # the path that regressed: exercise it, not just import
         "leaked = [m for m in sys.modules if m.split('.')[0] == 'petab_mcp']\n"
         "sys.exit('leaked petab_mcp: ' + ', '.join(sorted(leaked)[:3]) if leaked else 0)\n"
     )
     proc = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
     assert proc.returncode == 0, (
-        "petab_harness.simulate must not pull in the server package:\n" + proc.stderr
+        "gemot.simulate must not pull in the server package:\n" + proc.stderr
     )

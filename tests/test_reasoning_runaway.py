@@ -14,7 +14,7 @@ pytest.importorskip("langchain")
 from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage, ToolMessage
 
-from petab_harness.agent.guards import (
+from gemot.agent.guards import (
     _is_reasoning_runaway,
     _reasoning_runaway_guard,
     new_guard_stats,
@@ -213,8 +213,8 @@ def test_healthy_call_passes_through_untouched():
 def test_every_subagent_carries_the_runaway_guard():
     # deepagents builds each subagent its OWN middleware stack, so the lead's list does not
     # reach the analysts — 11 of 32 measured runaways were on subagents.
-    from petab_harness.agent.biocurator import _build_biocurator_subagent
-    from petab_harness.agent.subagents import _build_subagents
+    from gemot.agent.biocurator import _build_biocurator_subagent
+    from gemot.agent.subagents import _build_subagents
 
     stats: dict = {}
     specs = _build_subagents({}, stats) + [_build_biocurator_subagent([], [], stats)]
@@ -228,7 +228,7 @@ def test_every_subagent_carries_the_runaway_guard():
 
 def test_subagents_build_without_stats():
     # The stats argument is optional so the builders stay usable (and tested) standalone.
-    from petab_harness.agent.subagents import _build_subagents
+    from gemot.agent.subagents import _build_subagents
 
     for spec in _build_subagents({}):
         assert spec["middleware"]  # the turn limit is still there
@@ -237,7 +237,7 @@ def test_subagents_build_without_stats():
 def test_state_message_count_distinguishes_unreadable_from_empty():
     # The watchdog's replay test: None (unreadable) must NOT be conflated with 0 (real, empty),
     # or one odd emission would leave the stall window permanently widened.
-    from petab_harness.agent.driver import _state_message_count
+    from gemot.agent.driver import _state_message_count
 
     assert _state_message_count({"messages": [1, 2, 3]}) == 3
     assert _state_message_count({"messages": []}) == 0

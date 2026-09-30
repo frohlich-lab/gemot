@@ -1,11 +1,11 @@
-"""Tests for the biocurator bio-MCP session isolation (petab_harness.bio_sessions).
+"""Tests for the biocurator bio-MCP session isolation (gemot.bio_sessions).
 
 Covers issue #86: a transport failure on a hosted bio-knowledge MCP session used to abort the
 whole deepagents run. ``open_bio_sessions`` now runs each session in its own supervised, detached
 ``asyncio`` task, so a failure at connect OR mid-run degrades the biocurator instead of aborting
 the run.
 
-``bio_sessions`` imports ``mcp`` LAZILY (only inside the real opener), and ``petab_harness``'s own
+``bio_sessions`` imports ``mcp`` LAZILY (only inside the real opener), and ``gemot``'s own
 ``__init__`` is lazy too, so these tests just import it and inject a FAKE opener — no ``mcp``, no
 ``langchain``, no network, no live bio servers.
 The supervision/teardown logic is pure ``asyncio`` and always runs; the end-to-end transport abort
@@ -19,7 +19,7 @@ import asyncio
 import contextlib
 import time
 
-from petab_harness import bio_sessions as bio
+from gemot import bio_sessions as bio
 
 
 # --------------------------------------------------------------------- fake sessions + openers

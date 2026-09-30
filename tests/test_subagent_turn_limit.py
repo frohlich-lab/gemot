@@ -11,7 +11,7 @@ pytest.importorskip("langchain.agents.middleware.types")
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage  # noqa: E402
 
-from petab_harness.agent.guards import _subagent_turn_limit, _turn_notice  # noqa: E402
+from gemot.agent.guards import _subagent_turn_limit, _turn_notice  # noqa: E402
 
 CAP = 20
 
@@ -149,8 +149,8 @@ def test_no_notice_leaves_the_request_untouched():
 
 # --- wiring -------------------------------------------------------------------------------
 def test_wired_into_every_subagent_spec():
-    from petab_harness.agent.biocurator import _build_biocurator_subagent
-    from petab_harness.agent.subagents import _build_subagents
+    from gemot.agent.biocurator import _build_biocurator_subagent
+    from gemot.agent.subagents import _build_subagents
 
     specs = _build_subagents({}) + [_build_biocurator_subagent([], [])]
     assert len(specs) == 4

@@ -171,7 +171,7 @@ async def _drive(
             "skills_version": base_meta.get("skills_version"),
             # Which ARM, so a Phoenix query can split an A/B the same way the metrics CSV does.
             # Not derivable from prompt_version: an arm that changes no prompt text (see
-            # petab_harness.ablations) leaves it identical across both halves.
+            # gemot.ablations) leaves it identical across both halves.
             "ablation_arm": base_meta.get("ablation_arm"),
             # ...and the default-INDEPENDENT twin, or the claim above is false across a default
             # flip: `ablation_arm` names only deviations, so "baseline" means different

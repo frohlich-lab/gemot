@@ -1,12 +1,15 @@
 # Working in this repo
 
-**`petab_harness`** (under `src/`) is the agent harness that drives the petab-mcp server in
-`examples/`: a deepagents panel, the judge, the benchmark sweep, and the run explorer.
+**`gemot`** (under `src/`) is the agent harness that drives the petab-mcp server: a deepagents
+panel, the judge, the sweep analysis, the run explorer and the paper pipeline.
 
-The server itself — one PEtab v1 problem behind a _deliberately constrained_ editing loop, whose
-constraints are the product, not scaffolding — lives in
-[frohlich-lab/PEtab-MCP](https://github.com/frohlich-lab/PEtab-MCP) and is installed pinned to a
-commit (`pyproject.toml`). A server change lands there first; bumping the pin brings it here.
+Two neighbours pin what they depend on by commit:
+- the server, one PEtab v1 problem behind a _deliberately constrained_ editing loop whose
+  constraints are the product, lives in [frohlich-lab/PEtab-MCP](https://github.com/frohlich-lab/PEtab-MCP),
+  pinned here in `pyproject.toml`;
+- the benchmark gemot drives (`examples/`, `slurm/`, `paper/`) lives in
+  [frohlich-lab/petab_mcp](https://github.com/frohlich-lab/petab_mcp), which pins gemot.
+A change here reaches the benchmark when its gemot pin is bumped.
 
 ## Read before you change behaviour
 

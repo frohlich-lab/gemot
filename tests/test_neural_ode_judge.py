@@ -6,7 +6,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from petab_harness.neural_ode import judge as J
+from gemot.neural_ode import judge as J
 
 
 def _example(root: Path) -> Path:
@@ -78,7 +78,7 @@ def test_each_proposal_is_committed_and_judged_in_its_own_example_copy(tmp_path,
         )
         return 0
 
-    import petab_harness.runner.cli as cli
+    import gemot.runner.cli as cli
 
     monkeypatch.setattr(cli, "run_scenario", fake_run_scenario)
     rows = J.score_proposals(

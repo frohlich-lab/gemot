@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-APP_JS = Path(__file__).parent.parent / "src" / "petab_harness" / "explorer" / "static" / "app.js"
+APP_JS = Path(__file__).parent.parent / "src" / "gemot" / "explorer" / "static" / "app.js"
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 

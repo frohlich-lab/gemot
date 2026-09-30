@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from petab_harness.neural_ode import problem as P
+from gemot.neural_ode import problem as P
 
 _MEASUREMENTS = """observableId\tsimulationConditionId\ttime\tmeasurement\tnoiseParameters{preeq}
 obs_P\tc_lo\t0.0\t0.0\t{preeq_lo}

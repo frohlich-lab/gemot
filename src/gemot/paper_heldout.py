@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from petab_harness.paper_fujita import shaded
+from gemot.paper_fujita import shaded
 
 #: Figure 3's encoding, taken literally: hue and marker name the language model, the step on its
 #: ramp names the rung. Both LLM arms here are GLM-5.3-flash runs, so both are circles on the blue
@@ -175,7 +175,7 @@ def render(payload: dict, output, fontsize: float = BODY) -> None:
     from matplotlib.lines import Line2D
     from matplotlib.ticker import MaxNLocator
 
-    from petab_harness import paper_style
+    from gemot import paper_style
 
     matplotlib.rcParams.update(paper_style.rc())
 

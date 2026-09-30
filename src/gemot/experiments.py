@@ -31,7 +31,7 @@ DATASET_PREFIX = "petab-mcp-repair"
 def collect_prompts() -> dict[str, str]:
     """The repo's agent-facing prompts, keyed by a stable registry name.
 
-    The registry itself lives with the text, in :mod:`petab_harness.prompts` — this is a thin
+    The registry itself lives with the text, in :mod:`gemot.prompts` — this is a thin
     flatten of ``PROMPT_GROUPS`` so callers here need not know the grouping.
 
     It is the FULL surface: the lead's prompt and task, the analyst personas and the
@@ -88,7 +88,7 @@ _PROMPT_ROLES = {
 def prompt_version(prompts: dict[str, str] | None = None) -> str:
     """A stable 12-char content hash over all prompts — the harness's *prompt version*.
 
-    Re-exported from :mod:`petab_harness.prompts`, where it lives beside the text it hashes.
+    Re-exported from :mod:`gemot.prompts`, where it lives beside the text it hashes.
     Kept importable here because every existing caller reaches for it through this module.
     """
     from . import prompts as P
@@ -97,7 +97,7 @@ def prompt_version(prompts: dict[str, str] | None = None) -> str:
 
 
 def prompt_group_versions() -> dict[str, str]:
-    """Per-group prompt hashes — see :func:`petab_harness.prompts.prompt_group_versions`."""
+    """Per-group prompt hashes — see :func:`gemot.prompts.prompt_group_versions`."""
     from . import prompts as P
 
     return P.prompt_group_versions()

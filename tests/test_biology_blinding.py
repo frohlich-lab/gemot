@@ -13,7 +13,7 @@ import pandas as pd
 import petab.v1 as petab
 import pytest
 
-from petab_harness.biology_blinding import (
+from gemot.biology_blinding import (
     AnonymousSession,
     BlindNames,
     prepare,
@@ -231,9 +231,9 @@ import asyncio
 from pathlib import Path
 import sys
 import pytest
-from petab_harness import agent, prompts
-from petab_harness.scenario import Scenario
-from petab_harness.agent.tools import _trim_descriptions
+from gemot import agent, prompts
+from gemot.scenario import Scenario
+from gemot.agent.tools import _trim_descriptions
 from types import SimpleNamespace
 scenario = Scenario("Alkan", Path("/secret/Alkan/problem"), lambda *args: None,
                     task="EGFR biology", known_constants="U2OS cells", biocurator_entities=["EGFR"])
@@ -293,8 +293,8 @@ assert "biolog" not in prompts.FINISH_DESCRIPTION
 
 
 def test_cleanup_and_run_provenance_use_the_anonymous_view(tmp_path, monkeypatch):
-    from petab_harness.runner.main import cleanup
-    from petab_harness.scenario import Scenario
+    from gemot.runner.main import cleanup
+    from gemot.scenario import Scenario
 
     source = tmp_path / "example/problem"
     shutil.copytree(TOY, source)
@@ -303,8 +303,8 @@ def test_cleanup_and_run_provenance_use_the_anonymous_view(tmp_path, monkeypatch
     work = cleanup(scenario)
     assert read_names(work) is not None
     assert "conversion_reaction" not in (work / "model.xml").read_text()
-    from petab_harness.runner.cli import build_parser
-    from petab_harness.runner.provenance import _base_meta
+    from gemot.runner.cli import build_parser
+    from gemot.runner.provenance import _base_meta
 
     meta = _base_meta(scenario, build_parser(scenario).parse_args(["--driver", "scripted"]))
     assert meta["ablations"]["biology_blind"] is True
@@ -332,7 +332,7 @@ def _with_protocol(tmp_path, formula):
 def test_the_input_protocol_reaches_the_blind_task_in_aliases(tmp_path):
     """Fujita's EGF is a pulse or a ramp only under its rule; its rate is constant in training.
     The visible arms are told the rule, so the blind arm must be too, without the names."""
-    from petab_harness import prompts
+    from gemot import prompts
 
     source = _with_protocol(tmp_path, "piecewise(dose_rate*time + 1, time <= 60, 0)")
     work = tmp_path / "anonymous"
@@ -372,7 +372,7 @@ def test_a_protocol_may_not_read_a_model_parameter_through_its_alias(tmp_path):
     ],
 )
 def test_the_blind_task_refuses_a_rule_that_is_not_anonymous(protocol):
-    from petab_harness import prompts
+    from gemot import prompts
 
     with pytest.raises(ValueError, match="not an anonymized input protocol"):
         prompts.biology_blind_task([protocol])

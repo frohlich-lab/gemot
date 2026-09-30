@@ -1279,7 +1279,7 @@ def materialize(
     model-free protocol table: an input the experiment IMPOSED as a function of time and of the
     condition table's own columns (fujita's EGF, a pulse or ramp set by ``EGF_0``/``EGF_rate``/
     ``EGF_end``). It states what was done to the system, not how the system responds, which is why
-    it may name only ``time`` and condition columns -- :mod:`petab_harness.neural_ode.problem`
+    it may name only ``time`` and condition columns -- :mod:`gemot.neural_ode.problem`
     refuses anything else. The server ignores the file; the model-producing routes read it.
     """
     from petab.v1.C import CONDITION_NAME

@@ -8,7 +8,7 @@ the run succeeds and the bill arrives later -- so the invariants are pinned here
 
 import pytest
 
-from petab_harness.models import (
+from gemot.models import (
     MODELS,
     _CACHING,
     _ROUTING,
@@ -88,7 +88,7 @@ def test_resolve_maps_the_alias_to_the_pinned_id():
 def test_every_reasoning_entry_names_a_model_on_the_panel():
     """Same orphan check as the routing table: `_REASONING` is keyed by model ID, so an entry for
     a model no longer in MODELS is dead config that silently does nothing."""
-    from petab_harness.models import MODELS, _REASONING
+    from gemot.models import MODELS, _REASONING
 
     in_use = set(MODELS.values())
     orphaned = set(_REASONING) - in_use
@@ -96,7 +96,7 @@ def test_every_reasoning_entry_names_a_model_on_the_panel():
 
 
 def test_reasoning_effort_is_a_value_openrouter_accepts():
-    from petab_harness.models import _REASONING
+    from gemot.models import _REASONING
 
     for model_id, cfg in _REASONING.items():
         assert cfg.get("effort") in {"low", "medium", "high"} or "max_tokens" in cfg, (
@@ -107,7 +107,7 @@ def test_reasoning_effort_is_a_value_openrouter_accepts():
 def test_models_without_an_entry_keep_the_provider_default():
     """Omitted entirely, not sent as an empty block — a model whose thinking is already on must
     get exactly the request it got before."""
-    from petab_harness.models import reasoning_config
+    from gemot.models import reasoning_config
 
     assert reasoning_config("openai/gpt-5.6-luna-pro") is None
     assert reasoning_config("some/unknown-model") is None
@@ -116,7 +116,7 @@ def test_models_without_an_entry_keep_the_provider_default():
 def test_extra_body_carries_routing_and_reasoning_independently():
     """Routing and reasoning appear only when their table has an entry; the billed-cost flag is on
     every request, so a model with neither sends exactly that."""
-    from petab_harness.agent.driver import _extra_body
+    from gemot.agent.driver import _extra_body
 
     luna = _extra_body("openai/gpt-5.6-luna-pro")
     assert set(luna) == {"provider", "usage"}, (
@@ -131,8 +131,8 @@ def test_extra_body_carries_routing_and_reasoning_independently():
 
 
 def test_extra_body_includes_reasoning_when_a_model_has_it(monkeypatch):
-    from petab_harness import models as M
-    from petab_harness.agent.driver import _extra_body
+    from gemot import models as M
+    from gemot.agent.driver import _extra_body
 
     monkeypatch.setitem(M._REASONING, "openai/gpt-5.6-luna-pro", {"effort": "high"})
     body = _extra_body("openai/gpt-5.6-luna-pro")
@@ -192,7 +192,7 @@ def test_a_blank_text_block_does_not_capture_the_breakpoint():
     """An assistant turn that is only tool calls can arrive as a blank text block rather than
     `content: None`; marking it would leave the tool result — the real end of the history —
     unmarked."""
-    from petab_harness.agent.driver import _apply_cache_breakpoints
+    from gemot.agent.driver import _apply_cache_breakpoints
 
     cfg = {"type": "ephemeral", "ttl": "1h"}
     payload = {
@@ -215,7 +215,7 @@ def test_a_blank_text_block_does_not_capture_the_breakpoint():
 
 def test_caching_is_not_asked_for_in_the_request_body():
     """The top-level `cache_control` field is never sent (docs/RATIONALE.md)."""
-    from petab_harness.agent.driver import _extra_body
+    from gemot.agent.driver import _extra_body
 
     for model in ("anthropic/claude-sonnet-5", "openai/gpt-5.6-luna-pro"):
         assert "cache_control" not in _extra_body(model)
@@ -225,7 +225,7 @@ def test_caching_is_not_asked_for_in_the_request_body():
 def test_breakpoints_land_on_the_system_message_and_the_last_message():
     """The last message in this loop is a TOOL result, and a string content is rewritten into a
     text block to carry the marker."""
-    from petab_harness.agent.driver import _apply_cache_breakpoints
+    from gemot.agent.driver import _apply_cache_breakpoints
 
     cfg = {"type": "ephemeral", "ttl": "1h"}
     payload = {
@@ -248,7 +248,7 @@ def test_breakpoints_skip_a_contentless_tail_and_mark_existing_blocks():
     """A trailing assistant turn carrying only tool calls has nothing to mark, so the breakpoint
     walks back to the last message that has text; content already in block form is marked in
     place rather than rewritten."""
-    from petab_harness.agent.driver import _apply_cache_breakpoints
+    from gemot.agent.driver import _apply_cache_breakpoints
 
     cfg = {"type": "ephemeral"}
     payload = {
@@ -278,7 +278,7 @@ def test_the_request_langchain_builds_actually_carries_the_breakpoints():
     pytest.importorskip("langchain_openai", reason="harness-only dependency")
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-    from petab_harness.agent.driver import _chat_model_class, _extra_body
+    from gemot.agent.driver import _chat_model_class, _extra_body
 
     model_id = "anthropic/claude-sonnet-5"
     llm = _chat_model_class()(

@@ -1,6 +1,6 @@
 """Sweep-aggregation triage: don't score infrastructure-aborted runs as modeling failures.
 
-Covers issue #62. The unit under test is the abort triage in ``petab_harness.experiments``:
+Covers issue #62. The unit under test is the abort triage in ``gemot.experiments``:
 
   * an INSTANT infrastructure abort before any work (out-of-credits 402, dropped connection,
     a scoring float() crash) with ``n_ops==0 && n_fits==0`` is EXCLUDED from the success/ΔBIC
@@ -9,7 +9,7 @@ Covers issue #62. The unit under test is the abort triage in ``petab_harness.exp
     is KEPT — its best-achieved ΔBIC is a valid partial result;
   * genuine outcomes (completed, wall-time budget, recursion limit) are always kept.
 
-``experiments`` imports ``phoenix`` lazily and ``petab_harness``'s ``__init__`` is lazy too, so the
+``experiments`` imports ``phoenix`` lazily and ``gemot``'s ``__init__`` is lazy too, so the
 test needs neither the ``phoenix`` client nor the rest of the (heavy) harness — only stdlib.
 """
 
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from petab_harness import experiments
+from gemot import experiments
 
 
 def _row(**over):

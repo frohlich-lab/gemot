@@ -1,5 +1,5 @@
 """Test the residual-structure block the judge writes into result.json
-(petab_harness.runner.scoring `_residual_structure_fields`).
+(gemot.runner.scoring `_residual_structure_fields`).
 
 Pure projection of TWO payloads — the fit's own rolled-up ``residual_structure`` verdict (which only
 ``get_fit_summary`` reports) and the ``get_fit_diagnosis`` per-observable rows. ``runner.scoring``
@@ -8,7 +8,7 @@ skip where that is absent."""
 
 from __future__ import annotations
 
-from petab_harness.runner.scoring import (  # noqa: E402
+from gemot.runner.scoring import (  # noqa: E402
     _NOISE_SIGMA_COLLAPSE_FRACTION,
     _noise_sigma_flag,
     _residual_structure_fields,
@@ -95,7 +95,7 @@ def test_an_unread_verdict_reaches_the_history_csv_as_unknown():
     on the FLAT history columns, and omitting `replicate_lack_of_fit` blanked `lof_status`/`lof_weak`/
     `lof_df` exactly as a model-less run does. A run that HAS the block but could not read its verdict
     says so."""
-    from petab_harness.metrics import _flatten_replicate_lof
+    from gemot.metrics import _flatten_replicate_lof
 
     clean = _flatten_replicate_lof(
         {
@@ -165,7 +165,7 @@ def test_result_json_carries_the_replicate_lack_of_fit_verdict():
     Establishing that the arm had fired at all on the 2026-08-02 blasi run meant reading the
     Phoenix trace, which does not scale to a run series.
     """
-    from petab_harness.runner.scoring import _residual_structure_fields
+    from gemot.runner.scoring import _residual_structure_fields
 
     lof = {"available": True, "status": "flagged", "n_points": 15, "max_abs_z": 54.0}
     out = _residual_structure_fields(
@@ -209,7 +209,7 @@ def test_the_history_csv_has_a_column_for_the_replicate_arm(tmp_path):
     CSV writes `DictWriter(extrasaction="ignore")` against a fixed column tuple, so a nested block is
     dropped SILENTLY — exactly how the edit-reject metric was invisible for a release. `lof_weak` is
     the column this exists for: a pass and a pass on one degree of freedom are different runs."""
-    from petab_harness import metrics
+    from gemot import metrics
 
     result = {
         "scenario": "blasi",

@@ -427,7 +427,7 @@ def write_reference_from_problem(
     ``per_start_timeout`` overrides the global Fides ``MAXTIME`` cap for this fit — the reference is
     the one fit that must be run to convergence rather than to a shared budget, and what "long
     enough" means is a property of the individual model (see
-    :func:`~petab_harness.fit_budget.fides_maxtime_options`).
+    :func:`~gemot.fit_budget.fides_maxtime_options`).
 
     ``held_out`` (a :class:`petab_mcp.validation_data.HeldOut`) additionally scores this reference
     against HELD-OUT measurements, on the condition rows the set brings if any, and records the
@@ -437,12 +437,12 @@ def write_reference_from_problem(
     fitted model. Only the SCORE is recorded, not the vector — re-deriving the held-out bar means
     re-running this refit, exactly as re-deriving the training bar does (see
     :func:`_reference_validation`). A TRANSFER set is not scored here: it is refit on its own,
-    after this fit (``petab_harness.benchmark._transfer_reference``).
+    after this fit (``gemot.benchmark._transfer_reference``).
     """
     if held_out is not None and held_out.parameter_df is not None:
         raise ValueError(
             "write_reference_from_problem: a transfer set is REFIT, not scored at the "
-            "reference's fitted point (petab_harness.benchmark._transfer_reference)"
+            "reference's fitted point (gemot.benchmark._transfer_reference)"
         )
     import json
     import logging as _logging

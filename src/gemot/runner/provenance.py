@@ -282,7 +282,7 @@ def _base_meta(
         # that looks like a result. `ablation_arm` is the flat, groupable name -- "baseline", or
         # the deviations -- and rides in the metrics CSV; `ablations` is the full resolved state,
         # every switch recorded rather than only the non-default ones, so a silent absence can
-        # never have to be read as "probably the default". See petab_harness.ablations.
+        # never have to be read as "probably the default". See gemot.ablations.
         # `ablation_state` is the third: `ablation_arm` names only the DEVIATIONS, so its meaning
         # moves whenever a default does (after 2026-08-15 "baseline" carries free_exponents=on
         # where it used to carry off). Grouping a sweep that spans such a commit on `arm` alone
@@ -310,7 +310,7 @@ def _base_meta(
 
 
 def _agent_meta(base_meta: dict, agent_out: dict, stop_reason: str) -> dict:
-    """:func:`_base_meta` plus EVERYTHING :func:`petab_harness.agent.run_deepagents` reported.
+    """:func:`_base_meta` plus EVERYTHING :func:`gemot.agent.run_deepagents` reported.
 
     Spread wholesale rather than copied field by field, so a measurement the driver adds reaches
     ``result.json`` without a second edit here (docs/RATIONALE.md). ``stop_reason`` is restated

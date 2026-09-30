@@ -12,7 +12,7 @@ import libsbml
 import pandas as pd
 import pytest
 
-from petab_harness import benchmark as B
+from gemot import benchmark as B
 from petab_mcp import validation_data as V
 
 TOY = Path(__file__).parent / "data" / "toy_v1"
@@ -105,7 +105,7 @@ def _curated(tmp_path, condition):
 def test_a_transfer_set_is_refit_on_the_stated_problem(tmp_path, monkeypatch):
     """The refit problem is the stated one, so the reference moves the patched initial value the
     way the transfer parameter table asks it to."""
-    from petab_harness import simulate
+    from gemot import simulate
 
     monkeypatch.setattr(B, "_load_problem", lambda *a, **k: _toy())
     (tmp_path / "problem").mkdir()

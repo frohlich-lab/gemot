@@ -18,7 +18,7 @@ pytest.importorskip("opentelemetry.sdk.trace", reason="harness-only dependency")
 from opentelemetry.sdk.trace import ReadableSpan  # noqa: E402
 from opentelemetry.sdk.trace.export import SpanExportResult  # noqa: E402
 
-from petab_harness.tracing import (  # noqa: E402
+from gemot.tracing import (  # noqa: E402
     _STRIPPED_INPUT_SPANS,
     _make_stripping_exporter,
     _strip_span_inputs,
@@ -38,7 +38,7 @@ def _real_graph_nodes():
     from deepagents import create_deep_agent
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
-    from petab_harness.agent.guards import _tool_dispatch_guard
+    from gemot.agent.guards import _tool_dispatch_guard
 
     import inspect
 
@@ -180,7 +180,7 @@ def test_install_replaces_the_default_processor_rather_than_adding_to_it():
     pytest.importorskip("phoenix.otel", reason="harness-only dependency")
     from phoenix.otel import TracerProvider
 
-    from petab_harness.tracing import _install_stripping_processor
+    from gemot.tracing import _install_stripping_processor
 
     endpoint = "http://127.0.0.1:59999/v1/traces"
     provider = TracerProvider(endpoint=endpoint, verbose=False)
@@ -197,7 +197,7 @@ def test_install_declines_on_a_provider_it_cannot_replace_the_default_on():
     """A plain OTel provider must be refused, not appended to."""
     from opentelemetry.sdk.trace import TracerProvider as PlainTracerProvider
 
-    from petab_harness.tracing import _install_stripping_processor
+    from gemot.tracing import _install_stripping_processor
 
     provider = PlainTracerProvider()
     assert _install_stripping_processor(provider, "http://127.0.0.1:59999/v1/traces") is False

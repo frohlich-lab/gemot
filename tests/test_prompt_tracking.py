@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from petab_harness import prompts as P
+from gemot import prompts as P
 
 # Module-level names that are NOT model-facing text: the registry machinery itself, the separator
 # it serializes with, and the one list of TOOL NAMES the lead prompt renders itself from (the
@@ -185,37 +185,10 @@ def test_the_surface_covers_every_kind_of_prompt():
     assert P.FINISH_REFUSED_NO_FIT in tracked["petab-finish-gate"]
 
 
-def _known_constants_of_every_example() -> "dict[str, str]":
-    """Each example's ``KNOWN_CONSTANTS`` literal, read by AST (importing a run.py pulls in AMICI)."""
-    import ast
-
-    out = {}
-    for f in sorted((Path(__file__).parents[1] / "examples").glob("*/run.py")):
-        for node in ast.parse(f.read_text()).body:
-            if isinstance(node, ast.Assign) and any(
-                getattr(x, "id", None) == "KNOWN_CONSTANTS" for x in node.targets
-            ):
-                assert isinstance(node.value, ast.Constant), (
-                    f"{f}: KNOWN_CONSTANTS is not a literal"
-                )
-                out[f.parent.name] = node.value.value
-    assert out, "no example defines KNOWN_CONSTANTS"
-    return out
-
-
-def test_no_example_carries_its_own_copy_of_the_readout_note():
-    """A scenario's ``known_constants`` states facts about THAT problem; the readout-mapping
-    instruction is one harness-owned constant, so it is versioned once and cannot drift per
-    example."""
-    for name, note in _known_constants_of_every_example().items():
-        assert "MEASUREMENT MAPPINGS" not in note, name
-    assert "MEASUREMENT MAPPINGS" in P.KNOWN_CONSTANTS_READOUT_NOTE
-
-
 def test_the_lead_gets_the_readout_note_with_its_constants():
     """``agent_task`` appends the note to a scenario that HAS constants (every benchmark problem
     ships blinded readouts) and to nothing else (the synthetic demos have no blinding)."""
-    from petab_harness.scenario import Scenario
+    from gemot.scenario import Scenario
 
     kw = dict(problem_dir=Path("/x/problem"), scripted_fix=None)
     with_note = Scenario(name="a", known_constants="KNOWN CONSTANTS: k.", **kw).agent_task
@@ -266,12 +239,12 @@ def test_group_versions_isolate_the_change(monkeypatch):
 
 
 def test_collect_prompts_is_the_full_surface():
-    from petab_harness.experiments import collect_prompts, prompt_version
+    from gemot.experiments import collect_prompts, prompt_version
 
     assert collect_prompts() == P.all_prompts()
     assert prompt_version() == P.prompt_version()
     # every registered prompt has a declared chat role
-    from petab_harness.experiments import _PROMPT_ROLES
+    from gemot.experiments import _PROMPT_ROLES
 
     assert set(collect_prompts()) <= set(_PROMPT_ROLES)
 
@@ -282,7 +255,7 @@ def test_every_panel_tool_has_a_description():
     its panel-facing text lives outside prompts.py and outside the tracked surface. That is how
     `list_conditions` came to be the one tool the panel read from server.py."""
     pytest.importorskip("langchain_core", reason="agent stack not installed")
-    from petab_harness.agent.tools import ALLOWED_TOOLS
+    from gemot.agent.tools import ALLOWED_TOOLS
 
     assert ALLOWED_TOOLS == set(P.TOOL_DESCRIPTIONS), (
         "ALLOWED_TOOLS and TOOL_DESCRIPTIONS must match exactly; "
@@ -295,7 +268,7 @@ def test_every_panel_tool_has_a_description():
 def test_base_meta_stamps_the_prompt_version(tmp_path):
     """Not just Phoenix: a plain run.py / slurm run writes result.json through _base_meta, and
     used to record git_sha but nothing about the prompts."""
-    from petab_harness.runner.provenance import _base_meta
+    from gemot.runner.provenance import _base_meta
 
     scenario = types.SimpleNamespace(example_dir=tmp_path, version=1)
     args = argparse.Namespace(
@@ -314,8 +287,8 @@ def test_skills_are_tracked_like_prompts(tmp_path):
     `residual-analysis` before querying, so a skill edit changes what the agent is TOLD — it is a
     prompt change in everything but the file it lives in, and has to be versioned like one."""
     pytest.importorskip("langchain_core", reason="agent stack not installed")
-    from petab_harness.agent.tools import ORCHESTRATOR_TOOLS
-    from petab_harness.experiments import collect_skills, skills_version
+    from gemot.agent.tools import ORCHESTRATOR_TOOLS
+    from gemot.experiments import collect_skills, skills_version
     from petab_mcp.skills import skills_version as server_skills_version
 
     # the lead can actually reach it (otherwise the instruction is a dead letter).
@@ -351,8 +324,8 @@ def test_skills_are_tracked_like_prompts(tmp_path):
     assert v != P.prompt_version()
 
     # ...and it lands everywhere prompt_version does
-    from petab_harness import metrics, wandb_logging
-    from petab_harness.runner.provenance import _base_meta
+    from gemot import metrics, wandb_logging
+    from gemot.runner.provenance import _base_meta
 
     assert "skills_version" in metrics.HISTORY_FIELDS
     assert "skills_version" in wandb_logging._CONFIG_KEYS
@@ -394,7 +367,7 @@ def test_prompt_version_reaches_the_sweep_sinks(tmp_path):
     sweep spanning a prompt edit would pool both versions with no column to split them on."""
     import csv
 
-    from petab_harness import metrics, wandb_logging
+    from gemot import metrics, wandb_logging
 
     assert "prompt_version" in metrics.HISTORY_FIELDS
     assert "prompt_version" in wandb_logging._CONFIG_KEYS
@@ -414,7 +387,7 @@ def test_appending_to_a_pre_existing_history_does_not_shift_columns(tmp_path):
     `prompt_version`/`skills_version` went in mid-tuple, so every later column would move."""
     import csv as _csv
 
-    from petab_harness import metrics
+    from gemot import metrics
 
     out = tmp_path / "history.csv"
     old_fields = [

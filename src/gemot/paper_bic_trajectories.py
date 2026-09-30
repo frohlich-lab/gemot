@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from petab_harness.paper_fujita import MODEL_MARKERS, SUPPORT_RAMPS, shaded, support_label
+from gemot.paper_fujita import MODEL_MARKERS, SUPPORT_RAMPS, shaded, support_label
 
 VISIBLE, BLINDED = SUPPORT_RAMPS[0][0], SUPPORT_RAMPS[0][3]
 BETTER_FILL, BETTER_INK, ZERO_INK, MUTED = "#EEF6F2", "#3E7863", "#526370", "#5F6B74"
@@ -237,7 +237,7 @@ def _figure(width, height):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    from petab_harness import paper_style
+    from gemot import paper_style
 
     paper_style.register_fonts()
     matplotlib.rcParams.update({**paper_style.rc(), "font.size": SMALL})
@@ -330,7 +330,7 @@ def render_figure2(payload: dict, output, ncols: int = 6) -> None:
 
 
 def _width() -> float:
-    from petab_harness import paper_style
+    from gemot import paper_style
 
     return paper_style.TEXT_WIDTH
 

@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from petab_harness.runner.clock import _ToolClock
+from gemot.runner.clock import _ToolClock
 
 
 class _Block:
@@ -156,7 +156,7 @@ def test_the_history_csv_gets_flat_edit_reject_columns(tmp_path):
     metric stayed invisible in the history while being written to every result.json."""
     import csv as _csv
 
-    from petab_harness import metrics
+    from gemot import metrics
 
     out = tmp_path / "history.csv"
     metrics.append_history(
@@ -188,7 +188,7 @@ def test_every_reject_bucket_matches_a_message_the_server_can_emit():
     traces predating #118, which turned the sigma cap into a warning. Pin them against the real
     strings in the server source instead of literals typed into this file."""
     from conftest import SERVER_SRC
-    from petab_harness.runner.clock import _REJECT_PATTERNS
+    from gemot.runner.clock import _REJECT_PATTERNS
 
     src = "\n".join(p.read_text() for p in SERVER_SRC.rglob("*.py")).lower()
     dead = [label for label, needle in _REJECT_PATTERNS if needle not in src]
@@ -246,7 +246,7 @@ def test_git_diff_digest_fingerprints_an_uncommitted_tree(tmp_path):
     "different code" from "different model"."""
     import subprocess
 
-    from petab_harness.runner.provenance import _git_diff_digest, _git_sha
+    from gemot.runner.provenance import _git_diff_digest, _git_sha
 
     def git(*a):
         subprocess.check_call(
@@ -285,7 +285,7 @@ def test_the_run_records_which_server_code_served_it(tmp_path, monkeypatch):
     import importlib.metadata
     import subprocess
 
-    from petab_harness.runner.provenance import _git_sha, _server_provenance
+    from gemot.runner.provenance import _git_sha, _server_provenance
 
     class _Dist:
         version = "0.1.0"
@@ -319,7 +319,7 @@ def test_the_run_records_which_server_code_served_it(tmp_path, monkeypatch):
 
 
 def test_git_diff_digest_never_raises_outside_a_checkout(tmp_path):
-    from petab_harness.runner.provenance import _git_diff_digest
+    from gemot.runner.provenance import _git_diff_digest
 
     assert _git_diff_digest(tmp_path / "does-not-exist") is None
     assert _git_diff_digest(tmp_path) is None  # a real dir that is not a git tree
@@ -328,7 +328,7 @@ def test_git_diff_digest_never_raises_outside_a_checkout(tmp_path):
 def test_the_history_csv_carries_the_working_tree_digest(tmp_path):
     import csv as _csv
 
-    from petab_harness import metrics
+    from gemot import metrics
 
     out = tmp_path / "history.csv"
     metrics.append_history(

@@ -503,7 +503,7 @@ def macros(metadata, rows):
         values[named + "MeanUSD"] = f"{llm + cpu:,.2f}"
         values[named + "LLMUSD"] = f"{llm:,.2f}"
         values[named + "TotalUSD"] = f"{total:,.0f}"
-    from petab_harness.paper_fujita_models import annexed
+    from gemot.paper_fujita_models import annexed
 
     values["fujitaAnnexModelCount"] = str(len(annexed(metadata, rows)))
     deltas = metadata["validation_deltas"]
@@ -952,7 +952,7 @@ def candidate_network(metadata, row):
 
 def network_summary(diagram):
     """Two terse lines under a readout map: how big the model is, and what it implements."""
-    from petab_harness import sbgn
+    from gemot import sbgn
 
     counts = diagram["counts"]
     anchors = {readout["id"]: readout["species"] for readout in diagram["readouts"]}
@@ -1608,7 +1608,7 @@ def render(rows, coefficients, metadata, output):
     from matplotlib.lines import Line2D
     from matplotlib.ticker import FuncFormatter
 
-    from petab_harness import paper_style, sbgn
+    from gemot import paper_style, sbgn
 
     spec = arms(metadata)
     # Sized for ICLR's 5.5 in text width at 100%, with a 6 pt floor. Every size below is derived
@@ -1935,7 +1935,7 @@ def render_models(rows, metadata, output):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    from petab_harness import paper_style, sbgn
+    from gemot import paper_style, sbgn
 
     base = 6.4
     matplotlib.rcParams.update(

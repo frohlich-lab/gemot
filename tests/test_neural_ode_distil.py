@@ -10,10 +10,10 @@ import pytest
 import sympy as sp
 from test_neural_ode_problem import write_problem
 
-from petab_harness.neural_ode import distil as D
-from petab_harness.neural_ode import problem as P
-from petab_harness.neural_ode import pysr_worker as W
-from petab_harness.neural_ode import train as T
+from gemot.neural_ode import distil as D
+from gemot.neural_ode import problem as P
+from gemot.neural_ode import pysr_worker as W
+from gemot.neural_ode import train as T
 
 
 def _trained(tmp_path, *, protocol: bool = False):

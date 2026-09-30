@@ -5,7 +5,7 @@ current, fitted model with a plausible noise sigma, and takes a two-call ARM→C
 a diagnosis is always shown before a run is allowed to end. A silent stop is bounced back into
 this gate by the driver, so it cannot be sidestepped.
 
-Every string this returns to the model lives in :mod:`petab_harness.prompts`; the counters and
+Every string this returns to the model lives in :mod:`gemot.prompts`; the counters and
 the relent rules are here.
 """
 

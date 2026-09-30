@@ -1,6 +1,6 @@
 """The JAX-side process: run the route on one problem and write its outcome as JSON.
 
-    $JAX_PYTHON -m petab_harness.neural_ode.worker <problem_dir> --out <json> --config <json>
+    $JAX_PYTHON -m gemot.neural_ode.worker <problem_dir> --out <json> --config <json>
         [--work <dir>] [--seconds <s>]
 
 Exit 0 whenever the file was written (a refusal is a result), 2 when the route could not be

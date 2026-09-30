@@ -11,7 +11,7 @@ or how fast it arrives, is transport — it cannot move a result, so registering
 but as PROVENANCE (a source, a fetch date, a row count in ``result.json``), which is a different
 job with a different consumer.
 
-**Discoverable.** ``python -m petab_harness.ablations`` prints the catalogue: every arm, its
+**Discoverable.** ``python -m gemot.ablations`` prints the catalogue: every arm, its
 default, what the non-default side does, and whether it moves ``prompt_version``. A switch parsed
 where it is used can only be found by grepping for it, so "which arms can I run?" has no answer
 short of reading the whole source.
@@ -30,7 +30,7 @@ run, with a tool removed from the toolset while the prompt still instructs the a
 
 WHY IT LIVES IN THE HARNESS: an ablation is an experiment concept — the harness runs the arms,
 records them and sweeps over them. It also must live here rather than in the server package,
-because ``petab_harness.prompts`` has to import without ``petab_mcp`` (see
+because ``gemot.prompts`` has to import without ``petab_mcp`` (see
 ``tests/test_import_lightness``) and ``slurm/make_sweep.py`` imports from a bare interpreter. The
 server consequently reads its one switch from the environment itself; ``test_ablations`` runs both
 that gate and this registry over every spelling, so the twice-written rule cannot drift.
@@ -321,7 +321,7 @@ def state_key() -> str:
 
 
 def describe(*, use_color: bool = False) -> str:
-    """The catalogue printed by ``python -m petab_harness.ablations``."""
+    """The catalogue printed by ``python -m gemot.ablations``."""
     bold, dim, reset = ("\033[1m", "\033[2m", "\033[0m") if use_color else ("", "", "")
     rows = []
     for a in ABLATIONS:
@@ -354,7 +354,7 @@ def _main(argv: "list[str] | None" = None) -> int:
     import sys
 
     p = argparse.ArgumentParser(
-        prog="python -m petab_harness.ablations",
+        prog="python -m gemot.ablations",
         description="List the ablations available in this repo and their current values.",
     )
     p.add_argument(

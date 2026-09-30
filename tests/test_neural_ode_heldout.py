@@ -11,10 +11,10 @@ import pandas as pd
 import pytest
 from test_neural_ode_problem import write_problem
 
-from petab_harness.neural_ode import heldout as H
-from petab_harness.neural_ode import problem as P
-from petab_harness.neural_ode import train as T
-from petab_harness.neural_ode.__main__ import main
+from gemot.neural_ode import heldout as H
+from gemot.neural_ode import problem as P
+from gemot.neural_ode import train as T
+from gemot.neural_ode.__main__ import main
 
 _HELD_OUT = """observableId\tsimulationConditionId\ttime\tmeasurement\tnoiseParameters
 obs_P\t{cond}\t0.0\t0.05\t
@@ -154,7 +154,7 @@ def test_the_command_line_writes_the_record_and_the_trained_bundle(tmp_path):
 def test_a_curve_of_checkpoints_imports_the_held_out_set_once(tmp_path, monkeypatch):
     """A budget curve scores every checkpoint against one held-out set. Preparing once must stage
     and import once, however many fields are then scored against it."""
-    from petab_harness.neural_ode import train as T
+    from gemot.neural_ode import train as T
     from petab_mcp.validation_data import read_held_out
 
     problem, result = _trained(tmp_path)

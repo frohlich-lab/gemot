@@ -10,8 +10,6 @@ Three pieces, tested here at the unit level (tests/test_model_edits.py covers th
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -37,7 +35,7 @@ def _prob(formulas: dict[str, str], noise: dict[str, str] | None = None):
 
 # ------------------------------------------------------------------ materialization-side rewrite
 def test_blinding_rewrites_formula_and_writes_the_description():
-    from petab_harness.benchmark import _blind_observables
+    from gemot.benchmark import _blind_observables
 
     prob = _prob({"pAkt_tot": "observableParameter1_pAkt_tot * (pAkt + pAkt_S6)"})
     _blind_observables(
@@ -59,7 +57,7 @@ def test_blinding_rewrites_formula_and_writes_the_description():
 
 
 def test_blinding_refuses_an_unknown_observable():
-    from petab_harness.benchmark import _blind_observables
+    from gemot.benchmark import _blind_observables
 
     with pytest.raises(ValueError, match="no observable"):
         _blind_observables(_prob({"a": "x"}), {"b": {"formula": "readout_b", "measures": "m"}})
@@ -67,7 +65,7 @@ def test_blinding_refuses_an_unknown_observable():
 
 def test_blinding_refuses_a_formula_without_the_readout_symbol():
     """A blinded observable nothing tells the agent to define is a broken problem, silently."""
-    from petab_harness.benchmark import _blind_observables
+    from gemot.benchmark import _blind_observables
 
     with pytest.raises(ValueError, match="must reference 'readout_a'"):
         _blind_observables(_prob({"a": "x"}), {"a": {"formula": "0.5 * x", "measures": "m"}})
@@ -76,7 +74,7 @@ def test_blinding_refuses_a_formula_without_the_readout_symbol():
 def test_blinding_refuses_a_smuggled_symbol():
     """Only symbols already in the published formula may be KEPT (scalings/offsets); anything
     new is a hint arriving through the back door."""
-    from petab_harness.benchmark import _blind_observables
+    from gemot.benchmark import _blind_observables
 
     with pytest.raises(ValueError, match="scaling/offset"):
         _blind_observables(
@@ -87,7 +85,7 @@ def test_blinding_refuses_a_smuggled_symbol():
 
 def test_blinding_refuses_a_noise_side_leak():
     """A noiseFormula referencing a blinded-away species would move the leak into sigma."""
-    from petab_harness.benchmark import _blind_observables
+    from gemot.benchmark import _blind_observables
 
     prob = _prob({"a": "x"}, noise={"a": "0.1 * x"})
     with pytest.raises(ValueError, match="leak would move into sigma"):
@@ -95,7 +93,7 @@ def test_blinding_refuses_a_noise_side_leak():
 
 
 def test_blinding_keeps_scalings_and_the_noise_model():
-    from petab_harness.benchmark import _blind_observables
+    from gemot.benchmark import _blind_observables
 
     prob = _prob({"a": "scale_a * x + offset_a"})
     _blind_observables(prob, {"a": {"formula": "scale_a * readout_a + offset_a", "measures": "m"}})
@@ -183,74 +181,6 @@ def test_non_readout_symbols_are_not_this_checks_business():
     """A missing ordinary species is petab lint's job — one generic error, not two."""
     prob = _lintable({"a": "some_species"}, model_ids=[])
     assert _undefined_readout_issues(prob) == []
-
-
-# ------------------------------------------------------------------ the three examples' specs
-@pytest.fixture(scope="module")
-def _examples_on_path():
-    """`examples/` on sys.path for the duration of this module, then removed.
-
-    Inserted per parametrised case with no teardown before, which left three copies behind for
-    the rest of the session.
-    """
-    d = str(Path(__file__).resolve().parent.parent / "examples")
-    sys.path.insert(0, d)
-    try:
-        yield
-    finally:
-        while d in sys.path:
-            sys.path.remove(d)
-
-
-# Every benchmark example is blinded now; a new one must join this list (and ship a spec).
-BLINDED = [
-    "alkan",
-    "armistead",
-    "bachmann",
-    "blasi",
-    "boehm",
-    "brannmark",
-    "bruno",
-    "crauste",
-    "fiedler",
-    "fujita",
-    "isensee",
-    "lucarelli",
-    "oliveira",
-    "perelson",
-    "rahman",
-    "raimundez",
-    "schwen",
-    "sneyd",
-]
-
-
-@pytest.mark.parametrize("example", BLINDED)
-def test_example_spec_is_internally_consistent(example, _examples_on_path):
-    """Every blinded observable's readout symbol is referenced by its blinded formula AND
-    defined by TRUE_ANT — the scripted/reference build must satisfy the contract it ships.
-
-    Imported with a plain `import`, NOT `importorskip`: this is the invariant that keeps the
-    scripted/reference build able to satisfy the contract it ships, so an example that fails to
-    import must FAIL here rather than turning into a green skip."""
-    import importlib
-
-    mod = importlib.import_module(f"{example}.run")
-    blinding = mod.OBSERVABLE_BLINDING
-    assert blinding, f"{example}: no blinding spec"
-    assert mod.SCENARIO.version >= 2, (example, "blinding changed the problem; bump the version")
-    import re as _re
-
-    for obs_id, spec in blinding.items():
-        # Flattened tables share one readout across gel/dataset rows via the "readout" key.
-        readout = spec.get("readout", f"readout_{obs_id}")
-        assert readout in spec["formula"], (example, obs_id)
-        # EVERY readout the formula names, not just the declared one: schwen's ELISA references
-        # readout_insulin AND readout_insulin_fragments, so checking only the key would let a
-        # typo in the second ship a problem its own reference build cannot satisfy.
-        for sym in _re.findall(r"readout_\w+", spec["formula"]):
-            assert f"{sym} :=" in mod.TRUE_ANT, (example, obs_id, sym, "TRUE_ANT lacks it")
-        assert spec["measures"].strip(), (example, obs_id, "no description")
 
 
 def test_a_readout_declared_as_a_SPECIES_is_still_undefined():
@@ -362,7 +292,7 @@ def test_a_rate_rule_model_that_defines_its_readout_passes():
 # ------------------------------------------------------------------ collapsing through a merge
 def test_collapsing_a_spec_rewrites_placeholders_only():
     """Not the prose, not the readout symbol, and not a LONGER id that merely shares a prefix."""
-    from petab_harness.benchmark import _collapse_blinding
+    from gemot.benchmark import _collapse_blinding
 
     out = _collapse_blinding(
         {
@@ -388,7 +318,7 @@ def test_collapsing_a_spec_rewrites_placeholders_only():
 def test_collapsing_rewrites_the_noise_formula_too():
     """Both halves move: the placeholder, and -- because this spec has no explicit `readout` --
     the DERIVED readout symbol, which `_blind_observables` re-derives from the merged id."""
-    from petab_harness.benchmark import _collapse_blinding
+    from gemot.benchmark import _collapse_blinding
 
     out = _collapse_blinding(
         {"x": {"formula": "readout_x", "noise": "noiseParameter1_x * readout_x", "measures": "m"}},
@@ -399,7 +329,7 @@ def test_collapsing_rewrites_the_noise_formula_too():
 
 
 def test_specs_that_disagree_after_collapsing_are_refused():
-    from petab_harness.benchmark import _collapse_blinding
+    from gemot.benchmark import _collapse_blinding
 
     with pytest.raises(ValueError, match="disagree"):
         _collapse_blinding(
@@ -415,7 +345,7 @@ def test_specs_that_disagree_after_collapsing_are_refused():
 def test_a_noise_spec_may_reference_a_readout_other_than_its_own():
     """A proportional sigma rides the same readout the formula does; subtracting only the
     DERIVED `readout_<obsId>` refused that legal shape."""
-    from petab_harness.benchmark import _blind_observables
+    from gemot.benchmark import _blind_observables
 
     prob = _prob(
         {"Cer_obs": "observableParameter1_Cer_obs * Cer"},
@@ -449,7 +379,7 @@ def test_a_model_entity_left_in_the_noise_formula_is_refused():
     Using one that the observableFormula also names proves nothing: it is already in
     `seed_entities`, so the check fires with or without the noise-side widening. A sigma-only
     species is what that widening exists for."""
-    from petab_harness.benchmark import _blind_observables
+    from gemot.benchmark import _blind_observables
 
     prob = _prob({"a": "observableParameter1_a * S1"}, noise={"a": "noiseParameter1_a * S2"})
     prob.parameter_df = pd.DataFrame(
@@ -472,7 +402,7 @@ def test_a_sigma_only_species_is_refused_even_without_a_noise_key():
     """The default path checked the sigma column against the observable side's REMOVALS only, so
     a species the observable formula never mentioned was not in `removed` and sailed through --
     shipping the reference-model name to the agent through list_observables' noiseFormula."""
-    from petab_harness.benchmark import _blind_observables
+    from gemot.benchmark import _blind_observables
 
     prob = _prob({"a": "observableParameter1_a * S1"}, noise={"a": "0.1 * S2"})
     prob.parameter_df = pd.DataFrame(index=pd.Index(["observableParameter1_a"], name="parameterId"))
@@ -486,7 +416,7 @@ def test_a_noise_formula_may_reference_the_observable_itself():
     """`noiseParameter1_a * a` is PEtab's relative-error idiom -- petab substitutes the simulated
     observable for `a`. It names no model entity, so refusing it would reject a formula that
     leaks nothing."""
-    from petab_harness.benchmark import _blind_observables
+    from gemot.benchmark import _blind_observables
 
     prob = _prob({"a": "observableParameter1_a * S1"}, noise={"a": "noiseParameter1_a * a"})
     prob.parameter_df = pd.DataFrame(
@@ -509,7 +439,7 @@ def test_a_derived_readout_follows_its_observable_through_a_merge():
     """A spec with no `readout` key means `readout_<observableId>`, and `_blind_observables`
     re-derives it from the MERGED id -- so the formula's symbol has to move with it or the
     "must reference readout_<mergedId>" guard fires. Eleven blinded examples omit the key."""
-    from petab_harness.benchmark import _blind_observables, _collapse_blinding
+    from gemot.benchmark import _blind_observables, _collapse_blinding
 
     spec = _collapse_blinding(
         {"observable_k5": {"formula": "readout_observable_k5", "measures": "H4K5ac"}},
@@ -527,7 +457,7 @@ def test_a_merge_does_not_inherit_one_members_dataset_label():
     ARE the per-gel observable ids -- so inheriting one names the merged observable after a
     single dataset."""
     import pandas as _pd
-    from petab_harness.benchmark import _merge_equivalent_observables
+    from gemot.benchmark import _merge_equivalent_observables
 
     odf = _pd.DataFrame(
         {
@@ -567,7 +497,7 @@ def test_a_merge_does_not_inherit_one_members_dataset_label():
 
 def test_a_noise_key_without_a_noise_column_is_a_clear_error():
     """The refusal must name the problem, not surface as a bare KeyError from inside pandas."""
-    from petab_harness.benchmark import _blind_observables
+    from gemot.benchmark import _blind_observables
 
     prob = _prob({"x": "observableParameter1_x * S"})
     del prob.observable_df["noiseFormula"]

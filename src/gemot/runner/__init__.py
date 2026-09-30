@@ -1,6 +1,6 @@
 """Scenario-agnostic runner for the model-repair demos.
 
-Given a :class:`~petab_harness.scenario.Scenario`, the pipeline is always the same:
+Given a :class:`~gemot.scenario.Scenario`, the pipeline is always the same:
 
   (a) clean the example directory (recreate ``work/`` from the pristine, broken ``problem/``
       copy — this also discards any prior provenance; the SBML-hash-keyed AMICI build cache is
@@ -8,7 +8,7 @@ Given a :class:`~petab_harness.scenario.Scenario`, the pipeline is always the sa
   (b) start the ``petab-mcp`` server on ``work/problem.yaml`` (HTTP transport, one long-lived
       stateful process shared by the whole run), and
   (c) drive the chosen driver — ``deepagents`` (an OpenRouter-hosted model with the analyst
-      panel from :mod:`petab_harness.agent`) or ``scripted`` (the scenario's canonical repair,
+      panel from :mod:`gemot.agent`) or ``scripted`` (the scenario's canonical repair,
       no LLM) — then judge the result INDEPENDENTLY by the run's criterion.
 
 An example's ``run.py`` is a thin wrapper: build the ``Scenario`` and call
@@ -27,8 +27,8 @@ An example's ``run.py`` is a thin wrapper: build the ``Scenario`` and call
 
 Most of this package needs ``mcp`` — driving an MCP server is the point of it — but not all of
 it: ``endpoints`` imports nothing at all and ``scoring`` needs only ``petab_mcp``. So the names
-below resolve LAZILY (PEP 562), exactly as ``petab_harness.__init__`` does, which keeps
-``from petab_harness.runner.endpoints import BIO_MCP_URLS`` importable in an environment with no
+below resolve LAZILY (PEP 562), exactly as ``gemot.__init__`` does, which keeps
+``from gemot.runner.endpoints import BIO_MCP_URLS`` importable in an environment with no
 MCP client installed. Do not replace this with eager re-exports.
 """
 

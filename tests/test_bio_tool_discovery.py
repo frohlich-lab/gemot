@@ -19,7 +19,7 @@ def test_discovery_is_the_curated_allowlist(monkeypatch):
     pytest.importorskip("langchain_mcp_adapters")
     from langchain_core.tools import StructuredTool
     import langchain_mcp_adapters.tools as lmt
-    from petab_harness.agent import biocurator as B
+    from gemot.agent import biocurator as B
 
     def _tool(name):
         return StructuredTool.from_function(func=(lambda: ""), name=name, description=name)
@@ -56,7 +56,7 @@ def test_a_server_exposing_nothing_curated_leaves_the_biocurator_dumb(monkeypatc
     pytest.importorskip("langchain_mcp_adapters")
     from langchain_core.tools import StructuredTool
     import langchain_mcp_adapters.tools as lmt
-    from petab_harness.agent import biocurator as B
+    from gemot.agent import biocurator as B
 
     async def _fake_load(session):
         return [

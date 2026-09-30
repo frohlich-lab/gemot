@@ -11,8 +11,8 @@ import pytest
 import yaml
 from test_neural_ode_problem import write_problem
 
-from petab_harness.neural_ode import problem as P
-from petab_harness.neural_ode import stage as S
+from gemot.neural_ode import problem as P
+from gemot.neural_ode import stage as S
 
 
 def _starts(staged: S.Staged) -> dict[tuple[str, str], str]:

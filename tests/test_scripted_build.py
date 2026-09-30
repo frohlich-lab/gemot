@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
-from petab_harness.scenario import build_true_model
+from gemot.scenario import build_true_model
 
 
 def _recorder():

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from petab_harness.agent import sandbox as S  # noqa: E402
+from gemot.agent import sandbox as S  # noqa: E402
 
 requires_bwrap = pytest.mark.skipif(
     shutil.which("bwrap") is None, reason="bubblewrap not installed on this node"
@@ -68,7 +68,7 @@ def test_shell_sees_the_workspace_and_env_and_nothing_else(tmp_path):
     repo_src = Path(__file__).parents[1] / "src"
     assert backend.execute(f"test -e {repo_src}").exit_code != 0
     # the harness itself (an editable install pointing at src/) is therefore not importable...
-    assert backend.execute("python -c 'import petab_harness'").exit_code != 0
+    assert backend.execute("python -c 'import gemot'").exit_code != 0
     # ...while the scientific stack is
     assert (
         backend.execute("python -c 'import amici, pypesto, petab, scipy, sklearn'").exit_code == 0

@@ -1,6 +1,6 @@
 """CI guard: the curated biocurator tool names must still resolve on the live bio MCP servers.
 
-The biocurator (petab_harness.agent) is handed a CURATED allowlist of tool names
+The biocurator (gemot.agent) is handed a CURATED allowlist of tool names
 (DEFAULT_BIO_TOOLS + LITERATURE_BIO_TOOLS) resolved against the hardcoded bio MCP endpoints
 (runner.endpoints.BIO_MCP_URLS: BioContextAI + OmniPath). There is no all-tools fallback, so if an upstream
 server RENAMES or drops a tool the curated names silently stop matching and the biocurator runs
@@ -22,9 +22,9 @@ _CONNECT_TIMEOUT_S = 30.0
 
 
 def _load_agent():
-    """The agent package, for its curated tool-name sets. Import-light: `petab_harness.__init__`
+    """The agent package, for its curated tool-name sets. Import-light: `gemot.__init__`
     is lazy and the agent submodules only touch stdlib at import time."""
-    from petab_harness import agent
+    from gemot import agent
 
     return agent
 
@@ -35,7 +35,7 @@ def _bio_urls() -> "list[str]":
     ``runner.endpoints`` holds nothing but these constants and imports nothing, so this is a real
     import rather than the regex-over-runner.py-source it used to be — which would go silently
     empty, and so vacuously green, the moment that file was reorganised."""
-    from petab_harness.runner.endpoints import BIO_MCP_URLS
+    from gemot.runner.endpoints import BIO_MCP_URLS
 
     return list(BIO_MCP_URLS)
 

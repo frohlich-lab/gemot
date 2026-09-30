@@ -12,7 +12,7 @@ listed first: where it is installed it wins, and the layout does not move either
 
 from __future__ import annotations
 
-from pathlib import Path
+from .paths import repo_root
 
 SURFACE = "#FFFFFF"
 #: ICLR's ``\textwidth`` (iclr2027_conference.sty: 5.5 true in). Every main-text figure is drawn
@@ -27,7 +27,7 @@ MIN_FONT = 6.0
 #: where 6 does not fit (figure 3B's latent-depth notes). Everything else stays at MIN_FONT.
 NOTE_FONT, NOTE_GID = 5.0, "note"
 FONT_FAMILY = ["Arial", "Liberation Sans"]
-FONT_DIR = Path(__file__).resolve().parents[2] / "paper" / "fonts"
+FONT_DIR = repo_root() / "paper" / "fonts"
 
 
 def register_fonts() -> None:

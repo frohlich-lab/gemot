@@ -7,7 +7,7 @@ likelihood; the distilled model is scored downstream by refitting it on the data
 field's own fit is a search statistic.
 
 Where this interpreter has no JAX stack the route runs whole in :attr:`Config.interpreter` as
-``python -m petab_harness.neural_ode.worker`` and reads one JSON payload back. The parent owns
+``python -m gemot.neural_ode.worker`` and reads one JSON payload back. The parent owns
 the hard timeout; the worker gets an earlier scientific deadline with grace to write its payload,
 so a finished route is never killed reporting.
 
@@ -193,16 +193,17 @@ def _distil_reserve(seconds: float | None) -> float:
     )
 
 
-def _server_path(scratch: Path) -> Path:
-    """A directory holding only a link to this interpreter's installed ``petab_mcp``, which the
-    worker imports but its own interpreter need not have."""
+def _package_path(scratch: Path) -> Path:
+    """A directory holding only links to this interpreter's installed ``gemot`` and ``petab_mcp``,
+    which the worker imports but its own interpreter need not have."""
     import importlib.util
 
-    shim = scratch / "server_path"
+    shim = scratch / "package_path"
     shim.mkdir(parents=True, exist_ok=True)
-    link = shim / "petab_mcp"
-    link.unlink(missing_ok=True)  # a reused work dir may hold a link to an earlier install
-    link.symlink_to(Path(importlib.util.find_spec("petab_mcp").origin).parent)
+    for name in ("gemot", "petab_mcp"):
+        link = shim / name
+        link.unlink(missing_ok=True)  # a reused work dir may hold a link to an earlier install
+        link.symlink_to(Path(importlib.util.find_spec(name).origin).parent)
     return shim
 
 
@@ -229,8 +230,8 @@ def _run_in_interpreter(
     scratch.mkdir(parents=True, exist_ok=True)
     payload = scratch / "neural_proposals.json"
     env = dict(os.environ)
-    # This harness by path, and the server it imports beside it, not the rest of this interpreter.
-    paths = [str(Path(__file__).resolve().parents[2]), str(_server_path(scratch))]
+    # This harness and the server it imports, not the rest of this interpreter's packages.
+    paths = [str(_package_path(scratch))]
     env["PYTHONPATH"] = os.pathsep.join(
         paths + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])
     )
@@ -251,7 +252,7 @@ def _run_in_interpreter(
     command = [
         config.interpreter,
         "-m",
-        "petab_harness.neural_ode.worker",
+        "gemot.neural_ode.worker",
         str(problem_dir),
         "--out",
         str(payload),

@@ -3,7 +3,7 @@
 Its tools are runtime-discovered from the bio servers (their names are unknown ahead of time), so
 unlike the three static analysts it is assembled here from tool OBJECTS rather than declared in
 :data:`.subagents.ANALYSTS`. Its persona — the other half of the task blinding — is
-:data:`petab_harness.prompts.BIOCURATOR_PROMPT`.
+:data:`gemot.prompts.BIOCURATOR_PROMPT`.
 """
 
 from __future__ import annotations

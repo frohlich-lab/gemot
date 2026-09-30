@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from conftest import SERVER_SRC
-from petab_harness import ablations
+from gemot import ablations
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -25,7 +25,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 def _modules():
     """``(label, path)`` for every module of this harness and of the installed server, which reads
     switches of its own."""
-    for package in (SRC / "petab_harness", SERVER_SRC):
+    for package in (SRC / "gemot", SERVER_SRC):
         for path in package.rglob("*.py"):
             yield str(path.relative_to(package.parent)), path
 
@@ -110,9 +110,9 @@ def test_cli_lists_every_arm_and_json_round_trips(capsys):
 
 
 def test_module_runs_as_a_script():
-    """`python -m petab_harness.ablations` is the advertised entrypoint, so run it as one."""
+    """`python -m gemot.ablations` is the advertised entrypoint, so run it as one."""
     out = subprocess.run(
-        [sys.executable, "-m", "petab_harness.ablations"],
+        [sys.executable, "-m", "gemot.ablations"],
         capture_output=True,
         text=True,
         check=True,
@@ -185,7 +185,7 @@ def test_no_unregistered_environment_switch_gates_behaviour():
     """Every env var read in either package is either a registered ablation or declared
     non-ablation.
 
-    This is what makes `python -m petab_harness.ablations` an authoritative catalogue rather than
+    This is what makes `python -m gemot.ablations` an authoritative catalogue rather than
     a list someone remembered to update: an arm can only stay undiscoverable for as long as it
     takes this test to run.
     """
@@ -200,7 +200,7 @@ def test_no_unregistered_environment_switch_gates_behaviour():
     }
     assert not unaccounted, (
         "environment variables read in either package that are neither registered in "
-        "petab_harness.ablations nor listed in _NOT_ABLATIONS:\n"
+        "gemot.ablations nor listed in _NOT_ABLATIONS:\n"
         + "\n".join(f"  {v}  ({where})" for v, where in sorted(unaccounted.items()))
         + "\nIf it changes what a run DOES, register it as an Ablation so it is discoverable and "
         "lands in result.json. If not, add it to _NOT_ABLATIONS with the reason."
@@ -231,7 +231,7 @@ def test_the_server_gate_agrees_with_the_registry(monkeypatch, spelling):
     probe = (
         "import os,sys;"
         "sys.path.insert(0, %r);"
-        "from petab_harness.ablations import enabled;"
+        "from gemot.ablations import enabled;"
         "from petab_mcp.session import _REGIMES_ADVICE;"
         "print(int(enabled('data_regimes')), int(bool(_REGIMES_ADVICE)))" % str(SRC)
     )
@@ -263,7 +263,7 @@ def test_the_diff_edits_server_gate_agrees_with_the_registry(monkeypatch, spelli
     probe = (
         "import os,sys;"
         "sys.path.insert(0, %r);"
-        "from petab_harness.ablations import enabled;"
+        "from gemot.ablations import enabled;"
         "from petab_mcp.server import _diff_edits_enabled;"
         "print(int(enabled('diff_edits')), int(_diff_edits_enabled()))" % str(SRC)
     )
@@ -295,7 +295,6 @@ def test_the_removed_bio_literature_flag_stays_removed():
     It is now `PETAB_BIO_LITERATURE`. Re-adding the flag would restore two ways to set one arm,
     which is how it gets recorded from the wrong one.
     """
-    for name in ("runner/cli.py", "../../slurm/make_sweep.py"):
-        path = (SRC / "petab_harness" / name).resolve()
-        if path.is_file():
-            assert 'add_argument("--bio-literature"' not in path.read_text()
+    assert (
+        'add_argument("--bio-literature"' not in (SRC / "gemot" / "runner" / "cli.py").read_text()
+    )

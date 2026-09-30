@@ -21,9 +21,9 @@ from langchain_core.messages import (  # noqa: E402
     ToolMessage,
 )
 
-from petab_harness import models  # noqa: E402
-from petab_harness.agent.driver import _chat_model_class, _extra_body  # noqa: E402
-from petab_harness.agent.token_usage import _token_accountant  # noqa: E402
+from gemot import models  # noqa: E402
+from gemot.agent.driver import _chat_model_class, _extra_body  # noqa: E402
+from gemot.agent.token_usage import _token_accountant  # noqa: E402
 
 # openai builds its client on `httpx` up to 2.x and on `httpx2` from 3.x, and rejects a response
 # produced by the other flavour's transport. Take the flavour from openai; do not import it here.

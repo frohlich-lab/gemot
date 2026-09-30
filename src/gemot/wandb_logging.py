@@ -32,7 +32,7 @@ _CONFIG_KEYS = (
     "prompt_version",
     "skills_version",
     # Same argument, for the arms that change no prompt text and so leave prompt_version equal
-    # on both halves of an A/B (petab_harness.ablations).
+    # on both halves of an A/B (gemot.ablations).
     "ablation_arm",
     "ablation_state",
     "phoenix_project",

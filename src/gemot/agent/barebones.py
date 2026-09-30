@@ -6,7 +6,7 @@ summarization, its own ``general-purpose`` subagent) working directly on ``work/
 deliver a finished PEtab problem in place. It keeps the panel driver's infrastructure (provider
 pin, retries and checkpoint resume, output ceiling, runaway guard, token/wall/stall caps, token
 accounting) and the panel's curated bio tools; it has none of the design (no MCP tools, versions,
-analysts, finish gate or dispatch guards). Prompts are in :mod:`petab_harness.prompts`
+analysts, finish gate or dispatch guards). Prompts are in :mod:`gemot.prompts`
 (``BAREBONES_*``).
 
 ``execute`` runs under bubblewrap: system trees and the Python environment read-only, the
@@ -14,7 +14,7 @@ workspace read-write at ``/work``, no network, no ``$HOME``, an allowlisted envi
 :func:`sandbox_preflight` proves that on the node before the first LLM call and there is no
 unsandboxed fallback. Every command is recorded in ``workspace_audit`` as provenance.
 
-Scoring is the caller's (:mod:`petab_harness.runner.barebones`). Design decisions and their
+Scoring is the caller's (:mod:`gemot.runner.barebones`). Design decisions and their
 reasons are in ``docs/RATIONALE.md`` (the ``#203`` entries).
 """
 

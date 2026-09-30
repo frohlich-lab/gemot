@@ -1,4 +1,4 @@
-"""Tests for the empty-subagent-report guard (petab_harness.agent.guards).
+"""Tests for the empty-subagent-report guard (gemot.agent.guards).
 
 An analyst subagent can end its run with an empty final completion (finish_reason=stop, no
 content). deepagents' ``task`` tool extracts that last AI message's content and returns ``""`` to
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 
-from petab_harness import agent
+from gemot import agent
 
 
 # --------------------------------------------------------------------- _report_text (pure)

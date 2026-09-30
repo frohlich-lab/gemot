@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from petab_harness import paper_fujita, paper_fujita_models
+from gemot import paper_fujita, paper_fujita_models
 
 #: The split the text draws between "smaller" and "larger" problems, in training datapoints.
 #: Figure 2's columns are ordered by that count, and the five problems above this line are the
@@ -715,12 +715,17 @@ def heldout_macros(heldout: dict) -> dict[str, tuple[str, str]]:
 # ------------------------------------------------------------------------------ code constants
 
 
+#: Packages quoted by their path in their own repository, and read where each is installed.
+_INSTALLED = {"src/petab_mcp/": "petab_mcp", "src/gemot/": "gemot"}
+
+
 def _definitions(root: Path, path: str) -> ast.Module:
-    if path.startswith(_MCP):
-        # The server's path in its own repository; read where that repository is installed.
-        source = Path(importlib.util.find_spec("petab_mcp").origin).parent / path[len(_MCP) :]
-    else:
+    prefix = next((p for p in _INSTALLED if path.startswith(p)), None)
+    if prefix is None:
         source = root / path
+    else:
+        package = Path(importlib.util.find_spec(_INSTALLED[prefix]).origin).parent
+        source = package / path[len(prefix) :]
     return ast.parse(source.read_text(encoding="utf-8"))
 
 
@@ -868,19 +873,19 @@ CODE_DEFAULTS = (
     ("NestingTolerance", _MCP + "nesting.py", "module", ("_NLL_WORSE_TOLERANCE",)),
     (
         "StructureRefusals",
-        "src/petab_harness/agent/finish_gate.py",
+        "src/gemot/agent/finish_gate.py",
         "module",
         ("_MAX_STRUCTURE_FINISH_REFUSALS",),
     ),
     (
         "SigmaRefusals",
-        "src/petab_harness/agent/finish_gate.py",
+        "src/gemot/agent/finish_gate.py",
         "module",
         ("_MAX_SIGMA_FINISH_REFUSALS",),
     ),
     (
         "ParsimonyRefusals",
-        "src/petab_harness/agent/finish_gate.py",
+        "src/gemot/agent/finish_gate.py",
         "module",
         ("_MAX_PARSIMONY_FINISH_REFUSALS",),
     ),
@@ -893,11 +898,11 @@ CODE_DEFAULTS = (
     # fitting and warm starts
     ("WarmStartJitter", _MCP + "fitting.py", "module", ("WARM_START_JITTER",)),
     ("FitSeed", _MCP + "fitting.py", "module", ("FIT_SEED",)),
-    ("PerStartTimeout", "src/petab_harness/fit_budget.py", "module", ("FIT_PER_START_TIMEOUT_S",)),
-    ("AmiciAbsoluteTolerance", "src/petab_harness/fit_budget.py", "module", ("FIT_AMICI_ATOL",)),
+    ("PerStartTimeout", "src/gemot/fit_budget.py", "module", ("FIT_PER_START_TIMEOUT_S",)),
+    ("AmiciAbsoluteTolerance", "src/gemot/fit_budget.py", "module", ("FIT_AMICI_ATOL",)),
     # the runners' command-line defaults
-    ("RunnerStarts", "src/petab_harness/runner/cli.py", "argparse", ("--n-starts",)),
-    ("RunnerRecursionLimit", "src/petab_harness/runner/cli.py", "argparse", ("--recursion-limit",)),
+    ("RunnerStarts", "src/gemot/runner/cli.py", "argparse", ("--n-starts",)),
+    ("RunnerRecursionLimit", "src/gemot/runner/cli.py", "argparse", ("--recursion-limit",)),
     ("SweepStarts", "slurm/make_sweep.py", "argparse", ("--n-starts",)),
     ("SweepRecursionLimit", "slurm/make_sweep.py", "argparse", ("--recursion-limit",)),
     ("SweepWallMargin", "slurm/make_sweep.py", "argparse", ("--wall-time-margin",)),
@@ -907,7 +912,7 @@ CODE_DEFAULTS = (
     # the neural-ODE baseline
     (
         "BasalSampleRows",
-        "src/petab_harness/neural_ode/distil.py",
+        "src/gemot/neural_ode/distil.py",
         "module",
         ("_BASAL_SAMPLE_ROWS",),
     ),
@@ -1204,9 +1209,7 @@ def trajectory_macros(trajectories: dict, root: Path) -> dict[str, tuple[str, st
             "how many, spelled out",
         ),
         "bicTrajectoriesLinearThreshold": (
-            number(
-                module_constant(root, "src/petab_harness/paper_bic_trajectories.py", "LINTHRESH")
-            ),
+            number(module_constant(root, "src/gemot/paper_bic_trajectories.py", "LINTHRESH")),
             "the symmetric-log axis's linear range",
         ),
     }

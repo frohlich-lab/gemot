@@ -8,8 +8,8 @@ from dataclasses import replace
 import pytest
 from test_neural_ode_problem import write_problem
 
-from petab_harness.neural_ode import problem as P
-from petab_harness.neural_ode import train as T
+from gemot.neural_ode import problem as P
+from gemot.neural_ode import train as T
 
 
 def test_training_fits_counts_and_simulates(tmp_path):
@@ -188,7 +188,7 @@ def test_the_saved_bundle_carries_the_fitted_weights_not_the_staged_ones(tmp_pat
     import h5py
     import numpy as np
 
-    from petab_harness.neural_ode import stage as S
+    from gemot.neural_ode import stage as S
 
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
     result = T.train(

@@ -8,7 +8,7 @@ one rationale governs every list below and is not repeated at each of them.
 
 ``ALLOWED_TOOLS`` (the union) is all the panel ever sees; ``_select_tools`` resolves it against
 what the server actually offers, and ``_trim_descriptions`` swaps each tool's verbose server
-docstring for the panel-facing one-liner in :mod:`petab_harness.prompts` — which is therefore
+docstring for the panel-facing one-liner in :mod:`gemot.prompts` — which is therefore
 the text the panel actually reads, and the reason every tool here needs an entry there.
 """
 

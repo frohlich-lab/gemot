@@ -12,9 +12,9 @@ everything here runs on a login node with nothing but the harness installed.
 
 **Usage.** For a sweep submitted by ``slurm/make_sweep.py``, from the repo root::
 
-    python -m petab_harness.analysis summary <job> [<job> ...] [--by model|scenario] [--results-dir D]
-    python -m petab_harness.analysis rows    <job> [<job> ...] [--results-dir D] > sweep.csv
-    python -m petab_harness.analysis live    [<job>] [--work-root D]
+    python -m gemot.analysis summary <job> [<job> ...] [--by model|scenario] [--results-dir D]
+    python -m gemot.analysis rows    <job> [<job> ...] [--results-dir D] > sweep.csv
+    python -m gemot.analysis live    [<job>] [--work-root D]
 
 * ``summary`` — how the sweep did and what it cost. One line per model (per example with
   ``--by scenario``): runs, how many are scoreable, how many passed, success rate, median and best
@@ -1069,7 +1069,7 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     p = argparse.ArgumentParser(
-        prog="python -m petab_harness.analysis",
+        prog="python -m gemot.analysis",
         description="Sweep summaries from result.json + combo.env.",
     )
     sub = p.add_subparsers(dest="cmd", required=True)

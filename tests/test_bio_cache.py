@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import pickle
 
-from petab_harness import bio_cache
+from gemot import bio_cache
 
 
 class _Result:

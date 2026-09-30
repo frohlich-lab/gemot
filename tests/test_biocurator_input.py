@@ -1,4 +1,4 @@
-"""Tests for the biocurator input channel (petab_harness.agent) — issue #91.
+"""Tests for the biocurator input channel (gemot.agent) — issue #91.
 
 The deepagents ``task`` tool delivers only a free-text ``description`` to a subagent; a lead that
 stuffs the biocurator's entity names into a ``prompt=`` argument has them SILENTLY DROPPED. The
@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 
 
-from petab_harness import agent, prompts, scenario
+from gemot import agent, prompts, scenario
 
 
 # --------------------------------------------------------------------- _unexpected_task_kwargs
@@ -164,16 +164,6 @@ def test_scenario_has_biocurator_entities_field():
         biocurator_entities=["STAT5A", "STAT5B"],
     )
     assert set_.biocurator_entities == ["STAT5A", "STAT5B"]
-
-
-def test_every_example_curates_biocurator_entities():
-    """Every example run.py must explicitly set biocurator_entities (even if []) — a guard so a
-    newly-added example is deliberately curated rather than silently defaulting."""
-    examples = Path(__file__).resolve().parents[1] / "examples"
-    run_files = sorted(examples.glob("*/run.py"))
-    assert run_files, "no example run.py files found"
-    missing = [p.parent.name for p in run_files if "biocurator_entities=" not in p.read_text()]
-    assert not missing, f"examples not setting biocurator_entities: {missing}"
 
 
 # --------------------------------------------------------------------- _task_arg_guard middleware
@@ -351,7 +341,7 @@ def test_the_biocurator_spec_carries_a_model_only_when_one_is_given():
     analysts keep theirs. deepagents reads `model` off the spec and falls back to the lead's, so an
     ABSENT key must mean "same model as the lead" — setting it to None would hand deepagents a null
     model instead."""
-    from petab_harness.agent.biocurator import _build_biocurator_subagent
+    from gemot.agent.biocurator import _build_biocurator_subagent
 
     plain = _build_biocurator_subagent([], ["EGFR"], None)
     assert "model" not in plain

@@ -31,7 +31,7 @@ This log explains _why_. It does not restate what the source code does.
 ## Docstrings
 
 - **Every module opens with a substantial docstring**: what it is, what it owns, and why it
-  is a separate module. For example, [ablations.py](../src/petab_harness/ablations.py).
+  is a separate module. For example, [ablations.py](../src/gemot/ablations.py).
 - **Prose, not numpydoc.** A `Parameters ----------` block is the rare exception; explain in
   sentences.
 - **Sphinx roles and double backticks**: `:func:`, `:mod:`, `:class:`, ` ``literal`` `.
@@ -40,7 +40,7 @@ This log explains _why_. It does not restate what the source code does.
 ## Agent-facing prose
 
 Every string the harness sends to a model lives in
-[prompts.py](../src/petab_harness/prompts.py), and the panel reads several of those surfaces in
+[prompts.py](../src/gemot/prompts.py), and the panel reads several of those surfaces in
 one turn — its system prompt, each tool's description, whatever the finish gate returns. Three
 rules keep one fact from being written down twice:
 
@@ -59,7 +59,7 @@ rules keep one fact from being written down twice:
 The server's tool docstrings are the other half of this: they state the tool's CONTRACT
 (arguments, result shape, what it rejects) for any client, and the `TOOL_DESCRIPTIONS` entry
 that replaces them for the panel states the same tool for the job the lead is doing. Neither
-restates the other. The two packages ship separately — `petab_harness` must import without
+restates the other. The two packages ship separately — `gemot` must import without
 `petab_mcp` ([test_import_lightness.py](../tests/test_import_lightness.py)) — so they cannot
 share a constant; keep them from describing the same thing instead.
 
@@ -74,10 +74,10 @@ share a constant; keep them from describing the same thing instead.
 
 ## Where things live
 
-- **[prompts.py](../src/petab_harness/prompts.py)** — every agent-facing string the harness
+- **[prompts.py](../src/gemot/prompts.py)** — every agent-facing string the harness
   sends to a model, plus the registry (`PROMPT_GROUPS`) that versions them. Editing the text
   starts a new `prompt_version`, so results either side are not comparable.
-- **[ablations.py](../src/petab_harness/ablations.py)** — every switch that changes what a
+- **[ablations.py](../src/gemot/ablations.py)** — every switch that changes what a
   run _does_ (what the agent is told, what tools it has access to). Switched on or off via
   environment variables.
 
@@ -91,13 +91,13 @@ share a constant; keep them from describing the same thing instead.
   nothing imports them directly (the server's `h5py` is written _through_ pyPESTO's storage
   API) — a transitive graph change would otherwise break them silently.
 - **Optional deps must not silently skip tests.** `importorskip`-guarded tests are why `dev`
-  depends on `petab-harness[agent]`. Adding an `importorskip` means adding its dependency to
+  depends on `gemot[agent]`. Adding an `importorskip` means adding its dependency to
   `dev`.
 
 ## Tests
 
 - `tests/test_<module>.py`; plain `pytest` functions, no class wrappers.
-- Short aliased imports of the module under test: `from petab_harness import analysis as A`.
+- Short aliased imports of the module under test: `from gemot import analysis as A`.
 - Module-level `_BASE_*` template strings with a `{extra}` splice point, plus a small
   `_helper` that fills it, rather than a fixture per variation
   (`_TOY_BASE_MODEL` and `reauthor_toy` in [conftest.py](../tests/conftest.py)).

@@ -54,7 +54,7 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
         "--model",
         default=models.DEFAULT,
         help="OpenRouter model id, or a go-to alias (deepagents driver). Aliases: "
-        f"{', '.join(models.MODELS)} (see petab_harness/models.py). Default "
+        f"{', '.join(models.MODELS)} (see gemot/models.py). Default "
         f"'{models.DEFAULT}' = {models.resolve(models.DEFAULT)}, 1M-token context. "
         "Every aliased model is pinned to a single provider (see "
         "models.provider_routing) so a mirrored copy at another price cannot "
@@ -122,10 +122,10 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
     # --- blinded `biocurator` analyst: on the deepagents panel every run (endpoints hardcoded in
     #     runner.BIO_MCP_URLS; tools = the curated agent.DEFAULT_BIO_TOOLS allowlist).
     #     Literature access (EuropePMC/bioRxiv) is an ABLATION, not a flag: `PETAB_BIO_LITERATURE=1`,
-    #     registered in petab_harness.ablations alongside every other arm, so it is reachable from
+    #     registered in gemot.ablations alongside every other arm, so it is reachable from
     #     array_task.sh and written into result.json. Adding a flag for it here would put the arm
     #     out of reach of a batch job and give it a second, unrecorded way to be set.
-    #     Run `python -m petab_harness.ablations` to see the arms. ---
+    #     Run `python -m gemot.ablations` to see the arms. ---
     # Phoenix tracing is MANDATORY — every run must be traced, so there is deliberately no flag to
     # disable it (the --phoenix-* options below only configure it, they never turn it off).
     default_project = f"petab-mcp-{scenario.name}"

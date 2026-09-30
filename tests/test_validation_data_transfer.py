@@ -397,7 +397,7 @@ def _mini_collection(
 def test_transfer_setup_rejects_invalid_source_parameters_before_pruning(tmp_path, kind, needle):
     """Compare against the full published table at setup, where reference kinetics are known.
     An unknown estimated source row must not disappear through the unused-parameter pruning."""
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     name, coll = _mini_collection(tmp_path)
     bdir = coll / name
@@ -423,7 +423,7 @@ def test_the_transfer_problem_is_the_held_out_problem_verbatim(tmp_path):
     """Nothing is cropped: what the paper measured on the second system is what both sides are
     refit on, and the held-out problem's own tables (its `A_init`) are the start point. A
     `conditionName` column is free text, not an input, and does not make it a different model."""
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     name, coll = _mini_collection(tmp_path, condition_name=True)
     published = benchmark._load_problem(name, coll, flatten=False)
@@ -455,7 +455,7 @@ def test_a_held_out_problem_that_is_not_the_same_mechanism_is_refused(tmp_path, 
     bar; one that measures a readout the training problem never defined (Bahia's hospital and ICU
     beds) cannot be scored on it, and dropping the readout would score a subset of the experiment
     without saying so. All refused at setup, where the message can say what changed."""
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     name, coll = _mini_collection(tmp_path, **knob)
     published = benchmark._load_problem(name, coll, flatten=False)
@@ -475,7 +475,7 @@ def test_materialize_writes_the_three_tables_beside_problem_and_the_server_reads
 ):
     """Read back the transfer bundle outside problem/, with matching IDs after relabelling.
     Its parameter table must select transfer mode and retain the reference's parameter rows."""
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     name, coll = _mini_collection(tmp_path)
     example_dir = tmp_path / "example"
@@ -501,7 +501,7 @@ def test_materialize_writes_the_three_tables_beside_problem_and_the_server_reads
 
 
 def test_the_two_kinds_of_held_out_set_are_mutually_exclusive(tmp_path):
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     name, coll = _mini_collection(tmp_path)
     with pytest.raises(ValueError, match="mutually exclusive"):
@@ -527,7 +527,7 @@ def test_the_two_kinds_of_held_out_set_are_mutually_exclusive(tmp_path):
 def test_materialize_retires_a_transfer_bundle_when_its_declaration_changes(tmp_path, fixed):
     """An old parameters.tsv must not select transfer mode for new fixed-θ data; removing the
     declaration must also remove the measurements that trigger the judge's held-out call."""
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     name, coll = _mini_collection(tmp_path)
     bdir = coll / name
@@ -560,7 +560,7 @@ def test_the_reference_refit_lands_in_reference_json_with_its_mode_and_a_failure
     block has to reach the file from the tail, tagged `mode: transfer`, or the judge would subtract a
     fixed-θ bar from a transfer payload. And a refit that raises must be RECORDED as an error, not
     allowed to discard the training bar that was just fit."""
-    from petab_harness import benchmark, simulate
+    from gemot import benchmark, simulate
 
     name, coll = _mini_collection(tmp_path)
     example_dir = tmp_path / "example"
@@ -671,7 +671,7 @@ def test_a_curated_table_with_a_parameter_table_beside_it_is_a_transfer_set(tmp_
     and every other row, kinetics included, is the published one — the start of the reference
     refit — and the parameter table's presence is what tells the server to refit, not evaluate.
     The set's condition table REPLACES the training one rather than being appended to it."""
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     table = _curated_transfer(tmp_path, delta=[("A_init", "lin", 0.0, 100.0, 2.0, 0)])
 
@@ -701,7 +701,7 @@ def test_a_curated_parameter_table_is_checked_like_a_collection_transfer_problem
     """A header-only file on the published conditions changes nothing, so nothing transfers; a new
     estimated mechanism parameter is a rate the published model cannot carry. The same rule as for
     a collection's second problem, at setup, naming the file."""
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     table = _curated_transfer(tmp_path, delta=delta, conditions=conditions)
 
@@ -713,7 +713,7 @@ def test_a_curated_parameter_table_is_checked_like_a_collection_transfer_problem
 
 
 def test_a_curated_transfer_condition_table_must_keep_the_published_columns(tmp_path):
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     table = _curated_transfer(tmp_path, delta=[("A_init", "lin", 0.0, 100.0, 2.0, 0)])
     pd.DataFrame({"conditionId": ["c1"], "dose": [1.0]}).to_csv(
@@ -729,7 +729,7 @@ def test_a_curated_transfer_condition_table_must_keep_the_published_columns(tmp_
 def test_a_bound_only_delta_is_a_change(tmp_path):
     """Identity is judged on every column: a delta that only moves `A_init`'s upper bound is a
     different problem, not "identical"."""
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     table = _curated_transfer(tmp_path)
     pd.DataFrame({"parameterId": ["A_init"], "upperBound": [50.0]}).to_csv(
@@ -754,7 +754,7 @@ def test_new_input_values_make_a_system_and_a_pruned_row_does_not(tmp_path):
     system, and the retired `k1` row leaves the table. The same files with the published value on
     the published condition are the published problem again — refused as identical even though
     pruning `k1` would have made the two parameter tables differ."""
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     published = _toy_published()
     published.condition_df["k1"] = ["k1"]
@@ -779,7 +779,7 @@ def test_a_new_experiment_is_a_system_without_new_inputs_or_a_delta(tmp_path):
     """crauste's shape: no input columns, no parameter change, two conditions the published table
     never had — another experiment on the same mechanism, every rate refit. Two deliberate files,
     so it is not a mis-annotation, and the identity check stands aside."""
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     table = _curated_transfer(tmp_path, conditions=("F5_tumour", "F5_virus"))
 
@@ -795,7 +795,7 @@ def test_a_new_experiment_is_a_system_without_new_inputs_or_a_delta(tmp_path):
 def test_a_sigma_no_held_out_row_informs_is_not_a_parameter_of_the_refit(tmp_path):
     """The set measures `obs_B` only: `sigma_A` leaves the transfer table (it would price `k` for
     a parameter nothing informs), and a delta row for it names nothing the set uses."""
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     published = _toy_published()
     published.observable_df = pd.concat(
@@ -832,7 +832,7 @@ def test_a_sigma_no_held_out_row_informs_is_not_a_parameter_of_the_refit(tmp_pat
 
 
 def test_an_empty_curated_table_is_refused_at_setup(tmp_path):
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     table = _curated_transfer(tmp_path)
     mpath = tmp_path / "curated" / "measurements.tsv"
@@ -849,7 +849,7 @@ def test_materialize_writes_a_curated_transfer_bundle_the_server_reads_as_transf
 ):
     """On disk the curated set is indistinguishable from a collection transfer bundle: the FULL
     parameter table beside the measurements, which `read_held_out` turns into `mode: transfer`."""
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     monkeypatch.setattr(benchmark, "_load_problem", lambda *a, **k: _toy_published())
     table = _curated_transfer(tmp_path, delta=[("A_init", "lin", 0.0, 100.0, 2.0, 0)])
@@ -876,7 +876,7 @@ def test_the_reference_refits_a_curated_transfer_set_from_the_published_point(
     refit is handed NO held-out table (a transfer set is not scored at the fitted point), and the
     refit starts from the published table with the set's own rows laid over it, on the set's own
     conditions."""
-    from petab_harness import benchmark, simulate
+    from gemot import benchmark, simulate
 
     monkeypatch.setattr(benchmark, "_load_problem", lambda *a, **k: _toy_published())
     (tmp_path / "problem").mkdir()
@@ -911,7 +911,7 @@ def test_the_reference_refits_a_curated_transfer_set_from_the_published_point(
 def test_the_fixed_point_reference_scorer_refuses_a_transfer_set(tmp_path):
     """The guard behind the routing above: handing the training refit a transfer set would score
     it at the reference's fitted point and record an `ok` fixed-mode bar for data that is refit."""
-    from petab_harness import simulate
+    from gemot import simulate
 
     held = V.HeldOut(_rows("c1"), parameter_df=_params([("A_init", "lin", 0.0, 100.0, 2.0, 0)]))
 
@@ -963,7 +963,7 @@ def test_a_row_whose_condition_is_in_no_unit_is_declined_before_any_build(monkey
 def test_a_curated_transfer_set_names_the_systems_it_is_refit_on(tmp_path):
     """`units.tsv` beside a curated table reaches the HeldOut; a measured condition it leaves out,
     or a units file beside a fixed-θ set (nothing is refit there), is a setup error naming it."""
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     table = _curated_transfer(
         tmp_path, delta=[("A_init", "lin", 0.0, 100.0, 2.0, 0)], conditions=("c1", "c2")
@@ -994,7 +994,7 @@ def test_a_curated_transfer_set_names_the_systems_it_is_refit_on(tmp_path):
 def test_materialize_writes_the_units_beside_the_bundle_and_the_reference_refits_by_them(
     tmp_path, monkeypatch
 ):
-    from petab_harness import benchmark, simulate
+    from gemot import benchmark, simulate
 
     monkeypatch.setattr(benchmark, "_load_problem", lambda *a, **k: _toy_published())
     (tmp_path / "problem").mkdir()
@@ -1100,7 +1100,7 @@ def test_an_empty_units_declaration_is_incomplete_not_absent(tmp_path, monkeypat
     setup, rather than read as "one system"."""
     import pypesto.petab
 
-    from petab_harness import benchmark
+    from gemot import benchmark
 
     monkeypatch.setattr(pypesto.petab, "PetabImporter", lambda *a, **k: None)
     (tmp_path / "u.tsv").write_text("conditionId\tunitId\n")

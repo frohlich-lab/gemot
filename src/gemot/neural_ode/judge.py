@@ -24,7 +24,7 @@ from pathlib import Path
 #: What the scripted fix tells the server. The judge reads it as any other justification.
 JUSTIFICATION = (
     "Rate laws distilled by symbolic regression (PySR) from a neural vector field fitted to "
-    "these data (petab_harness.neural_ode). The named constants are seeded at their regressed "
+    "these data (gemot.neural_ode). The named constants are seeded at their regressed "
     "values and refit here; agreement with the field, not with the data, chose the expressions."
 )
 

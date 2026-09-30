@@ -13,7 +13,7 @@ import asyncio
 
 import pytest
 
-from petab_harness.agent.circuit_breaker import (
+from gemot.agent.circuit_breaker import (
     _TOOL_ERROR_DISABLE_THRESHOLD,
     _coerce_json_string_args,
     _container_arg_names,
@@ -240,7 +240,7 @@ def test_a_repeated_identical_rejection_eventually_escalates():
     """The case the sole-editor escalation could NOT reach: a rejection comes back as a normal
     result (`applied: false`), which is deliberately not a breaker error — so gemini sent 106
     identical ones and luna 246 of 265 with nothing ever telling them to change approach."""
-    from petab_harness.agent.circuit_breaker import _REJECTION_ESCALATE_AT
+    from gemot.agent.circuit_breaker import _REJECTION_ESCALATE_AT
 
     state = _new_breaker_state()
     tool = _FakeTool("make_changes")
@@ -264,7 +264,7 @@ def test_a_repeated_identical_rejection_eventually_escalates():
 
 def test_a_different_rejection_resets_the_rejection_streak():
     """Only an IDENTICAL repeat is a loop; a new rejection is ordinary edit/retry progress."""
-    from petab_harness.agent.circuit_breaker import _note_repeated_rejection
+    from gemot.agent.circuit_breaker import _note_repeated_rejection
 
     state = _new_breaker_state()
     for i in range(10):
@@ -274,7 +274,7 @@ def test_a_different_rejection_resets_the_rejection_streak():
 
 
 def test_a_success_clears_the_rejection_streak():
-    from petab_harness.agent.circuit_breaker import _note_repeated_rejection
+    from gemot.agent.circuit_breaker import _note_repeated_rejection
 
     state = _new_breaker_state()
     for _ in range(3):
@@ -295,7 +295,7 @@ def test_call_outcomes_counts_what_edit_rejects_cannot_see():
     job is edit failure, blind to a run that failed every edit. This counts at the client wrapper,
     so the three server-less failure modes are visible.
     """
-    from petab_harness.agent.circuit_breaker import (
+    from gemot.agent.circuit_breaker import (
         _CALL_CLIENT_INVALID,
         _CALL_DISABLED,
         _CALL_OK,
@@ -326,14 +326,14 @@ def test_call_outcomes_counts_what_edit_rejects_cannot_see():
 
 
 def test_call_outcomes_is_empty_not_broken_for_a_tool_never_called():
-    from petab_harness.agent.circuit_breaker import call_outcomes
+    from gemot.agent.circuit_breaker import call_outcomes
 
     out = call_outcomes(_new_breaker_state(), "make_changes")
     assert out == {"attempted": 0, "failed": 0, "fail_rate": None, "by_outcome": {}}
 
 
 def test_the_wrapper_records_each_outcome_class():
-    from petab_harness.agent.circuit_breaker import call_outcomes
+    from gemot.agent.circuit_breaker import call_outcomes
 
     state = _new_breaker_state()
     ok = _FakeTool("make_changes", args=_ARGS_SCHEMA)
@@ -393,7 +393,7 @@ def test_a_verdict_payload_is_not_a_breaker_error():
     different-errors-reset-the-streak protection could never fire, and three consecutive
     verdicts disabled the tool (7 of 18 draft-arm runs, sneyd/fujita A/B). No current tool
     emits the shape; the carve-out is pinned so any future verdict-style payload reads right."""
-    from petab_harness.agent.circuit_breaker import _result_error
+    from gemot.agent.circuit_breaker import _result_error
 
     verdict = {"ok": False, "issues": ["Unknown parameter id 'kdim_EGFR'"], "warnings": []}
     assert _result_error(None, {"structured_content": verdict}) is None
@@ -412,7 +412,7 @@ def test_a_verdict_is_identified_by_issues_not_by_a_missing_error_key():
     exempt two shapes that are real failures: an empty `error` (which signs the streak with "",
     handing the model an escalation carrying no error text) and a bare `{"ok": false}` — the
     shape a HOSTED bio server may use, and those are the flaky ones the breaker exists for."""
-    from petab_harness.agent.circuit_breaker import _result_error
+    from gemot.agent.circuit_breaker import _result_error
 
     assert _result_error(None, {"structured_content": {"ok": False, "error": ""}}) == "tool error"
     assert _result_error(None, {"structured_content": {"ok": False}}) == "tool error"

@@ -20,9 +20,9 @@ from datetime import timedelta
 
 import pytest
 
-from petab_harness.agent.circuit_breaker import _is_call_timeout, _is_transport_error
-from petab_harness.fit_budget import fit_time_budget
-from petab_harness.runner.clock import NON_FIT_CALL_TIMEOUT_S, _make_call, _wrap_call_timeout
+from gemot.agent.circuit_breaker import _is_call_timeout, _is_transport_error
+from gemot.fit_budget import fit_time_budget
+from gemot.runner.clock import NON_FIT_CALL_TIMEOUT_S, _make_call, _wrap_call_timeout
 
 DEFAULT_N_STARTS = 50
 
@@ -208,7 +208,7 @@ def test_liveness_reads_popen_semantics_not_truthiness():
     """`Popen.poll()` returns None while RUNNING and an int once exited. Taking the returncode is
     what makes `server_poll=proc.poll` — the obvious wiring — correct rather than exactly
     inverted; `bool(poll())` would read None as False and call every healthy server dead."""
-    from petab_harness.agent.driver import _server_is_alive
+    from gemot.agent.driver import _server_is_alive
 
     assert _server_is_alive(lambda: None) is True  # running
     assert _server_is_alive(lambda: 0) is False  # exited cleanly
@@ -218,7 +218,7 @@ def test_liveness_reads_popen_semantics_not_truthiness():
 def test_no_signal_is_not_evidence_of_death():
     """`None`, not False: a caller that wires nothing must not have its runs ended on no
     evidence. The call site checks `is False` for exactly this reason."""
-    from petab_harness.agent.driver import _server_is_alive
+    from gemot.agent.driver import _server_is_alive
 
     assert _server_is_alive(None) is None
 
@@ -234,7 +234,7 @@ def test_liveness_against_a_real_process():
     import subprocess
     import sys
 
-    from petab_harness.agent.driver import _server_is_alive
+    from gemot.agent.driver import _server_is_alive
 
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:

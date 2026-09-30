@@ -15,7 +15,7 @@ import sys
 
 import pytest
 
-from petab_harness.ablations import ABLATIONS
+from gemot.ablations import ABLATIONS
 from test_run_loop_no_model import requires_harness
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,8 +39,8 @@ def test_only_curator_guidance_and_roster_change():
     script = r"""
 import json
 from pathlib import Path
-from petab_harness import agent, prompts
-from petab_harness.scenario import Scenario
+from gemot import agent, prompts
+from gemot.scenario import Scenario
 scenario = Scenario("identified", Path("/example/problem"), lambda *args: None,
                     task="EGFR biology", known_constants="U2OS cells",
                     biocurator_entities=["EGFR"])
@@ -79,11 +79,11 @@ import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import pytest
-from petab_harness import agent, prompts
-from petab_harness.runner import main as runner
-from petab_harness.runner import provenance
-from petab_harness.runner.cli import build_parser
-from petab_harness.scenario import Scenario
+from gemot import agent, prompts
+from gemot.runner import main as runner
+from gemot.runner import provenance
+from gemot.runner.cli import build_parser
+from gemot.scenario import Scenario
 sys.path.insert(0, str(Path.cwd() / "tests"))
 from test_run_loop_no_model import _run, _Probe
 
@@ -163,10 +163,3 @@ with TemporaryDirectory() as directory, pytest.MonkeyPatch.context() as patch:
         PETAB_BIOCURATOR="0",
         PETAB_BIO_LITERATURE=literature,
     )
-
-
-def test_sweep_accepts_the_curator_only_arm():
-    import runpy
-
-    sweep = runpy.run_path(str(ROOT / "slurm/make_sweep.py"))
-    assert sweep["_arm_exports"](["biocurator=off"]) == ["PETAB_BIOCURATOR=0"]

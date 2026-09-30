@@ -113,7 +113,7 @@ def hours(seconds) -> str:
 def support(run: dict) -> str:
     """Figure 3's ladder label for what a run was given: ``curator + biology + gemot`` ..., with
     the harness named as the figure prints it (``paper_fujita.support_label``)."""
-    from petab_harness.paper_fujita import support_label
+    from gemot.paper_fujita import support_label
 
     parts = (
         (["curator"] if run["biocurator"] == "on" else [])

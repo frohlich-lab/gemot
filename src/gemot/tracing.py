@@ -126,7 +126,7 @@ _STRIPPED_INPUT_SPANS = frozenset(
     {
         "model",  # LangChain's model node
         "TodoListMiddleware.after_model",  # deepagents
-        "_ToolDispatchGuard.after_model",  # ours, see petab_harness.agent.guards
+        "_ToolDispatchGuard.after_model",  # ours, see gemot.agent.guards
     }
 )
 

@@ -18,6 +18,10 @@ cost or the PR number, and stop; do not narrate the investigation, restate what 
 enumerate every case you checked. Prefer editing or deleting a stale entry over appending beside
 it.
 
+The numbers on the entries below are pull requests of
+[frohlich-lab/petab_mcp](https://github.com/frohlich-lab/petab_mcp), where this package was
+developed before it moved here.
+
 #347 An estimated sigma starts at its data's spread (`stage._sigma_seeds`), not at the table's
 nominal: Adam in log space moves at most its learning rate per step, and perelson's `sd_viral_load`
 nominal of 1e5 for a log10 sigma kept the likelihood flat for the whole budget -- the weights saw
@@ -25,13 +29,6 @@ no gradient and the "fit" was the sigma descending at the rate cap, identical ac
 nll differed by exactly `n ln(ln 10)`.
 
 #300 A fixed-θ held-out set may bring ROWS of the training condition table but never a column, and the rows are appended at score time (`validation_data._with_held_out_conditions`) rather than shipped in the agent's `problem/conditions.tsv`. The shipped-table route is the obvious simplification and worked on main before #300; it tells the agent which experiments are held out and moves `Scenario.version`, which is what kept raimundez's EGFR knockdown (Fig 6E) filed as a transfer set in #290's first draft although the paper predicted it at the fitted point.
-
-#256 Manuscript prose cites numbers only through `paper/generated/values.tex` macros: the
-findings come from different sweeps, shas and arms, so `paper/lint_drafted.py` must reject bare
-numerals rather than warn about values that cannot be regenerated from prose. The byte-identity
-test excludes `provenance.tex` because its sha changes on each commit; the paired provenance test
-must retain `repoSha` and `generatedOn`, with the latter derived from HEAD's UTC commit date so
-regeneration does not drift with the wall clock.
 
 #200 Anthropic caches nothing unless the request marks breakpoints, so
 `driver._apply_cache_breakpoints` marks two on the CONVERTED payload — system prompt and last
@@ -63,24 +60,6 @@ Do not add a table back: the hand-kept one drifted from the pinned endpoints wit
 priced runs wrong silently, and fetching live prices at analysis time was rejected too, since it
 reprices old runs at today's rates and this path is offline by design. A run with no recorded
 figure is `None`, never 0.0, which would read as free in a mean.
-
-#192 perelson does not tell the agent its pre-treatment state; it makes it preequilibrate to one.
-The export's `T0`, `Tstar(0)` and `V(0)` = `Vin(0)` are to the digit one endemic steady state, and
-`K0` is the paper's `c = N*k*T0` identity (footnote 10) solved for `k` — four numbers that are one
-object, and right only at `c = 2.06`. Writing that state down for the agent is the modelling this
-example exists to test, so `rit` gates the drug's effect on new virions and the target pool's
-turnover and the solver finds it: preeq reaches `T` = 11000.0 from any start (`c - N*k*T` = -7.4e-12,
-the identity DERIVED) and the treated phase reproduces Eq. 6 to 6.8e-12 with `T` held, which is the
-paper's own assumption for the treated week. Eqs 1/2 with `T` pinned are linear and homogeneous, so
-no gate alone can do this — the pool has to turn over untreated for the endemic state to be an
-attractor rather than a ray through the origin. `NN`/`T0`/`K0` are gauge (`S = NN*Tstar` removes all
-three), so none is shipped and `TRUE_ANT` carries none.
-
-#192 The bar stays the PRISTINE published problem, which has no parameter for the pre-treatment
-scale while a preequilibrated model has one, so a correct build is `k` = 4 and pays `ln(16)` = +1.5
-BIC. `REFERENCE_FREE_PARAMS` cannot close this — it frees rows of the PUBLISHED table and `V0` exists
-only in the patched model — and patching the training reference would redefine what a reference is
-for every example. Revisit if live runs show +1.5 biting.
 
 #192 `TRAINING_MEASUREMENTS` restates the published measurement table from one the example commits.
 The collection's perelson series is a digitisation of Fig. 1B where the study's own release has the

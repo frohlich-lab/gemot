@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 
-from petab_harness.explorer.archive import archive_run
+from gemot.explorer.archive import archive_run
 
 
 def _work(tmp_path):

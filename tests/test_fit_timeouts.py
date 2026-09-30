@@ -13,13 +13,13 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 
-from petab_harness.agent.driver import _pending_fit_starts
-from petab_harness.fit_budget import (
+from gemot.agent.driver import _pending_fit_starts
+from gemot.fit_budget import (
     FIT_BUDGET_CEILING_S,
     fit_time_budget,
     fit_time_budget_for,
 )
-from petab_harness.runner.clock import _make_call, _wrap_call_timeout
+from gemot.runner.clock import _make_call, _wrap_call_timeout
 
 
 class _FakeSession:
@@ -71,7 +71,7 @@ def test_a_tool_that_cannot_fit_gets_the_short_budget_not_the_run_default():
     """A read used to inherit the run-default FIT budget — 4200s at bachmann's settings — so a
     wedged one cost a whole multistart of wall clock and left no trace. It is sized on what the
     tool can do now, not on whether it happened to carry `n_starts`."""
-    from petab_harness.runner.clock import NON_FIT_CALL_TIMEOUT_S
+    from gemot.runner.clock import NON_FIT_CALL_TIMEOUT_S
 
     s = _wrapped()
     asyncio.run(s.call_tool("get_fit_summary", {}))
@@ -133,7 +133,7 @@ def test_the_scripted_path_gets_the_scenario_floor_without_Scenario_exposing_it(
     """`build_true_model` floors n_starts at min_n_starts, and the scripted driver has no agent
     loop — the per-call timeout is its ONLY guard. It must see 400, not the run's 50, even though
     `runner.main` (which sets the session timeout) cannot know the floor exists."""
-    from petab_harness.scenario import build_true_model
+    from gemot.scenario import build_true_model
 
     s = _wrapped()
     asyncio.run(
@@ -288,8 +288,8 @@ def test_the_fit_tool_set_is_derived_from_the_leads_actual_roster():
     """A hand-written set stops matching on the next rename (`set_model`/`change_parameters` ->
     `make_changes` already happened) and nothing would fail — every fit would quietly drop to the
     run-default window. It must intersect the real roster, and must not be empty."""
-    from petab_harness.agent.driver import _FIT_TOOLS
-    from petab_harness.agent.tools import ORCHESTRATOR_TOOLS
+    from gemot.agent.driver import _FIT_TOOLS
+    from gemot.agent.tools import ORCHESTRATOR_TOOLS
 
     assert _FIT_TOOLS, "no fitting tool matched the lead's roster — the watchdog is disarmed"
     assert _FIT_TOOLS <= set(ORCHESTRATOR_TOOLS)
@@ -364,7 +364,7 @@ def test_a_per_call_fit_timeout_takes_the_RESUME_path_not_the_model():
     from mcp.shared.exceptions import McpError
     from mcp.types import ErrorData
 
-    from petab_harness.agent.circuit_breaker import _is_call_timeout, _is_transport_error
+    from gemot.agent.circuit_breaker import _is_call_timeout, _is_transport_error
 
     timed_out = McpError(ErrorData(code=408, message="Timed out waiting for response"))
     assert _is_call_timeout(timed_out)
@@ -380,7 +380,7 @@ def test_the_session_ceiling_stays_strictly_above_every_per_call_budget():
     """If they were equal, the clamped worst case would be a race between the anyio timer and
     httpx's read deadline — and an httpx win tears down the transport instead of returning a
     clean 408."""
-    from petab_harness.runner import main
+    from gemot.runner import main
 
     ceiling = max(FIT_BUDGET_CEILING_S, fit_time_budget_for(None, DEFAULT)) * 1.2
     assert ceiling > FIT_BUDGET_CEILING_S
@@ -401,7 +401,7 @@ def test_an_absurd_n_starts_is_clamped_not_overflowed():
 def test_the_default_floor_survives_a_ceiling_that_would_cut_below_it():
     """The ceiling bounds what the MODEL may ask for, never what the operator configured. A run
     whose own default budget exceeds the ceiling must not be silently cut below it."""
-    from petab_harness.fit_budget import _MAX_DERIVABLE_N_STARTS
+    from gemot.fit_budget import _MAX_DERIVABLE_N_STARTS
 
     # Below the COUNT clamp, so the floor is this run's real default budget...
     huge = _MAX_DERIVABLE_N_STARTS // 10
@@ -416,7 +416,7 @@ def test_the_three_timeouts_are_strictly_ordered_not_merely_all_large():
     """httpx ceiling > watchdog > per-call cut. Ties are unsafe: with the watchdog equal to the
     transport cut it always wins (armed a graph-dispatch earlier), the step is cancelled
     mid-flight as 'stalled', and the clean 408 resume path is unreachable."""
-    from petab_harness.fit_budget import FIT_WATCHDOG_MARGIN
+    from gemot.fit_budget import FIT_WATCHDOG_MARGIN
 
     per_call = fit_time_budget_for(400, DEFAULT)
     watchdog = per_call * FIT_WATCHDOG_MARGIN
@@ -485,7 +485,7 @@ def test_a_fit_timeout_abort_scores_as_infrastructure_not_as_a_failed_model():
     """It is the same event as the httpx ReadTimeout it replaced — it only stopped being one when
     the timeout moved from the session to the individual call. Unmarked, a 0-fit run killed by a
     fit timeout enters the success/dBIC aggregation as a genuine modelling failure."""
-    from petab_harness.experiments import _is_infra_abort
+    from gemot.experiments import _is_infra_abort
 
     assert _is_infra_abort(
         {

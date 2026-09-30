@@ -16,7 +16,7 @@ pytest.importorskip("langchain_core", reason="harness-only dependency")
 anyio = pytest.importorskip("anyio")
 httpx = pytest.importorskip("httpx")
 
-from petab_harness.agent import circuit_breaker as _breaker  # noqa: E402
+from gemot.agent import circuit_breaker as _breaker  # noqa: E402
 
 
 class _Tool:

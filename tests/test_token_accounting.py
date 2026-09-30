@@ -10,7 +10,7 @@ import pytest
 
 pytest.importorskip("langchain_core", reason="harness-only dependency")
 
-from petab_harness.agent import token_usage as _token_usage  # noqa: E402
+from gemot.agent import token_usage as _token_usage  # noqa: E402
 
 
 def _resp(usage_list=None, llm_output=None, metas=None):

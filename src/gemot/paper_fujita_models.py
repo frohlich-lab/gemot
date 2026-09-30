@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import re
 
-from petab_harness.paper_fujita import arms, csv_text, run_name
+from gemot.paper_fujita import arms, csv_text, run_name
 
 
 def annexed(metadata, rows):

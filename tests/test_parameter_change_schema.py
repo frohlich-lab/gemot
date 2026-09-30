@@ -11,7 +11,7 @@ import asyncio
 import pytest
 from fastmcp import FastMCP
 
-from petab_harness.agent.driver import _content_filter_stop_reason
+from gemot.agent.driver import _content_filter_stop_reason
 from petab_mcp.server import ParameterChange, _parameter_entries
 
 
@@ -144,7 +144,7 @@ def test_the_observed_504_is_classified_as_transient():
     client raises a bare ValueError — invisible to the OpenAI client's own 5xx retry AND to
     `_TRANSIENT_ERRORS`. It reached the terminal handler and ended a healthy run.
     """
-    from petab_harness.agent.driver import _transient_provider_reason
+    from gemot.agent.driver import _transient_provider_reason
 
     reason = _transient_provider_reason(
         ValueError("{'message': 'The operation was aborted', 'code': 504}")
@@ -154,7 +154,7 @@ def test_the_observed_504_is_classified_as_transient():
 
 @pytest.mark.parametrize("code", [500, 502, 503, 504, 529, 599])
 def test_any_5xx_resumes(code):
-    from petab_harness.agent.driver import _transient_provider_reason
+    from gemot.agent.driver import _transient_provider_reason
 
     assert (
         _transient_provider_reason(ValueError(f"{{'message': 'upstream', 'code': {code}}}"))
@@ -171,7 +171,7 @@ def test_4xx_is_never_treated_as_transient(code):
     """A 4xx is deterministic: retrying re-sends the same request and fails the same way. The
     content refusal is the case that matters — retrying it would burn three attempts to reach
     the same terminal answer."""
-    from petab_harness.agent.driver import _transient_provider_reason
+    from gemot.agent.driver import _transient_provider_reason
 
     assert _transient_provider_reason(ValueError(f"{{'message': 'nope', 'code': {code}}}")) is None
 
@@ -179,7 +179,7 @@ def test_4xx_is_never_treated_as_transient(code):
 def test_a_content_refusal_stays_terminal_even_though_it_carries_a_code():
     """Both classifiers see this exception; the content one must win, and it must not be
     resumed."""
-    from petab_harness.agent.driver import _content_filter_stop_reason, _transient_provider_reason
+    from gemot.agent.driver import _content_filter_stop_reason, _transient_provider_reason
 
     exc = ValueError(
         "{'message': 'This content was flagged for possible biological risk.', 'code': 400}"
@@ -189,7 +189,7 @@ def test_a_content_refusal_stays_terminal_even_though_it_carries_a_code():
 
 
 def test_an_error_with_no_code_is_left_alone():
-    from petab_harness.agent.driver import _transient_provider_reason
+    from gemot.agent.driver import _transient_provider_reason
 
     for exc in (
         RuntimeError("Recursion limit of 250 reached"),

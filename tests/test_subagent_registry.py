@@ -4,7 +4,7 @@ deepagents auto-inserts a `general-purpose` subagent holding the FULL tool pool 
 active harness profile disables it. We never curated it, and it broke the panel two ways in
 sweep 50751606: the lead delegated to it and it called `set_model` (9x), `fit` and
 `change_parameters` INSIDE a subagent — bypassing lead-only authoring — and 39% of its tool
-calls were unused filesystem builtins. ``petab_harness.agent`` now registers a
+calls were unused filesystem builtins. ``gemot.agent`` now registers a
 ``HarnessProfile`` turning that auto-add off.
 
 The roster + lead-only-authoring assertions are dependency-free and always run. The last test
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from petab_harness import agent
+from gemot import agent
 
 # The one editor. It authors the model AND fits, so "who may change the model" and "who may
 # score it" are now the same question — and the answer is still: the lead alone.
@@ -127,8 +127,8 @@ def test_arm_on_every_subagent_tool_is_resolvable():
     `_build_subagents` can resolve them — silently, with only a stdout print."""
     assert (
         _arm_on("""
-        from petab_harness import agent
-        from petab_harness.agent.tools import ALLOWED_TOOLS
+        from gemot import agent
+        from gemot.agent.tools import ALLOWED_TOOLS
         for spec in agent.ACTIVE_SPECS:
             missing = [t for t in spec["tools"] if t not in ALLOWED_TOOLS]
             assert not missing, (spec["name"], missing)
@@ -144,9 +144,9 @@ def test_arm_on_the_lead_holds_get_model_and_the_roster_is_unchanged():
     ALLOWED_TOOLS still agrees with the panel-facing descriptions (both arm-dependent)."""
     assert (
         _arm_on("""
-        from petab_harness import agent
-        from petab_harness.agent.tools import ALLOWED_TOOLS, ORCHESTRATOR_TOOLS
-        from petab_harness import prompts as P
+        from gemot import agent
+        from gemot.agent.tools import ALLOWED_TOOLS, ORCHESTRATOR_TOOLS
+        from gemot import prompts as P
         assert "get_model" in ORCHESTRATOR_TOOLS
         assert "get_model" in ALLOWED_TOOLS
         assert agent.SUBAGENT_NAMES == (

@@ -26,7 +26,7 @@ import pytest
 
 pytest.importorskip("mcp", reason="harness-only dependency")
 
-from petab_harness.runner import _judge, _ToolClock  # noqa: E402
+from gemot.runner import _judge, _ToolClock  # noqa: E402
 
 #: brannmark's own numbers: the reference's fitted sigma for the observable that decided the run.
 _REF_SIGMA = 17.578327340872296

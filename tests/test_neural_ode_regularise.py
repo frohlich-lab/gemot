@@ -11,7 +11,7 @@ from __future__ import annotations
 import jax.numpy as jnp
 import pytest
 
-from petab_harness.neural_ode import regularise as R
+from gemot.neural_ode import regularise as R
 
 
 def test_each_column_is_its_own_variable_until_products_overlap_them():

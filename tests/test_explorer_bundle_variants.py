@@ -6,7 +6,7 @@ coherent change is now one ``make_changes`` call, which always fits, so a run em
 ``fit`` spans and a fit-only filter would rebuild an empty trajectory and flag every variant
 ``no_turn``. The reverse matters too: the explorer's job is reading traces that already exist,
 and every sweep recorded before the collapse is a ``set_model``/``change_parameters``/``fit``
-trace. These tests pin both directions (``petab_harness.explorer.bundle``).
+trace. These tests pin both directions (``gemot.explorer.bundle``).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import json
 
 import pandas as pd
 
-from petab_harness.explorer import bundle as B  # noqa: E402
+from gemot.explorer import bundle as B  # noqa: E402
 
 
 def _span_output(result: dict) -> str:

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import asyncio
 
-from petab_harness.agent.token_usage import _token_accountant
-from petab_harness.metrics import _flatten_served_endpoints
+from gemot.agent.token_usage import _token_accountant
+from gemot.metrics import _flatten_served_endpoints
 
 
 class _Msg:
@@ -200,7 +200,7 @@ def test_metrics_leaves_pre_existing_rows_untouched():
 
 def test_served_columns_are_declared_in_the_history_header():
     """`DictWriter(extrasaction="ignore")` drops undeclared keys SILENTLY."""
-    from petab_harness.metrics import HISTORY_FIELDS
+    from gemot.metrics import HISTORY_FIELDS
 
     for col in ("served_provider", "served_n_distinct", "served_drifted"):
         assert col in HISTORY_FIELDS
@@ -208,7 +208,7 @@ def test_served_columns_are_declared_in_the_history_header():
 
 def test_nested_source_is_carried_so_the_flattener_can_see_it():
     """build_row copies only flat fields; without this the columns stay empty on collect()."""
-    from petab_harness.metrics import _NESTED_SOURCE_FIELDS
+    from gemot.metrics import _NESTED_SOURCE_FIELDS
 
     assert "openrouter_endpoints" in _NESTED_SOURCE_FIELDS
 
@@ -220,7 +220,7 @@ def test_span_name_is_preserved_despite_the_subclass():
     query keyed on `ChatOpenAI` (the whole archive, and slurm/trace_review) returns no rows for new
     runs and cannot be compared with old ones.
     """
-    from petab_harness.agent.driver import _chat_model_class
+    from gemot.agent.driver import _chat_model_class
 
     kw = dict(
         model="openai/gpt-5.6-luna-pro",
@@ -232,7 +232,7 @@ def test_span_name_is_preserved_despite_the_subclass():
 
 def test_the_subclass_is_built_once():
     """Each call would otherwise construct — and permanently register — a fresh pydantic class."""
-    from petab_harness.agent.driver import _chat_model_class
+    from gemot.agent.driver import _chat_model_class
 
     assert _chat_model_class() is _chat_model_class()
 
@@ -241,8 +241,8 @@ def test_the_block_travels_from_the_agent_output_to_the_history_column(tmp_path)
     """The tally reaching `endpoints()` is only half of it: the runner has to carry it into
     result.json, and for every run until now it did not — so `served_drifted`, the column a
     benchmark filters on, was blank whatever the accountant measured."""
-    from petab_harness import metrics
-    from petab_harness.runner.provenance import _agent_meta
+    from gemot import metrics
+    from gemot.runner.provenance import _agent_meta
 
     agent_out = {
         "stop_reason": "completed",

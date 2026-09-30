@@ -13,8 +13,8 @@ import copy
 import pandas as pd
 import pytest
 
-from petab_harness import benchmark
-from petab_harness.runner.scoring import _validation_fields
+from gemot import benchmark
+from gemot.runner.scoring import _validation_fields
 
 
 def _problem(measurements, *, observables=("obs_A",), conditions=("c_train", "c_test")):
@@ -201,7 +201,7 @@ def test_the_validation_tool_is_not_exposed_to_the_panel():
     the enforcement; this pins that it stays absent, since adding a tool to that set is a one-line
     change someone could make while tidying."""
     pytest.importorskip("langchain_core", reason="agent stack not installed")
-    from petab_harness.agent.tools import ALLOWED_TOOLS
+    from gemot.agent.tools import ALLOWED_TOOLS
 
     assert "evaluate_validation_data" not in ALLOWED_TOOLS
 
@@ -385,7 +385,7 @@ def test_the_history_csv_has_columns_for_the_held_out_score(tmp_path):
     """result.json carrying the block is not the same as a sweep being able to read it:
     `DictWriter(extrasaction="ignore")` drops a nested dict silently — how the edit-reject metric
     stayed invisible for a release."""
-    from petab_harness import metrics
+    from gemot import metrics
 
     result = {
         "scenario": "fujita",
@@ -446,8 +446,8 @@ def _run_judge(work, *, has_held_out, payload, reference=None, nll=100.0):
     import asyncio
     import time
 
-    from petab_harness import benchmark as bm
-    from petab_harness.runner import _judge, _ToolClock
+    from gemot import benchmark as bm
+    from gemot.runner import _judge, _ToolClock
 
     scenario = _Scenario(work, reference)
     if has_held_out:
@@ -524,7 +524,7 @@ def test_the_span_and_the_csv_cannot_disagree_about_the_held_out_columns(monkeyp
     """One naming authority. `tracing.record_run_result` stamps whatever
     `metrics.flatten_validation` returns, so a tenth `val_*` column reaches the Phoenix span and
     the history CSV together or not at all — it used to restate the nine names as its own tuple."""
-    from petab_harness import metrics, tracing
+    from gemot import metrics, tracing
 
     flat = metrics.flatten_validation({"validation": {"status": "ok", "nll": 1.0}})
     assert set(flat) == {c for c in metrics.HISTORY_FIELDS if c.startswith("val_")}
@@ -615,7 +615,7 @@ def test_the_recorded_reference_vector_must_be_full_dimensional():
     """`_recorded_vector`'s two callers zip it against `pp.x_names` and index it by free position,
     so a reduced or reordered `x` would surface as wrong sigmas and a wrong held-out score rather
     than as an error."""
-    from petab_harness.simulate import _recorded_vector
+    from gemot.simulate import _recorded_vector
 
     class _PP:
         x_names = ["a", "b", "c"]
@@ -633,7 +633,7 @@ def test_a_failed_reference_refit_is_distinguishable_from_no_bar_at_all(tmp_path
     """Both leave `val_reference_nll` blank. Without `val_reference_status` the two are byte-
     identical in the history CSV, which would make the guarded refit's whole point — record the
     failure rather than drop it — invisible to every sweep."""
-    from petab_harness import metrics
+    from gemot import metrics
 
     failed = _validation_fields(
         {"status": "ok", "nll": 500.0, "n": 12, "chi2": 1.0},

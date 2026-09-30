@@ -19,8 +19,8 @@ report. The lead synthesizes the reports and is the only agent that edits the mo
   :mod:`.guards`           middleware: make proposed tool calls actually FIRE, and arrive intact
   :mod:`.driver`           :func:`run_deepagents` — builds the graph and runs the loop
 
-Every agent-facing string is in :mod:`petab_harness.prompts`, not here; observability is Arize
-Phoenix tracing (:mod:`petab_harness.tracing`), which the runner turns on before the agent starts.
+Every agent-facing string is in :mod:`gemot.prompts`, not here; observability is Arize
+Phoenix tracing (:mod:`gemot.tracing`), which the runner turns on before the agent starts.
 
 Importing this package is CHEAP by design: every module above touches only stdlib at import
 time, and each langchain / deepagents / openai import is lazy, inside the function that needs it.
@@ -109,7 +109,7 @@ from .tools import (
 )
 
 # The prompt constants tests and callers have always read off this module. They live in
-# petab_harness.prompts now; re-exported so `agent.BIOCURATOR_PROMPT` still resolves.
+# gemot.prompts now; re-exported so `agent.BIOCURATOR_PROMPT` still resolves.
 from ..prompts import (
     BIOCURATOR_PROMPT,
     SUBAGENT_EMPTY_REPORT_MARKER,

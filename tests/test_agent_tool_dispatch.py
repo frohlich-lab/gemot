@@ -1,4 +1,4 @@
-"""Tests for the deepagents driver's tool-dispatch guard (petab_harness.agent).
+"""Tests for the deepagents driver's tool-dispatch guard (gemot.agent).
 
 Covers issue #63: a class of runs (first seen on the blasi zero-shot build) that proposed
 tool calls every step but executed ZERO tools, terminating early with nothing built. The guard
@@ -14,7 +14,7 @@ is not a dependency of the petab-mcp package (only of the examples harness).
 from __future__ import annotations
 
 
-from petab_harness import agent, scenario
+from gemot import agent, scenario
 
 
 # --------------------------------------------------------------------- pure de-dup helpers
