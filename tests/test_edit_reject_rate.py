@@ -187,14 +187,10 @@ def test_every_reject_bucket_matches_a_message_the_server_can_emit():
     dead one with nothing failing. Two buckets were already dead on arrival: they were mined from
     traces predating #118, which turned the sigma cap into a warning. Pin them against the real
     strings in the server source instead of literals typed into this file."""
-    from pathlib import Path
-
+    from conftest import SERVER_SRC
     from petab_harness.runner.clock import _REJECT_PATTERNS
 
-    src = "\n".join(
-        p.read_text()
-        for p in (Path(__file__).resolve().parents[1] / "src" / "petab_mcp").rglob("*.py")
-    ).lower()
+    src = "\n".join(p.read_text() for p in SERVER_SRC.rglob("*.py")).lower()
     dead = [label for label, needle in _REJECT_PATTERNS if needle not in src]
     assert not dead, f"reject buckets matching no message the server emits: {dead}"
 
@@ -281,6 +277,45 @@ def test_git_diff_digest_fingerprints_an_uncommitted_tree(tmp_path):
     # ...and the same modification reproduces the same digest.
     (tmp_path / "a.txt").write_text("one\ntwo\n")
     assert _git_diff_digest(tmp_path)["sha256"] == first
+
+
+def test_the_run_records_which_server_code_served_it(tmp_path, monkeypatch):
+    """`git_sha` covers this checkout only; the server is installed from its own repository, so a
+    server edit would otherwise leave two runs indistinguishable in the record."""
+    import importlib.metadata
+    import subprocess
+
+    from petab_harness.runner.provenance import _git_sha, _server_provenance
+
+    class _Dist:
+        version = "0.1.0"
+
+        def __init__(self, direct):
+            self.direct = direct
+
+        def read_text(self, name):
+            return json.dumps(self.direct)
+
+    def installed(direct):
+        monkeypatch.setattr(importlib.metadata, "distribution", lambda name: _Dist(direct))
+
+    installed(
+        {"url": "https://example.org/s.git", "vcs_info": {"vcs": "git", "commit_id": "c0ffee"}}
+    )
+    assert _server_provenance() == {"version": "0.1.0", "commit": "c0ffee"}
+
+    def git(*a):
+        subprocess.check_call(["git", *a], cwd=tmp_path, stdout=subprocess.DEVNULL)
+
+    git("init")
+    (tmp_path / "server.py").write_text("one\n")
+    git("add", "server.py")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "x")
+    (tmp_path / "server.py").write_text("edited\n")
+    installed({"url": tmp_path.as_uri(), "dir_info": {"editable": True}})
+    code = _server_provenance()
+    assert code["git_sha"] == _git_sha(tmp_path) and code["git_sha"].endswith("+dirty")
+    assert code["git_diff"]["files"] == ["server.py"]
 
 
 def test_git_diff_digest_never_raises_outside_a_checkout(tmp_path):

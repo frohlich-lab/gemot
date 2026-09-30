@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
 from pathlib import Path
 
@@ -9,6 +10,9 @@ import pytest
 
 DATA_DIR = Path(__file__).parent / "data" / "toy_v1"
 YAML_PATH = DATA_DIR / "problem.yaml"
+#: The installed server package's directory, for tests that read its source. It comes from its own
+#: repository (frohlich-lab/PEtab-MCP), not ``src/``; ``find_spec`` locates it without importing it.
+SERVER_SRC = Path(importlib.util.find_spec("petab_mcp").origin).parent
 
 
 def pytest_configure(config):  # noqa: D401 - pytest hook

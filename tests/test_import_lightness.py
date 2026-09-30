@@ -287,6 +287,8 @@ def _repo_scripts():
 def test_scripts_only_import_names_our_packages_actually_define():
     """`from petab_mcp.X import Y` / `from petab_harness.X import Y` in slurm/ and examples/ must
     name something module X really binds."""
+    from conftest import SERVER_SRC
+
     broken = []
     for root, path in _repo_scripts():
         for node in ast.walk(ast.parse(path.read_text())):
@@ -294,7 +296,11 @@ def test_scripts_only_import_names_our_packages_actually_define():
                 continue
             if node.level or node.module.split(".")[0] not in ("petab_mcp", "petab_harness"):
                 continue
-            target = root / "src" / Path(node.module.replace(".", "/"))
+            # the server is installed from its own repository, not under src/
+            packages = (
+                SERVER_SRC.parent if node.module.split(".")[0] == "petab_mcp" else root / "src"
+            )
+            target = packages / Path(node.module.replace(".", "/"))
             source = (
                 target.with_suffix(".py")
                 if target.with_suffix(".py").is_file()

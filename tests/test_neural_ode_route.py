@@ -235,6 +235,11 @@ def test_the_parent_passes_an_earlier_clock_the_config_and_the_env_and_reads_pro
     # The config crosses whole, the PySR interpreter and the dosing convention included.
     assert Config.load(command[command.index("--config") + 1]) == config
     assert env["OMP_NUM_THREADS"] == "4" and env["PYTHONPATH"].split(":")[0].endswith("src")
+    # The worker imports petab_mcp, which its interpreter need not have: it gets this one's.
+    from conftest import SERVER_SRC
+
+    server = Path(env["PYTHONPATH"].split(":")[1]) / "petab_mcp"
+    assert server.resolve() == SERVER_SRC.resolve()
     assert outcome.proposals[0].record == {
         "jax_interpreter": "/jax/python",
         "ran_out_of_process": True,

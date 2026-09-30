@@ -16,9 +16,18 @@ from pathlib import Path
 
 import pytest
 
+from conftest import SERVER_SRC
 from petab_harness import ablations
 
 SRC = Path(__file__).resolve().parents[1] / "src"
+
+
+def _modules():
+    """``(label, path)`` for every module of this harness and of the installed server, which reads
+    switches of its own."""
+    for package in (SRC / "petab_harness", SERVER_SRC):
+        for path in package.rglob("*.py"):
+            yield str(path.relative_to(package.parent)), path
 
 
 # --------------------------------------------------------------------------- the registry itself
@@ -173,7 +182,8 @@ _ENV_READ = re.compile(r"""(?:environ\.get|getenv)\(\s*["']([A-Z][A-Z0-9_]*)["']
 
 
 def test_no_unregistered_environment_switch_gates_behaviour():
-    """Every env var read in `src/` is either a registered ablation or declared non-ablation.
+    """Every env var read in either package is either a registered ablation or declared
+    non-ablation.
 
     This is what makes `python -m petab_harness.ablations` an authoritative catalogue rather than
     a list someone remembered to update: an arm can only stay undiscoverable for as long as it
@@ -181,16 +191,16 @@ def test_no_unregistered_environment_switch_gates_behaviour():
     """
     registered = {a.env for a in ablations.ABLATIONS}
     found: dict[str, str] = {}
-    for path in SRC.rglob("*.py"):
+    for label, path in _modules():
         for var in _ENV_READ.findall(path.read_text(encoding="utf-8", errors="replace")):
-            found.setdefault(var, str(path.relative_to(SRC)))
+            found.setdefault(var, label)
 
     unaccounted = {
         v: where for v, where in found.items() if v not in registered and v not in _NOT_ABLATIONS
     }
     assert not unaccounted, (
-        "environment variables read in src/ that are neither registered in petab_harness.ablations "
-        "nor listed in _NOT_ABLATIONS:\n"
+        "environment variables read in either package that are neither registered in "
+        "petab_harness.ablations nor listed in _NOT_ABLATIONS:\n"
         + "\n".join(f"  {v}  ({where})" for v, where in sorted(unaccounted.items()))
         + "\nIf it changes what a run DOES, register it as an Ablation so it is discoverable and "
         "lands in result.json. If not, add it to _NOT_ABLATIONS with the reason."
@@ -270,7 +280,7 @@ def test_registered_ablations_are_actually_read_somewhere():
     """The converse: a registered arm that nothing reads is a lie in the catalogue."""
     text = "\n".join(
         p.read_text(encoding="utf-8", errors="replace")
-        for p in SRC.rglob("*.py")
+        for _, p in _modules()
         if p.name != "ablations.py"
     )
     for a in ablations.ABLATIONS:

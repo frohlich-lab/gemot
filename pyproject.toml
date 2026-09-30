@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "petab-mcp"
+name = "petab-harness"
 version = "0.1.0"
-description = "A local MCP server for interactively editing a PEtab (v1) model/parameters and scoring against fixed data."
+description = "The agent harness, zero-shot benchmark and paper pipeline that drive the petab-mcp server."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -20,50 +20,28 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 
-# The simulation stack (AMICI + pyPESTO) is a hard requirement: fitting and simulation
-# run automatically on every model commit, so the server assumes they are present.
-# Installing therefore needs a C++ toolchain, CMake/Ninja, and swig (see README).
 dependencies = [
-    # The MCP server framework. server.py builds on the STANDALONE `fastmcp` package -- the
-    # maintained continuation of the FastMCP that once shipped inside the `mcp` SDK and was
-    # removed there in mcp 2.0.0. `from fastmcp import FastMCP` replaces the old
-    # `from mcp.server.fastmcp import FastMCP`; the tool/resource decorators, the
-    # `FastMCP(name, instructions=...)` constructor, and `run(transport=...)` are unchanged.
-    # fastmcp 3.x pulls a compatible `mcp` (1.x) in transitively, which is what the harness's MCP
-    # *client* code (runner/*, bio_sessions) imports -- so no separate `mcp` pin is needed here.
-    # Held below 4 deliberately: fastmcp 4.x pulls in the mcp 2.0 SDK, and the AGENT STACK cannot
-    # run on mcp 2.0 yet -- `langchain-mcp-adapters` (the load_mcp_tools bridge the deepagents
-    # driver needs) hard-imports the `mcp.server.fastmcp` module that mcp 2.0 deleted, in every
-    # released version (through 0.3.1), so merely importing it crashes under mcp 2.0. mcp 2.0 also
-    # reworks the client API the harness uses directly (streamablehttp_client -> streamable_http_client
-    # with a new signature; CallToolResult/Tool fields went snake_case). Revisit once
-    # langchain-mcp-adapters ships mcp 2.0 support.
-    "fastmcp>=3,<4",
-    # 0.9 is the first release whose v2 problem carries the SciML extension natively
-    # (`petab.v2.extensions.sciml`); the neural route stages its problems in that form and
-    # reads them back through `petab.v2.Problem.from_yaml`, which older releases refuse.
+    # The server this harness drives, from its own repository. Pinned to a commit so a checkout
+    # here names the server it was tested against: bump it deliberately, and see the README for
+    # developing both at once.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@27ac55d5aca329458f08eb987882b38439277cfe",
+    # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
+    # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
+    # deleted, and mcp 2.0 reworks the client API used here (streamablehttp_client ->
+    # streamable_http_client; CallToolResult/Tool fields went snake_case). petab-mcp's `fastmcp<4`
+    # holds this today, but that cap is the server's to lift. Revisit once langchain-mcp-adapters
+    # ships mcp 2.0 support.
+    "mcp<2",
+    # Imported directly here too (judge, benchmark setup, simulate, the neural route), so named
+    # rather than left to arrive through petab-mcp, whose pyproject says why each floor.
     "petab>=0.9",
     "python-libsbml>=5.19",
-    # Floored at 3.2 because `validation.frozen_parametric_stoichiometry_issues` is now the ONLY
-    # guard against a symbolic reaction stoichiometry (issue #89). Below 3.2, reusing one symbol
-    # across several stoichiometries (`N A -> N B`) instead fails the Antimony->SBML conversion on
-    # an id-uniqueness clash, raising an opaque libSBML error that nothing here translates.
     "antimony>=3.2",
     "pandas>=1.5",
     "numpy>=1.23",
     "duckdb>=0.9",
-    # Never imported here: pyPESTO's storage API writes the per-fit pypesto_result.hdf5
-    # (fitting._write_result_hdf5 / provenance's copy-forward) and h5py is what it writes
-    # through. Pinned explicitly so that path can't break on a transitive graph change.
-    "h5py>=3",
     "sympy>=1.10",
-    # Imported directly for the chi2 goodness-of-fit p-value (residual_tests, fitting) and by
-    # the harness's judge. Only transitively present via pyPESTO otherwise.
     "scipy>=1.10",
-    # 1.x, not 0.30: the package was reorganised at 1.0 and every import here uses the new layout
-    # (`amici.importers.petab.v1`, `amici.importers.sbml`, `amici.sim.sundials.petab.v1`), none
-    # of which exists in 0.x -- the old floor admitted versions that fail at import. 1.1.0 is what
-    # the cluster env runs and the suite is measured against.
     "amici>=1.1",
     "pypesto[petab]>=0.5",
     "fides>=0.7",
@@ -86,8 +64,8 @@ dev = [
     # cap ruff. CI installs ruff on its own (it needs no C++ toolchain), so this pin exists so a
     # developer runs the same check locally.
     "ruff>=0.6",
-    "petab-mcp[agent]",
-    "petab-mcp[neural]",
+    "petab-harness[agent]",
+    "petab-harness[neural]",
 ]
 
 # The deepagents driver stack: what the analyst panel actually runs on, and the only part of the
@@ -131,7 +109,7 @@ agent = [
 # Reaching a model also needs an OpenRouter API key:
 #     export OPENROUTER_API_KEY=sk-or-...      # https://openrouter.ai/keys
 harness = [
-    "petab-mcp[agent]",
+    "petab-harness[agent]",
     # Arize Phoenix agent tracing (ON by default; disable at runtime with --no-phoenix).
     # Traces every LLM + MCP tool call the agent makes as OpenTelemetry spans viewable in the
     # Phoenix UI. arize-phoenix-otel + the LangChain instrumentor EXPORT the spans; the full
@@ -157,28 +135,22 @@ harness = [
 # just the web-serving deps.
 explorer = ["fastapi>=0.110", "uvicorn>=0.23", "jinja2>=3.1"]
 
-[project.scripts]
-petab-mcp = "petab_mcp.cli:main"
-
 [project.urls]
-Homepage = "https://github.com/ffroehlich/petab_mcp"
-Repository = "https://github.com/ffroehlich/petab_mcp"
+Homepage = "https://github.com/frohlich-lab/petab_mcp"
+Repository = "https://github.com/frohlich-lab/petab_mcp"
 
 [tool.hatch.metadata]
-# The `neural` extra pins petab-sciml to a git commit (see the comment there: the curriculum
-# multiple shooting rewrite is unreleased). Hatchling refuses a direct reference in metadata
-# unless this says so, and `dev` depends on `petab-mcp[neural]`, so WITHOUT this every
-# `pip install -e '.[dev]'` fails at metadata generation -- CI never reaches the test step.
-# Drop it together with the git pin, once petab-sciml 0.0.4 is on PyPI.
+# Two dependencies are git pins: petab-mcp itself, and the `neural` extra's petab-sciml (see the
+# comment there: the curriculum multiple shooting rewrite is unreleased). Hatchling refuses a direct
+# reference in metadata unless this says so, so WITHOUT it every `pip install -e .` fails at metadata
+# generation -- CI never reaches the test step.
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-# petab_harness (the examples' agent harness) ships alongside the server rather than as its
-# own distribution: it is only ever installed next to petab_mcp, from this repo.
-packages = ["src/petab_mcp", "src/petab_harness"]
+packages = ["src/petab_harness"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/petab_mcp", "src/petab_harness", "tests", "README.md", "LICENSE"]
+include = ["src/petab_harness", "tests", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -214,7 +186,7 @@ exclude = ["paper/neural_heldout/evaluator/*.py"]
 # (`I`, `UP`, `BLE`).
 select = ["E", "F", "W"]
 ignore = [
-    # Line length is a ~100-col TARGET, not a gate. ~640 lines in `src/` exceed it and nearly all
+    # Line length is a ~100-col TARGET, not a gate. ~340 lines in `src/` exceed it and nearly all
     # of them are the rationale comments that carry this repo's institutional memory; reflowing
     # them would churn `git blame` across every module to buy nothing. Write to 100 anyway.
     "E501",
@@ -224,6 +196,4 @@ ignore = [
 # Package facades. `petab_harness/agent/__init__.py` re-exports ~55 package-internal names because
 # tests and the driver have always addressed them as `agent._foo` (its module docstring makes the
 # case, and says why trimming further is risky) -- they are imports that exist to BE unused here.
-# `petab_mcp/__init__.py` sequences its imports around a package-level side effect
-# (`antimony_guard.install()` must run before `.session` is imported), which is what E402 flags.
-"__init__.py" = ["F401", "E402"]
+"__init__.py" = ["F401"]

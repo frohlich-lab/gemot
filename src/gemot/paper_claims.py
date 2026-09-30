@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import csv
+import importlib.util
 import json
 import math
 import re
@@ -715,7 +716,12 @@ def heldout_macros(heldout: dict) -> dict[str, tuple[str, str]]:
 
 
 def _definitions(root: Path, path: str) -> ast.Module:
-    return ast.parse((root / path).read_text(encoding="utf-8"))
+    if path.startswith(_MCP):
+        # The server's path in its own repository; read where that repository is installed.
+        source = Path(importlib.util.find_spec("petab_mcp").origin).parent / path[len(_MCP) :]
+    else:
+        source = root / path
+    return ast.parse(source.read_text(encoding="utf-8"))
 
 
 def _literal(node: ast.expr):

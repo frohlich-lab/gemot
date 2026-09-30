@@ -363,11 +363,21 @@ def test_skills_are_tracked_like_prompts(tmp_path):
     assert _base_meta(scenario, args)["skills_version"] == v
 
 
+def test_the_petab_skill_is_inlined_from_the_installed_server():
+    """`_inline_skill` returns "" for a file it cannot find, so a server package that moved would
+    silently drop the skill from every analyst prompt, and move prompt_version with it."""
+    from conftest import SERVER_SRC
+
+    skill = SERVER_SRC / "_skills" / "petab-model-building" / "SKILL.md"
+    assert skill.read_text(encoding="utf-8") in P._PETAB_SKILL_INLINE
+
+
 def test_skills_version_moves_when_a_skill_changes(tmp_path):
     """A skill edit must be visible in the version, or the tracking is decorative."""
+    from conftest import SERVER_SRC
     from petab_mcp.skills import skills_version
 
-    src = Path(__file__).parent.parent / "src" / "petab_mcp" / "_skills"
+    src = SERVER_SRC / "_skills"
     before = skills_version(src)
 
     fake = tmp_path / "_skills" / "petab-model-building"

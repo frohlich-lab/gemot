@@ -193,6 +193,19 @@ def _distil_reserve(seconds: float | None) -> float:
     )
 
 
+def _server_path(scratch: Path) -> Path:
+    """A directory holding only a link to this interpreter's installed ``petab_mcp``, which the
+    worker imports but its own interpreter need not have."""
+    import importlib.util
+
+    shim = scratch / "server_path"
+    shim.mkdir(parents=True, exist_ok=True)
+    link = shim / "petab_mcp"
+    link.unlink(missing_ok=True)  # a reused work dir may hold a link to an earlier install
+    link.symlink_to(Path(importlib.util.find_spec("petab_mcp").origin).parent)
+    return shim
+
+
 def _run_in_interpreter(
     problem_dir: Path,
     problem: str,
@@ -216,8 +229,11 @@ def _run_in_interpreter(
     scratch.mkdir(parents=True, exist_ok=True)
     payload = scratch / "neural_proposals.json"
     env = dict(os.environ)
-    root = str(Path(__file__).resolve().parents[2])
-    env["PYTHONPATH"] = root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    # This harness by path, and the server it imports beside it, not the rest of this interpreter.
+    paths = [str(Path(__file__).resolve().parents[2]), str(_server_path(scratch))]
+    env["PYTHONPATH"] = os.pathsep.join(
+        paths + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])
+    )
     if config.threads and int(config.threads) > 1:  # unset, the inherited one-thread pinning stands
         threads = str(int(config.threads))
         for name in (

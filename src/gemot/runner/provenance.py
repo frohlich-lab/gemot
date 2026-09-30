@@ -94,6 +94,32 @@ def _git_diff_digest(path: Path) -> dict | None:
     }
 
 
+def _server_provenance() -> dict | None:
+    """Which petab-mcp code served the run. The server is installed from its own repository, so
+    ``git_sha`` does not cover it: record the commit a git install was made from, or an editable
+    checkout's own ``git_sha`` and ``git_diff``. ``None`` when the server is not installed.
+    Best-effort, like the git helpers above."""
+    import urllib.parse
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    try:
+        dist = distribution("petab-mcp")
+    except PackageNotFoundError:
+        return None
+    try:
+        direct = json.loads(dist.read_text("direct_url.json") or "{}")
+    except ValueError:
+        direct = {}
+    out = {"version": dist.version}
+    if "vcs_info" in direct:
+        out["commit"] = direct["vcs_info"].get("commit_id")
+    elif (direct.get("dir_info") or {}).get("editable"):
+        checkout = Path(urllib.parse.unquote(urllib.parse.urlparse(direct["url"]).path))
+        out["git_sha"] = _git_sha(checkout)
+        out["git_diff"] = _git_diff_digest(checkout)
+    return out
+
+
 def _omnipath_provenance() -> dict | None:
     """Fetch date + row counts of the local OmniPath snapshot, or ``None`` if it was not used.
 
@@ -244,6 +270,7 @@ def _base_meta(
         "example_version": scenario.version,
         # What `git_sha`'s `+dirty` suffix only hinted at: see `_git_diff_digest`. None when clean.
         "git_diff": _git_diff_digest(scenario.example_dir),
+        "server_code": _server_provenance(),
         "prompt_version": prompt_version(),
         "prompt_group_versions": prompt_group_versions(),
         # the skills are instructions the panel reads (prompts step 0), so they are

@@ -61,13 +61,18 @@ BIOCURATOR_ENABLED = _ablations.enabled("biocurator") and not BIOLOGY_BLIND_ENAB
 # analyst spawn fetched this same document via get_skill exactly once (mathematician 203/203,
 # signal_engineer 217/217, systems_scientist 115/115 across the 37-run A/B) — a deterministic
 # fetch is a constant, and as a tool result it cost a turn per spawn and rode subagent history;
-# as prompt text it caches as prefix. Read from the petab_mcp package by PATH (not import: this
-# module must stay import-light, see tests/test_import_lightness); missing file degrades to the
-# old behaviour minus the tool, and prompt_version hashes whatever was actually inlined.
+# as prompt text it caches as prefix. Read from the installed petab_mcp package by PATH (`find_spec`
+# locates it without importing: this module must stay import-light, see tests/test_import_lightness);
+# missing file degrades to the old behaviour minus the tool, and prompt_version hashes whatever was
+# actually inlined.
 def _inline_skill(name: str) -> str:
+    import importlib.util
     from pathlib import Path
 
-    f = Path(__file__).resolve().parent.parent / "petab_mcp" / "_skills" / name / "SKILL.md"
+    spec = importlib.util.find_spec("petab_mcp")
+    if spec is None or spec.origin is None:
+        return ""
+    f = Path(spec.origin).parent / "_skills" / name / "SKILL.md"
     try:
         text = f.read_text(encoding="utf-8")
     except OSError:

@@ -46,6 +46,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build cmake build-essential
 
+      # petab-mcp is a git dependency on a PRIVATE repository (pyproject.toml), which this job's
+      # GITHUB_TOKEN cannot read: fetch that one URL over SSH with a read-only deploy key of that
+      # repository, held here as a secret.
+      - name: Read access to the server repository
+        env:
+          DEPLOY_KEY: ${{ secrets.PETAB_MCP_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/petab_mcp && chmod 600 ~/.ssh/petab_mcp
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts
+          git config --global core.sshCommand "ssh -i ~/.ssh/petab_mcp -o IdentitiesOnly=yes"
+          git config --global \
+            url."ssh://git@github.com/frohlich-lab/PEtab-MCP".insteadOf \
+            "https://github.com/frohlich-lab/PEtab-MCP"
+
       - name: Install package (with dev extras)
         run: |
           python -m pip install --upgrade pip
@@ -55,7 +70,7 @@ jobs:
       # test_biocurator_input.py, test_biocurator_trim.py) importorskip their harness dependency, so
       # they SILENTLY SKIP if it is absent -- which is how a broken _trim_europepmc_search and,
       # before it, the uncurated `general-purpose` subagent (issue #112) stayed invisible to CI.
-      # `.[dev]` above covers them: dev -> petab-mcp[agent], which pins deepagents,
+      # `.[dev]` above covers them: dev -> petab-harness[agent], which pins deepagents,
       # langchain-openai AND langchain-mcp-adapters. Do not add a manual install step back -- the
       # one removed here omitted langchain-mcp-adapters, so it was strictly weaker than the extra
       # it duplicated, and it could drift out of step with the pins in pyproject.toml.
