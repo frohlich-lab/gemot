@@ -19,8 +19,8 @@ enumerate every case you checked. Prefer editing or deleting a stale entry over 
 it.
 
 The numbers on the entries below are pull requests of
-[frohlich-lab/petab_mcp](https://github.com/frohlich-lab/petab_mcp), where this package was
-developed before it moved here.
+[frohlich-lab/gemot_iclr_2026](https://github.com/frohlich-lab/gemot_iclr_2026) (then named petab_mcp), where this
+package was developed before it moved here.
 
 #347 An estimated sigma starts at its data's spread (`stage._sigma_seeds`), not at the table's
 nominal: Adam in log space moves at most its learning rate per step, and perelson's `sd_viral_load`

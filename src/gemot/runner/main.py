@@ -288,7 +288,7 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
                 )
                 # Snapshot the run's on-disk half (result.json + version store) into the runs
                 # archive while work/ still exists — the next run of this example wipes it. The
-                # run explorer (examples/explore_ui.py) stitches this with the persisted Phoenix
+                # run explorer (scripts/explore_ui.py) stitches this with the persisted Phoenix
                 # trace. Best-effort: archive_run never raises.
                 if result:
                     # Record WHERE it went. The archive is keyed by run id, but every sweep and

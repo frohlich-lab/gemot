@@ -115,7 +115,7 @@ harness = [
     # Phoenix UI. arize-phoenix-otel + the LangChain instrumentor EXPORT the spans; the full
     # `arize-phoenix` package provides the local in-process UI the runner launches when no
     # PHOENIX_COLLECTOR_ENDPOINT is set, and >=19 provides the run_experiment / Datasets /
-    # Prompt-registry API that examples/run_experiments.py uses.
+    # Prompt-registry API that gemot_iclr_2026's scripts/run_experiments.py uses.
     "arize-phoenix>=19.13",
     "arize-phoenix-otel>=0.16",
     "openinference-instrumentation-langchain>=0.1",
@@ -130,7 +130,7 @@ harness = [
 # the hardcoded bio-knowledge MCP endpoints (gemot.runner.endpoints.BIO_MCP_URLS) over
 # streamable-HTTP with the langchain-mcp-adapters / mcp client already pinned above.
 
-# Run-explorer web UI (examples/explore_ui.py): serves the archived runs + Phoenix trace.
+# Run-explorer web UI (gemot_iclr_2026's scripts/explore_ui.py): serves the archived runs + Phoenix trace.
 # The Phoenix client it reads traces through ships with the `harness` extra above; these are
 # just the web-serving deps.
 explorer = ["fastapi>=0.110", "uvicorn>=0.23", "jinja2>=3.1"]

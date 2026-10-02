@@ -16,7 +16,7 @@ best-scoring version and scores it against a true or published reference. Phoeni
 run explorer read the trace and version history this pipeline leaves behind.
 
 The benchmark it drives — the zero-shot examples, the Slurm sweep tooling and the paper — lives in
-[frohlich-lab/petab_mcp](https://github.com/frohlich-lab/petab_mcp), which installs gemot pinned
+[frohlich-lab/gemot_iclr_2026](https://github.com/frohlich-lab/gemot_iclr_2026), which installs gemot pinned
 to a commit. gemot is a checkout tool: it finds that checkout from the running script or the
 working directory, or from `PETAB_MCP_REPO_ROOT` (see [`src/gemot/paths.py`](src/gemot/paths.py)).
 
@@ -63,8 +63,6 @@ pip install -e ../PEtab-MCP
 - `gemot.explorer` — the run viewer over archived and in-flight runs.
 - `gemot.analysis`, `gemot.ablations` — sweep analysis (`python -m gemot.analysis`) and the
   registry of every switch that changes what a run does (`python -m gemot.ablations`).
-- `gemot.paper*` — the manuscript's generated inputs and figures, built from the benchmark
-  checkout's `paper/`.
 
 ## Design notes
 

@@ -2,7 +2,7 @@
 
 Not coupled to the MCP server (which is single-problem, stdio-first). Reads archived runs from
 ``examples/_runs_archive`` and fetches each run's Phoenix trace lazily (cached) when its page is
-opened. Build via :func:`create_app`; launch via ``examples/explore_ui.py``.
+opened. Build via :func:`create_app`; launch via gemot_iclr_2026's ``scripts/explore_ui.py``.
 """
 
 from __future__ import annotations

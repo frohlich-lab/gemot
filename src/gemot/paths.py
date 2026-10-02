@@ -2,7 +2,7 @@
 
 The harness is installed from its own repository, but it is a *checkout* tool: it runs
 ``examples/<name>/run.py`` as a subprocess, archives results into ``examples/_runs_archive/`` and
-reads an example's shipped ``problem/``, all in the checkout that pins it (frohlich-lab/petab_mcp).
+reads an example's shipped ``problem/``, all in the checkout that pins it (frohlich-lab/gemot_iclr_2026).
 So "where is the checkout" is a real question it has to answer, and the resolution lives here —
 one module, one rule, and a single env var to override it.
 """
