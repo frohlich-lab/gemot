@@ -249,8 +249,9 @@ def test_reference_sigma_flag_accepts_a_sigma_near_the_truth():
 
 def test_reference_sigma_flag_catches_both_tails():
     # Twice the fixed tolerance, read off the constant: the floor is what decides at this df, and a
-    # literal here would quietly stop testing the tails if the factor ever moved.
-    from petab_mcp.constants import NOISE_SIGMA_REFERENCE_FACTOR as F
+    # literal here would quietly stop testing the tails if the factor ever moved. gemot's copy, which
+    # tests/server/test_server_constants.py holds to the server's.
+    from gemot.runner.scoring import _NOISE_SIGMA_REFERENCE_FACTOR as F
 
     inflated = _ref_flag(0.10 * (F * 2), 0.10)
     assert inflated["inflated"] and not inflated["collapsed"]

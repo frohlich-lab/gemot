@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+
 #: Importing any of these means the module under test stopped being import-light.
 _HEAVY = (
     "mcp",
@@ -42,6 +43,7 @@ _HEAVY = (
     "pypesto",
     "petab",
 )
+
 
 _PROBE = """
 import sys
@@ -77,6 +79,8 @@ def _assert_light(importline: str) -> None:
         "from gemot import fit_budget",
         "from gemot.explorer import bundle",
         "from gemot.runner import endpoints",
+        "from gemot import server_api",
+        "from gemot.runner import scoring, provenance",
         "from gemot import neural_ode",
         "from gemot.neural_ode import route, config, worker",
     ],
@@ -85,18 +89,14 @@ def test_import_is_light(importline):
     _assert_light(importline)
 
 
-def test_the_agent_package_never_imports_the_server_package():
-    """Not even LAZILY, inside a function. ``petab_mcp`` is a server-side dependency: the harness
-    process that runs the panel talks to the server over MCP and need not have it installed.
+_ROOT = Path(__file__).resolve().parents[1]
 
-    The parametrized module-scope check above cannot see a `from petab_mcp... import` inside a
-    function body, and one of those in the finish gate's ARM step meant that where petab_mcp was
-    absent EVERY armed finish raised — and the driver bounces a finish that did not confirm, so the
-    run looped to the recursion limit instead of finishing at its honest score. Scanned statically
-    over the AST, so no import is attempted here either.
-    """
+
+def _server_imports(paths) -> list[str]:
+    """``file:line`` of every ``import petab_mcp...`` / ``from petab_mcp... import`` in ``paths``,
+    found statically over the AST, so no import is attempted here either."""
     offenders = []
-    for path in sorted((Path(__file__).parent.parent / "src" / "gemot" / "agent").rglob("*.py")):
+    for path in paths:
         for node in ast.walk(ast.parse(path.read_text())):
             module = (node.module if isinstance(node, ast.ImportFrom) else None) or ""
             names = (
@@ -107,8 +107,36 @@ def test_the_agent_package_never_imports_the_server_package():
             if module.split(".")[0] == "petab_mcp" or any(
                 n.split(".")[0] == "petab_mcp" for n in names
             ):
-                offenders.append(f"{path.name}:{node.lineno}")
-    assert not offenders, f"gemot.agent imports petab_mcp at {offenders}"
+                offenders.append(f"{path.relative_to(_ROOT)}:{node.lineno}")
+    return offenders
+
+
+def test_only_server_api_imports_the_server_package():
+    """Not even LAZILY, inside a function. ``petab_mcp`` is the ``server`` extra: gemot installs,
+    imports and runs its server-free tests without it, and every in-process use of it goes through
+    :mod:`gemot.server_api`, which is what the server-free tier fakes.
+
+    The parametrized module-scope check above cannot see a `from petab_mcp... import` inside a
+    function body, and one of those in the finish gate's ARM step meant that where petab_mcp was
+    absent EVERY armed finish raised — and the driver bounces a finish that did not confirm, so the
+    run looped to the recursion limit instead of finishing at its honest score. A direct import
+    anywhere else in ``src/`` would also bypass the fakes, and only the server-free CI job would
+    notice.
+    """
+    paths = sorted(p for p in (_ROOT / "src" / "gemot").rglob("*.py") if p.name != "server_api.py")
+    offenders = _server_imports(paths)
+    assert not offenders, f"petab_mcp imported outside gemot.server_api at {offenders}"
+
+
+def test_only_the_server_tier_imports_the_server_package():
+    """A test outside ``tests/server/`` that imports ``petab_mcp`` cannot run where the server is
+    not installed, which is the point of that tier; it belongs in ``tests/server/``, or should read
+    the server through :mod:`gemot.server_api` and the fakes."""
+    paths = sorted(
+        p for p in (_ROOT / "tests").rglob("*.py") if (_ROOT / "tests" / "server") not in p.parents
+    )
+    offenders = _server_imports(paths)
+    assert not offenders, f"petab_mcp imported outside tests/server/ at {offenders}"
 
 
 def _lazy_table(package):
@@ -200,35 +228,6 @@ def test_lazy_facade_resolves_by_getattr():
 
 
 # --------------------------------------------------------------- the fit-budget duplication
-# `gemot.fit_budget` re-implements six things `petab_mcp.fitting` also defines
-# (_env_float/_env_int, the default worker count, FIT_PER_START_TIMEOUT_S, FIT_N_WORKERS,
-# fides_maxtime_options, fit_engine). That duplication looks removable but is NOT: `_HEAVY`
-# above lists `petab_mcp`, so importing ANY petab_mcp module from fit_budget -- including a
-# stdlib-only `constants` -- fails test_import_is_light, because petab_mcp/__init__ eagerly
-# imports session (and so petab + pandas). fit_budget must stay importable from a bare
-# amici+petab environment for simulate.py's offline reference fit.
-#
-# So the copies stay, and this pins them together instead: the drift the dedup would have
-# prevented is what actually matters, and the server + harness computing DIFFERENT fit budgets
-# is exactly the bug the two files' cross-referencing comments warn about.
-def test_fit_budget_matches_the_server():
-    """The harness's fit budget must agree with the server's, or a healthy fit gets killed."""
-    from gemot import fit_budget
-
-    from petab_mcp import fitting
-
-    assert fit_budget.FIT_PER_START_TIMEOUT_S == fitting.FIT_PER_START_TIMEOUT_S
-    assert fit_budget.FIT_N_WORKERS == fitting.FIT_N_WORKERS
-    assert fit_budget.fides_maxtime_options() == fitting._fides_maxtime_options()
-
-    # The worker count each side derives for a given multistart, including the edge cases
-    # (0/negative starts, fewer starts than workers) where the two expressions differ in shape.
-    for n_starts in (0, 1, 2, 3, 7, 50, 1000, -5):
-        harness = fit_budget.fit_workers(n_starts)
-        server = max(1, min(fitting.FIT_N_WORKERS, int(n_starts)))
-        assert harness == server, f"n_starts={n_starts}: harness={harness} server={server}"
-
-
 def test_fit_workers_honours_an_explicit_override():
     """`n_workers` must beat the import-time FIT_N_WORKERS cap.
 

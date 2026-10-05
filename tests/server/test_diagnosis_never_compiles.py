@@ -30,7 +30,7 @@ from petab_mcp.engine import AmiciEngine
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.session import PetabSession
 
-YAML_PATH = Path(__file__).parent / "data" / "toy_v1" / "problem.yaml"
+YAML_PATH = Path(__file__).parents[1] / "data" / "toy_v1" / "problem.yaml"
 
 # The toy model, re-authorable with a different STARTING VALUE for k1. That is the drift that makes
 # the de-dup no-op dangerous: `structure_fingerprint` ignores nominal values (so the fit is skipped

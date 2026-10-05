@@ -18,11 +18,13 @@ import pytest
 
 from gemot import prompts as P
 
+
 # Module-level names that are NOT model-facing text: the registry machinery itself, the separator
 # it serializes with, and the one list of TOOL NAMES the lead prompt renders itself from (the
 # rendered text is tracked through DEFAULT_SYSTEM_PROMPT, so editing the tuple still moves the
 # version). Everything else in `prompts` is prose sent to a model.
 _NOT_PROMPTS = {"PROMPT_GROUPS", "_HASH_SEP", "LEAD_SELF_READ_TOOLS"}
+
 
 # FRAGMENTS: constants that are concatenated INTO another prompt rather than sent on their own
 # (both report contracts are appended to the personas). They have no registry entry of their
@@ -285,11 +287,12 @@ def test_base_meta_stamps_the_prompt_version(tmp_path):
 def test_skills_are_tracked_like_prompts(tmp_path):
     """The lead is told to read `petab-model-building` before authoring and the signal analyst
     `residual-analysis` before querying, so a skill edit changes what the agent is TOLD — it is a
-    prompt change in everything but the file it lives in, and has to be versioned like one."""
+    prompt change in everything but the file it lives in, and has to be versioned like one. What
+    the skills themselves contain is pinned against the real server, in
+    tests/server/test_prompt_tracking.py."""
     pytest.importorskip("langchain_core", reason="agent stack not installed")
+    from gemot import server_api
     from gemot.agent.tools import ORCHESTRATOR_TOOLS
-    from gemot.experiments import collect_skills, skills_version
-    from petab_mcp.skills import skills_version as server_skills_version
 
     # the lead can actually reach it (otherwise the instruction is a dead letter).
     # list_skills is deliberately NOT exposed: zero agent calls across every measured sweep,
@@ -309,21 +312,7 @@ def test_skills_are_tracked_like_prompts(tmp_path):
         assert "get_skill('independence-audit')" not in P.DEFAULT_SYSTEM_PROMPT
         assert "get_data_regimes" not in P.DEFAULT_SYSTEM_PROMPT
 
-    skills = collect_skills()
-    assert set(skills) == {
-        "petab-skill-petab-model-building",
-        "petab-skill-antimony-authoring",
-        "petab-skill-independence-audit",
-    }
-    assert all(text.strip() for text in skills.values())
-
-    v = skills_version()
-    assert v == server_skills_version() and len(v) == 12
-
-    # it is SEPARATE from prompt_version, so a bump says WHICH surface moved
-    assert v != P.prompt_version()
-
-    # ...and it lands everywhere prompt_version does
+    # ...and the skills' version lands everywhere prompt_version does
     from gemot import metrics, wandb_logging
     from gemot.runner.provenance import _base_meta
 
@@ -333,32 +322,7 @@ def test_skills_are_tracked_like_prompts(tmp_path):
     args = argparse.Namespace(
         driver="deepagents", model="m", recursion_limit=10, n_starts=5, temperature=0.0
     )
-    assert _base_meta(scenario, args)["skills_version"] == v
-
-
-def test_the_petab_skill_is_inlined_from_the_installed_server():
-    """`_inline_skill` returns "" for a file it cannot find, so a server package that moved would
-    silently drop the skill from every analyst prompt, and move prompt_version with it."""
-    from conftest import SERVER_SRC
-
-    skill = SERVER_SRC / "_skills" / "petab-model-building" / "SKILL.md"
-    assert skill.read_text(encoding="utf-8") in P._PETAB_SKILL_INLINE
-
-
-def test_skills_version_moves_when_a_skill_changes(tmp_path):
-    """A skill edit must be visible in the version, or the tracking is decorative."""
-    from conftest import SERVER_SRC
-    from petab_mcp.skills import skills_version
-
-    src = SERVER_SRC / "_skills"
-    before = skills_version(src)
-
-    fake = tmp_path / "_skills" / "petab-model-building"
-    fake.mkdir(parents=True)
-    (fake / "SKILL.md").write_text(
-        (src / "petab-model-building" / "SKILL.md").read_text() + "\nAn extra rule.\n"
-    )
-    assert skills_version(tmp_path / "_skills") != before
+    assert _base_meta(scenario, args)["skills_version"] == server_api.skills().skills_version()
 
 
 def test_prompt_version_reaches_the_sweep_sinks(tmp_path):
@@ -430,7 +394,8 @@ def test_appending_to_a_pre_existing_history_does_not_shift_columns(tmp_path):
 #
 # A number that genuinely teaches belongs as a property of the problem ("a collapse of three
 # near-free pairs can cost hundreds of bic"), which is checkable against the model in front of the
-# agent, rather than as a finding of ours.
+# agent, rather than as a finding of ours. The shipped skills are held to the same rule against the
+# real server, in tests/server/test_prompt_tracking.py.
 _ARCHAEOLOGY = [
     (r"\b\d+[\s-]run\b", "a run count from our own sweeps"),
     (r"\bsweeps?\b", "refers to our sweeps"),
@@ -452,27 +417,22 @@ _ARCHAEOLOGY = [
 ]
 
 
-def _agent_facing_text():
-    """Every string the agent can actually read: the tracked prompts and the shipped skills."""
-    from petab_mcp import skills as _skills
-
-    for name, text in P.all_prompts().items():
-        if isinstance(text, str):
-            yield f"prompt:{name}", text
-    root = Path(_skills.__file__).resolve().parent / "_skills"
-    for path in sorted(root.rglob("SKILL.md")):
-        yield f"skill:{path.parent.name}", path.read_text(encoding="utf-8")
-
-
-def test_agent_facing_text_contains_no_archaeology():
+def _archaeology_offences(texts: dict[str, str]) -> list[str]:
+    """Each ``_ARCHAEOLOGY`` match in ``texts`` (where -> text), with its context."""
     import re
 
     offences = []
-    for where, text in _agent_facing_text():
+    for where, text in texts.items():
         for pattern, why in _ARCHAEOLOGY:
             for m in re.finditer(pattern, text, re.IGNORECASE):
                 s, e = max(0, m.start() - 70), min(len(text), m.end() + 70)
                 offences.append(f"{where}: {why}\n      ...{text[s:e].strip()}...")
+    return offences
+
+
+def test_agent_facing_text_contains_no_archaeology():
+    prompts = {f"prompt:{n}": t for n, t in P.all_prompts().items() if isinstance(t, str)}
+    offences = _archaeology_offences(prompts)
     assert not offences, (
         "agent-facing text cites this project's own history instead of stating a rule:\n    "
         + "\n    ".join(offences)

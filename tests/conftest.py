@@ -1,4 +1,12 @@
-"""Shared test fixtures and AMICI/SWIG discovery for the test session."""
+"""Shared test fixtures and AMICI/SWIG discovery for the test session.
+
+The suite has two tiers. Everything directly under ``tests/`` runs WITHOUT the petab-mcp server
+package: the server modules gemot reads in process (:mod:`gemot.server_api`) are replaced by
+``tests/fakes/server_api.py`` for every test here. ``tests/server/`` holds the tests that need the
+real server (its fixtures are in ``tests/server/conftest.py``), and is collected only where it is
+installed; the report header says when it was not. CI runs each tier in its own job, so neither
+can go quietly missing there.
+"""
 
 from __future__ import annotations
 
@@ -10,62 +18,50 @@ import pytest
 
 DATA_DIR = Path(__file__).parent / "data" / "toy_v1"
 YAML_PATH = DATA_DIR / "problem.yaml"
-#: The installed server package's directory, for tests that read its source. It comes from its own
-#: repository (frohlich-lab/PEtab-MCP), not ``src/``; ``find_spec`` locates it without importing it.
-SERVER_SRC = Path(importlib.util.find_spec("petab_mcp").origin).parent
+SERVER_TIER = Path(__file__).parent / "server"
+SERVER_INSTALLED = importlib.util.find_spec("petab_mcp") is not None
+
+#: pytest skips a directory named here. Only ever ``server/`` and only without the server: an
+#: explicit ``pytest tests/server`` still fails loudly there (see ``tests/server/conftest.py``).
+collect_ignore = [] if SERVER_INSTALLED else ["server"]
+
+
+def pytest_report_header(config):
+    if not SERVER_INSTALLED:
+        return (
+            "tests/server: NOT collected, petab-mcp is not installed "
+            "(pip install -e '.[server]', or -e ../PEtab-MCP)"
+        )
 
 
 def pytest_configure(config):  # noqa: D401 - pytest hook
-    # The server package already owns this (AMICI compiles a C++ model per structure and needs
-    # the SWIG the wheel was built against). It used to be copy-pasted here as a third identical
-    # implementation; call the shipped one instead.
-    from petab_mcp.engine import _ensure_swig_on_path
+    # AMICI compiles a C++ model per structure and needs the SWIG the wheel was built against.
+    # gemot ships this for data regeneration, identical to the server's own copy; calling it
+    # rather than the server's keeps this conftest importable without the server.
+    from gemot.simulate import _ensure_swig_on_path
 
     _ensure_swig_on_path()
+
+
+@pytest.fixture(autouse=True)
+def _fake_server_api(request, monkeypatch):
+    """Outside ``tests/server/``, every :mod:`gemot.server_api` accessor returns a fake.
+
+    Autouse so no test outside the server tier can reach the real server by forgetting to ask
+    for the fake: a test whose path needs more than ``tests/fakes/server_api.py`` provides fails
+    with ``NotFaked``, naming the attribute, which says it belongs in ``tests/server/``. A
+    subprocess does not inherit this; one that reaches the server is a server-tier test too.
+    """
+    if SERVER_TIER in request.path.parents:
+        return
+    from fakes import server_api as fake
+
+    fake.install(monkeypatch.setattr)
 
 
 @pytest.fixture
 def yaml_path() -> str:
     return str(YAML_PATH)
-
-
-# The shipped toy model (tests/data/toy_v1/model.ant). Structural edits in tests are made by
-# re-authoring this base (via ``set_model``) with extra reaction lines spliced in.
-_TOY_BASE_MODEL = """model conversion_reaction
-  compartment compartment_ = 1;
-  species A in compartment_;
-  species B in compartment_;
-  A = A_init;
-  B = B_init;
-  A_init = 1.0;
-  B_init = 0.0;
-  k1 = 0.5;
-  k2 = 0.1;
-  r1: A => B; k1 * A;
-  r2: B => A; k2 * B;
-{extra}end
-"""
-
-
-@pytest.fixture
-def reauthor_toy():
-    """Return a helper that re-authors the toy model with ``extra_reactions`` (Antimony lines)
-    spliced in via ``set_model`` and then ``fit``s it, for tests that just need a committed,
-    versioned structural change.
-
-    Since issue #81 an edit is fit-free (it snapshots no version); ``fit`` is what commits the
-    version. This helper does both so a caller gets a committed version in one call. Engine-free
-    (the plain ``session`` fixture wires no engine), ``fit`` still snapshots a ``kind="fit"``
-    version recording the edited model — the fit itself is skipped. Returns the ``fit`` result."""
-    from petab_mcp import operations as O
-
-    def _reauthor(session, extra_reactions=(), *, justification="test", **kwargs):
-        body = "".join(f"  {line}\n" for line in extra_reactions)
-        antimony = _TOY_BASE_MODEL.format(extra=body)
-        O.set_model(session, antimony, justification=justification, **kwargs)
-        return session.fit()
-
-    return _reauthor
 
 
 def _langchain_available() -> bool:
@@ -100,18 +96,6 @@ def broken_model():
     return SbmlModel.from_antimony(
         "model conversion_reaction\n species A = 1;\n k1 = 0.5;\n r1: A => ; k1 * A;\nend",
         model_id="conversion_reaction",
-    )
-
-
-@pytest.fixture
-def session(yaml_path, tmp_path):
-    from petab_mcp.references import StubReferenceResolver
-    from petab_mcp.session import PetabSession
-
-    return PetabSession(
-        yaml_path,
-        provenance_dir=str(tmp_path / "prov"),
-        resolver=StubReferenceResolver(),
     )
 
 
@@ -160,28 +144,6 @@ def amici_build_root(tmp_path_factory):
     return tmp_path_factory.mktemp("amici_build_root")
 
 
-@pytest.fixture
-def engine(session, amici_build_root):
-    from petab_mcp.engine import AmiciEngine
-
-    return AmiciEngine(session, build_root=str(amici_build_root))
-
-
-@pytest.fixture
-def fit_session(session, amici_build_root):
-    """A session with the AMICI engine wired and auto-fit on (small n_starts).
-
-    Use for tests that exercise the ``fit`` path; the engine is reachable as
-    ``fit_session.engine``.
-    """
-    from petab_mcp.engine import AmiciEngine
-
-    session.engine = AmiciEngine(session, build_root=str(amici_build_root))
-    session.auto_fit = True
-    session.auto_fit_starts = 2
-    return session
-
-
 def _write_empty_sbml(path: Path, model_id: str = "conversion_reaction") -> None:
     import libsbml
 
@@ -207,16 +169,3 @@ def empty_yaml(tmp_path) -> str:
         shutil.copy(DATA_DIR / name, work / name)
     _write_empty_sbml(work / "conversion_reaction.xml")
     return str(work / "problem.yaml")
-
-
-@pytest.fixture
-def empty_session(empty_yaml, tmp_path):
-    """A session whose problem ships model-less — ``has_model()`` is False until ``set_model``."""
-    from petab_mcp.references import StubReferenceResolver
-    from petab_mcp.session import PetabSession
-
-    return PetabSession(
-        empty_yaml,
-        provenance_dir=str(tmp_path / "prov"),
-        resolver=StubReferenceResolver(),
-    )

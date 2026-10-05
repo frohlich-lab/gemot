@@ -86,6 +86,9 @@ from gemot.runner.cli import build_parser
 from gemot.scenario import Scenario
 sys.path.insert(0, str(Path.cwd() / "tests"))
 from test_run_loop_no_model import _run, _Probe
+# The conftest's server fakes stop at the process boundary; this run's provenance reads them.
+from fakes import server_api as fake_server_api
+fake_server_api.install()
 
 async def forbidden_discovery(*args, **kwargs):
     raise AssertionError("Disabled curator queried biology tools")

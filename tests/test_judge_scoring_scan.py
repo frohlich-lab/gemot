@@ -249,7 +249,9 @@ def test_every_criterion_is_recorded_candidate_against_reference(tmp_path):
     can be read under a criterion it was neither run nor graded with, and a criterion sweep's arms
     can be put on each other's scale. The two flat rows the CSV/W&B allowlists take must agree
     with it."""
-    from petab_mcp.criteria import PENALTIES
+    from gemot import server_api
+
+    PENALTIES = server_api.criteria().PENALTIES
 
     store = _Store({4: (140.117, _CLEAN_SIGMA)}, head=4, checkpoint=4, criterion="aicc")
     _, result = _run(tmp_path, store)

@@ -21,7 +21,7 @@ import pytest
 
 from petab_mcp import validation_data as V
 
-TOY = Path(__file__).parent / "data" / "toy_v1"
+TOY = Path(__file__).parents[1] / "data" / "toy_v1"
 
 
 # ------------------------------------------------------------------ what makes a set a transfer

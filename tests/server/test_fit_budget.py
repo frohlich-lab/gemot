@@ -45,7 +45,7 @@ def test_both_tolerance_constants_honour_the_same_env_override():
         "import sys; sys.path.insert(0, %r);"
         "from gemot import fit_budget; from petab_mcp import fitting;"
         "print(fitting.FIT_AMICI_ATOL, fit_budget.FIT_AMICI_ATOL)"
-        % str(Path(__file__).resolve().parent.parent / "src")
+        % str(Path(__file__).resolve().parents[2] / "src")
     )
     env = {**os.environ, "PETAB_MCP_FIT_AMICI_ATOL": "1e-8"}
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, env=env)
@@ -139,3 +139,33 @@ def test_overrides_that_vary_only_across_conditions_are_taken_natively():
         ]
     )
     assert needs_flattening(_problem(mdf)) is False
+
+
+# --------------------------------------------------------------- the fit-budget duplication
+# `gemot.fit_budget` re-implements six things `petab_mcp.fitting` also defines
+# (_env_float/_env_int, the default worker count, FIT_PER_START_TIMEOUT_S, FIT_N_WORKERS,
+# fides_maxtime_options, fit_engine). That duplication looks removable but is NOT:
+# tests/test_import_lightness.py's `_HEAVY` lists `petab_mcp`, so importing ANY petab_mcp module from fit_budget -- including a
+# stdlib-only `constants` -- fails test_import_is_light, because petab_mcp/__init__ eagerly
+# imports session (and so petab + pandas). fit_budget must stay importable from a bare
+# amici+petab environment for simulate.py's offline reference fit.
+#
+# So the copies stay, and this pins them together instead: the drift the dedup would have
+# prevented is what actually matters, and the server + harness computing DIFFERENT fit budgets
+# is exactly the bug the two files' cross-referencing comments warn about.
+def test_fit_budget_matches_the_server():
+    """The harness's fit budget must agree with the server's, or a healthy fit gets killed."""
+    from gemot import fit_budget
+
+    from petab_mcp import fitting
+
+    assert fit_budget.FIT_PER_START_TIMEOUT_S == fitting.FIT_PER_START_TIMEOUT_S
+    assert fit_budget.FIT_N_WORKERS == fitting.FIT_N_WORKERS
+    assert fit_budget.fides_maxtime_options() == fitting._fides_maxtime_options()
+
+    # The worker count each side derives for a given multistart, including the edge cases
+    # (0/negative starts, fewer starts than workers) where the two expressions differ in shape.
+    for n_starts in (0, 1, 2, 3, 7, 50, 1000, -5):
+        harness = fit_budget.fit_workers(n_starts)
+        server = max(1, min(fitting.FIT_N_WORKERS, int(n_starts)))
+        assert harness == server, f"n_starts={n_starts}: harness={harness} server={server}"
