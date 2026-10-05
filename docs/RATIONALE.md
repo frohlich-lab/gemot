@@ -22,7 +22,7 @@ The numbers on the entries below are pull requests of
 [frohlich-lab/gemot_iclr_2026](https://github.com/frohlich-lab/gemot_iclr_2026) (then named petab_mcp), where this
 package was developed before it moved here.
 
-2026-10-05 A model-free data package (`paths.DATA_PACKAGE_EXAMPLES`) has no true model, so the
+#14 A model-free data package (`paths.DATA_PACKAGE_EXAMPLES`) has no true model, so the
 Δcriterion gate could never pass it; a `reference_free` scenario is instead graded by an ABSOLUTE
 goodness-of-fit test (`scoring._reference_free_adequacy`) that the scenario DECLARES in `adequacy`,
 since only its author knows which one its noise model supports: `chi2` where every sigma is fixed (an
@@ -32,8 +32,8 @@ missing reference.json (deleting an answer key must keep failing the example), a
 noise report (a run must not change its own test by freeing a sigma) — and an unassessable verdict is
 not a pass. Held-out data stays report-only, now as absolute numbers with nothing to subtract;
 `judge_mode` rides on every result so a sweep never pools an adequacy pass with a ΔBIC pass. The bar is
-only as strict as the curated noise model: a dispersion-as-noise package (lun) makes chi2 lax, a
-tiny-SEM one makes it strict.
+only as strict as the curated noise model: a dispersion-as-noise package (lun) makes chi2 looser than
+its data allow, a tiny-SEM one makes it strict.
 
 #347 An estimated sigma starts at its data's spread (`stage._sigma_seeds`), not at the table's
 nominal: Adam in log space moves at most its learning rate per step, and perelson's `sd_viral_load`
