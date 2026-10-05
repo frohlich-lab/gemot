@@ -1,4 +1,4 @@
-"""THE CONTRACT: no diagnosis path may trigger AMICI codegen or a C++ build.
+"""THE CONTRACT: no diagnosis path may trigger AMICI codegen or a C++ build — through gemot.
 
 A diagnosis describes a fit that already happened, and the module that fit was compiled with
 already exists — so asking "which parameters can this fit not pin?" must never cost a build. It did:
@@ -7,12 +7,11 @@ resolved its AMICI output folder from live session state then compiled that neve
 Measured on the reviewed candidate: 22.4 s (blasi no-op), 57 s (toy, auto_fit off) and 12.5 s
 (unauthored blasi), charged to no clock at all when it went through the finish gate's un-timed probe.
 
-The fix is :class:`petab_mcp.fitting.FitRecord` — a diagnosis reads the built problem the fit left
-behind, so there is no hash to resolve. This file is what keeps that true: it enumerates EVERY
-diagnosis entry point and asserts, against a build root, that the directory listing and the compile
-accounting are both unchanged. A new entry point belongs in ``_ENTRY_POINTS`` — a reader adding one
-gets the check for free, and the loud failure here is a listing diff, not an exception (a diagnosis
-itself must fail OPEN for the agent: the section absent with an honest reason).
+The server's own entry points (the identifiability readers, ``get_fit_summary``, every section of
+``get_fit_diagnosis``, the judge's literal call) and the fail-open half of the contract are pinned in
+PEtab-MCP's ``tests/test_diagnosis_never_compiles.py``. What stays here is the one entry point that
+is gemot's: the finish gate's probe, :func:`gemot.agent.probe._current_diagnosis`, driven through
+the server's real fit tools in every state a run reaches, against a build root.
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ from pathlib import Path
 import pytest
 from fastmcp import FastMCP
 
-from petab_mcp import identifiability as I
 from petab_mcp import operations as O
 from petab_mcp import server as S
 from petab_mcp.engine import AmiciEngine
@@ -139,19 +137,8 @@ async def _probe_diagnosis(fx):
     return await _current_diagnosis(reader)
 
 
-#: Every way a diagnosis can be asked for. Named so a failure says WHICH surface built something.
+#: Every way gemot asks for a diagnosis. Named so a failure says WHICH surface built something.
 _ENTRY_POINTS = {
-    "merge_hints": lambda fx: I.fit_merge_hints(fx.session),
-    "fit_diagnosis_block": lambda fx: I.fit_diagnosis_block(fx.session),
-    "stored_merge_hints": lambda fx: I.stored_merge_hints(fx.session),
-    "identifiability": lambda fx: I.identifiability(fx.session),
-    "get_fit_summary": lambda fx: fx.call("get_fit_summary"),
-    "diagnosis_default": lambda fx: fx.call("get_fit_diagnosis"),
-    "diagnosis_residuals": lambda fx: fx.call("get_fit_diagnosis", sections="residuals"),
-    "diagnosis_parameters": lambda fx: fx.call("get_fit_diagnosis", sections="parameters"),
-    "diagnosis_all": lambda fx: fx.call("get_fit_diagnosis", sections="all"),
-    # the judge's literal call (runner/judge.py) and the finish gate's un-timed probe
-    "judge": lambda fx: fx.call("get_fit_diagnosis", sections="residuals"),
     "finish_gate_probe": lambda fx: asyncio.run(_probe_diagnosis(fx)),
 }
 
@@ -162,7 +149,7 @@ def _assert_nothing_built(fx, label):
     # one. Warming `get_fit_summary` first — on the theory that an on-demand simulation is a
     # legitimate, accounted build — moved the baseline past the 16 s this file exists to forbid, and
     # made every state below pass vacuously. A read never compiles: `fitting.ensure_simulation`
-    # refuses a structure with no module and the section reports why (see the fail-open test below).
+    # refuses a structure with no module and the section reports why (see the fail-open test in PEtab-MCP).
     before = fx.state()
     for name, entry in _ENTRY_POINTS.items():
         entry(fx)
@@ -187,8 +174,8 @@ _CASES = [
 
 
 @pytest.mark.parametrize("case", _CASES)
-def test_no_diagnosis_entry_point_builds_a_model(tmp_path, case):
-    """Every entry point, in every state a run reaches, against the build root.
+def test_the_finish_gate_probe_never_builds_a_model(tmp_path, case):
+    """The probe, in every state a run reaches, against the build root.
 
     Three of these built. ``dedup_noop``: HEAD is a real fit, the working SBML has been re-authored to
     the same structure with a different starting value, so the fit is SKIPPED while
@@ -221,41 +208,3 @@ def test_no_diagnosis_entry_point_builds_a_model(tmp_path, case):
         # What makes these the sharp cases, asserted AFTER the reads so it is the reads that are shown
         # not to have built it: no module exists for the structure the working state names.
         assert not fx.session.engine.module_built(fx.session.sbml_hash())
-
-
-def test_the_diagnosis_still_answers_where_it_refuses_to_build(tmp_path):
-    """Failing open is the other half of the contract: the section must be ABSENT with an honest
-    reason, never an exception and never a silent empty payload that reads as "nothing wrong"."""
-    fx = _Fixture(tmp_path, auto_fit=False)
-    O.set_model(fx.session, _TOY.format(k1=0.5), justification="build the toy")
-    fx.session.fit()  # auto_fit off -> status "skipped", so no optimum was frozen
-
-    ident = fx.call("get_fit_diagnosis", sections="parameters")["identifiability"]
-    assert ident["available"] is False
-    assert ident["note"] == I.NO_OPTIMUM_NOTE
-    # ...and the residual half, which has no simulation and may not compile one to get it, says so
-    # rather than returning bare empty rows that read as a clean fit
-    residuals = fx.call("get_fit_diagnosis")
-    assert residuals["per_observable"] == [] and "compile" in residuals["status"]
-
-
-def test_a_resumed_process_still_reports_the_fits_parameter_geometry(tmp_path):
-    """Failing open must not become failing SILENT. The freeze made the parameter half depend on
-    in-process state, so a restarted process reported `available: false` for a fit that HAD happened —
-    and the harness parsimony gate, which refuses a finish on a rank-deficient FIM, stopped refusing
-    for the rest of the run. The verdict therefore travels with the fit
-    (identifiability.fit_diagnosis_block), and is re-served without recomputing anything."""
-    fx = _Fixture(tmp_path)
-    O.set_model(fx.session, _TOY.format(k1=0.5), justification="build the toy")
-    fx.session.fit()
-    fitted = fx.call("get_fit_diagnosis", sections="parameters")["identifiability"]
-    assert fitted["available"] is True and fitted["fim"]
-
-    resumed = fx.reopen()
-    after = resumed.call("get_fit_diagnosis", sections="parameters")["identifiability"]
-    assert after["fim"] == fitted["fim"] and after["parameters"] == fitted["parameters"]
-    assert "stale" not in after
-    # ...and the score read beside it names the same tie (or the same absence of one)
-    assert resumed.call("get_fit_summary").get("merge_hints") == fx.call("get_fit_summary").get(
-        "merge_hints"
-    )

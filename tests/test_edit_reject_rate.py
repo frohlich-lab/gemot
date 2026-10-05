@@ -195,49 +195,6 @@ def test_every_reject_bucket_matches_a_message_the_server_can_emit():
     assert not dead, f"reject buckets matching no message the server emits: {dead}"
 
 
-# -- the rejection message must carry its own reasons (Aug 8-10 sweep) -----------------------
-def test_rejection_summary_names_the_reasons():
-    from petab_mcp.operations import _rejection_summary
-
-    out = _rejection_summary(
-        [
-            "'RAF_total' ships FIXED (estimate=0) in this problem — a known constant",
-            "Extraneous parameter(s) in parameter table: {'pEGFR_Akt', 'pAkt_S6'}",
-        ]
-    )
-    assert "resulting problem is invalid" in out  # bucket substring preserved
-    assert "RAF_total" in out and "pAkt_S6" in out  # the actionable detail is IN the message
-    assert "more in `issues`" not in out  # nothing elided at 2 issues
-
-
-def test_rejection_summary_caps_and_says_what_it_elided():
-    from petab_mcp.operations import _rejection_summary
-
-    out = _rejection_summary([f"issue number {i}" for i in range(7)])
-    assert "issue number 0" in out and "issue number 2" in out
-    assert "issue number 3" not in out  # capped at 3
-    assert "(+4 more in `issues`)" in out  # a truncated view never looks complete
-
-
-def test_rejection_summary_collapses_multiline_libsbml_noise():
-    from petab_mcp.operations import _rejection_summary
-
-    long_sbml = (
-        "libSBML Error (SBML component consistency): The value of a 'symbol' field in any "
-        "<initialAssignment>\n   definition cannot also appear as the value of a "
-        "'variable' field.\n   " + "x" * 400
-    )
-    out = _rejection_summary([long_sbml])
-    assert "\n" not in out  # one line, not a wall of text
-    assert len(out) < 420  # per-issue truncation actually applied
-
-
-def test_rejection_summary_falls_back_when_there_is_no_error_level_issue():
-    from petab_mcp.operations import _rejection_summary
-
-    assert _rejection_summary([]) == "the resulting problem is invalid."
-
-
 # -- the working tree must be attributable, not just the commit ------------------------------
 def test_git_diff_digest_fingerprints_an_uncommitted_tree(tmp_path):
     """`git_sha` ends in `+dirty` when the tree is modified, which means it does NOT pin the code.

@@ -345,22 +345,6 @@ def test_the_petab_skill_is_inlined_from_the_installed_server():
     assert skill.read_text(encoding="utf-8") in P._PETAB_SKILL_INLINE
 
 
-def test_skills_version_moves_when_a_skill_changes(tmp_path):
-    """A skill edit must be visible in the version, or the tracking is decorative."""
-    from conftest import SERVER_SRC
-    from petab_mcp.skills import skills_version
-
-    src = SERVER_SRC / "_skills"
-    before = skills_version(src)
-
-    fake = tmp_path / "_skills" / "petab-model-building"
-    fake.mkdir(parents=True)
-    (fake / "SKILL.md").write_text(
-        (src / "petab-model-building" / "SKILL.md").read_text() + "\nAn extra rule.\n"
-    )
-    assert skills_version(tmp_path / "_skills") != before
-
-
 def test_prompt_version_reaches_the_sweep_sinks(tmp_path):
     """result.json is not where a sweep is analysed from. The history CSV writes with
     `extrasaction="ignore"`, so a key missing from the field list is dropped SILENTLY — a
