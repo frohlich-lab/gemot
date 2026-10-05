@@ -13,6 +13,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The whole suite against the server pyproject.toml pins: tests/server/ AND the server-free tier.
+  # The server-free tier runs again, without the server, in `unit` below; this job stays the one
+  # that says "everything passes against the pinned server", under the check names branch
+  # protection already requires.
   test:
     name: test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -46,7 +50,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build cmake build-essential
 
-      # petab-mcp is a git dependency on a PRIVATE repository (pyproject.toml), which this job's
+      # petab-mcp (the `server` extra) is a git dependency on a PRIVATE repository, which this job's
       # GITHUB_TOKEN cannot read: fetch that one URL over SSH with a read-only deploy key of that
       # repository, held here as a secret.
       - name: Read access to the server repository
@@ -61,10 +65,10 @@ jobs:
             url."ssh://git@github.com/frohlich-lab/PEtab-MCP".insteadOf \
             "https://github.com/frohlich-lab/PEtab-MCP"
 
-      - name: Install package (with dev extras)
+      - name: Install package (with dev and server extras)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e '.[dev]'
+          python -m pip install -e '.[dev,server]'
 
       # NOTE: the deepagents driver's tests (test_subagent_registry.py, test_agent_tool_dispatch.py,
       # test_biocurator_input.py, test_biocurator_trim.py) importorskip their harness dependency, so
@@ -118,6 +122,50 @@ jobs:
         # even a single-file debug run spawn two workers -- each with its own session-scoped
         # amici_build_root, so the ~60-90s toy-model compile was paid twice for no parallelism.
         run: python -m pytest -v -n 2
+
+  # The server-free tier, with NO server installed: everything under tests/ but tests/server/,
+  # which reads the server only through tests/fakes/server_api.py. What this job proves is that it
+  # stays that way -- a test or a module that starts needing petab_mcp fails here, where the
+  # `test` job above would pass it. It needs no deploy key, and no C++ toolchain or pinned SWIG
+  # either: nothing in this tier compiles an AMICI model (the neural route's JAX backend does not).
+  unit:
+    name: unit, no server (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package (dev extras only)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      # The premise of the job. If an extra ever pulled the server in, every step below would pass
+      # without proving anything.
+      - name: Check the server is NOT installed
+        run: |
+          python -c "import importlib.util, sys; sys.exit('petab_mcp is installed' if importlib.util.find_spec('petab_mcp') else 0)"
+
+      # Same reason as in `test`: tests/test_explorer_math.py skips without node.
+      - name: Set up Node (runs the explorer's JS through pytest)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run the server-free tier
+        run: python -m pytest -v -n 2 tests --ignore=tests/server
 
   lint:
     name: lint (ruff)

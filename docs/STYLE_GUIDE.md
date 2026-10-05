@@ -61,7 +61,10 @@ The server's tool docstrings are the other half of this: they state the tool's C
 that replaces them for the panel states the same tool for the job the lead is doing. Neither
 restates the other. The two packages ship separately — `gemot` must import without
 `petab_mcp` ([test_import_lightness.py](../tests/test_import_lightness.py)) — so they cannot
-share a constant; keep them from describing the same thing instead.
+share a constant; keep them from describing the same thing instead. Where gemot must apply the
+server's value (a threshold both gates read), it keeps a copy beside the code that uses it, and a
+test in `tests/server/` holds the copy to the server's
+([test_server_constants.py](../tests/server/test_server_constants.py)).
 
 ## Types
 
@@ -96,11 +99,22 @@ share a constant; keep them from describing the same thing instead.
 
 ## Tests
 
+- **Two tiers.** `tests/test_<module>.py` runs with no server installed;
+  `tests/server/test_<module>.py` runs against the real one. A new test goes in `tests/` unless
+  it needs the server itself — its session or engine, its source or skills, or more of a server
+  module than [tests/fakes/server_api.py](../tests/fakes/server_api.py) provides (the test then
+  fails with `NotFaked`). Mixed files are split along that line, and a test is split with them
+  when one half needs the server and the other does not.
+- **Only [server_api.py](../src/gemot/server_api.py) imports `petab_mcp`** in `src/`, and only
+  `tests/server/` in `tests/` ([test_import_lightness.py](../tests/test_import_lightness.py)
+  enforces both). A fake added to `tests/fakes/server_api.py` comes with a case in
+  [test_server_api_fakes.py](../tests/server/test_server_api_fakes.py) that runs it against the
+  real module.
 - `tests/test_<module>.py`; plain `pytest` functions, no class wrappers.
 - Short aliased imports of the module under test: `from gemot import analysis as A`.
 - Module-level `_BASE_*` template strings with a `{extra}` splice point, plus a small
   `_helper` that fills it, rather than a fixture per variation
-  (`_TOY_BASE_MODEL` and `reauthor_toy` in [conftest.py](../tests/conftest.py)).
+  (`_TOY_BASE_MODEL` and `reauthor_toy` in [tests/server/conftest.py](../tests/server/conftest.py)).
 - **A test comment names the regression it locks in.** A test whose failure does not tell
   you what broke is half a test — see the docstrings in
   [test_prompt_tracking.py](../tests/test_prompt_tracking.py).

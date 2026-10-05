@@ -23,8 +23,12 @@ working directory, or from `PETAB_MCP_REPO_ROOT` (see [`src/gemot/paths.py`](src
 ## Install
 
 ```bash
-pip install -e .          # gemot + the pinned server (AMICI + pyPESTO; a C++ toolchain is required)
+pip install -e '.[server]'   # gemot + the pinned server (AMICI + pyPESTO; a C++ toolchain is required)
 ```
+
+The server is the `server` extra (`harness` includes it): anything that RUNS a scenario launches
+it, but gemot itself installs and imports without it, and most of its tests run without it (see
+[Development](#development)).
 
 AMICI compiles generated C++ and needs a toolchain: a C++ compiler, CMake, Ninja, and the
 pip `swig` binary on `PATH` (OpenBLAS ships in the AMICI wheel).
@@ -37,7 +41,7 @@ git config --global url."git@github.com:frohlich-lab/PEtab-MCP".insteadOf https:
 ```
 
 To work on the server and gemot together, install your server checkout over the pinned one
-(and again after any later `pip install -e .`, which restores the pin):
+(and again after any later `pip install -e '.[server]'`, which restores the pin):
 
 ```bash
 pip install -e ../PEtab-MCP
@@ -73,9 +77,28 @@ named score every gate reads, the versioned provenance. They are stated in the
 ## Development
 
 ```bash
-pip install -e '.[dev]'   # dev adds pytest + the agent stack
-pytest                    # needs the full install (AMICI/pyPESTO are hard deps); PubMed is stubbed
+pip install -e '.[dev]'   # dev adds pytest + the agent stack, NOT the server
+pytest                    # the server-free tier; PubMed is stubbed
 ```
+
+The suite has two tiers:
+
+- **`tests/`** runs with no server installed. gemot reads the server in process only through
+  [`gemot.server_api`](src/gemot/server_api.py), and every test here gets the fakes in
+  [`tests/fakes/server_api.py`](tests/fakes/server_api.py) in its place. A test whose path needs
+  more of the server than they provide fails with `NotFaked`, naming what it reached for: it
+  belongs in `tests/server/`.
+- **`tests/server/`** runs against the real server: its in-process session and engine, its source
+  and skills, the held-out format, and the drift tests that hold gemot's copied constants and the
+  fakes to the server's. It is collected only where the server is installed; the report header
+  says when it was not.
+
+```bash
+pip install -e '.[dev,server]'   # or `pip install -e ../PEtab-MCP` over it, to test a server change
+pytest                           # both tiers
+```
+
+CI runs the whole suite against the pinned server, and the server-free tier again without it.
 
 ## License
 
