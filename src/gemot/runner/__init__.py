@@ -17,8 +17,8 @@ An example's ``run.py`` is a thin wrapper: build the ``Scenario`` and call
   :mod:`.endpoints`   the bio-knowledge MCP URLs the biocurator queries (dependency-free)
   :mod:`.clock`       the MCP call handle + the union-of-busy-intervals tool clock
   :mod:`.provenance`  timestamps, code version, reference score, the live-run marker
-  :mod:`.scoring`     residual-structure and noise-sigma projections of the fit reports
-  :mod:`.judge`       the BIC verdict, scored on the run's BEST checkpoint
+  :mod:`.scoring`     residual-structure, noise-sigma and reference-free adequacy projections
+  :mod:`.judge`       the verdict (by criterion, or reference-free), on the run's BEST checkpoint
   :mod:`.server`      the petab-mcp server subprocess and its bootstrap
   :mod:`.failure`     degraded results for a run that aborts before a verdict
   :mod:`.drive`       one run: preflight, baseline, driver, judge, archive
@@ -68,6 +68,8 @@ _LAZY = {
     "_noise_sigma_flag": ".scoring",
     "_reference_sigma_flag": ".scoring",
     "_residual_structure_fields": ".scoring",
+    "_reference_free_adequacy": ".scoring",
+    "REFERENCE_FREE_GOF_ALPHA": ".scoring",
     "_SERVER_BOOTSTRAP": ".server",
     "_free_port": ".server",
     "_wait_until_listening": ".server",

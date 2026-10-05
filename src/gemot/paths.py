@@ -94,8 +94,17 @@ BENCHMARK_EXAMPLES = [
 #: it cannot drift from the authoritative list above.
 LARGE_EXAMPLES = frozenset(BENCHMARK_EXAMPLES[-5:])
 
-#: Every example with a ``run.py``, synthetic demos first (the sweep's rollout order).
-ALL_EXAMPLES = [*SYNTHETIC_EXAMPLES, *BENCHMARK_EXAMPLES]
+#: Model-free data packages: curated PEtab v2 problems imported from frohlich-lab/petab_datasets,
+#: with no published mechanistic model behind them. Their ``problem/`` is committed, NOT
+#: materialized from the benchmark collection, and they ship no ``reference.json``: the judge grades
+#: them reference-free (``Scenario.reference_free``). Kept out of BENCHMARK_EXAMPLES on purpose:
+#: everything that walks that list (materialization, the reference refits, LARGE_EXAMPLES' tail)
+#: needs a published model to fit.
+DATA_PACKAGE_EXAMPLES = ["dessauges", "fontaine", "lun", "thomas"]
+
+#: Every example with a ``run.py``, synthetic demos first, data packages last (the sweep's rollout
+#: order).
+ALL_EXAMPLES = [*SYNTHETIC_EXAMPLES, *BENCHMARK_EXAMPLES, *DATA_PACKAGE_EXAMPLES]
 
 
 def runs_archive_root() -> Path:

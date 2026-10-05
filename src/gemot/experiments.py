@@ -425,6 +425,8 @@ _ROW_FIELDS = (
     "model",
     "temperature",
     "success",
+    # Which bar `success` was decided by; a pass rate is only meaningful within one.
+    "judge_mode",
     "delta_bic",
     # The delta the GATE used, and the criterion it used — `delta_bic` is only the
     # gating number when BIC is that criterion, so aggregating it beside `success`
@@ -558,6 +560,7 @@ def fetch_experiment_rows(base_url: str = "http://localhost:6006") -> list[dict[
                         "model": md.get("model") or out.get("model"),
                         "temperature": md.get("temperature"),
                         "success": out.get("success"),
+                        "judge_mode": out.get("judge_mode"),
                         "delta_bic": out.get("delta_bic"),
                         "delta_criterion": out.get("delta_criterion"),
                         "criterion": out.get("criterion"),
@@ -659,27 +662,41 @@ def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool 
             f"{_fmt(_med([g.get('chi2_gof_pvalue') for g in group]), '.2g'):>9}"
         )
 
-    # model × temperature pivot (pooled over examples): pass rate
-    lines += ["", "Pass rate by model × temperature (pooled over examples):", ""]
-    models = sorted({r.get("model") for r in rows}, key=str)
-    temps = sorted({r.get("temperature") for r in rows}, key=lambda t: (t is None, str(t)))
-    head = f"{'model':<26}" + "".join(f"{('t=' + _fmt(t, 'g')):>10}" for t in temps)
-    lines += [head, "-" * len(head)]
-    for model in models:
-        cell_strs = []
-        for t in temps:
-            grp = [r for r in rows if r.get("model") == model and r.get("temperature") == t]
-            if grp:
-                p = sum(1 for g in grp if g.get("success"))
-                cell_strs.append(f"{p}/{len(grp)}")
-            else:
-                cell_strs.append("-")
-        lines.append(f"{_fmt(model):<26}" + "".join(f"{c:>10}" for c in cell_strs))
+    # Everything below pools over examples, so it is split by judge mode once there is more than
+    # one: a reference-free pass (absolute adequacy) and a Δcriterion pass are different claims, and
+    # one rate over both reads as neither. A row from before `judge_mode` was judged by reference.
+    by_mode: dict[str, list[dict]] = {}
+    for r in rows:
+        by_mode.setdefault(r.get("judge_mode") or "reference", []).append(r)
+    split = len(by_mode) > 1
 
-    total_pass = sum(1 for r in rows if r.get("success"))
-    lines += [
-        "",
-        f"overall: {total_pass}/{len(rows)} runs passed "
-        f"({len(cells)} cells, prompt_version={rows[0].get('prompt_version')})",
-    ]
+    # model × temperature pivot (pooled over examples): pass rate
+    for mode, mode_rows in sorted(by_mode.items()):
+        pooled = f"pooled over examples, {mode}" if split else "pooled over examples"
+        lines += ["", f"Pass rate by model × temperature ({pooled}):", ""]
+        models = sorted({r.get("model") for r in mode_rows}, key=str)
+        temps = sorted({r.get("temperature") for r in mode_rows}, key=lambda t: (t is None, str(t)))
+        head = f"{'model':<26}" + "".join(f"{('t=' + _fmt(t, 'g')):>10}" for t in temps)
+        lines += [head, "-" * len(head)]
+        for model in models:
+            cell_strs = []
+            for t in temps:
+                grp = [
+                    r for r in mode_rows if r.get("model") == model and r.get("temperature") == t
+                ]
+                if grp:
+                    p = sum(1 for g in grp if g.get("success"))
+                    cell_strs.append(f"{p}/{len(grp)}")
+                else:
+                    cell_strs.append("-")
+            lines.append(f"{_fmt(model):<26}" + "".join(f"{c:>10}" for c in cell_strs))
+
+    lines.append("")
+    for mode, mode_rows in sorted(by_mode.items()):
+        total_pass = sum(1 for r in mode_rows if r.get("success"))
+        lines.append(
+            f"{f'overall ({mode})' if split else 'overall'}: {total_pass}/{len(mode_rows)} runs "
+            f"passed ({len({_key(r) for r in mode_rows})} cells, "
+            f"prompt_version={rows[0].get('prompt_version')})"
+        )
     return "\n".join(lines)

@@ -37,6 +37,10 @@ _RESULT_FIELDS = (
     "model",
     "driver",
     "success",
+    # Which bar `success` was decided by: "reference" (Δcriterion against the true model) or
+    # "reference_free" (an absolute adequacy test, for an example with no true model). Different
+    # claims, so a pass rate pooled across the two means neither; group by this first.
+    "judge_mode",
     "stop_reason",
     "baseline_nll",
     "final_nll",
@@ -146,6 +150,11 @@ _VALIDATION_FIELDS = (
 # different runs, and without a flat column telling them apart means reading traces.
 _LOF_FIELDS = ("lof_status", "lof_weak", "lof_df")
 
+# A reference-free run's bar, flattened out of the nested `adequacy` block: which absolute test the
+# example declared and whether the candidate passed it (blank = it could not be assessed, which the
+# judge did not count as a pass). Empty on every reference-judged run.
+_ADEQUACY_FIELDS = ("adequacy_test", "adequacy_passed")
+
 # result.json keys whose value is a NESTED dict, carried into the row so the write-time flatteners
 # below can expand them. build_row copies only the flat _RESULT_FIELDS, so without this the flatteners
 # saw nothing on the collect() path and every column derived from a nested block stayed empty —
@@ -156,6 +165,7 @@ _NESTED_SOURCE_FIELDS = (
     "git_diff",
     "openrouter_endpoints",
     "validation",
+    "adequacy",
 )
 
 # Columns derived from the Phoenix trace (token usage + span breakdown).
@@ -172,7 +182,9 @@ _PHOENIX_FIELDS = (
     "phoenix_note",
 )
 
-HISTORY_FIELDS = _RESULT_FIELDS + _LOF_FIELDS + _VALIDATION_FIELDS + _PHOENIX_FIELDS
+HISTORY_FIELDS = (
+    _RESULT_FIELDS + _LOF_FIELDS + _VALIDATION_FIELDS + _ADEQUACY_FIELDS + _PHOENIX_FIELDS
+)
 DEFAULT_HISTORY = paths.metrics_history()
 
 
@@ -474,6 +486,16 @@ def flatten_validation(row: dict) -> dict:
     }
 
 
+def flatten_adequacy(row: dict) -> dict:
+    """The flat ``adequacy_*`` pairs for a reference-free result's ``adequacy`` block — ``{}`` when
+    it has none, which is every reference-judged run. Keys-only and public for the same reason as
+    :func:`flatten_validation`: the Phoenix span stamps the same names."""
+    block = row.get("adequacy")
+    if not isinstance(block, dict):
+        return {}
+    return {"adequacy_test": block.get("test"), "adequacy_passed": block.get("passed")}
+
+
 #: Flatteners that return only THEIR OWN keys, merged into the row rather than replacing it. The
 #: four `_flatten_*` helpers above return the WHOLE row and chain; these do not, and the split is
 #: load-bearing (a keys-only mapping is what lets `tracing` stamp the same names without restating
@@ -485,7 +507,7 @@ def flatten_validation(row: dict) -> dict:
 #: the Phoenix span together — would change what `tracing` stamps (it resolves the name per call)
 #: and NOT what this writes, silently un-syncing the two surfaces the split exists to keep
 #: identical. Resolved per call so both sides see the same function.
-_KEY_FLATTENERS = ("flatten_validation",)
+_KEY_FLATTENERS = ("flatten_validation", "flatten_adequacy")
 
 # Resolved ONCE, here, so a typo is a hard failure at IMPORT rather than a KeyError inside
 # `append_history` — which runs at the very end of a run, after the agent loop, the fits and the
@@ -635,7 +657,15 @@ def summarize(rows: list[dict[str, Any]]) -> str:
         for scenario, group in repeated.items():
             passed = sum(1 for r in group if r.get("success"))
             lines.append(f"  {scenario:<16} {passed}/{len(group)}")
-    n_pass = sum(1 for r in rows if r.get("success"))
+    # Per judge mode once there is more than one: a reference-free pass (absolute adequacy) and a
+    # Δcriterion pass are different claims, and one rate over both reads as neither. A row from
+    # before `judge_mode` was recorded was judged against its reference.
+    by_mode: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        by_mode.setdefault(r.get("judge_mode") or "reference", []).append(r)
     lines.append("")
-    lines.append(f"overall: {n_pass}/{len(rows)} passed")
+    for mode, group in sorted(by_mode.items()):
+        n_pass = sum(1 for r in group if r.get("success"))
+        label = "overall" if len(by_mode) == 1 else f"overall ({mode})"
+        lines.append(f"{label}: {n_pass}/{len(group)} passed")
     return "\n".join(lines)

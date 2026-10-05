@@ -12,7 +12,8 @@ and lets an LLM agent change the model only through one constrained tool, with e
 
 gemot spawns that server as a subprocess, launches a panel of agent specialists (mathematician,
 systems scientist, signal engineer) on it and then hands off to the **judge**, which selects the
-best-scoring version and scores it against a true or published reference. Phoenix tracing and the
+best-scoring version and scores it against a true or published reference — or, for a model-free
+data package with no reference, by an absolute goodness-of-fit test. Phoenix tracing and the
 run explorer read the trace and version history this pipeline leaves behind.
 
 The benchmark it drives — the zero-shot examples, the Slurm sweep tooling and the paper — lives in

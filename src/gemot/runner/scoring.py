@@ -1,12 +1,14 @@
 """Projections of the server's fit reports into the judge's verdict fields.
 
-Two families, both pure functions over a report payload:
+Three families, all pure functions over a report payload:
 
-* the compact residual-structure block ``result.json`` carries, and
+* the compact residual-structure block ``result.json`` carries,
 * the noise-sigma plausibility gates — is the estimated sigma inflated to absorb misfit, or
   collapsed to overfit the noise? The preferred gate compares against the TRUE model's own
   fitted sigmas (dimensionally sound); the data-std band is the fallback where a reference
-  doesn't record them.
+  doesn't record them — and
+* the absolute adequacy verdict that is a reference-free example's bar, where there is no true
+  model to compare against at all.
 
 Imports ``petab_mcp.constants`` so the session's adequacy gate and this judge gate share ONE
 threshold — but nothing from ``mcp``, so a test of these projections needs no MCP client.
@@ -24,16 +26,24 @@ from petab_mcp.constants import (
     NOISE_SIGMA_REFERENCE_FACTOR as _NOISE_SIGMA_REFERENCE_FACTOR,
 )
 
+from ..scenario import ADEQUACY_CHI2, ADEQUACY_REPLICATE_LOF, ADEQUACY_RESIDUAL_STRUCTURE
+
 __all__ = [
     "_NOISE_SIGMA_COLLAPSE_FRACTION",
     "_NOISE_SIGMA_BAND_ALPHA",
     "_NOISE_SIGMA_BAND_MIN_DF",
     "_NOISE_SIGMA_REFERENCE_FACTOR",
+    "REFERENCE_FREE_GOF_ALPHA",
     "_noise_sigma_flag",
+    "_reference_free_adequacy",
     "_reference_sigma_flag",
     "_residual_structure_fields",
     "_validation_fields",
 ]
+
+#: The level of a reference-free example's chi2 bar. The other two tests arrive as the server's own
+#: verdicts, already decided at the server's own alphas, so this does not reach them.
+REFERENCE_FREE_GOF_ALPHA = 0.05
 
 
 def _validation_fields(payload, reference, *, asked: bool = False) -> dict | None:
@@ -494,3 +504,116 @@ def _noise_sigma_flag(report) -> dict | None:
         "max_fraction_of_data_std": hi,
         "min_fraction_of_data_std": lo,
     }
+
+
+def _reference_free_adequacy(
+    test,
+    noise_sigma_report,
+    chi2_gof_pvalue,
+    residual_structure,
+    alpha: float = REFERENCE_FREE_GOF_ALPHA,
+) -> dict:
+    """Is the candidate adequate ON ITS OWN? The success bar of a reference-free example, which has
+    no true model to be compared against, graded by the absolute goodness-of-fit ``test`` the
+    scenario declares (``Scenario.adequacy``):
+
+    * ``chi2`` — the residuals against the problem's own noise model. Valid only when the fit
+      estimated no noise sigma, i.e. ``noise_sigma_report`` is an EMPTY dict: an ML sigma pins chi2
+      near ``n``, so the test passes any model. A non-empty report makes the declared test invalid
+      for this fit, which is reported as exactly that — never answered by another test instead.
+    * ``replicate_lof`` — the server's replicate lack-of-fit verdict (each replicated design point
+      against its OWN scatter, so it needs no sigma), read off ``residual_structure``. A flag stands
+      at any df; a pass on few lack-of-fit df is recorded ``weak`` and still passes, as it does
+      every other gate that reads this arm.
+    * ``residual_structure`` — the server's sign (bias) and runs (trend) tests per observable,
+      whose ``flagged_observables`` also carries any replicate lack-of-fit flag. Nothing flagged
+      on underpowered tests (``low_power``) is no evidence either way.
+
+    ``passed`` is ``None`` whenever the test could not speak, and the judge does NOT count that as
+    a pass. A ``None`` report means UNREADABLE, never "no sigma estimated". ``basis`` is the test
+    whose evidence was read (``None`` where the declared one is invalid for this fit or had nothing
+    to read); ``reason`` is the one line the verdict text quotes.
+    """
+    out = {
+        "test": test,
+        "basis": None,
+        "passed": None,
+        "alpha": alpha,
+        "chi2_gof_pvalue": chi2_gof_pvalue,
+        "lof_status": None,
+        "lof_weak": None,
+        "lof_df": None,
+        "lof_untested_status": None,
+        "flagged_observables": None,
+        "reason": None,
+    }
+    rolled = residual_structure if isinstance(residual_structure, dict) else {}
+    if test == ADEQUACY_CHI2:
+        if not isinstance(noise_sigma_report, dict):
+            out["reason"] = (
+                "no readable noise-sigma report, so whether the noise is fixed is unknown"
+            )
+        elif noise_sigma_report:
+            out["reason"] = (
+                f"the fit estimated noise sigma(s) {sorted(map(str, noise_sigma_report))}, which pin "
+                "chi2 near n — the declared chi2 test is invalid for this fit"
+            )
+        else:
+            out["basis"] = ADEQUACY_CHI2
+            if chi2_gof_pvalue is None:
+                out["reason"] = (
+                    "no chi2 p-value (chi2 unreported, or no residual degrees of freedom)"
+                )
+            else:
+                out["passed"] = chi2_gof_pvalue >= alpha
+                out["reason"] = (
+                    f"chi2 GoF p={chi2_gof_pvalue:.3g} {'>=' if out['passed'] else '<'} {alpha:g}"
+                )
+    elif test == ADEQUACY_REPLICATE_LOF:
+        lof = rolled.get("replicate_lack_of_fit")
+        if not isinstance(lof, dict):
+            out["reason"] = "no replicate lack-of-fit verdict was read"
+            return out
+        status, lof_df = lof.get("status"), lof.get("lof_df")
+        out.update(
+            basis=ADEQUACY_REPLICATE_LOF,
+            lof_status=status,
+            lof_df=lof_df,
+            # As in the history CSV (metrics._flatten_replicate_lof): only where a df was counted.
+            lof_weak=None if lof_df is None else bool(lof.get("weak")),
+            lof_untested_status=lof.get("untested_status"),
+        )
+        if status == "flagged":
+            out["passed"] = False
+            out["reason"] = (
+                f"replicate lack-of-fit flags {lof.get('n_flagged', 0)} of {lof.get('n_points')} "
+                "replicated design points"
+            )
+        elif status == "pass":
+            out["passed"] = True
+            out["reason"] = (
+                f"replicate lack-of-fit passes on {lof.get('n_points')} design points"
+                + (f" (weak: {lof_df} lack-of-fit df)" if out["lof_weak"] else "")
+            )
+            if out["lof_untested_status"]:
+                out["reason"] += f"; a further family went untested ({out['lof_untested_status']})"
+        else:
+            out["reason"] = f"replicate lack-of-fit could not run ({status})"
+    elif test == ADEQUACY_RESIDUAL_STRUCTURE:
+        # `_residual_structure_fields` omits the verdict keys unless it READ them.
+        if rolled.get("rollup_status") != "read":
+            out["reason"] = "no residual-structure verdict was read"
+            return out
+        flagged = [str(o) for o in rolled.get("flagged_observables") or []]
+        out.update(basis=ADEQUACY_RESIDUAL_STRUCTURE, flagged_observables=flagged)
+        if flagged:
+            out["passed"] = False
+            out["reason"] = f"residual structure in {', '.join(flagged)}"
+        elif rolled.get("low_power"):
+            out["reason"] = "nothing flagged, but the sign/runs tests were underpowered"
+        else:
+            out["passed"] = True
+            out["reason"] = "no residual bias or trend in any observable (tests powered)"
+    else:
+        out["reason"] = f"unknown adequacy test {test!r}"
+    return out
