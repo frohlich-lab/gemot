@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import models
+from . import models, server_api
 
 # Stable dataset-name prefix. Kept as "...-repair" (the examples' original framing; they are
 # now zero-shot BUILDS) on purpose: it is a Phoenix dataset *identifier*, so renaming it would
@@ -110,16 +110,13 @@ def collect_skills() -> dict[str, str]:
     before authoring (see prompts.DEFAULT_SYSTEM_PROMPT step 0). A change to one therefore
     changes what the agent is told, so they are registered and versioned like the prompts.
     """
-    from petab_mcp.skills import skill_texts
-
-    return {f"petab-skill-{name}": text for name, text in skill_texts().items()}
+    texts = server_api.skills().skill_texts()
+    return {f"petab-skill-{name}": text for name, text in texts.items()}
 
 
 def skills_version() -> str:
     """Content hash over the bundled skills — see :func:`petab_mcp.skills.skills_version`."""
-    from petab_mcp.skills import skills_version as _sv
-
-    return _sv()
+    return server_api.skills().skills_version()
 
 
 def register_prompts(client, *, model_name: str) -> dict[str, Any]:

@@ -8,21 +8,25 @@ Two families, both pure functions over a report payload:
   fitted sigmas (dimensionally sound); the data-std band is the fallback where a reference
   doesn't record them.
 
-Imports ``petab_mcp.constants`` so the session's adequacy gate and this judge gate share ONE
-threshold — but nothing from ``mcp``, so a test of these projections needs no MCP client.
+The thresholds below are COPIES of ``petab_mcp.constants``, so the session's adequacy gate and
+this judge gate agree; ``tests/server/test_server_constants.py`` fails the moment they drift.
+Copied rather than imported so the judge imports without the server package (see
+:mod:`gemot.server_api`), and nothing here imports ``mcp``, so a test of these projections needs
+neither the server nor an MCP client.
 """
 
 from __future__ import annotations
 
+from .. import server_api
 
-# The collapse threshold lives in petab_mcp.constants so the session's adequacy gate and this
-# judge gate share ONE value (re-exported under the old name for callers/tests).
-from petab_mcp.constants import NOISE_SIGMA_COLLAPSE_FRACTION as _NOISE_SIGMA_COLLAPSE_FRACTION
-from petab_mcp.constants import (
-    NOISE_SIGMA_BAND_ALPHA as _NOISE_SIGMA_BAND_ALPHA,
-    NOISE_SIGMA_BAND_MIN_DF as _NOISE_SIGMA_BAND_MIN_DF,
-    NOISE_SIGMA_REFERENCE_FACTOR as _NOISE_SIGMA_REFERENCE_FACTOR,
-)
+# Copies of petab_mcp.constants' values under the same names (see the module docstring): the
+# server's adequacy gate and this judge gate must agree on what an implausible sigma is, and
+# tests/server/test_server_constants.py holds each one to the server's. The rationale for each
+# value lives beside the original.
+_NOISE_SIGMA_COLLAPSE_FRACTION = 0.01  # NOISE_SIGMA_COLLAPSE_FRACTION
+_NOISE_SIGMA_REFERENCE_FACTOR = 3.0  # NOISE_SIGMA_REFERENCE_FACTOR
+_NOISE_SIGMA_BAND_ALPHA = 0.01  # NOISE_SIGMA_BAND_ALPHA
+_NOISE_SIGMA_BAND_MIN_DF = 3.0  # NOISE_SIGMA_BAND_MIN_DF
 
 __all__ = [
     "_NOISE_SIGMA_COLLAPSE_FRACTION",
@@ -476,10 +480,10 @@ def _noise_sigma_flag(report) -> dict | None:
     if not isinstance(report, dict) or not report:
         return None
     # Single source of truth for both predicates (shared with the session adequacy gate).
-    from petab_mcp.fitting import noise_sigma_collapsed, noise_sigma_inflated
+    fitting = server_api.fitting()
 
-    inflated = noise_sigma_inflated(report)
-    collapsed = noise_sigma_collapsed(report)
+    inflated = fitting.noise_sigma_inflated(report)
+    collapsed = fitting.noise_sigma_collapsed(report)
     hi = lo = None
     for e in report.values():
         if not isinstance(e, dict):

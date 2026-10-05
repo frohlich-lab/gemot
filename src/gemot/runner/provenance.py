@@ -8,6 +8,7 @@ import json
 import subprocess
 from pathlib import Path
 
+from .. import server_api
 from ..scenario import Scenario
 
 
@@ -171,10 +172,8 @@ def _reference_score(ref, criterion) -> float | None:
     """
     if not ref:
         return None
-    from petab_mcp.criteria import CANONICAL
-
     try:
-        return (criterion or CANONICAL["bic"]).value(
+        return (criterion or server_api.criteria().CANONICAL["bic"]).value(
             ref["nll"], ref["k"], ref["n"], ref.get("k_eff")
         )
     except (KeyError, TypeError, ValueError):
@@ -199,7 +198,7 @@ def _write_live_marker(
     score live, and its agent works beside this file.
     """
     try:
-        from petab_mcp.criteria import CANONICAL
+        CANONICAL = server_api.criteria().CANONICAL
 
         ref = scenario.reference() if include_reference else None
         bic_ref = _bic_reference(ref)
@@ -248,8 +247,6 @@ def _base_meta(
     text produced it. ``prompt_group_versions`` makes a bump attributable to lead vs analysts vs
     tools vs control instead of one opaque number moving. Imported from ``prompts`` rather than
     ``experiments`` to keep the runner free of the (heavier, Phoenix-facing) module."""
-    from petab_mcp.skills import skills_version
-
     from .. import ablations
 
     from ..prompts import BIOCURATOR_ENABLED, prompt_group_versions, prompt_version
@@ -276,7 +273,7 @@ def _base_meta(
         "prompt_group_versions": prompt_group_versions(),
         # the skills are instructions the panel reads (prompts step 0), so they are
         # part of "what produced this run" just as much as the prompts are.
-        "skills_version": None if blind_names is not None else skills_version(),
+        "skills_version": None if blind_names is not None else server_api.skills().skills_version(),
         # WHICH ARM. An ablation changes what a run does while leaving `git_sha` and (for the
         # switches that touch no prompt text) `prompt_version` identical, so without these two
         # fields the halves of an A/B are indistinguishable in the record and pool into one cell

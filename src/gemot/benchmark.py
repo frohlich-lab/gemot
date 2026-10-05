@@ -42,6 +42,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from . import server_api
+
 COLLECTION_URL = "https://github.com/Benchmarking-Initiative/Benchmark-Models-PEtab"
 # Pinned so the copied tables (and thus the committed reference.json) are reproducible.
 COLLECTION_PIN = "1763dfcd66d25bfd97492cfedf6a730472c383d0"
@@ -109,7 +111,7 @@ def _load_problem(
     """
     import petab.v1 as petab
 
-    from petab_mcp.fitting import needs_flattening
+    needs_flattening = server_api.fitting().needs_flattening
 
     prob = petab.Problem.from_yaml(str(benchmark_dir(name, collection) / f"{name}.yaml"))
     if restated_measurements is not None:
@@ -257,7 +259,7 @@ def _merge_equivalent_observables(prob) -> dict[str, str]:
         OBSERVABLE_TRANSFORMATION,
     )
 
-    from petab_mcp.fitting import needs_flattening
+    needs_flattening = server_api.fitting().needs_flattening
 
     odf, mdf = prob.observable_df, prob.measurement_df
     if odf is None or mdf is None or OBSERVABLE_PARAMETERS not in mdf.columns:
@@ -483,7 +485,7 @@ def _blind_observables(prob, blinding: dict[str, dict]) -> None:
     """
     from petab.v1.C import NOISE_FORMULA, OBSERVABLE_FORMULA, OBSERVABLE_NAME
 
-    from petab_mcp.reconcile import formula_identifiers
+    formula_identifiers = server_api.reconcile().formula_identifiers
 
     odf = prob.observable_df
     # What counts as a MODEL entity: anything the published formulas name that is not a
@@ -701,7 +703,7 @@ def _check_held_out_rows(name: str, vprob, published, training_measurement_df) -
     from petab.v1.C import OBSERVABLE_ID, SIMULATION_CONDITION_ID, TIME
     from petab.v1.lint import check_measurement_df
 
-    from petab_mcp.fitting import needs_flattening
+    needs_flattening = server_api.fitting().needs_flattening
 
     vmeas = vprob.measurement_df
     # petab's own measurement-table lint on BOTH operands (required columns, observable ids, override
@@ -766,7 +768,7 @@ def _transfer_problem(
     from petab.v1.C import CONDITION_NAME
     from petab.v1.yaml import load_yaml
 
-    from petab_mcp.validation_data import _reject_untransferable_table
+    _reject_untransferable_table = server_api.validation_data()._reject_untransferable_table
 
     bdir = benchmark_dir(name, collection)
     path = bdir / transfer_yaml
@@ -963,7 +965,7 @@ def _held_out_source(
     table — a ``transfer_yaml``, or a curated table with a ``parameters.tsv`` beside it — is a
     TRANSFER set; the others are fixed-θ.
     """
-    from petab_mcp.validation_data import HeldOut
+    HeldOut = server_api.validation_data().HeldOut
 
     declared = {
         "VALIDATION_YAML": validation_yaml,
@@ -1047,15 +1049,17 @@ def _curated_held_out(*, name: str, validation_table: str, example_dir: Path, pu
     )
     from petab.v1.parameters import get_valid_parameters_for_parameter_table
 
-    from petab_mcp.validation_data import (
-        HELD_OUT_CONDITIONS,
-        HELD_OUT_PARAMETERS,
-        HELD_OUT_UNITS,
-        HeldOut,
-        _refit_units,
-        _reject_untransferable_table,
-        _with_held_out_conditions,
-        read_units,
+    V = server_api.validation_data()
+    HELD_OUT_CONDITIONS, HELD_OUT_PARAMETERS, HELD_OUT_UNITS = (
+        V.HELD_OUT_CONDITIONS,
+        V.HELD_OUT_PARAMETERS,
+        V.HELD_OUT_UNITS,
+    )
+    HeldOut, read_units = V.HeldOut, V.read_units
+    _refit_units, _reject_untransferable_table, _with_held_out_conditions = (
+        V._refit_units,
+        V._reject_untransferable_table,
+        V._with_held_out_conditions,
     )
 
     path = Path(example_dir) / validation_table
@@ -1443,7 +1447,12 @@ def materialize(
         f"{len(prob.observable_df)} observables, {len(prob.condition_df)} condition(s); "
         f"shipped params {shipped_param_ids}"
     )
-    from petab_mcp.validation_data import HELD_OUT_CONDITIONS, HELD_OUT_PARAMETERS, HELD_OUT_UNITS
+    V = server_api.validation_data()
+    HELD_OUT_CONDITIONS, HELD_OUT_PARAMETERS, HELD_OUT_UNITS = (
+        V.HELD_OUT_CONDITIONS,
+        V.HELD_OUT_PARAMETERS,
+        V.HELD_OUT_UNITS,
+    )
 
     vpath = validation_measurements_path(example_dir)
     cpath = vpath.with_name(HELD_OUT_CONDITIONS)
@@ -1794,7 +1803,7 @@ def _transfer_reference(
 
     from petab.v1.C import ESTIMATE
 
-    from petab_mcp import validation_data
+    validation_data = server_api.validation_data()
 
     _apply_param_overrides(vprob, name, param_overrides)
     vprob.parameter_df = vprob.parameter_df.drop(

@@ -35,6 +35,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .. import server_api
 from . import problem as P
 from . import stage as S
 from . import train as T
@@ -212,6 +213,4 @@ def score_of(nll: float, k: int, n: int, *, criterion=None) -> float | None:
     Over the field's TRAINING nll and the scalars PEtab estimates, never the weights; the distilled
     models are scored downstream on what they really estimate.
     """
-    from petab_mcp.criteria import resolve  # noqa: PLC0415
-
-    return resolve(criterion).value(nll, k, n)
+    return server_api.criteria().resolve(criterion).value(nll, k, n)

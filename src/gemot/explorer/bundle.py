@@ -25,6 +25,8 @@ import math
 from pathlib import Path
 from typing import Any
 
+from .. import server_api
+
 # ---------------------------------------------------------------- Phoenix message parsing
 
 # CHAIN/middleware span names that are langgraph plumbing, not conversation.
@@ -498,9 +500,7 @@ def load_variants(run_dir: Path, n_data_points: int | None) -> list[dict]:
         k = _k_from_params(params) if params else (len(meta.get("fitted_parameters") or {}) or None)
         # ONE BIC definition, in `petab_mcp.criteria`. It returns None for any missing or
         # impossible input, so no separate guard is needed here.
-        from petab_mcp.criteria import CANONICAL
-
-        bic = CANONICAL["bic"].value(nll, k, n)
+        bic = server_api.criteria().CANONICAL["bic"].value(nll, k, n)
         variants.append(
             {
                 "index": len(variants),

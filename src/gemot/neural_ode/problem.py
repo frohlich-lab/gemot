@@ -37,6 +37,8 @@ from petab.math import sympify_petab
 from petab.v1 import C
 from petab.versions import get_major_version
 
+from .. import server_api
+
 #: Symbols a protocol formula may use besides its declared condition columns.
 PROTOCOL_ALLOWED = frozenset(
     {
@@ -388,9 +390,8 @@ def _observable_parameters(source, estimated) -> tuple[str, ...]:
     parameters and enforces observation-model roles with -- so the route reads it rather than
     keeping a second opinion that could drift from it.
     """
-    from petab_mcp.reconcile import observable_scaling_ids  # noqa: PLC0415
-
-    return tuple(sorted(s for s in observable_scaling_ids(source) if estimated.get(s)))
+    scaling = server_api.reconcile().observable_scaling_ids(source)
+    return tuple(sorted(s for s in scaling if estimated.get(s)))
 
 
 def _observed_scale(state, meas, formulas, nominal) -> float:

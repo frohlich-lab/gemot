@@ -21,19 +21,15 @@ classifiers = [
 ]
 
 dependencies = [
-    # The server this harness drives, from its own repository. Pinned to a commit so a checkout
-    # here names the server it was tested against: bump it deliberately, and see the README for
-    # developing both at once.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@27ac55d5aca329458f08eb987882b38439277cfe",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
     # deleted, and mcp 2.0 reworks the client API used here (streamablehttp_client ->
     # streamable_http_client; CallToolResult/Tool fields went snake_case). petab-mcp's `fastmcp<4`
-    # holds this today, but that cap is the server's to lift. Revisit once langchain-mcp-adapters
-    # ships mcp 2.0 support.
+    # holds this too where the `server` extra is installed, but that cap is the server's to lift.
+    # Revisit once langchain-mcp-adapters ships mcp 2.0 support.
     "mcp<2",
-    # Imported directly here too (judge, benchmark setup, simulate, the neural route), so named
-    # rather than left to arrive through petab-mcp, whose pyproject says why each floor.
+    # Imported directly here (judge, benchmark setup, simulate, the neural route), so named rather
+    # than left to arrive through petab-mcp, whose pyproject says why each floor.
     "petab>=0.9",
     "python-libsbml>=5.19",
     "antimony>=3.2",
@@ -100,16 +96,27 @@ agent = [
     "langchain-openai>=1.3,<2",
 ]
 
+# The server this harness drives, from its own repository. Pinned to a commit so a checkout
+# here names the server it was tested against: bump it deliberately, and see the README for
+# developing both at once. An EXTRA rather than a dependency so gemot installs, imports and
+# tests without it: every import of it goes through `gemot.server_api`, and the tests that need
+# it live in tests/server/ (see the README's "Tests"). A run launches it as a subprocess
+# (`gemot.runner.server`), so anything that RUNS a scenario needs this.
+server = [
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@27ac55d5aca329458f08eb987882b38439277cfe",
+]
+
 # The agent harness (`gemot`): the deepagents driver every example's run.py drives,
 # plus Phoenix tracing and W&B metrics logging. NOT needed for `--driver scripted` (the
-# no-LLM harness self-test), which needs only the petab-mcp server itself, nor for
-# regenerating an example's synthetic data (generate_data.py needs only amici + petab,
-# which the server install already provides).
+# no-LLM harness self-test), which needs only `gemot[server]`, nor for regenerating an
+# example's synthetic data (generate_data.py needs only amici + petab, which gemot's own
+# dependencies provide).
 #
 # Reaching a model also needs an OpenRouter API key:
 #     export OPENROUTER_API_KEY=sk-or-...      # https://openrouter.ai/keys
 harness = [
     "gemot[agent]",
+    "gemot[server]",
     # Arize Phoenix agent tracing (ON by default; disable at runtime with --no-phoenix).
     # Traces every LLM + MCP tool call the agent makes as OpenTelemetry spans viewable in the
     # Phoenix UI. arize-phoenix-otel + the LangChain instrumentor EXPORT the spans; the full
@@ -140,10 +147,10 @@ Homepage = "https://github.com/frohlich-lab/gemot"
 Repository = "https://github.com/frohlich-lab/gemot"
 
 [tool.hatch.metadata]
-# Two dependencies are git pins: petab-mcp itself, and the `neural` extra's petab-sciml (see the
-# comment there: the curriculum multiple shooting rewrite is unreleased). Hatchling refuses a direct
-# reference in metadata unless this says so, so WITHOUT it every `pip install -e .` fails at metadata
-# generation -- CI never reaches the test step.
+# Two dependencies are git pins: the `server` extra's petab-mcp, and the `neural` extra's
+# petab-sciml (see the comment there: the curriculum multiple shooting rewrite is unreleased).
+# Hatchling refuses a direct reference in metadata unless this says so, so WITHOUT it every
+# `pip install -e .` fails at metadata generation -- CI never reaches the test step.
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]

@@ -41,6 +41,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from . import server_api
+
 
 def _symbol_locals(model) -> dict:
     """Map every id the model defines to a plain sympy Symbol.
@@ -227,7 +229,7 @@ def prune(name: str, fixed_params: list[str], collection: Path | None = None) ->
         assignment would otherwise be deleted and leave the event dangling, the same breakage this
         module's rule-target handling exists to prevent.
         """
-        from petab_mcp.reconcile import _ast_names
+        _ast_names = server_api.reconcile()._ast_names
 
         out: set[str] = set()
         for i in range(model.getNumReactions()):

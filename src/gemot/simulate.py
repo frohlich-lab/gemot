@@ -27,6 +27,8 @@ from petab.v1.C import (
     TIME,
 )
 
+from . import server_api
+
 
 def _ensure_swig_on_path() -> None:
     """AMICI compiles generated C++ via CMake+SWIG; make sure ``swig`` is found."""
@@ -312,7 +314,7 @@ def _effective_reference_sigmas(problem, raw: dict) -> dict:
     tolerance is a generous ratio band, so a moderate split difference is absorbed; a large one
     is not. For fiedler the gain divides the formula exactly, so this equals the raw sigma.
     """
-    from petab_mcp import reconcile as _reconcile
+    _reconcile = server_api.reconcile()
 
     out: dict = {}
     for pid, value in (raw or {}).items():
@@ -383,7 +385,7 @@ def write_reference(
             measurement_df=measurement_df,
             parameter_df=parameter_df,
         )
-        from petab_mcp import reconcile as _reconcile
+        _reconcile = server_api.reconcile()
 
         sigma_ids = _reconcile.plausibility_sigma_ids(_problem)
         ref["noise_sigma"] = {
@@ -509,7 +511,7 @@ def write_reference_from_problem(
     # candidate's, and the bar a TIC-ranked run is graded against (petab_mcp.criteria).
     # Advisory like the sigmas below: None when the objective cannot be evaluated
     # there, and the reference bar is written regardless.
-    from petab_mcp.identifiability import effective_parameter_count
+    effective_parameter_count = server_api.identifiability().effective_parameter_count
 
     # Through `_recorded_vector` like every other derived statistic, rather than indexing the
     # optimizer's `x` directly: that is where the full-dimensional invariant is enforced, so a
@@ -618,7 +620,7 @@ def _reference_validation(
     held-out bar means re-running ``setup.py --refit``, which is also the only way the training bar
     beside it can be re-derived, so the two cannot drift apart.
     """
-    from petab_mcp import validation_data
+    validation_data = server_api.validation_data()
 
     x = _recorded_vector(result, x_full_used, pp)
     return validation_data.score_problem(
@@ -644,7 +646,7 @@ def _reference_noise_sigmas(problem, pp, result, pdf, x_full_used=None) -> dict:
     from petab.v1.C import NOMINAL_VALUE
     from petab.v1.parameters import unscale
 
-    from petab_mcp import reconcile as _reconcile
+    _reconcile = server_api.reconcile()
 
     sigma_ids = _reconcile.plausibility_sigma_ids(problem)
     if not sigma_ids:

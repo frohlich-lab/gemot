@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 from .clock import _ToolClock
-from .. import benchmark
+from .. import benchmark, server_api
 from .provenance import _bic_reference, _now_iso, _reference_score
 from ..scenario import Baseline, JudgeContext, Scenario
 from .scoring import (
@@ -352,7 +352,7 @@ async def _judge(
     the machine-readable result dict (also written to ``work/result.json``), so the caller
     can stamp the outcome onto the run span.
     """
-    from petab_mcp.criteria import CANONICAL, Criterion
+    CANONICAL, Criterion = server_api.criteria().CANONICAL, server_api.criteria().Criterion
 
     from ..scenario import chi2_gof_pvalue
 

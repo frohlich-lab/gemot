@@ -35,6 +35,8 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from .. import server_api
+
 METHOD = "neural_ode"
 
 
@@ -230,11 +232,8 @@ def _fit(args) -> int:
     reference = json.loads(reference_path.read_text()) if reference_path.is_file() else None
     payload = None
     if held_out_path is not None and not result.solver_failed:
-        from petab_mcp.validation_data import read_held_out  # noqa: PLC0415
-
-        payload = H.score(
-            result, read_held_out(held_out_path), args.out / "heldout", training=problem
-        )
+        held_out = server_api.validation_data().read_held_out(held_out_path)
+        payload = H.score(result, held_out, args.out / "heldout", training=problem)
     from ..runner.scoring import _validation_fields  # noqa: PLC0415
 
     record["validation"] = _validation_fields(payload, reference, asked=held_out_path is not None)
@@ -258,11 +257,8 @@ def _fit(args) -> int:
     # benchmark's test set (`TrainConfig.checkpoints` says why at length): reporting that held-out
     # loss turns upward is a finding, picking the budget where it was lowest is leakage.
     if result.checkpoints and held_out_path is not None:
-        from petab_mcp.validation_data import read_held_out  # noqa: PLC0415
-
-        prepared = H.prepare(
-            result, read_held_out(held_out_path), args.out / "curve", training=problem
-        )
+        held_out = server_api.validation_data().read_held_out(held_out_path)
+        prepared = H.prepare(result, held_out, args.out / "curve", training=problem)
         curve = []
         for i, point in enumerate(result.checkpoints):
             scored = (

@@ -15,7 +15,7 @@ from typing import AsyncIterator
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
-from .. import ablations, benchmark, prompts
+from .. import ablations, benchmark, prompts, server_api
 from ..bio_sessions import open_bio_sessions
 from ..explorer.archive import archive_run
 from ..fit_budget import (
@@ -102,6 +102,7 @@ async def _petab_server(
         from ..biology_blinding import private_dir
 
         validation_tsv = private_dir(work) / "validation/measurements.tsv"
+    server_api.require()
     server_cmd = [
         sys.executable,
         "-c",
