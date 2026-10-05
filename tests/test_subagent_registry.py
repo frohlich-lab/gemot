@@ -64,6 +64,23 @@ def test_only_the_lead_holds_the_model_editors():
     assert agent._build_biocurator_subagent([], [])["tools"] == []
 
 
+# ------------------------------------------------------------------- tools actually resolve
+def test_every_subagent_tool_is_resolvable():
+    """Each spec's tools must be a SUBSET of ALLOWED_TOOLS, or `_select_tools` drops them before
+    `_build_subagents` can resolve them — silently, with only a stdout print. The draft era lost a
+    whole arm this way with every roster test green, because those compare subagent NAMES."""
+    for spec in agent.ACTIVE_SPECS:
+        missing = [t for t in spec["tools"] if t not in agent.ALLOWED_TOOLS]
+        assert not missing, (spec["name"], missing)
+
+
+def test_only_the_lead_holds_get_model():
+    """The raw committed text is for the lead's `base_version` forks; only the lead edits."""
+    assert "get_model" in agent.ORCHESTRATOR_TOOLS
+    for spec in agent.ANALYSTS:
+        assert "get_model" not in spec["tools"], spec["name"]
+
+
 # ------------------------------------------------------------- the real create_deep_agent
 def test_create_deep_agent_does_not_add_the_general_purpose_subagent(monkeypatch):
     """End-to-end: with the profile registered, deepagents builds the panel we passed and
@@ -96,68 +113,3 @@ def test_create_deep_agent_does_not_add_the_general_purpose_subagent(monkeypatch
     )
 
     assert captured["names"] == list(agent.SUBAGENT_NAMES)
-
-
-# ----------------------------------------------------- the ARM-ON surface (subprocess: import-time)
-# The arm is resolved at IMPORT (prompts.DIFF_EDITS_ENABLED gates the tool lists), so arm-on
-# cannot be exercised by monkeypatching in-process — it needs a fresh interpreter. The draft-era
-# lesson these exist for: an arm's tool can be silently filtered out of the panel (ALLOWED_TOOLS
-# omission) with every in-process test green, because the roster assertions compare subagent
-# NAMES, never their resolved tools.
-import os  # noqa: E402 - section-local: these serve the subprocess arm documented above
-import subprocess  # noqa: E402
-import sys  # noqa: E402
-import textwrap  # noqa: E402
-
-
-def _arm_on(script: str) -> str:
-    out = subprocess.run(
-        [sys.executable, "-c", textwrap.dedent(script)],
-        env={**os.environ, "PETAB_DIFF_EDITS": "1"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert out.returncode == 0, out.stderr[-2000:]
-    return out.stdout.strip()
-
-
-def test_arm_on_every_subagent_tool_is_resolvable():
-    """Each spec's tools must be a SUBSET of ALLOWED_TOOLS, or `_select_tools` drops them before
-    `_build_subagents` can resolve them — silently, with only a stdout print."""
-    assert (
-        _arm_on("""
-        from gemot import agent
-        from gemot.agent.tools import ALLOWED_TOOLS
-        for spec in agent.ACTIVE_SPECS:
-            missing = [t for t in spec["tools"] if t not in ALLOWED_TOOLS]
-            assert not missing, (spec["name"], missing)
-        print("ok")
-    """)
-        == "ok"
-    )
-
-
-def test_arm_on_the_lead_holds_get_model_and_the_roster_is_unchanged():
-    """diff_edits changes only the LEAD's surface: `get_model` (the raw committed text patches
-    are quoted from) joins its toolset and ALLOWED_TOOLS, no subagent joins or leaves, and
-    ALLOWED_TOOLS still agrees with the panel-facing descriptions (both arm-dependent)."""
-    assert (
-        _arm_on("""
-        from gemot import agent
-        from gemot.agent.tools import ALLOWED_TOOLS, ORCHESTRATOR_TOOLS
-        from gemot import prompts as P
-        assert "get_model" in ORCHESTRATOR_TOOLS
-        assert "get_model" in ALLOWED_TOOLS
-        assert agent.SUBAGENT_NAMES == (
-            "mathematician", "systems_scientist", "signal_engineer", "biocurator")
-        assert ALLOWED_TOOLS == set(P.TOOL_DESCRIPTIONS), (
-            ALLOWED_TOOLS ^ set(P.TOOL_DESCRIPTIONS))
-        # analysts never gain the raw-text read: it exists for quoting patch targets,
-        # and only the lead patches.
-        for spec in agent.ANALYSTS:
-            assert "get_model" not in spec["tools"], spec["name"]
-        print("ok")
-    """)
-        == "ok"
-    )

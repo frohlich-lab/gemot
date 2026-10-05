@@ -95,8 +95,7 @@ ANALYSTS = [
 
 # ONE source of truth for the active roster — the panel builder and SUBAGENT_NAMES both read
 # this, so they cannot disagree about who is on the panel. (The draft-era model_editor rode
-# here arm-gated; the diff_edits arm that replaced it changes only the LEAD's own surface, so
-# the roster is now arm-independent.)
+# here arm-gated; the roster is now arm-independent.)
 # Bound to the SAME list object, not a copy: `list(ANALYSTS)` made this a snapshot, so appending
 # a persona to ANALYSTS after import reached the panel builder through one name and not the other
 # -- the opposite of the single source of truth this exists to be.

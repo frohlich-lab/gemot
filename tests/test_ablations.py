@@ -41,14 +41,14 @@ def test_every_ablation_defaults_to_the_baseline_arm(monkeypatch):
 
 @pytest.mark.parametrize("spelling", ["0", "false", "FALSE", "no", "off", " Off "])
 def test_off_words_turn_a_default_on_switch_off(monkeypatch, spelling):
-    monkeypatch.setenv("PETAB_DATA_REGIMES", spelling)
-    assert ablations.enabled("data_regimes") is False
+    monkeypatch.setenv("PETAB_BIOCURATOR", spelling)
+    assert ablations.enabled("biocurator") is False
 
 
 @pytest.mark.parametrize("spelling", ["1", "true", "yes", "on", "anything"])
 def test_non_off_words_leave_a_default_on_switch_on(monkeypatch, spelling):
-    monkeypatch.setenv("PETAB_DATA_REGIMES", spelling)
-    assert ablations.enabled("data_regimes") is True
+    monkeypatch.setenv("PETAB_BIOCURATOR", spelling)
+    assert ablations.enabled("biocurator") is True
 
 
 def test_the_printed_setting_actually_flips_each_arm(monkeypatch):
@@ -75,24 +75,24 @@ def test_the_printed_setting_actually_flips_each_arm(monkeypatch):
 def test_arm_names_only_the_deviations(monkeypatch):
     """A new ablation left at its default must not rename existing arms, or old runs stop being
     comparable to new ones the moment a switch is added."""
-    monkeypatch.delenv("PETAB_BIO_LITERATURE", raising=False)
-    monkeypatch.delenv("PETAB_DATA_REGIMES", raising=False)
-    assert ablations.arm() == "baseline"  # both at their defaults
-    monkeypatch.setenv("PETAB_DATA_REGIMES", "1")
-    assert ablations.arm() == "data_regimes=on"
+    for a in ablations.ABLATIONS:
+        monkeypatch.delenv(a.env, raising=False)
+    assert ablations.arm() == "baseline"  # all at their defaults
+    monkeypatch.setenv("PETAB_BIOCURATOR", "0")
+    assert ablations.arm() == "biocurator=off"
     monkeypatch.setenv("PETAB_BIO_LITERATURE", "1")
-    assert ablations.arm() == "data_regimes=on,bio_literature=on"
+    assert ablations.arm() == "bio_literature=on,biocurator=off"
 
 
 def test_unknown_ablation_raises_rather_than_reading_as_off():
     """A typo must not silently select the baseline — that is an A/B whose halves are identical."""
     with pytest.raises(KeyError, match="unknown ablation"):
-        ablations.enabled("data_regime")  # missing 's'
+        ablations.enabled("bio_literatur")  # missing 'e'
 
 
 def test_state_records_every_switch_not_only_the_deviations(monkeypatch):
     """A run silent about a switch is indistinguishable from one predating it."""
-    monkeypatch.delenv("PETAB_DATA_REGIMES", raising=False)
+    monkeypatch.delenv("PETAB_BIOCURATOR", raising=False)
     monkeypatch.delenv("PETAB_BIO_LITERATURE", raising=False)
     assert set(ablations.state()) == {a.name for a in ablations.ABLATIONS}
 
@@ -117,7 +117,7 @@ def test_module_runs_as_a_script():
         text=True,
         check=True,
     )
-    assert "Ablations" in out.stdout and "data_regimes" in out.stdout
+    assert "Ablations" in out.stdout and "biocurator" in out.stdout
 
 
 # --------------------------------------------------------------------------- the drift guard
@@ -204,75 +204,6 @@ def test_no_unregistered_environment_switch_gates_behaviour():
         + "\n".join(f"  {v}  ({where})" for v, where in sorted(unaccounted.items()))
         + "\nIf it changes what a run DOES, register it as an Ablation so it is discoverable and "
         "lands in result.json. If not, add it to _NOT_ABLATIONS with the reason."
-    )
-
-
-@pytest.mark.parametrize(
-    "spelling",
-    ["0", "false", "FALSE", "no", "off", " Off ", "1", "true", "yes", "on", "anything", None],
-)
-def test_the_server_gate_agrees_with_the_registry(monkeypatch, spelling):
-    """A duplicated predicate must agree with the registry on every spelling.
-
-    ``petab_mcp.session`` gates its own data-regimes advice by reading ``PETAB_DATA_REGIMES``
-    itself, because the server cannot import the harness (wrong direction) and the harness's
-    ``prompts`` cannot import the server (import-lightness). If the two ever disagreed the result
-    is a HALF-ABLATED run: the tool removed from the toolset while the server still tells the agent
-    to call it — a wasted turn on an unknown-tool error and, worse, a contaminated control. Rather
-    than trust the comment, run both.
-    """
-    if spelling is None:
-        monkeypatch.delenv("PETAB_DATA_REGIMES", raising=False)
-    else:
-        monkeypatch.setenv("PETAB_DATA_REGIMES", spelling)
-
-    # A FRESH interpreter each time: both gates are module-level constants, so an already-imported
-    # copy would answer for whatever the environment was on first import.
-    probe = (
-        "import os,sys;"
-        "sys.path.insert(0, %r);"
-        "from gemot.ablations import enabled;"
-        "from petab_mcp.session import _REGIMES_ADVICE;"
-        "print(int(enabled('data_regimes')), int(bool(_REGIMES_ADVICE)))" % str(SRC)
-    )
-    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
-    assert out.returncode == 0, out.stderr
-    registry, server = out.stdout.split()
-    assert registry == server, (
-        f"PETAB_DATA_REGIMES={spelling!r}: registry says {registry}, "
-        f"petab_mcp.session says {server} — the duplicated predicate has drifted"
-    )
-
-
-@pytest.mark.parametrize(
-    "spelling",
-    ["0", "false", "FALSE", "no", "off", " Off ", "1", "true", "yes", "on", "anything", None],
-)
-def test_the_diff_edits_server_gate_agrees_with_the_registry(monkeypatch, spelling):
-    """Same duplicated-predicate rule for the OTHER server-read arm: ``petab_mcp.server``
-    reads PETAB_DIFF_EDITS itself (registration-time, to pick the make_changes schema), so the
-    two spellings-of-truth must agree or a run is half-ablated — the prompt promising `edits`
-    while the schema refuses it, or vice versa."""
-    if spelling is None:
-        monkeypatch.delenv("PETAB_DIFF_EDITS", raising=False)
-    else:
-        monkeypatch.setenv("PETAB_DIFF_EDITS", spelling)
-
-    # A fresh interpreter, same as above: the registry side is read through module-level
-    # constants elsewhere, and the probe must answer for THIS environment.
-    probe = (
-        "import os,sys;"
-        "sys.path.insert(0, %r);"
-        "from gemot.ablations import enabled;"
-        "from petab_mcp.server import _diff_edits_enabled;"
-        "print(int(enabled('diff_edits')), int(_diff_edits_enabled()))" % str(SRC)
-    )
-    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
-    assert out.returncode == 0, out.stderr
-    registry, server = out.stdout.split()
-    assert registry == server, (
-        f"PETAB_DIFF_EDITS={spelling!r}: registry says {registry}, "
-        f"petab_mcp.server says {server} — the duplicated predicate has drifted"
     )
 
 
