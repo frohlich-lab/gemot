@@ -10,6 +10,10 @@ resolver fails here, and the fix is to the fake (or to the gemot code the change
 from __future__ import annotations
 
 import math
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pandas as pd
 import petab.v1 as petab
@@ -40,6 +44,49 @@ def test_the_fake_constants_are_the_servers():
     real = server_api.constants()
     for name in names:
         assert getattr(fake_constants, name) == getattr(real, name), name
+
+
+# ------------------------------------------------------------------------------- fit settings
+_FIT_SETTINGS = ("FIT_PER_START_TIMEOUT_S", "FIT_N_WORKERS", "FIT_AMICI_ATOL")
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"PETAB_MCP_FIT_N_WORKERS": "3", "PETAB_MCP_FIT_PER_START_TIMEOUT": "60"},
+        {"PETAB_MCP_FIT_N_WORKERS": "0", "PETAB_MCP_FIT_PER_START_TIMEOUT": "nan"},
+        {"PETAB_MCP_FIT_N_WORKERS": "x", "PETAB_MCP_FIT_PER_START_TIMEOUT": "-5"},
+        {"SLURM_CPUS_PER_TASK": "4"},
+        {"SLURM_CPUS_PER_TASK": "4", "PETAB_MCP_FIT_N_WORKERS": "2"},
+        {"PETAB_MCP_FIT_AMICI_ATOL": "1e-8"},
+        {"PETAB_MCP_FIT_AMICI_ATOL": "inf"},
+    ],
+)
+def test_the_fake_fit_settings_resolve_as_the_servers_do(env):
+    """Both resolve from the environment ONCE, at import, so each environment runs in a fresh
+    interpreter: what is compared is the rule (overrides, malformed values, the SLURM grant), not
+    one machine's numbers."""
+    tests = Path(__file__).resolve().parents[1]
+    probe = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "from fakes import server_api as fake\n"
+        "from petab_mcp import fitting\n"
+        "for name in %r:\n"
+        "    print(name, getattr(fake.fitting(), name), getattr(fitting, name))\n"
+    ) % (str(tests), _FIT_SETTINGS)
+    clean = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("PETAB_MCP_FIT_") and k != "SLURM_CPUS_PER_TASK"
+    }
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, env={**clean, **env}
+    )
+    assert out.returncode == 0, out.stderr
+    for line in out.stdout.splitlines():
+        name, mine, theirs = line.split()
+        assert mine == theirs, f"{env}: {name} fake={mine} server={theirs}"
 
 
 # ------------------------------------------------------------------------------ criteria

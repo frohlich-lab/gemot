@@ -1,57 +1,34 @@
-"""The fit-budget invariants that span BOTH packages.
+"""The harness's fit settings are the server's, applied the server's way.
 
-`petab_mcp` must import without `gemot` (tests/test_import_lightness), so the constants
-the candidate fit and the reference refit share cannot be one object — they are two copies that
-must agree. Nothing but these tests stops them drifting.
+``gemot.fit_budget`` reads the per-start cap, the worker count and the AMICI tolerance from
+``petab_mcp.fitting`` (through ``gemot.server_api``), but applies them through helpers of its own,
+which take per-call overrides the server's do not. These pin the helpers to the server's: if the
+reference refit and a candidate fit stopped agreeing on tolerance, cap or parallelism, delta-BIC
+would stop being a comparison, and a healthy fit could outrun the timeout sized for it.
 """
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 
+def test_the_reference_refit_integrates_at_the_servers_tolerance():
+    """The reference refit sets its AMICI tolerance through ``apply_amici_solver_defaults``; it must
+    land on the server's ``FIT_AMICI_ATOL``, which every candidate fit uses. On lucarelli the gap
+    between AMICI's stock 1e-16 and the server's 1e-10 was worth 175 BIC, which would read as a
+    modelling result rather than a solver setting."""
+    from types import SimpleNamespace
 
-# -- the two-copy tolerance invariant ------------------------------------------------------
-def test_the_candidate_and_reference_fits_use_ONE_amici_tolerance():
-    """`petab_mcp.fitting.FIT_AMICI_ATOL` (every candidate fit) and
-    `gemot.fit_budget.FIT_AMICI_ATOL` (the reference refit) must be the same number.
-
-    They are deliberately separate constants — petab_mcp must import without gemot — so
-    nothing but this test stops them drifting. If they diverge, the reference and the candidate
-    are optimised against DIFFERENT objectives and delta-BIC stops being a comparison: on
-    lucarelli the gap between AMICI's stock 1e-16 and this 1e-10 was worth 175 BIC, which would
-    read as a modelling result rather than a solver setting.
-    """
     from gemot import fit_budget
     from petab_mcp import fitting
 
-    assert fitting.FIT_AMICI_ATOL == fit_budget.FIT_AMICI_ATOL, (
-        f"candidate atol {fitting.FIT_AMICI_ATOL} != reference atol "
-        f"{fit_budget.FIT_AMICI_ATOL} — the two sides of every delta-BIC are being integrated "
-        "at different tolerances"
+    seen = []
+    problem = SimpleNamespace(
+        objective=SimpleNamespace(amici_solver=SimpleNamespace(set_absolute_tolerance=seen.append))
     )
-    # ...and it must NOT be AMICI's stock value: 1e-16 makes the forward-sensitivity solve
-    # unable to differentiate on stiff models, reporting solver failure as failed starts.
+    fit_budget.apply_amici_solver_defaults(problem)
+    assert seen == [fitting.FIT_AMICI_ATOL]
+    # ...and it is NOT AMICI's stock value: 1e-16 makes the forward-sensitivity solve unable to
+    # differentiate on stiff models, reporting solver failure as failed starts.
     assert fitting.FIT_AMICI_ATOL > 1e-16
-
-
-def test_both_tolerance_constants_honour_the_same_env_override():
-    """One env var (PETAB_MCP_FIT_AMICI_ATOL) must move BOTH, or an operator tuning the
-    tolerance for a sweep silently moves only the candidate side."""
-    import subprocess
-    import sys
-
-    probe = (
-        "import sys; sys.path.insert(0, %r);"
-        "from gemot import fit_budget; from petab_mcp import fitting;"
-        "print(fitting.FIT_AMICI_ATOL, fit_budget.FIT_AMICI_ATOL)"
-        % str(Path(__file__).resolve().parents[2] / "src")
-    )
-    env = {**os.environ, "PETAB_MCP_FIT_AMICI_ATOL": "1e-8"}
-    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, env=env)
-    assert out.returncode == 0, out.stderr
-    cand, ref = out.stdout.split()
-    assert float(cand) == float(ref) == 1e-8, f"env override moved only one side: {out.stdout!r}"
 
 
 # ---------------------------------------------------------------- needs_flattening: numeric overrides
@@ -141,26 +118,15 @@ def test_overrides_that_vary_only_across_conditions_are_taken_natively():
     assert needs_flattening(_problem(mdf)) is False
 
 
-# --------------------------------------------------------------- the fit-budget duplication
-# `gemot.fit_budget` re-implements six things `petab_mcp.fitting` also defines
-# (_env_float/_env_int, the default worker count, FIT_PER_START_TIMEOUT_S, FIT_N_WORKERS,
-# fides_maxtime_options, fit_engine). That duplication looks removable but is NOT:
-# tests/test_import_lightness.py's `_HEAVY` lists `petab_mcp`, so importing ANY petab_mcp module from fit_budget -- including a
-# stdlib-only `constants` -- fails test_import_is_light, because petab_mcp/__init__ eagerly
-# imports session (and so petab + pandas). fit_budget must stay importable from a bare
-# amici+petab environment for simulate.py's offline reference fit.
-#
-# So the copies stay, and this pins them together instead: the drift the dedup would have
-# prevented is what actually matters, and the server + harness computing DIFFERENT fit budgets
-# is exactly the bug the two files' cross-referencing comments warn about.
+# --------------------------------------------------------------- the server's rules, gemot's helpers
 def test_fit_budget_matches_the_server():
-    """The harness's fit budget must agree with the server's, or a healthy fit gets killed."""
+    """The harness's helpers must derive what the server's do from the same settings, or the
+    timeout sized for a fit stops matching the fit the server runs, and a healthy one gets killed.
+    """
     from gemot import fit_budget
 
     from petab_mcp import fitting
 
-    assert fit_budget.FIT_PER_START_TIMEOUT_S == fitting.FIT_PER_START_TIMEOUT_S
-    assert fit_budget.FIT_N_WORKERS == fitting.FIT_N_WORKERS
     assert fit_budget.fides_maxtime_options() == fitting._fides_maxtime_options()
 
     # The worker count each side derives for a given multistart, including the edge cases

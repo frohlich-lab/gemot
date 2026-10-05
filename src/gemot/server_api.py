@@ -3,7 +3,8 @@
 gemot drives the server over MCP, but it also reuses a few of the server's own definitions IN
 PROCESS, so a verdict means the same thing on both sides of the wire: the complexity criteria the
 judge grades by, the noise-sigma predicates and thresholds its success gate shares with the
-server's adequacy gate, the held-out data format, the skills' version. Every one of them, constant
+server's adequacy gate, the fit settings its timeouts and its reference fit are sized to, the
+held-out data format, the skills' version. Every one of them, constant
 or function, comes through here and nowhere else (``tests/test_import_lightness.py`` enforces it),
 so this module is the complete list of what gemot takes from the server in process, and for two
 reasons:
@@ -66,7 +67,8 @@ def criteria() -> ModuleType:
 
 
 def fitting() -> ModuleType:
-    """:mod:`petab_mcp.fitting`: the noise-sigma predicates and ``needs_flattening``."""
+    """:mod:`petab_mcp.fitting`: the fit settings (``FIT_PER_START_TIMEOUT_S``, ``FIT_N_WORKERS``,
+    ``FIT_AMICI_ATOL``), the noise-sigma predicates and ``needs_flattening``."""
     return _module("fitting")
 
 

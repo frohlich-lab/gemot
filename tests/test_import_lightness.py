@@ -227,20 +227,20 @@ def test_lazy_facade_resolves_by_getattr():
     assert "Scenario" in dir(gemot)
 
 
-# --------------------------------------------------------------- the fit-budget duplication
+# --------------------------------------------------------------- the fit-budget overrides
 def test_fit_workers_honours_an_explicit_override():
     """`n_workers` must beat the import-time FIT_N_WORKERS cap.
 
     The reference refit for a stiff model (fujita, sneyd) has to run SEQUENTIALLY -- a parallel
     pyPESTO worker hard-crashes with BrokenProcessPool. That used to be requested by setting
     PETAB_MCP_FIT_N_WORKERS at runtime, which silently did nothing: examples/setup.py imports the
-    example's run.py (binding fit_budget.FIT_N_WORKERS) BEFORE it could set the env var, so the
-    refit kept running in parallel. An argument cannot lose that race; this pins that it is
-    actually plumbed through to the engine.
+    example's run.py (binding FIT_N_WORKERS) BEFORE it could set the env var, so the refit kept
+    running in parallel. An argument cannot lose that race; this pins that it is actually plumbed
+    through to the engine.
     """
     import os
 
-    from gemot import fit_budget
+    from gemot import fit_budget, server_api
 
     assert fit_budget.fit_workers(50, 1) == 1
     assert fit_budget.fit_engine(50, 1) is None  # None == pyPESTO's sequential engine
@@ -248,13 +248,13 @@ def test_fit_workers_honours_an_explicit_override():
     assert fit_budget.fit_workers(1, 99) == 1
 
     # Omitting it preserves the default (env-var-or-core-count) behaviour exactly.
-    assert fit_budget.fit_workers(50) == max(1, min(fit_budget.FIT_N_WORKERS, 50))
+    n_workers = server_api.fitting().FIT_N_WORKERS
+    assert fit_budget.fit_workers(50) == max(1, min(n_workers, 50))
 
     # And the env var remains inert once bound, which is the whole reason the argument exists.
-    before = fit_budget.FIT_N_WORKERS
-    os.environ["PETAB_MCP_FIT_N_WORKERS"] = str(before + 7)
+    os.environ["PETAB_MCP_FIT_N_WORKERS"] = str(n_workers + 7)
     try:
-        assert fit_budget.FIT_N_WORKERS == before
+        assert server_api.fitting().FIT_N_WORKERS == n_workers
     finally:
         os.environ.pop("PETAB_MCP_FIT_N_WORKERS", None)
 
@@ -263,9 +263,9 @@ def test_simulate_does_not_need_the_server_package():
     """``simulate.py`` may import ``petab``/``amici`` — it is a simulation module — but NOT
     ``petab_mcp``.
 
-    Its docstring promises "only ``amici`` + ``petab`` (not the petab-mcp server package), so data
-    can be regenerated from a bare simulation environment", and the ``fit_budget`` duplication above
-    is justified by that same promise. Nothing checked it, so a change that replaced simulate's
+    Its docstring promises that generating data needs "only ``amici`` + ``petab`` (not the petab-mcp
+    server package)"; only the reference fit reads the server, through ``gemot.server_api``, when
+    it runs. Nothing checked it, so a change that replaced simulate's
     self-contained build-env helper with an import of ``petab_mcp.engine`` broke the contract while
     every test stayed green. This pins the one module the ``_HEAVY`` list cannot cover, because
     simulate legitimately imports petab at module scope and so can never be "light" wholesale.

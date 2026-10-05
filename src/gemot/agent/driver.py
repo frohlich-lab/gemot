@@ -173,9 +173,9 @@ _PENDING_SCAN_DEPTH = 6
 def _env_token_limit(name: str, default: int, *, minimum: int) -> int:
     """An int >= ``minimum`` from ``name``, or ``default`` for an unset, empty, or malformed
     override — a bad value must degrade, never crash the run before the graph is built (an empty
-    ``NAME=`` in a submit script is the natural way to write "leave it alone"). Distinct from
-    fit_budget._env_int, which enforces >= 1: the output cap documents 0 as its OFF switch, so
-    it needs ``minimum=0``."""
+    ``NAME=`` in a submit script is the natural way to write "leave it alone"). Distinct from the
+    fit settings' ``_env_int`` (``petab_mcp.fitting``), which enforces >= 1: the output cap
+    documents 0 as its OFF switch, so it needs ``minimum=0``."""
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
         return default
@@ -742,7 +742,8 @@ async def run_deepagents(
     # Output ceiling. An explicit 0 leaves `max_tokens` OFF so the provider default applies (the
     # behaviour before 2026-08-28); unset uses the 131_072 default — see the parameter below for
     # why the provider default is not enough. minimum=0 is what makes the off-switch reachable:
-    # fit_budget's _env_int maps 0 back to the default, which would silently turn the cap ON.
+    # an `_env_int` like the fit settings' maps 0 back to the default, which would silently turn the
+    # cap ON.
     max_output_tokens = _env_token_limit("PETAB_MCP_MAX_OUTPUT_TOKENS", 131_072, minimum=0)
     # Bound once so the value sent to the provider is the value recorded in result.json — a
     # fresh uuid inlined at the call site could not be reported afterwards.

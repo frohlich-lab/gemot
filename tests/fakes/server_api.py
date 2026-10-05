@@ -2,9 +2,9 @@
 ``tests/server/`` — which runs with no petab-mcp installed.
 
 ``tests/conftest.py`` swaps these in for every test outside ``tests/server/``. Each is the
-SMALLEST faithful copy of what gemot reads: the noise-sigma thresholds, the criteria's penalty
-formulas, the two noise-sigma predicates, the observable-scaling resolver, a fixed skills
-version. Faithful matters, because
+SMALLEST faithful copy of what gemot reads: the noise-sigma thresholds, the fit settings (the
+per-start cap, the worker count, the AMICI tolerance), the criteria's penalty formulas, the two
+noise-sigma predicates, the observable-scaling resolver, a fixed skills version. Faithful matters, because
 judge tests assert real numbers through them, so ``tests/server/test_server_api_fakes.py`` runs
 every one against the real module and fails when they disagree; a server change that moves a
 verdict then fails there, at the pin bump that brought it.
@@ -129,6 +129,36 @@ def resolve(criterion: "Criterion | str | None" = None) -> Criterion:
 
 
 # ------------------------------------------------------------------------------- fitting
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    try:
+        val = float(raw) if raw is not None else default
+    except ValueError:
+        return default
+    return val if math.isfinite(val) and val > 0 else default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    try:
+        val = int(raw) if raw is not None else default
+    except ValueError:
+        return default
+    return val if val >= 1 else default
+
+
+def _default_fit_workers() -> int:
+    slurm = _env_int("SLURM_CPUS_PER_TASK", 0)
+    return slurm if slurm >= 1 else max(1, (os.cpu_count() or 1) - 1)
+
+
+#: petab_mcp.fitting's fit settings, resolved from the same environment variables the same way
+#: and, like the server's, once: at import.
+FIT_PER_START_TIMEOUT_S = _env_float("PETAB_MCP_FIT_PER_START_TIMEOUT", 180.0)
+FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_fit_workers())
+FIT_AMICI_ATOL = _env_float("PETAB_MCP_FIT_AMICI_ATOL", 1e-10)
+
+
 def _entry_inflated(entry: dict) -> bool:
     # The effective sd where the entry records one (None there means "unknown", not inflated);
     # `fitted` only for an entry older than that field.
@@ -214,6 +244,9 @@ def criteria() -> ModuleType:
 def fitting() -> ModuleType:
     return _module(
         "fitting",
+        FIT_PER_START_TIMEOUT_S=FIT_PER_START_TIMEOUT_S,
+        FIT_N_WORKERS=FIT_N_WORKERS,
+        FIT_AMICI_ATOL=FIT_AMICI_ATOL,
         noise_sigma_inflated=noise_sigma_inflated,
         noise_sigma_collapsed=noise_sigma_collapsed,
     )

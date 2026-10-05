@@ -7,8 +7,11 @@ correctly-specified model produces — the only gap left for the fit to close is
 floor. A ``generate_data.py`` script per example calls :func:`simulate_true` on the truth
 model, then :func:`add_noise_and_write` to emit ``measurements.tsv``.
 
-Kept dependency-light on purpose: it needs only ``amici`` + ``petab`` (not the petab-mcp
-server package), so data can be regenerated from a bare simulation environment.
+Generating data is kept dependency-light on purpose: it needs only ``amici`` + ``petab`` (not
+the petab-mcp server package), so data can be regenerated from a bare simulation environment.
+Fitting the REFERENCE (``write_reference_*``) is not: it fits with the server's settings and
+scores with the server's own helpers, through :mod:`gemot.server_api`, so the bar and the
+candidates it is compared against are fit and scored alike, and it needs the ``server`` extra.
 """
 
 from __future__ import annotations

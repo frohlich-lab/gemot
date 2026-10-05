@@ -27,11 +27,11 @@ import shutil
 import time
 from pathlib import Path
 
-from .. import ablations
+from .. import ablations, server_api
 from ..agent.sandbox import SANDBOX_HOME_DIR, SANDBOX_TMP_DIR, sandbox_preflight
 from ..bio_sessions import open_bio_sessions
 from ..explorer.archive import archive_run
-from ..fit_budget import FIT_N_WORKERS, fit_time_budget
+from ..fit_budget import fit_time_budget
 from ..agent.tools import ALLOWED_TOOLS
 from ..prompts import BAREBONES_ENTITIES_TMPL, BAREBONES_SYSTEM_PROMPT_TMPL, BAREBONES_TASK
 from ..scenario import Baseline, Scenario
@@ -358,9 +358,11 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
     api_key = args.api_key or os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise SystemExit("No OpenRouter API key: set OPENROUTER_API_KEY (or pass --api-key).")
+    # The agent's code fits with the same parallelism the server's candidate fits get.
+    n_cpus = server_api.fitting().FIT_N_WORKERS
     # An infrastructure abort (the node, not the agent), written as one.
     try:
-        sandbox = sandbox_preflight(agent_dir, n_cpus=FIT_N_WORKERS)
+        sandbox = sandbox_preflight(agent_dir, n_cpus=n_cpus)
     except RuntimeError as exc:
         return 1, _write_degraded_result(work, base_meta, scenario, f"sandbox: {exc}")
     print(
@@ -371,7 +373,7 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
     # One shell command may run as long as one server fit would.
     execute_timeout_s = fit_time_budget(args.n_starts)
     system_prompt = BAREBONES_SYSTEM_PROMPT_TMPL.format(
-        execute_timeout=execute_timeout_s, n_cpus=FIT_N_WORKERS, n_starts=args.n_starts
+        execute_timeout=execute_timeout_s, n_cpus=n_cpus, n_starts=args.n_starts
     )
     task = barebones_task(scenario)
 
@@ -422,7 +424,7 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
                         recursion_limit=args.recursion_limit,
                         temperature=args.temperature,
                         execute_timeout_s=execute_timeout_s,
-                        n_cpus=FIT_N_WORKERS,
+                        n_cpus=n_cpus,
                         max_wall_seconds=args.max_wall_seconds,
                         bio_sessions=bio_sessions,
                         bio_literature=ablations.enabled("bio_literature"),

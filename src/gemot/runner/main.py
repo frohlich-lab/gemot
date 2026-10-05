@@ -18,12 +18,7 @@ from mcp.client.streamable_http import streamablehttp_client
 from .. import ablations, benchmark, prompts, server_api
 from ..bio_sessions import open_bio_sessions
 from ..explorer.archive import archive_run
-from ..fit_budget import (
-    FIT_BUDGET_CEILING_S,
-    FIT_N_WORKERS,
-    FIT_PER_START_TIMEOUT_S,
-    fit_time_budget_for,
-)
+from ..fit_budget import FIT_BUDGET_CEILING_S, fit_time_budget_for
 from .drive import _drive
 from .endpoints import BIO_MCP_URLS
 from .failure import _should_reraise, _summarize_exc, _write_degraded_result
@@ -143,11 +138,12 @@ async def _petab_server(
     # systemd-coredump, which stores node-locally and is not readable by the job's user — so the
     # in-process traceback is the artifact that actually survives. array_task.sh raises the core
     # limit too, so a core lands as well where the node permits it.
+    fitting = server_api.fitting()
     server_env = {
         **os.environ,
         "PYTHONFAULTHANDLER": "1",
-        "PETAB_MCP_FIT_PER_START_TIMEOUT": str(FIT_PER_START_TIMEOUT_S),
-        "PETAB_MCP_FIT_N_WORKERS": str(FIT_N_WORKERS),
+        "PETAB_MCP_FIT_PER_START_TIMEOUT": str(fitting.FIT_PER_START_TIMEOUT_S),
+        "PETAB_MCP_FIT_N_WORKERS": str(fitting.FIT_N_WORKERS),
     }
     try:
         proc = subprocess.Popen(server_cmd, stdout=amici_log, stderr=server_log, env=server_env)
