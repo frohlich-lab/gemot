@@ -60,11 +60,11 @@ The server's tool docstrings are the other half of this: they state the tool's C
 (arguments, result shape, what it rejects) for any client, and the `TOOL_DESCRIPTIONS` entry
 that replaces them for the panel states the same tool for the job the lead is doing. Neither
 restates the other. The two packages ship separately — `gemot` must import without
-`petab_mcp` ([test_import_lightness.py](../tests/test_import_lightness.py)) — so they cannot
-share a constant; keep them from describing the same thing instead. Where gemot must apply the
-server's value (a threshold both gates read), it keeps a copy beside the code that uses it, and a
-test in `tests/server/` holds the copy to the server's
-([test_server_constants.py](../tests/server/test_server_constants.py)).
+`petab_mcp` ([test_import_lightness.py](../tests/test_import_lightness.py)) — so prose cannot be
+shared between them; keep them from describing the same thing instead. A VALUE gemot must apply
+as the server does (a threshold both gates read) is never copied: it is read from the server
+through [server_api.py](../src/gemot/server_api.py) where it is used, so that module stays the
+complete list of what gemot takes from the server.
 
 ## Types
 

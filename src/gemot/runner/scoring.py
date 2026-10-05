@@ -8,31 +8,17 @@ Two families, both pure functions over a report payload:
   fitted sigmas (dimensionally sound); the data-std band is the fallback where a reference
   doesn't record them.
 
-The thresholds below are COPIES of ``petab_mcp.constants``, so the session's adequacy gate and
-this judge gate agree; ``tests/server/test_server_constants.py`` fails the moment they drift.
-Copied rather than imported so the judge imports without the server package (see
-:mod:`gemot.server_api`), and nothing here imports ``mcp``, so a test of these projections needs
-neither the server nor an MCP client.
+The thresholds are the server's own (``petab_mcp.constants``, read through
+:mod:`gemot.server_api` when a gate runs), so the session's adequacy gate and this judge gate
+agree on what an implausible sigma is. Nothing here imports the server or ``mcp`` at module load,
+so a test of these projections needs neither.
 """
 
 from __future__ import annotations
 
 from .. import server_api
 
-# Copies of petab_mcp.constants' values under the same names (see the module docstring): the
-# server's adequacy gate and this judge gate must agree on what an implausible sigma is, and
-# tests/server/test_server_constants.py holds each one to the server's. The rationale for each
-# value lives beside the original.
-_NOISE_SIGMA_COLLAPSE_FRACTION = 0.01  # NOISE_SIGMA_COLLAPSE_FRACTION
-_NOISE_SIGMA_REFERENCE_FACTOR = 3.0  # NOISE_SIGMA_REFERENCE_FACTOR
-_NOISE_SIGMA_BAND_ALPHA = 0.01  # NOISE_SIGMA_BAND_ALPHA
-_NOISE_SIGMA_BAND_MIN_DF = 3.0  # NOISE_SIGMA_BAND_MIN_DF
-
 __all__ = [
-    "_NOISE_SIGMA_COLLAPSE_FRACTION",
-    "_NOISE_SIGMA_BAND_ALPHA",
-    "_NOISE_SIGMA_BAND_MIN_DF",
-    "_NOISE_SIGMA_REFERENCE_FACTOR",
     "_noise_sigma_flag",
     "_reference_sigma_flag",
     "_residual_structure_fields",
@@ -318,7 +304,9 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
     # each would fail an honest run g times as often as the alpha claims. Counts the entries the
     # loop below actually TESTS — a non-dict entry it skips is not a comparison, and counting it
     # would split alpha further and widen every real sigma's band.
-    alpha = _NOISE_SIGMA_BAND_ALPHA / max(1, sum(1 for e in report.values() if isinstance(e, dict)))
+    alpha = server_api.constants().NOISE_SIGMA_BAND_ALPHA / max(
+        1, sum(1 for e in report.values() if isinstance(e, dict))
+    )
     hi = lo = None
     inflated = collapsed = False
     per_sigma: dict[str, dict] = {}
@@ -418,7 +406,9 @@ def _sigma_ratio_band(n_points, k, n, reference, alpha):
     """
     from scipy.stats import f as _f
 
-    fixed = (1.0 / _NOISE_SIGMA_REFERENCE_FACTOR, float(_NOISE_SIGMA_REFERENCE_FACTOR))
+    constants = server_api.constants()
+    factor = constants.NOISE_SIGMA_REFERENCE_FACTOR
+    fixed = (1.0 / factor, float(factor))
     try:
         points = int(n_points)
         k_cand, n_cand = int(k), int(n)
@@ -432,8 +422,8 @@ def _sigma_ratio_band(n_points, k, n, reference, alpha):
     # Clamped, not switched: at one or two degrees of freedom the band is so wide it says nothing,
     # and letting it keep widening would make the gate vanish on a two-point group. Bounding how
     # permissive it can get is a choice about the limit; the REPORTED df stays the real one.
-    lo_df = max(df_cand, _NOISE_SIGMA_BAND_MIN_DF)
-    hi_df = max(df_ref, _NOISE_SIGMA_BAND_MIN_DF)
+    lo_df = max(df_cand, constants.NOISE_SIGMA_BAND_MIN_DF)
+    hi_df = max(df_ref, constants.NOISE_SIGMA_BAND_MIN_DF)
     # The band is on the RATIO, the F quantiles are on its square.
     return (
         min(fixed[0], float(_f.ppf(alpha / 2, lo_df, hi_df)) ** 0.5),
@@ -474,7 +464,7 @@ def _noise_sigma_flag(report) -> dict | None:
     An inflated/collapsed sigma DISQUALIFIES an otherwise-passing score (see _judge) — a hidden
     integrity gate applied post-run and never surfaced to the agent. The full block is also written
     to result.json so a gated (or borderline) run is auditable. The collapse threshold
-    ``_NOISE_SIGMA_COLLAPSE_FRACTION`` is a heuristic — tune it if a genuinely better, more flexible
+    (the server's ``NOISE_SIGMA_COLLAPSE_FRACTION``) is a heuristic — tune it if a genuinely better, more flexible
     model (a legitimately small residual sigma) is being false-failed.
     """
     if not isinstance(report, dict) or not report:

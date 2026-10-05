@@ -89,8 +89,8 @@ The suite has two tiers:
   more of the server than they provide fails with `NotFaked`, naming what it reached for: it
   belongs in `tests/server/`.
 - **`tests/server/`** runs against the real server: its in-process session and engine, its source
-  and skills, the held-out format, and the drift tests that hold gemot's copied constants and the
-  fakes to the server's. It is collected only where the server is installed; the report header
+  and skills, the held-out format, and the tests that hold each fake to the server module it
+  stands in for. It is collected only where the server is installed; the report header
   says when it was not.
 
 ```bash

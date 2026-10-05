@@ -2,8 +2,9 @@
 ``tests/server/`` — which runs with no petab-mcp installed.
 
 ``tests/conftest.py`` swaps these in for every test outside ``tests/server/``. Each is the
-SMALLEST faithful copy of what gemot reads: the criteria's penalty formulas, the two noise-sigma
-predicates, the observable-scaling resolver, a fixed skills version. Faithful matters, because
+SMALLEST faithful copy of what gemot reads: the noise-sigma thresholds, the criteria's penalty
+formulas, the two noise-sigma predicates, the observable-scaling resolver, a fixed skills
+version. Faithful matters, because
 judge tests assert real numbers through them, so ``tests/server/test_server_api_fakes.py`` runs
 every one against the real module and fails when they disagree; a server change that moves a
 verdict then fails there, at the pin bump that brought it.
@@ -21,8 +22,6 @@ import re
 from dataclasses import dataclass, field
 from types import ModuleType
 from typing import Any, Callable, Mapping
-
-from gemot.runner.scoring import _NOISE_SIGMA_COLLAPSE_FRACTION
 
 
 class NotFaked(AttributeError):
@@ -50,6 +49,14 @@ def _finite_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return out if math.isfinite(out) else None
+
+
+# ----------------------------------------------------------------------------- constants
+#: petab_mcp.constants: the noise-sigma thresholds the judge's gate shares with the server's.
+NOISE_SIGMA_COLLAPSE_FRACTION = 0.01
+NOISE_SIGMA_REFERENCE_FACTOR = 3.0
+NOISE_SIGMA_BAND_ALPHA = 0.01
+NOISE_SIGMA_BAND_MIN_DF = 3.0
 
 
 # ------------------------------------------------------------------------------ criteria
@@ -135,7 +142,7 @@ def _entry_inflated(entry: dict) -> bool:
 
 def _entry_collapsed(entry: dict) -> bool:
     frac = entry.get("fraction_of_data_std")
-    return isinstance(frac, (int, float)) and frac < _NOISE_SIGMA_COLLAPSE_FRACTION
+    return isinstance(frac, (int, float)) and frac < NOISE_SIGMA_COLLAPSE_FRACTION
 
 
 def noise_sigma_inflated(report: "dict | None") -> bool:
@@ -188,6 +195,16 @@ def observable_scaling_ids(problem) -> set[str]:
 SKILLS_VERSION = "fake-skills"
 
 
+def constants() -> ModuleType:
+    return _module(
+        "constants",
+        NOISE_SIGMA_COLLAPSE_FRACTION=NOISE_SIGMA_COLLAPSE_FRACTION,
+        NOISE_SIGMA_REFERENCE_FACTOR=NOISE_SIGMA_REFERENCE_FACTOR,
+        NOISE_SIGMA_BAND_ALPHA=NOISE_SIGMA_BAND_ALPHA,
+        NOISE_SIGMA_BAND_MIN_DF=NOISE_SIGMA_BAND_MIN_DF,
+    )
+
+
 def criteria() -> ModuleType:
     return _module(
         "criteria", PENALTIES=PENALTIES, Criterion=Criterion, CANONICAL=CANONICAL, resolve=resolve
@@ -219,7 +236,15 @@ def validation_data() -> ModuleType:
 
 
 #: The :mod:`gemot.server_api` accessors this module replaces, by name.
-ACCESSORS = ("criteria", "fitting", "identifiability", "reconcile", "skills", "validation_data")
+ACCESSORS = (
+    "constants",
+    "criteria",
+    "fitting",
+    "identifiability",
+    "reconcile",
+    "skills",
+    "validation_data",
+)
 
 
 def install(set_attr: Callable[[Any, str, Any], None] = setattr) -> None:

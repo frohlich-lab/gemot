@@ -3,13 +3,13 @@
 
 Pure projection of TWO payloads — the fit's own rolled-up ``residual_structure`` verdict (which only
 ``get_fit_summary`` reports) and the ``get_fit_diagnosis`` per-observable rows. ``runner.scoring``
-shares its thresholds with the server's own adequacy gate, so it needs `petab_mcp` — but not `mcp`;
-skip where that is absent."""
+reads its thresholds from the server's own adequacy gate, through ``gemot.server_api``, which this
+tier fakes; it needs no `mcp`."""
 
 from __future__ import annotations
 
+from fakes.server_api import NOISE_SIGMA_COLLAPSE_FRACTION
 from gemot.runner.scoring import (  # noqa: E402
-    _NOISE_SIGMA_COLLAPSE_FRACTION,
     _noise_sigma_flag,
     _residual_structure_fields,
 )
@@ -141,7 +141,7 @@ def test_noise_sigma_flag_detects_inflation():
 
 def test_noise_sigma_flag_detects_collapse():
     # fraction below the collapse floor -> collapsed (overfitting the noise).
-    frac = _NOISE_SIGMA_COLLAPSE_FRACTION / 2
+    frac = NOISE_SIGMA_COLLAPSE_FRACTION / 2
     f = _noise_sigma_flag({"sigma": _sigma_entry(frac, 0.5, frac)})
     assert f["collapsed"] is True and f["inflated"] is False
     assert f["min_fraction_of_data_std"] == frac
@@ -153,7 +153,7 @@ def test_noise_sigma_flag_detects_both_inflated_and_collapsed():
     f = _noise_sigma_flag(
         {
             "sig_hi": _sigma_entry(0.5, 0.1, 2.5),  # inflated
-            "sig_lo": _sigma_entry(0.01, 0.5, _NOISE_SIGMA_COLLAPSE_FRACTION / 2),  # collapsed
+            "sig_lo": _sigma_entry(0.01, 0.5, NOISE_SIGMA_COLLAPSE_FRACTION / 2),  # collapsed
         }
     )
     assert f["inflated"] is True and f["collapsed"] is True

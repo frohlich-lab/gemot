@@ -30,6 +30,18 @@ def _same(a, b):
     return math.isclose(a, b, rel_tol=1e-12, abs_tol=0.0)
 
 
+# ----------------------------------------------------------------------------- constants
+def test_the_fake_constants_are_the_servers():
+    """Every constant the fake stands in for has the server's value: the judge's noise-sigma gate
+    reads these, and must agree with the server's adequacy gate on what an implausible sigma is."""
+    fake_constants = fake.constants()
+    names = [n for n in vars(fake_constants) if n.isupper()]
+    assert names, "the fake defines no constants"
+    real = server_api.constants()
+    for name in names:
+        assert getattr(fake_constants, name) == getattr(real, name), name
+
+
 # ------------------------------------------------------------------------------ criteria
 def test_the_fake_criteria_are_the_servers():
     real = server_api.criteria()

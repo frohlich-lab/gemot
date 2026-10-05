@@ -18,18 +18,22 @@ from pathlib import Path
 
 import pytest
 from gemot.runner import (  # noqa: E402
-    _NOISE_SIGMA_COLLAPSE_FRACTION,
     _judge,
     _reference_sigma_flag,
     _ToolClock,
 )
+
+# The server's collapse floor, as this tier's fake serves it (tests/fakes/server_api.py, held to the
+# server's value by tests/server/test_server_api_fakes.py). Read off the fake rather than through
+# gemot.server_api because this is module scope, where the conftest's swap is not yet in place.
+from fakes.server_api import NOISE_SIGMA_COLLAPSE_FRACTION
 
 
 def _sigma_entry(fitted, cap, frac):
     return {"fitted": fitted, "upper_bound_cap": cap, "data_std": 1.0, "fraction_of_data_std": frac}
 
 
-_COLLAPSE_FRAC = _NOISE_SIGMA_COLLAPSE_FRACTION / 2  # well below the collapse floor
+_COLLAPSE_FRAC = NOISE_SIGMA_COLLAPSE_FRACTION / 2  # well below the collapse floor
 _PLAUSIBLE = {"sigma": _sigma_entry(0.08, 0.1, 0.4)}  # below its cap, above the collapse floor
 _INFLATED = {"sigma": _sigma_entry(0.5, 0.1, 2.5)}  # past the data-driven cap (absorbs misfit)
 _COLLAPSED = {"sigma": _sigma_entry(_COLLAPSE_FRAC, 0.5, _COLLAPSE_FRAC)}  # overfits the noise
@@ -249,9 +253,10 @@ def test_reference_sigma_flag_accepts_a_sigma_near_the_truth():
 
 def test_reference_sigma_flag_catches_both_tails():
     # Twice the fixed tolerance, read off the constant: the floor is what decides at this df, and a
-    # literal here would quietly stop testing the tails if the factor ever moved. gemot's copy, which
-    # tests/server/test_server_constants.py holds to the server's.
-    from gemot.runner.scoring import _NOISE_SIGMA_REFERENCE_FACTOR as F
+    # literal here would quietly stop testing the tails if the factor ever moved.
+    from gemot import server_api
+
+    F = server_api.constants().NOISE_SIGMA_REFERENCE_FACTOR
 
     inflated = _ref_flag(0.10 * (F * 2), 0.10)
     assert inflated["inflated"] and not inflated["collapsed"]

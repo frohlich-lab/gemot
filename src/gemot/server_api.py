@@ -2,9 +2,11 @@
 
 gemot drives the server over MCP, but it also reuses a few of the server's own definitions IN
 PROCESS, so a verdict means the same thing on both sides of the wire: the complexity criteria the
-judge grades by, the noise-sigma predicates its success gate shares with the server's adequacy
-gate, the held-out data format, the skills' version. Those calls come through here and nowhere
-else (``tests/test_import_lightness.py`` enforces it), for two reasons:
+judge grades by, the noise-sigma predicates and thresholds its success gate shares with the
+server's adequacy gate, the held-out data format, the skills' version. Every one of them, constant
+or function, comes through here and nowhere else (``tests/test_import_lightness.py`` enforces it),
+so this module is the complete list of what gemot takes from the server in process, and for two
+reasons:
 
 * ``petab-mcp`` is the ``server`` EXTRA, not a dependency: ``import gemot.<anything>`` must work
   without it, so every accessor imports on first CALL, never at module load.
@@ -15,9 +17,8 @@ else (``tests/test_import_lightness.py`` enforces it), for two reasons:
   the signal that it belongs in ``tests/server/``.
 
 Each accessor returns the server's MODULE, so a call site reads as the server's own API
-(``server_api.criteria().CANONICAL``). Plain constants are not borrowed this way: gemot keeps its
-own copy beside the code that uses it, with a drift test in ``tests/server/``
-(``runner.scoring``'s noise-sigma thresholds, :mod:`gemot.fit_budget`).
+(``server_api.criteria().CANONICAL``). Read it where the value is used, not at module load: a
+module-level ``X = server_api.constants().X`` would import the server with the module.
 """
 
 from __future__ import annotations
@@ -52,6 +53,11 @@ def require() -> None:
     """
     if importlib.util.find_spec("petab_mcp") is None:
         raise ModuleNotFoundError(f"petab_mcp: {_INSTALL_HINT}", name="petab_mcp")
+
+
+def constants() -> ModuleType:
+    """:mod:`petab_mcp.constants`: the thresholds both sides gate on (the noise-sigma ones)."""
+    return _module("constants")
 
 
 def criteria() -> ModuleType:
