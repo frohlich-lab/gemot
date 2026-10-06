@@ -32,21 +32,12 @@ _NOT_PROMPTS = {"PROMPT_GROUPS", "_HASH_SEP", "LEAD_SELF_READ_TOOLS"}
 _FRAGMENTS = {
     "_REPORT_CONTRACT",
     "_BIOCURATOR_REPORT_CONTRACT",
-    # Concatenated into DEFAULT_SYSTEM_PROMPT, and EMPTY in the ablation
-    # arm (PETAB_DATA_REGIMES=0), where it is vacuously contained.
-    "_DATA_REGIMES_GUIDANCE",
-    # Same shape: concatenated into DEFAULT_SYSTEM_PROMPT. Default ON since the
-    # 2026-08-15 A/B, so under a bare test env this is NON-empty and the
-    # fragments-really-are-fragments check exercises it for real.
+    # Concatenated into DEFAULT_SYSTEM_PROMPT.
     "_FREE_EXPONENTS_GUIDANCE",
     # Concatenated into the three ANALYST prompts (the skill formerly fetched via
     # get_skill once per spawn — now prompt text, versioned through those prompts).
     "_PETAB_SKILL_INLINE",
-    # Same shape again: concatenated into DEFAULT_SYSTEM_PROMPT, and EMPTY in the
-    # ablation arm (PETAB_DIFF_EDITS=0). Default ON since the 2026-08-19 flip, so under
-    # a bare test env this is NON-empty and really is exercised here. While the arm was
-    # default-OFF the constant was "" and this check passed vacuously, which is why the
-    # gap only surfaced when the default moved.
+    # Concatenated into DEFAULT_SYSTEM_PROMPT.
     "_DIFF_EDITS_GUIDANCE",
     # The rules read on MORE THAN ONE surface, each composed into every prompt that
     # states it (see the block at the top of prompts.py). They are fragments for the
@@ -297,17 +288,10 @@ def test_skills_are_tracked_like_prompts(tmp_path):
     assert "get_skill" in ORCHESTRATOR_TOOLS
     assert "list_skills" not in ORCHESTRATOR_TOOLS
     assert "get_skill('petab-model-building')" in P.DEFAULT_SYSTEM_PROMPT
-    # `independence-audit` is NOT step-0 reading -- it is a mid-run diagnostic, pointed at from the
-    # structure-vs-parsimony section here and from the server's structural-inadequacy stop message.
-    # Still a dead letter unless the prompt names it, so pin that it does -- but ONLY in the arm that
-    # ships it. In the ablation arm (PETAB_DATA_REGIMES=0) the pointer must be ABSENT, or a control
-    # run is told to read a skill about a tool it no longer has: a wasted turn and a contaminated
-    # control. Asserting both directions is what makes this a real check of the arm.
-    if P.DATA_REGIMES_ENABLED:
-        assert "get_skill('independence-audit')" in P.DEFAULT_SYSTEM_PROMPT
-    else:
-        assert "get_skill('independence-audit')" not in P.DEFAULT_SYSTEM_PROMPT
-        assert "get_data_regimes" not in P.DEFAULT_SYSTEM_PROMPT
+    # The `independence-audit` pointer rode with the retired data_regimes arm, which was never on
+    # in practice: the lead must not be told to read a skill about a tool it does not hold.
+    assert "get_skill('independence-audit')" not in P.DEFAULT_SYSTEM_PROMPT
+    assert "get_data_regimes" not in P.DEFAULT_SYSTEM_PROMPT
 
     skills = collect_skills()
     assert set(skills) == {
