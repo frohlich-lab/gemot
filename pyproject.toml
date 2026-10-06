@@ -24,7 +24,7 @@ dependencies = [
     # The server this harness drives, from its own repository. Pinned to a commit so a checkout
     # here names the server it was tested against: bump it deliberately, and see the README for
     # developing both at once.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@2e8615fb76a0bb49036d39f8c038eae658cf0a2e",
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@52d34ca2c0d8ab6115eb6f20fb3d2996140daab1",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
     # deleted, and mcp 2.0 reworks the client API used here (streamablehttp_client ->
