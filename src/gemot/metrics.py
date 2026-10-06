@@ -646,23 +646,28 @@ def summarize(rows: list[dict[str, Any]]) -> str:
             f"{_fmt(r.get('trace_model') or r.get('model'))}"
         )
 
-    # Per-scenario success rate (only meaningful once there are repeats in the batch).
-    by_scenario: dict[str, list[dict[str, Any]]] = {}
+    # Every rate below is per judge mode: a reference-free pass (absolute adequacy) and a
+    # Δcriterion pass are different claims, and one rate over both reads as neither. A row from
+    # before `judge_mode` was recorded was judged against its reference. The mode is named only
+    # once the batch holds two.
+    by_mode: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
-        by_scenario.setdefault(str(r.get("scenario")), []).append(r)
+        by_mode.setdefault(r.get("judge_mode") or "reference", []).append(r)
+    split = len(by_mode) > 1
+
+    # Per-scenario success rate (only meaningful once there are repeats in the batch).
+    by_scenario: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for r in rows:
+        key = (str(r.get("scenario")), r.get("judge_mode") or "reference")
+        by_scenario.setdefault(key, []).append(r)
     repeated = {k: v for k, v in by_scenario.items() if len(v) > 1}
     if repeated:
         lines.append("")
         lines.append("success rate (this batch):")
-        for scenario, group in repeated.items():
+        for (scenario, mode), group in repeated.items():
             passed = sum(1 for r in group if r.get("success"))
-            lines.append(f"  {scenario:<16} {passed}/{len(group)}")
-    # Per judge mode once there is more than one: a reference-free pass (absolute adequacy) and a
-    # Δcriterion pass are different claims, and one rate over both reads as neither. A row from
-    # before `judge_mode` was recorded was judged against its reference.
-    by_mode: dict[str, list[dict[str, Any]]] = {}
-    for r in rows:
-        by_mode.setdefault(r.get("judge_mode") or "reference", []).append(r)
+            label = f"{scenario} ({mode})" if split else scenario
+            lines.append(f"  {label:<16} {passed}/{len(group)}")
     lines.append("")
     for mode, group in sorted(by_mode.items()):
         n_pass = sum(1 for r in group if r.get("success"))

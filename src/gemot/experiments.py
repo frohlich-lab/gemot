@@ -427,6 +427,10 @@ _ROW_FIELDS = (
     "success",
     # Which bar `success` was decided by; a pass rate is only meaningful within one.
     "judge_mode",
+    # A reference-free run's declared test and its verdict (None = not assessable), so a failed
+    # test can be told from one that could not speak. Absent on a reference-judged run.
+    "adequacy_test",
+    "adequacy_passed",
     "delta_bic",
     # The delta the GATE used, and the criterion it used — `delta_bic` is only the
     # gating number when BIC is that criterion, so aggregating it beside `success`
@@ -531,6 +535,7 @@ def fetch_experiment_rows(base_url: str = "http://localhost:6006") -> list[dict[
     """One flat row per experiment task-run across every ``petab-mcp-repair-*`` dataset."""
     from phoenix.client import Client
 
+    from .metrics import flatten_adequacy
     from .tracing import phoenix_base_url
 
     client = Client(base_url=phoenix_base_url(base_url))
@@ -578,6 +583,7 @@ def fetch_experiment_rows(base_url: str = "http://localhost:6006") -> list[dict[
                         "n_fits": out.get("n_fits"),
                         "prompt_version": md.get("prompt_version"),
                         "git_sha": md.get("git_sha"),
+                        **flatten_adequacy(out),
                     }
                 )
     return rows
@@ -615,8 +621,19 @@ def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool 
         if not rows:
             return note + "(no scored runs yet — every run was a no-work infrastructure abort)"
 
+    # Every table below is split by judge mode: a reference-free pass (absolute adequacy) and a
+    # Δcriterion pass are different claims, and one rate over both reads as neither. A row from
+    # before `judge_mode` was judged by reference. The mode is shown only once there are two.
+    def _mode(r):
+        return r.get("judge_mode") or "reference"
+
+    by_mode: dict[str, list[dict]] = {}
+    for r in rows:
+        by_mode.setdefault(_mode(r), []).append(r)
+    split = len(by_mode) > 1
+
     def _key(r):
-        return (r.get("example"), r.get("model"), r.get("temperature"))
+        return (r.get("example"), r.get("model"), r.get("temperature"), _mode(r))
 
     cells: dict[tuple, list[dict]] = {}
     for r in rows:
@@ -635,14 +652,19 @@ def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool 
             return str(v)
 
     lines = [note] if note else []
-    lines += ["Per-cell (example × model × temperature):", ""]
+    cell_axes = "example × model × temperature" + (" × judge mode" if split else "")
+    lines += [f"Per-cell ({cell_axes}):", ""]
     hdr = (
-        f"{'example':<16} {'model':<26} {'temp':>4} {'n':>3} {'pass':>5} "
+        f"{'example':<16} {'model':<26} {'temp':>4} "
+        + (f"{'judge mode':<14} " if split else "")
+        + f"{'n':>3} {'pass':>5} "
         f"{'ΔBIC med':>9} {'ΔBIC min':>9} {'ΔBIC max':>9} {'chi2p med':>9}"
     )
     lines += [hdr, "-" * len(hdr)]
-    for key in sorted(cells, key=lambda k: (str(k[0]), str(k[1]), k[2] is None, str(k[2]))):
-        ex, model, temp = key
+    for key in sorted(
+        cells, key=lambda k: (str(k[0]), str(k[1]), k[2] is None, str(k[2]), str(k[3]))
+    ):
+        ex, model, temp, mode = key
         group = cells[key]
         n = len(group)
         passes = sum(1 for g in group if g.get("success"))
@@ -655,20 +677,13 @@ def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool 
             for g in group
         ]
         lines.append(
-            f"{_fmt(ex):<16} {_fmt(model):<26} {_fmt(temp, 'g'):>4} {n:>3} "
-            f"{passes}/{n:<3} {_fmt(_med(dbs), '+.3g'):>9} "
+            f"{_fmt(ex):<16} {_fmt(model):<26} {_fmt(temp, 'g'):>4} "
+            + (f"{mode:<14} " if split else "")
+            + f"{n:>3} {passes}/{n:<3} {_fmt(_med(dbs), '+.3g'):>9} "
             f"{_fmt(min([d for d in dbs if isinstance(d, (int, float))], default=None), '+.3g'):>9} "
             f"{_fmt(max([d for d in dbs if isinstance(d, (int, float))], default=None), '+.3g'):>9} "
             f"{_fmt(_med([g.get('chi2_gof_pvalue') for g in group]), '.2g'):>9}"
         )
-
-    # Everything below pools over examples, so it is split by judge mode once there is more than
-    # one: a reference-free pass (absolute adequacy) and a Δcriterion pass are different claims, and
-    # one rate over both reads as neither. A row from before `judge_mode` was judged by reference.
-    by_mode: dict[str, list[dict]] = {}
-    for r in rows:
-        by_mode.setdefault(r.get("judge_mode") or "reference", []).append(r)
-    split = len(by_mode) > 1
 
     # model × temperature pivot (pooled over examples): pass rate
     for mode, mode_rows in sorted(by_mode.items()):

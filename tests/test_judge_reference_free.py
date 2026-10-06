@@ -448,6 +448,19 @@ def test_batch_summaries_never_pool_the_two_kinds_of_pass():
     # one mode reads exactly as it always did
     assert "overall: 1/1 passed" in metrics.summarize([reference])
 
+    # The per-scenario rate too: ONE scenario under both modes is two rates, never one.
+    same = [
+        {"scenario": "lun", "success": True},
+        {"scenario": "lun", "success": True},
+        {"scenario": "lun", "success": False, "judge_mode": "reference_free"},
+        {"scenario": "lun", "success": False, "judge_mode": "reference_free"},
+    ]
+    rates = metrics.summarize(same).split("success rate (this batch):")[1]
+    assert "lun (reference)" in rates and "2/2" in rates
+    assert "lun (reference_free)" in rates and "0/2" in rates
+    assert "2/4" not in rates
+    assert "  lun              2/2" in metrics.summarize(same[:2])  # one mode: unlabelled
+
     from gemot import experiments
 
     rows = [
@@ -457,3 +470,13 @@ def test_batch_summaries_never_pool_the_two_kinds_of_pass():
     out = experiments.summarize_sweep(rows)
     assert "overall (reference): 1/1 runs passed" in out
     assert "overall (reference_free): 0/1 runs passed" in out
+    # The per-cell table: the same (example, model, temperature) under two modes is two cells.
+    per_cell = out.split("Pass rate by model")[0]
+    assert "× judge mode" in per_cell
+    cell_rows = [line for line in per_cell.splitlines() if line.startswith("boehm")]
+    assert len(cell_rows) == 2
+    assert any("reference_free" in line and "0/1" in line for line in cell_rows)
+    assert any("reference " in line and "1/1" in line for line in cell_rows)
+    assert "1/2" not in per_cell
+    # one mode: no mode column, as before
+    assert "judge mode" not in experiments.summarize_sweep(rows[:1])
