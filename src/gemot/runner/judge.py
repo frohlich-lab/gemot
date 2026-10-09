@@ -482,7 +482,7 @@ async def _judge(
     # model's own fitted sigma, not against a fraction of the marginal data std (which conflates
     # explained and unexplained variance, so no fixed band holds the truth). Falls back to the
     # data-std band for a reference.json written before `noise_sigma` was recorded — regenerate
-    # with `python examples/setup.py --refit <example>` to switch an example over.
+    # with `python -m petab_agent_bench --refit <example>` to switch an example over.
     reference_sigma_flag = _reference_sigma_flag(noise_sigma_report, ref, k=k, n=n)
     noise_sigma_flag = reference_sigma_flag or _noise_sigma_flag(noise_sigma_report)
     sigma_basis = "reference" if reference_sigma_flag else "data_std"
@@ -498,7 +498,7 @@ async def _judge(
 
     # EVERY criterion, candidate against reference, so a run can be read under any of them
     # afterwards. `None` wherever a side has no value: aicc at n <= k+1, tic without a k_eff —
-    # which the reference only carries once regenerated with `setup.py --refit`.
+    # which the reference only carries once regenerated with `python -m petab_agent_bench --refit`.
     criteria_scores = {}
     for name, crit in CANONICAL.items():
         cand = crit.value(final_nll, k, n, k_eff) if (n and final_nll is not None) else None

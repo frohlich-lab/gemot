@@ -3,7 +3,7 @@
 Tested here at the unit level: `benchmark._blind_observables`, the materialization-side rewrite
 and its leak guards. The commit-time remedy, `validation._undefined_readout_issues`, is pinned in
 PEtab-MCP's tests/test_undefined_readouts.py; the examples' own materialization is exercised by
-examples/setup.py.
+PEtabAgentBench's `petab_agent_bench.materialize`.
 """
 
 from __future__ import annotations

@@ -284,8 +284,9 @@ def test_a_tic_run_against_a_reference_without_a_k_eff_is_graded_by_bic_and_says
 
 
 def test_a_tic_run_against_a_regenerated_reference_is_graded_by_tic(tmp_path):
-    """Once `setup.py --refit` has recorded the reference fit's own k_eff, the gate follows the
-    criterion: a candidate whose fit the data see as 11 parameters against a truth seen as 20."""
+    """Once `python -m petab_agent_bench --refit` has recorded the reference fit's own k_eff, the
+    gate follows the criterion: a candidate whose fit the data see as 11 parameters against a
+    truth seen as 20."""
     store = _Store({4: (140.117, _CLEAN_SIGMA)}, head=4, checkpoint=4, criterion="tic", k_eff=11.0)
     _, result = _run(tmp_path, store, ref={**_REF, "k_eff": 20.0})
 

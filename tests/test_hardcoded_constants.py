@@ -95,10 +95,10 @@ def test_the_server_reports_the_constants_on_the_edit_result_and_the_summary(tmp
 
 # ------------------------------------------------------------------- the reference side
 def test_the_reference_pays_for_its_fitted_literals():
-    """`setup.py --refit` charges the published model's FITTED literals to the bar's k (fujita's
-    68190 is the author's fitted pro_EGFR, inlined by the collection) and records them, so a
-    reference whose k exceeds its estimated-row count is auditable. Nothing else on the result
-    moves: the published fit is unchanged, only its count."""
+    """`python -m petab_agent_bench --refit` charges the published model's FITTED literals to the
+    bar's k (fujita's 68190 is the author's fitted pro_EGFR, inlined by the collection) and records
+    them, so a reference whose k exceeds its estimated-row count is auditable. Nothing else on the
+    result moves: the published fit is unchanged, only its count."""
     from gemot.benchmark import charge_hardcoded_parameters
 
     ref = {"nll": -66.58, "k": 19, "n": 144, "noise_sigma": {}}

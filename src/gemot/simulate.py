@@ -615,8 +615,8 @@ def _reference_validation(
     The VECTOR itself is deliberately not recorded. Writing it into ``reference.json`` would put the
     reference fit's full optimum into a committed file to serve a re-score path that does not exist
     — unread state in an answer key, free to go stale against the next refit. Re-deriving the
-    held-out bar means re-running ``setup.py --refit``, which is also the only way the training bar
-    beside it can be re-derived, so the two cannot drift apart.
+    held-out bar means re-running ``python -m petab_agent_bench --refit``, which is also the only
+    way the training bar beside it can be re-derived, so the two cannot drift apart.
     """
     from petab_mcp import validation_data
 

@@ -176,8 +176,9 @@ def test_delta_is_candidate_minus_reference_and_positive_means_worse():
 
 def test_a_held_out_n_that_disagrees_with_the_reference_withholds_the_difference():
     """The two sides are computed at different times from different files — the reference at
-    ``setup.py --refit``, the candidate at run time. A held-out set that changed in between would
-    otherwise yield a plausible difference of two likelihoods over different data."""
+    ``python -m petab_agent_bench --refit``, the candidate at run time. A held-out set that changed
+    in between would otherwise yield a plausible difference of two likelihoods over different
+    data."""
     out = _validation_fields({"status": "ok", "nll": 560.0, "n": 200, "chi2": None}, _REF)
     assert out["n_mismatch"] is True
     assert "delta_nll" not in out

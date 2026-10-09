@@ -234,7 +234,7 @@ def test_fit_workers_honours_an_explicit_override():
 
     The reference refit for a stiff model (fujita, sneyd) has to run SEQUENTIALLY -- a parallel
     pyPESTO worker hard-crashes with BrokenProcessPool. That used to be requested by setting
-    PETAB_MCP_FIT_N_WORKERS at runtime, which silently did nothing: examples/setup.py imports the
+    PETAB_MCP_FIT_N_WORKERS at runtime, which silently did nothing: petab_agent_bench imports the
     example's run.py (binding fit_budget.FIT_N_WORKERS) BEFORE it could set the env var, so the
     refit kept running in parallel. An argument cannot lose that race; this pins that it is
     actually plumbed through to the engine.

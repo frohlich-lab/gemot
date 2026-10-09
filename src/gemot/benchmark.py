@@ -2,9 +2,9 @@
 
 The zero-shot benchmark examples do NOT vendor their PEtab problems in the repo. Instead each
 example ships only a small config (its ``run.py``: benchmark name, which parameters ship, the true
-reference model, and a ``known_constants`` prompt note). ``examples/setup.py`` downloads the pinned
-collection once and calls :func:`materialize` for every example, which writes ``<example>/problem/``
-by copying the REAL published tables **verbatim**:
+reference model, and a ``known_constants`` prompt note). ``python -m petab_agent_bench`` downloads
+the pinned collection once and calls :func:`materialize` for every example, which writes
+``<example>/problem/`` by copying the REAL published tables **verbatim**:
 
   * measurements / observables — verbatim (petab's ``flatten_timepoint_specific_output_overrides``
     is applied first when the benchmark uses per-measurement observable/noise parameter overrides,
@@ -26,7 +26,7 @@ by copying the REAL published tables **verbatim**:
     ``write_reference_for(free_parameters=...)`` so both sides estimate it. See BENCHMARK_NOTES.
 
 ``reference.json`` (the reference bar — the true structure fit to the data) is NOT materialized: it
-is the committed answer key, regenerated only via ``setup.py --refit`` (see
+is the committed answer key, regenerated only via ``python -m petab_agent_bench --refit`` (see
 :func:`write_reference_for`).
 
 The collection is pinned to ``COLLECTION_PIN`` for reproducibility; override its location with
@@ -1225,9 +1225,10 @@ def materialize(
     collection: Path | None = None,
 ) -> dict[str, Any]:
     """Write ``example_dir/problem/`` from the pinned collection — the fast, no-fit path run by
-    ``setup.py``. Copies the published measurements/observables/conditions VERBATIM (flattening
-    per-measurement output overrides when required), ships an empty SBML + the SUBSET parameter
-    table (``shipped_param_ids``) + problem.yaml. Does NOT touch reference.json.
+    ``petab_agent_bench.materialize``. Copies the published measurements/observables/conditions
+    VERBATIM (flattening per-measurement output overrides when required), ships an empty SBML +
+    the SUBSET parameter table (``shipped_param_ids``) + problem.yaml. Does NOT touch
+    reference.json.
 
     ``shipped_param_overrides`` applies per-parameter cell overrides to the shipped rows — the
     shipped table is a CURATED subset, not verbatim: e.g. an observation sigma the example ships
@@ -1596,8 +1597,9 @@ def write_reference_for(
     training_measurements: str | None = None,
 ) -> dict[str, Any]:
     """Regenerate the committed ``reference.json`` (the reference bar): fit the PRISTINE published
-    PEtab problem EXACTLY as it ships. Run only via ``setup.py --refit`` — slow, and its output is
-    committed.
+    PEtab problem EXACTLY as it ships. Run only via
+    ``petab_agent_bench.materialize(id, refit=True)`` (``python -m petab_agent_bench --refit``) —
+    slow, and its output is committed.
 
     The reference is the benchmark's OWN model — the shipped SBML + the published parameter table
     (the paper's true free/fixed split, bounds and priors; ``nominalValue`` = the published optimum)

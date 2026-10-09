@@ -60,7 +60,7 @@ SYNTHETIC_EXAMPLES = ["enzyme_kinetics", "predator_prey", "repressilator"]
 #: Collection-based examples, in rollout order. Each has a ``run.py`` exposing
 #: ``BENCHMARK_NAME`` + ``SHIPPED_PARAM_IDS``.
 #:
-#: THE authoritative list. It used to be copied by hand into ``examples/setup.py``,
+#: THE authoritative list. It used to be copied by hand into the examples' setup script,
 #: ``slurm/make_sweep.py`` and ``slurm/refit_references.sh``, which drifted to 13/15/12
 #: entries — ``fujita`` fell out of two of them, and since ``make_sweep.py`` passes its copy
 #: as argparse ``choices=``, ``--examples fujita`` became a hard error. Add a new example
