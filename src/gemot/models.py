@@ -27,6 +27,14 @@ MODELS: dict[str, str] = {
     "minimax-m3": "minimax/minimax-m3",
     "mimo": "xiaomi/mimo-v2.5",
     "glm-flash": "z-ai/glm-5.3-flash",
+    # The flash tier's newer open-weight models, added 2026-10-10 for a campaign on the PEtab v2
+    # server: each the latest of its family in glm-flash's price class on that date. Not
+    # defaults -- opt in with --models.
+    "qwen-flash": "qwen/qwen3.8-flash",
+    "v4.1-flash": "deepseek/deepseek-v4.1-flash",
+    "mimo-flash": "xiaomi/mimo-v2.6-flash",
+    "mistral-small": "mistralai/mistral-small-2603",
+    "hy3": "tencent/hy3",
     # The tier above the panel: ~10x luna per run, added to test whether capability buys
     # anything on the examples the panel cannot solve. Not defaults -- opt in with --models.
     "terra": "openai/gpt-5.6-terra",
@@ -129,6 +137,39 @@ _ROUTING: dict[str, dict] = {
         "order": ["novita/fp8", "parasail/fp8", "deepinfra/fp8", "together"],
         "only": ["novita/fp8", "parasail/fp8", "deepinfra/fp8", "together"],
     },
+    # The flash tier added 2026-10-10 (see MODELS). ZDR enforcement is OFF account-side since that
+    # date, which is what makes Alibaba's and Xiaomi's own endpoints reachable at all. Each pin was
+    # verified live that day with a one-shot tool call through it -- served by the pinned host,
+    # the tool call intact, thinking on by default (10-30 reasoning tokens) -- except where noted.
+    # Hosts were priced on both mixes this repo has measured: the panel's (~98% cache reads) and
+    # the single-step gym's (84% cache reads, completion 22% of prompt, so the completion rate
+    # weighs more).
+    #
+    # qwen-flash: Alibaba is its only host (1M context). Every probe on 2026-10-10 answered 429,
+    # the provider rate-limiting, so it is NOT yet verified to serve this account.
+    "qwen/qwen3.8-flash": {"only": ["alibaba"]},
+    # v4.1-flash: DeepSeek's own endpoint stays out for a different policy than ZDR -- the account
+    # refuses providers that train on paid traffic ("Paid model training violation", verified
+    # live). DeepInfra serves THIS model at fp8 (it served v4-flash at fp4, which is why that pin
+    # excludes it) and is the cheapest fp8 host on both mixes, 131k output cap; StreamLake fp8
+    # (1.02M context, 384k output cap) is the standby.
+    "deepseek/deepseek-v4.1-flash": {
+        "order": ["deepinfra/fp8", "streamlake/fp8"],
+        "only": ["deepinfra/fp8", "streamlake/fp8"],
+    },
+    # mimo-flash: Xiaomi's own fp8 endpoint, unblocked by the ZDR change, at the $0.003/M cache
+    # read the mimo note above could not reach; Novita fp8 is the same price and the standby.
+    "xiaomi/mimo-v2.6-flash": {
+        "order": ["xiaomi/fp8", "novita/fp8"],
+        "only": ["xiaomi/fp8", "novita/fp8"],
+    },
+    # mistral-small and hy3: one host each worth having, and 262,144 tokens of context -- under the
+    # 1M the driver assumes when it trims no history. That covers a single-step episode (the gym's
+    # largest call was 166k tokens) and the largest call across 210 archived panel runs (171k),
+    # but a long panel run could reach it. Mistral answered 429 to every probe on 2026-10-10 but
+    # one, so like qwen-flash it is not yet verified to serve this account.
+    "mistralai/mistral-small-2603": {"only": ["mistral"]},
+    "tencent/hy3": {"only": ["tencent/fp8"]},
     # terra: same Azure trap as the rest of the OpenAI family (OpenAI $1.00 vs Azure $2.75, a
     # 5.5x spread), so the bare `openai` tag is mandatory -- it also excludes `openai/flex` and
     # `openai/priority`, the undocumented cheap and dear tiers we refuse everywhere else.
