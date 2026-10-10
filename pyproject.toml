@@ -23,10 +23,11 @@ classifiers = [
 dependencies = [
     # The server this harness drives, from its own repository. Pinned to a commit so a checkout
     # here names the server it was tested against: bump it deliberately, and see the README for
-    # developing both at once. 8b64357 is the server on PEtab v2 (frohlich-lab/PEtab-MCP#5): it
-    # upgrades a v1 problem on load, refuses a store the v1 server wrote, and brings AMICI and
-    # pyPESTO from git commits, so AMICI builds from source wherever this installs.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@8b64357bcdabfa37899da027b6f62f25c88b8d82",
+    # developing both at once. c4b5865 is the server on PEtab v2 (frohlich-lab/PEtab-MCP#5) with
+    # its v1 upgrade made to load the benchmark (branch claude/v1-upgrade-without-lint: petab1to2
+    # unlinted, on libpetab main) -- move to its merge commit. It refuses a store the v1 server
+    # wrote, and brings AMICI, pyPESTO and libpetab from git commits, so AMICI builds from source.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@c4b5865f325459afe15b73135c5f639e7f55094e",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
     # deleted, and mcp 2.0 reworks the client API used here (streamablehttp_client ->
