@@ -245,8 +245,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "`get_skill('petab-model-building')` and `get_skill('antimony-authoring')`. They are short, "
     "and they carry domain knowledge this prompt does not.\n"
     "1. Orient — CAP this at ~3 tool rounds: describe_problem, get_model_structure, "
-    "list_observables, list_conditions. Do not skip `list_conditions`: what it reports is an "
-    "experimental INPUT your model has to reproduce by name, not something to fit. "
+    "list_observables, list_conditions, list_experiments. Do not skip `list_conditions`: what it "
+    "reports is an experimental INPUT your model has to reproduce by name, not something to fit; "
+    "`list_experiments` says which condition applies when. "
     "Once you have the observables and the current structure you MUST call `make_changes` "
     "BEFORE any further inspection — do not re-propose the same read-only batch every "
     "step or keep probing; a first fit is the fastest way to learn what the model is missing. "
@@ -469,7 +470,7 @@ BAREBONES_SYSTEM_PROMPT_TMPL = (
     "the files then selected by `problem.yaml`. Never defer saving or restoring your best "
     "result until the end.\n\n"
     "ITERATE. Do not stop at the first model that fits: a first fit is where the work starts. "
-    "Compare simulation against data per observable and condition, look for systematic misfit, "
+    "Compare simulation against data per observable and experiment, look for systematic misfit, "
     "and revise the mechanism — rate-law forms, added or removed processes — refitting each time, "
     "until the residuals show no systematic structure and further changes stop lowering the BIC. "
     "You have a wall-clock budget of hours; use it, and deliver the best model you found.\n\n"
@@ -578,11 +579,11 @@ SIGNAL_ENGINEER_PROMPT = (
     "You are a signal-processing engineer. Treat the time courses as signals — do not "
     "hypothesize mechanisms. Call list_data_tables FIRST for the available tables/columns, "
     "then use query_data. Before a model is fitted, characterize the MEASURED signal itself, "
-    "per observable_id / condition_id: its shape (monotonic rise, saturation, decay, sustained "
+    "per observable_id / experiment_id: its shape (monotonic rise, saturation, decay, sustained "
     "oscillation — with its period — or damping), timescales, and amplitudes — the qualitative "
     "fingerprint the mechanism must reproduce. Once a model is fitted, the `simulations` table "
     "has one row per point with `measurement`, `simulation`, `residual`, `residual_weighted`, "
-    "and `noise`: compute breakdowns in SQL — grouped by observable_id / condition_id / time, "
+    "and `noise`: compute breakdowns in SQL — grouped by observable_id / experiment_id / time, "
     "the worst-fit points (`ORDER BY abs(residual_weighted) DESC`), per-group bias "
     "(`avg(residual_weighted)`), and time-trend (`corr(time, residual_weighted)`) — and say "
     "whether the residuals look like noise (the fit is adequate) or systematic (the structure "
@@ -816,11 +817,18 @@ TOOL_DESCRIPTIONS = {
         "MORE; below it fits LESS hard, and the minimum is 1."
     ),
     "list_conditions": (
-        "The fixed conditions and what each one perturbs. A condition column sets "
-        "a model quantity PER CONDITION (a dose, an input level, a switch), so "
-        "your model must reference it BY NAME — a target the model never uses is "
-        "a rejected change, and a condition-set initial is an experimental input "
-        "to reproduce, not a value to fit."
+        "The fixed conditions and what each one perturbs: one row per change, setting "
+        "`targetId` (a model quantity: a dose, an input level, a switch) to "
+        "`targetValue`, so your model must reference each target BY NAME — a target "
+        "the model never uses is a rejected change, and a condition-set initial is an "
+        "experimental input to reproduce, not a value to fit. Which condition applies "
+        "when is `list_experiments`."
+    ),
+    "list_experiments": (
+        "The fixed experiments: one row per period — from `time` on, experiment "
+        "`experimentId` applies condition `conditionId`; `time` -inf is a "
+        "pre-equilibration to steady state. Every measurement names its experiment "
+        "(`experimentId`, '' for the model as is)."
     ),
     "describe_problem": "Orientation: whether a mechanism has been authored (model_authored), table/entity counts, current version, and the multistart count a fit uses by default (fit_n_starts_default). Cheap.",
     "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law) — empty until a model is built.",
@@ -936,8 +944,8 @@ TOOL_DESCRIPTIONS = {
     ),
     "get_measurements": (
         "Measurement data. Default returns a COMPACT SUMMARY (per observable×"
-        "condition: n, time span, value min/max/mean, preview points) — prefer "
-        "it, and prefer condition_id/observable_id filters or query_data for a "
+        "experiment: n, time span, value min/max/mean, preview points) — prefer "
+        "it, and prefer experiment_id/observable_id filters or query_data for a "
         "targeted slice. summarize=False returns raw points PAGED "
         "{rows, row_count, total_rows, offset, truncated, next_offset?}, "
         "max_rows=200 per page: an unpaged dump is 70-80k tokens on the large "
@@ -946,37 +954,40 @@ TOOL_DESCRIPTIONS = {
     ),
     "list_data_tables": "List the SQL tables query_data exposes and their columns.",
     # The column names are spelled out because guessing them was the single largest non-editing
-    # error class measured (15 of 22 query_data failures in the 2026-08-17 sweep): PEtab is
-    # camelCase, and `conditionId` is NOT a measurements column -- that table keys conditions as
-    # `simulationConditionId`. No casing convention would have saved the caller; only the schema.
+    # error class measured (15 of 22 query_data failures in the 2026-08-17 sweep, then on the v1
+    # server's `simulationConditionId`). No casing convention would have saved the caller; only the
+    # schema. On the PEtab v2 server measurements are keyed by experiment and conditions are long,
+    # so the joins below are v2's; the worked shape it replaced (a `USING` join of measurements to
+    # simulations) could never have run, since simulations spells its keys snake_case.
     "query_data": (
         "Run a read-only DuckDB SQL query over the data. Column names are PEtab's, "
-        "camelCase. Tables: measurements (observableId, simulationConditionId, "
-        "preequilibrationConditionId?, measurement, time, observableParameters, "
-        "noiseParameters, datasetId, replicateId?), conditions (conditionId + one "
-        "column per condition-specific quantity), observables (observableId, "
-        "observableFormula, noiseFormula, observableTransformation, noiseDistribution), "
-        "parameters (parameterId, parameterScale, lowerBound, upperBound, nominalValue, "
-        "estimate), simulations (one row per point: measurement, simulation, residual, "
-        "residual_weighted, noise), simulations_history (those same per-point rows for "
+        "camelCase, except the simulation tables' snake_case. Tables: measurements "
+        "(observableId, experimentId — '' for the model as is — time, measurement, "
+        "observableParameters?, noiseParameters?, datasetId?, replicateId?), experiments "
+        "(experimentId, time — when the period starts, -inf = pre-equilibration — "
+        "conditionId), conditions (conditionId, targetId, targetValue: one row per "
+        "quantity a condition sets), observables (observableId, observableFormula, "
+        "noiseFormula, noiseDistribution), parameters (parameterId, parameterScale, "
+        "lowerBound, upperBound, nominalValue, estimate, role, status), simulations (one "
+        "row per point: observable_id, experiment_id, time, measurement, simulation, "
+        "residual, residual_weighted, noise), simulations_history (those same per-point rows for "
         "EVERY committed version, plus a `version` column — the ONLY way to compare "
         "model versions point-by-point, e.g. `SELECT observable_id, time, "
         "max(CASE WHEN version=3 THEN residual_weighted END) AS v3, "
         "max(CASE WHEN version=4 THEN residual_weighted END) AS v4 "
         "FROM simulations_history WHERE version IN (3,4) GROUP BY 1,2 "
         "ORDER BY abs(v4)-abs(v3) DESC`), optimization_starts, optimization_trace. "
-        "NOTE the join, and note that BOTH spellings are real, on different tables: "
-        "`measurements.simulationConditionId = conditions.conditionId`. measurements "
-        "has no `conditionId`; conditions has no `simulationConditionId`. `residual` "
-        "lives on simulations, not measurements. Call `list_data_tables` for the exact "
+        "NOTE the joins: `measurements.experimentId = experiments.experimentId`, then "
+        "`experiments.conditionId = conditions.conditionId`; a condition's settings are "
+        "ROWS (targetId, targetValue), not columns. `residual` lives on simulations, which "
+        "already carries `measurement`, so a residual breakdown needs no join. Call "
+        "`list_data_tables` for the exact "
         "per-problem columns. Two things that bite: aggregate only NUMERIC columns "
         "(`avg(measurement)`, not `avg(observableId)` — a text column raises a "
         "Conversion Error), and DuckDB is not SQLite/pandas, so check a function "
         "exists before leaning on it. A worked shape: "
-        "`SELECT m.observableId, m.simulationConditionId, count(*) n, "
-        "avg(s.residual_weighted) bias FROM measurements m JOIN simulations s USING "
-        "(observableId, simulationConditionId, time) GROUP BY 1, 2 ORDER BY abs(bias) "
-        "DESC LIMIT 20`. "
+        "`SELECT observable_id, experiment_id, count(*) n, avg(residual_weighted) bias "
+        "FROM simulations GROUP BY 1, 2 ORDER BY abs(bias) DESC LIMIT 20`. "
         "Prefer aggregations; rows capped at max_rows (default 50). When `truncated` "
         "is true the result carries `next_offset` — page with it rather than raising "
         "max_rows, since a big page re-enters your context every later turn. Add an "
@@ -1323,8 +1334,9 @@ BIOLOGY_BLIND_SEMANTICS = (
     "The problem is supplied through structured MCP tools. There are no problem files in your "
     "filesystem. All identifiers are anonymous: they encode no domain meaning. Use only the "
     "numerical measurements, input design, parameter constraints and mathematical consistency. "
-    "An input column sets the identically named model quantity for each condition. Declare it "
-    "and use it in the equations; do not estimate it. Condition-set initial values are inputs. "
+    "A condition sets the model quantity its targetId names to its targetValue. Declare that "
+    "quantity and use it in the equations; do not estimate it. Condition-set initial values are "
+    "inputs. "
     "A readout_* symbol is an output mapping: define it by an assignment rule, "
     "`readout_001 := <expression of states>`, which holds at all times. It is neither a fitted "
     "parameter nor a state in a reaction. Preserve every supplied observable and noise formula. "
@@ -1437,10 +1449,11 @@ BIOLOGY_BLIND_ANALYSTS = {
 BIOLOGY_BLIND_TOOL_DESCRIPTIONS = {
     "describe_problem": "Inspect problem dimensions, anonymous identifiers, model state and fit budget.",
     "get_model_structure": "Read model entities, equations and initial-value rules.",
-    "list_observables": "Read anonymous observable formulas, transformations and noise models.",
-    "list_conditions": "Read numerical input rows; column names must match model quantities.",
+    "list_observables": "Read anonymous observable formulas, noise formulas and distributions.",
+    "list_conditions": "Read numerical input rows; each targetId must name a model quantity.",
+    "list_experiments": "Read which condition each experiment applies, from which time.",
     "get_parameters": "Read parameter values, bounds, estimation scales, fixed flags and roles.",
-    "get_measurements": "Read a page of numerical measurements by observable and condition.",
+    "get_measurements": "Read a page of numerical measurements by observable and experiment.",
     "list_data_tables": "List queryable numerical tables and their columns.",
     "query_data": "Run read-only SQL over numerical data, simulations and fit diagnostics.",
     # No agent holds this tool since the data_regimes arm retired; the entry stays only because
