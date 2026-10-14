@@ -32,7 +32,8 @@ dependencies = [
     # holds this today, but that cap is the server's to lift. Revisit once langchain-mcp-adapters
     # ships mcp 2.0 support.
     "mcp<2",
-    # Imported directly here too (judge, benchmark setup, simulate, the neural route), so named
+    # Imported directly here too (judge, simulate, the neural route), or promised to the
+    # barebones agent's sandbox (pyPESTO, which its prompt tells the agent to fit with), so named
     # rather than left to arrive through petab-mcp, whose pyproject says why each floor.
     "petab>=0.9",
     "python-libsbml>=5.19",

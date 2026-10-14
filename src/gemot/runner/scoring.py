@@ -65,10 +65,11 @@ def _validation_fields(payload, reference, *, asked: bool = False) -> dict | Non
     ref_block = (reference or {}).get("validation") if isinstance(reference, dict) else None
     ref_block = ref_block if isinstance(ref_block, dict) else {}
     # The REFERENCE side's own status, carried through so a refit whose held-out scoring FAILED
-    # (`status: error`, written by `simulate.write_reference_from_problem`) is distinguishable from
-    # a reference that simply predates the feature. Both leave `reference_nll` blank, and without
-    # this the two are byte-identical in the history CSV — which would make the guarded refit's
-    # whole point ("record the failure rather than drop it") invisible per-run.
+    # (`status: error`, written by `petab_agent_bench.reference.write_reference_from_problem`) is
+    # distinguishable from a reference that simply predates the feature. Both leave
+    # `reference_nll` blank, and without this the two are byte-identical in the history CSV —
+    # which would make the guarded refit's whole point ("record the failure rather than drop it")
+    # invisible per-run.
     # No default: a block that does not SAY it succeeded is reported as `None`, not as "ok".
     # Folding "the block is silent" into the affirmative case would defeat the point of carrying
     # the status at all, which is to separate "the refit's held-out scoring failed" from "no bar
