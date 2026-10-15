@@ -16,9 +16,13 @@ gemot spawns that server as a subprocess, launches a panel of agent specialists
 reference. Phoenix tracing and the run explorer read the trace and version history this
 pipeline leaves behind.
 
-The benchmark it drives — the zero-shot examples, the Slurm sweep tooling and the paper —
-lives in [frohlich-lab/gemot_iclr_2026](https://github.com/frohlich-lab/gemot_iclr_2026),
-which installs gemot pinned to a commit. gemot is a checkout tool: it finds that checkout
+The zero-shot problems it drives — and the code that materializes them from the PEtab
+Benchmark-Models collection and fits their reference bars — live in
+[frohlich-lab/PEtabAgentBench](https://github.com/frohlich-lab/PEtabAgentBench). The Slurm sweep
+tooling and the paper live in
+[frohlich-lab/gemot_iclr_2026](https://github.com/frohlich-lab/gemot_iclr_2026), which mounts
+those problems at `examples/` and installs gemot pinned to a commit. gemot is a checkout tool: it
+finds that checkout
 from the running script or the working directory, or from `PETAB_MCP_REPO_ROOT` (see
 [`src/gemot/paths.py`](src/gemot/paths.py)).
 

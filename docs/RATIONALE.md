@@ -76,9 +76,10 @@ figure is `None`, never 0.0, which would read as free in a mean.
 
 #192 `TRAINING_MEASUREMENTS` restates the published measurement table from one the example commits.
 The collection's perelson series is a digitisation of Fig. 1B where the study's own release has the
-measured values, and they disagree materially at one point. Restating happens in `_load_problem`, so
-the agent's copy and every reference stage read one source; a table naming an observable or condition
-the published problem lacks is refused rather than silently extending it.
+measured values, and they disagree materially at one point. Restating happens in
+PEtabAgentBench's `materialization.load_published_problem`, so the agent's copy and every reference
+stage read one source; a table naming an observable or condition the published problem lacks is
+refused rather than silently extending it.
 
 #192 A transfer set may free a parameter the (patched) reference model defines even when the
 published parameter table lacks it: what makes one unmanageable is having no counterpart at all, not

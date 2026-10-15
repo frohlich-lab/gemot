@@ -15,7 +15,8 @@ from typing import AsyncIterator
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
-from .. import ablations, benchmark, prompts
+from .. import ablations, prompts
+from ..paths import validation_measurements_path
 from ..bio_sessions import open_bio_sessions
 from ..explorer.archive import archive_run
 from ..fit_budget import (
@@ -48,7 +49,7 @@ def cleanup(scenario: Scenario) -> Path:
         prepare(
             scenario.problem_dir / "problem.yaml",
             work,
-            benchmark.validation_measurements_path(scenario.example_dir).parent,
+            validation_measurements_path(scenario.example_dir).parent,
         )
     else:
         shutil.copytree(scenario.problem_dir, work)
@@ -94,10 +95,10 @@ async def _petab_server(
     host, port = "127.0.0.1", _free_port()
     # HELD-OUT data, if this example has any: read from the example dir, NOT from `work/` — `work/`
     # is a copy of `problem/` and the held-out table is deliberately not in there (see
-    # `benchmark.VALIDATION_DIR`). Passed as "" when absent, in which case the server registers no
+    # `paths.VALIDATION_DIR`). Passed as "" when absent, in which case the server registers no
     # `evaluate_validation_data` tool at all — and the judge, gated on the same file, does not ask
     # for one, so the seventeen examples without held-out data are untouched by any of this.
-    validation_tsv = benchmark.validation_measurements_path(scenario.example_dir)
+    validation_tsv = validation_measurements_path(scenario.example_dir)
     if ablations.enabled("biology_blind"):
         from ..biology_blinding import private_dir
 

@@ -164,10 +164,10 @@ def _reference_score(ref, criterion) -> float | None:
 
     The reference carries ``nll``/``k``/``n``, from which every criterion but TIC is computable,
     so the judge can grade a candidate under whatever criterion the run searched by; TIC also
-    needs the reference fit's ``k_eff``, which :func:`simulate.write_reference_from_problem`
-    records and an older ``reference.json`` lacks (``None`` then — no TIC gate, and the judge
-    says so). Same fail-soft contract as above: an author-side reference problem degrades to "no
-    gate", never an exception.
+    needs the reference fit's ``k_eff``, which
+    ``petab_agent_bench.reference.write_reference_from_problem`` records and an older
+    ``reference.json`` lacks (``None`` then — no TIC gate, and the judge says so). Same fail-soft
+    contract as above: an author-side reference problem degrades to "no gate", never an exception.
     """
     if not ref:
         return None
