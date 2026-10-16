@@ -2,8 +2,8 @@
 
 The counterpart of :mod:`petab_mcp.validation_data` for the neural field. **Fixed-θ** evaluates
 the trained weights and scalars on conditions the training set did not cover: the one thing the
-server cannot do for a field, since it fits PEtab v1 problems and a staged SciML problem is not
-one.
+server cannot do for a field, since it fits plain PEtab problems and a staged one carries the
+SciML extension.
 
 **A transfer set is refused, not scored.** A transfer set asks whether a model structure can
 describe a new system once its parameters are re-estimated, and a field's parameters ARE its
@@ -153,38 +153,54 @@ def score(result: T.TrainResult, held_out, directory: Path | str, *, training: P
 
 
 def _held_out_problem(training: P.Problem, held_out, directory: Path) -> P.Problem:
-    """The held-out set as a PEtab v1 problem beside the training tables it does not replace:
-    the measurements are the set's; the conditions gain the set's rows (fixed-θ) or become the
-    set's table (transfer); the parameters are the set's own when it brings them."""
+    """The held-out set as a PEtab v1 problem beside the training tables: the measurements are the
+    set's, the conditions gain the set's rows, everything else is the training problem's. Fixed-θ
+    only; :func:`prepare` refuses a transfer set before this.
+
+    The set is read as the server reads it (:func:`petab_mcp.validation_data.read_held_out`), so
+    its condition table is v2's long one whatever its files are. The route stages v1 problems
+    (:mod:`.problem`), so those rows go back into v1's columns, one per target. A set keyed by
+    experiment, a native v2 one, has no v1 form and is refused.
+    """
     import petab.v1 as petab  # noqa: PLC0415
     from petab.v1 import C  # noqa: PLC0415
     from petab.v1.yaml import load_yaml  # noqa: PLC0415
 
+    measurements = held_out.measurement_df
+    if held_out.experiment_df is not None or C.SIMULATION_CONDITION_ID not in measurements:
+        raise P.ProblemError(
+            "the held-out set names experiments, not conditions (PEtab v2); the neural route "
+            "stages PEtab v1 problems, so the set has no form it can score"
+        )
     source = petab.Problem.from_yaml(str(training.source))
     directory.mkdir(parents=True, exist_ok=True)
-    petab.write_measurement_df(held_out.measurement_df, str(directory / "measurements.tsv"))
+    petab.write_measurement_df(measurements, str(directory / "measurements.tsv"))
     petab.write_observable_df(source.observable_df, str(directory / "observables.tsv"))
     conditions = source.condition_df
-    theirs = held_out.condition_df
-    if theirs is not None:
-        theirs = theirs.drop(columns=[C.CONDITION_NAME], errors="ignore")
-        mine = conditions.drop(columns=[C.CONDITION_NAME], errors="ignore")
-        if set(map(str, theirs.columns)) != set(map(str, mine.columns)):
+    if held_out.condition_df is not None:
+        if conditions is None:
             raise P.ProblemError(
-                f"the held-out condition table has columns {sorted(map(str, theirs.columns))} against "
-                f"the training table's {sorted(map(str, mine.columns))}; a condition column is an input, "
-                "so the two tables describe different fields"
+                "the held-out set brings a condition table but the training problem has none, so "
+                "there are no inputs to line the two up by"
             )
-        conditions = (
-            theirs[list(mine.columns)]
-            if held_out.parameter_df is not None
-            else pd.concat([mine, theirs[list(mine.columns)]])
-        )
+        mine = conditions.drop(columns=[C.CONDITION_NAME], errors="ignore")
+        named = {
+            str(c)
+            for column in (C.SIMULATION_CONDITION_ID, C.PREEQUILIBRATION_CONDITION_ID)
+            if column in measurements
+            for c in measurements[column].dropna()
+            if str(c)
+        }
+        theirs = _v1_conditions(held_out.condition_df, named - set(map(str, mine.index)))
+        new = sorted(set(map(str, theirs.columns)) - set(map(str, mine.columns)))
+        if new:
+            raise P.ProblemError(
+                f"the held-out conditions set {new}, which no training condition sets; a "
+                "condition target is an input, so the two tables describe different fields"
+            )
+        conditions = pd.concat([mine, theirs.reindex(columns=mine.columns)])
     petab.write_condition_df(conditions, str(directory / "conditions.tsv"))
-    petab.write_parameter_df(
-        held_out.parameter_df if held_out.parameter_df is not None else source.parameter_df,
-        str(directory / "parameters.tsv"),
-    )
+    petab.write_parameter_df(source.parameter_df, str(directory / "parameters.tsv"))
     document = load_yaml(str(training.source))
     model = training.source.parent / document["problems"][0]["sbml_files"][0]
     shutil.copy(model, directory / "model.xml")
@@ -197,6 +213,17 @@ def _held_out_problem(training: P.Problem, held_out, directory: Path) -> P.Probl
         "  observable_files: [observables.tsv]\n"
     )
     return P.load(directory, name=f"{training.name}_held_out", dosed=training.dosed)
+
+
+def _v1_conditions(condition_df, empty: "set[str]") -> pd.DataFrame:
+    """A v2 condition table in v1's shape: indexed by condition, one column per target. v2 has no
+    row for a condition that changes nothing; each id in ``empty`` comes back as an empty row, as
+    v1 has it."""
+    from petab.v2.C import CONDITION_ID, TARGET_ID, TARGET_VALUE  # noqa: PLC0415
+
+    wide = condition_df.pivot(index=CONDITION_ID, columns=TARGET_ID, values=TARGET_VALUE)
+    wide.columns.name = None
+    return wide.reindex(wide.index.union(sorted(empty)))
 
 
 def score_of(nll: float, k: int, n: int, *, criterion=None) -> float | None:

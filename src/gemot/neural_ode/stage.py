@@ -22,11 +22,13 @@ through PyTorch and PyTorch is not a dependency here; the YAML is written beside
 portable record of the architecture. Time is normalised in the rate rules rather than in the
 network, so the field is O(1) in its own clock and derivatives come out in the problem's units.
 
-A ``log10`` observable's noise formula is multiplied by ``ln 10``. PEtab v2 has no log10-normal
-noise, so petab's upgrader writes log-normal and warns, which changes the likelihood: the residual
-``(log10 y - log10 ŷ) / σ`` becomes ``(ln y - ln ŷ) / σ``. With ``σ`` scaled by ``ln 10`` the two
-densities are identical, the Jacobian term included, so the field's nll stays comparable with the
-reference's. The readout scale factors are FIXED at their nominal values, though the shipped table
+A ``log10`` observable's noise formula comes out multiplied by ``ln 10``. PEtab v2 has no
+log10-normal noise, so petab's upgrader writes log-normal, which alone would change the likelihood:
+the residual ``(log10 y - log10 ŷ) / σ`` becomes ``(ln y - ln ŷ) / σ``. With ``σ`` scaled by
+``ln 10`` the two densities are identical, the Jacobian term included, so the field's nll stays
+comparable with the reference's. The upgrader applies that factor itself
+(PEtab-dev/libpetab-python#535); this module applied it as well before that, which counted it
+twice. The readout scale factors are FIXED at their nominal values, though the shipped table
 estimates them. A neural state's magnitude is free, so a scale factor times that state is all the data
 constrain, and estimating both let fujita's drift to 1e-8 and 1e5 while the states went the
 other way -- a fit no better on the training data and worse off it. Fixed, the state carries the
@@ -303,14 +305,8 @@ def _stage_v1_tables(
             v1 / "conditions.tsv", sep="\t", index=False
         )
     source.measurement_df.to_csv(v1 / "measurements.tsv", sep="\t", index=False)
-    observables = source.observable_df.copy()
-    if "observableTransformation" in observables.columns:
-        log10 = observables["observableTransformation"].astype(str).str.strip() == "log10"
-        observables.loc[log10, "noiseFormula"] = [
-            f"({formula}) * {math.log(10.0)!r}"
-            for formula in observables.loc[log10, "noiseFormula"]
-        ]
-    observables.to_csv(v1 / "observables.tsv", sep="\t")
+    # As shipped: the upgrader rescales a log10 observable's noise (see the module docstring).
+    source.observable_df.to_csv(v1 / "observables.tsv", sep="\t")
     parameters = source.parameter_df
     referenced = set(problem.noise_parameters)
     for column in ("observableFormula", "noiseFormula"):

@@ -8,6 +8,7 @@ import statistics
 import h5py
 import pandas as pd
 import pytest
+import sympy as sp
 import yaml
 from test_neural_ode_problem import write_problem
 
@@ -103,11 +104,10 @@ def test_log10_noise_keeps_the_v1_likelihood_under_v2s_log_normal(tmp_path):
     observables = pd.read_csv(staged.directory / "observables.tsv", sep="\t").set_index(
         "observableId"
     )
-    # The upgrader writes log-normal; the noise formula carries ln 10 so the density is v1's.
+    # The upgrader writes log-normal; the noise formula carries ln 10, ONCE, so the density is v1's.
     assert observables.loc["obs_Q", "noiseDistribution"] == "log-normal"
-    assert (
-        observables.loc["obs_Q", "noiseFormula"] == f"(noiseParameter1_obs_Q) * {math.log(10.0)!r}"
-    )
+    noise = sp.sympify(observables.loc["obs_Q", "noiseFormula"])
+    assert sp.simplify(noise / sp.Symbol("noiseParameter1_obs_Q") - sp.log(10)) == 0
     assert (
         observables.loc["obs_P", "noiseDistribution"] == "normal"
         and observables.loc["obs_P", "noiseFormula"] == "sigma_P"

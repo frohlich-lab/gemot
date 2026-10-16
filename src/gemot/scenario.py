@@ -270,7 +270,7 @@ def reaction_rate_law(structure: dict[str, Any], reaction_id: str) -> str | None
 
 def fitted_values(param_records: list[dict[str, Any]]) -> dict[str, float]:
     """Map ``parameterId -> nominalValue`` (the fitted values) from ``get_parameters``."""
-    from petab.v1.C import NOMINAL_VALUE, PARAMETER_ID
+    from petab.v2.C import NOMINAL_VALUE, PARAMETER_ID
 
     out: dict[str, float] = {}
     for rec in param_records or []:

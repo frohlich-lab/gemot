@@ -220,6 +220,76 @@ def test_an_untouched_model_less_problem_reads_as_no_model(tmp_path):
     assert out["model_authored"] is False
 
 
+def _workspace_v2(tmp_path: Path) -> Path:
+    """`_workspace` for a native PEtab v2 problem: the toy with one condition, upgraded."""
+    from petab.v2.petab1to2 import petab1to2
+
+    source = tmp_path / "v1"
+    shutil.copytree(TOY, source)
+    (source / "conditions.tsv").write_text("conditionId\tA\nc0\t1.0\n")
+    work = tmp_path / "ex" / "work"
+    petab1to2(source / "problem.yaml", work, validate=False)
+    (work / "reference.json").write_text('{"nll": 1.0, "k": 2, "n": 10}')
+    return work
+
+
+def test_a_v2_delivery_is_checked_against_its_own_tables(tmp_path):
+    """A v2 YAML lists its tables at the top level, adds an experiment table to the design, and
+    spells `estimate` true/false; untouched, it is clean and lints under petab.v2."""
+    work = _workspace_v2(tmp_path)
+    staged = R.stage_workspace(work)
+    assert set(staged["design_hashes"]) == {
+        "measurements.tsv",
+        "conditions.tsv",
+        "experiments.tsv",
+        "observables.tsv",
+    }
+    assert staged["shipped_rows"]["sigma_B"] == (0, 0.1)
+    assert staged["shipped_rows"]["k1"] == (1, 0.5)
+    work = staged["agent_dir"]
+    out = R.check_delivery(work, staged)
+    assert out["design_modified"] == [] and out["shipped_rows_violated"] == []
+    assert out["petab_lint"]["ok"], out["petab_lint"]
+    assert out["model_authored"] is True
+
+
+def test_a_v2_delivery_that_rewrites_the_design_or_a_shipped_row_is_reported(tmp_path):
+    work = _workspace_v2(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+    experiments = work / "experiments.tsv"
+    experiments.write_text(experiments.read_text() + "\n")
+    parameters = (work / "parameters.tsv").read_text()
+    header = parameters.splitlines()[0].split("\t")
+    rows = []
+    for line in parameters.splitlines()[1:]:
+        cells = dict(zip(header, line.split("\t")))
+        if cells["parameterId"] == "sigma_B":
+            cells["nominalValue"] = "0.5"
+        elif cells["parameterId"] == "A_init":
+            cells["estimate"] = "true"
+        rows.append("\t".join(cells[c] for c in header))
+    (work / "parameters.tsv").write_text("\n".join(["\t".join(header), *rows]) + "\n")
+    out = R.check_delivery(work, staged)
+    assert out["design_modified"] == ["experiments.tsv"]
+    assert sorted(out["shipped_rows_violated"]) == sorted(
+        ["sigma_B: fixed value 0.1 -> 0.5", "A_init: estimate 0 -> 1"]
+    )
+
+
+def test_a_v2_lint_error_is_named(tmp_path):
+    work = _workspace_v2(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+    lines = (work / "parameters.tsv").read_text().splitlines()
+    (work / "parameters.tsv").write_text(
+        "\n".join(line for line in lines if not line.startswith("sigma_B")) + "\n"
+    )
+    out = R.check_delivery(work, staged)
+    assert out["petab_lint"]["ok"] is False
+    assert any("sigma_B" in m for m in out["petab_lint"]["messages"]), out["petab_lint"]
+
+
 def test_unscoreable_result_is_a_loss_not_an_abort(tmp_path):
     """`aborted:` is what the sweep aggregation drops as infrastructure noise; a delivery that
     cannot be judged is the agent's failure and must stay in the table as one."""

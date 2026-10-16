@@ -5,6 +5,12 @@ the server loads anonymized tables and SBML. The numerical design is unchanged; 
 metadata is omitted. The private bijection stays on the harness side, and the judge's caller
 translates identifiers back so diagnostics and reference-sigma pairing retain their meaning.
 The agent has only structured MCP tools, not access to these host files or this mapping.
+
+The anonymous problem is PEtab v2 whichever version the source is. A v1 source is upgraded first,
+by the loader the server itself uses (``petab_mcp.problem.WorkingProblem.from_yaml``), so the
+blinded problem is the server's own v2 problem under other names, and a native v2 source takes
+the same path. Blinding the v1 files and leaving the upgrade to the server would only work for
+v1 sources.
 """
 
 from __future__ import annotations
@@ -30,12 +36,15 @@ _RESERVED = {
     "exponentiale",
     "avogadro",
 }
+#: The columns each v2 table keeps; anything else (names, units, comments) is descriptive
+#: metadata and is dropped. ``parameterScale`` is the server's estimation-scale extension.
 _COLUMNS = {
     "observables": (
         "observableId",
         "observableFormula",
+        "observablePlaceholders",
         "noiseFormula",
-        "observableTransformation",
+        "noisePlaceholders",
         "noiseDistribution",
     ),
     "parameters": (
@@ -45,23 +54,49 @@ _COLUMNS = {
         "upperBound",
         "nominalValue",
         "estimate",
-        "initializationPriorType",
-        "initializationPriorParameters",
-        "objectivePriorType",
-        "objectivePriorParameters",
+        "priorDistribution",
+        "priorParameters",
     ),
+    "conditions": ("conditionId", "targetId", "targetValue"),
+    "experiments": ("experimentId", "time", "conditionId"),
     "measurements": (
         "observableId",
-        "preequilibrationConditionId",
-        "simulationConditionId",
-        "measurement",
+        "experimentId",
         "time",
+        "measurement",
         "observableParameters",
         "noiseParameters",
         "datasetId",
         "replicateId",
     ),
+    "mapping": ("petabEntityId", "modelEntityId"),
 }
+#: Columns that hold enums or numbers, not identifiers. A source parameter called "normal" or
+#: "log10" must not rewrite a distribution or scale.
+_VALUES = {
+    "parameterScale",
+    "noiseDistribution",
+    "priorDistribution",
+    "priorParameters",
+    "measurement",
+    "time",
+    "lowerBound",
+    "upperBound",
+    "nominalValue",
+    "estimate",
+}
+#: The table files of the anonymous problem, by kind, and the YAML key that lists each.
+#: Conditions, experiments and a mapping are written only when the problem has them.
+_FILES = {kind: f"{kind}.tsv" for kind in _COLUMNS}
+_YAML_KEYS = {
+    "parameters": "parameter_files",
+    "observables": "observable_files",
+    "conditions": "condition_files",
+    "experiments": "experiment_files",
+    "measurements": "measurement_files",
+    "mapping": "mapping_files",
+}
+_OPTIONAL = ("conditions", "experiments", "mapping")
 
 
 def _translate(value, names):
@@ -120,64 +155,38 @@ class BlindNames:
             ("observableId", "observable"),
             ("parameterId", "parameter"),
             ("conditionId", "condition"),
-            ("simulationConditionId", "condition"),
-            ("preequilibrationConditionId", "condition"),
+            ("experimentId", "experiment"),
             ("datasetId", "dataset"),
             ("replicateId", "replicate"),
+            # A condition's targets are the experiment's inputs, whatever model entity each is.
+            ("targetId", "input"),
+            ("petabEntityId", "entity"),
         ):
             if column in table:
                 for value in table[column].dropna().unique():
-                    if isinstance(value, str):
+                    # "" is a measurement with no experiment, not an identifier.
+                    if isinstance(value, str) and value:
                         self.add(value, prefix)
-        if kind == "conditions":
-            for column in table:
-                if column not in {"conditionId", "conditionName"}:
-                    self.add(column, "input")
-                    for value in table[column]:
-                        self.expression(value)
-        else:
-            for column in (
-                "observableFormula",
-                "noiseFormula",
-                "observableParameters",
-                "noiseParameters",
-            ):
-                if column in table:
-                    for value in table[column]:
-                        self.expression(value)
+        for column in (
+            "observableFormula",
+            "observablePlaceholders",
+            "noiseFormula",
+            "noisePlaceholders",
+            "observableParameters",
+            "noiseParameters",
+            "targetValue",
+        ):
+            if column in table:
+                for value in table[column]:
+                    self.expression(value)
 
     def table(self, kind, table):
         self.register_table(kind, table)
-        columns = (
-            [c for c in table if c != "conditionName"]
-            if kind == "conditions"
-            else [c for c in _COLUMNS[kind] if c in table]
-        )
+        columns = [c for c in _COLUMNS[kind] if c in table]
         result = table[columns].copy()
         for column in columns:
-            # These columns contain enums or numbers, not identifiers. A source parameter
-            # called "normal" or "log10" must not rewrite a distribution or scale.
-            if column in {
-                "parameterScale",
-                "observableTransformation",
-                "noiseDistribution",
-                "initializationPriorType",
-                "objectivePriorType",
-                "measurement",
-                "time",
-                "lowerBound",
-                "upperBound",
-                "nominalValue",
-                "estimate",
-                "initializationPriorParameters",
-                "objectivePriorParameters",
-            }:
-                continue
-            result[column] = result[column].map(lambda value: _translate(value, self.forward))
-        if kind == "conditions":
-            result = result.rename(
-                columns={c: self.forward[c] for c in columns if c != "conditionId"}
-            )
+            if column not in _VALUES:
+                result[column] = result[column].map(lambda value: _translate(value, self.forward))
         return result
 
     def judge_call(self, call):
@@ -227,28 +236,50 @@ def _anonymous_sbml(document, names: BlindNames) -> str:
     return libsbml.writeSBMLToString(document)
 
 
+def _tables(problem) -> dict:
+    """``problem``'s tables as plain frames, keyed by kind; an optional table it lacks is left out."""
+    tables = {
+        "parameters": problem.parameter_df.reset_index(),
+        "observables": problem.observable_df.reset_index(),
+        "conditions": problem.condition_df,
+        "experiments": problem.experiment_df,
+        "measurements": problem.measurement_df,
+        "mapping": problem.mapping_df,
+    }
+    return {
+        kind: table.copy()
+        for kind, table in tables.items()
+        if table is not None and (kind not in _OPTIONAL or len(table))
+    }
+
+
+def _write(table, path: Path) -> None:
+    """One table as a v2 TSV: ``estimate`` spelled ``true``/``false``, as v2 has it."""
+    from petab_mcp.problem import as_bool
+
+    if "estimate" in table:
+        table = table.assign(estimate=["true" if as_bool(v) else "false" for v in table.estimate])
+    table.to_csv(path, sep="\t", index=False)
+
+
 def prepare(source_yaml: Path, work: Path, validation_dir: Path | None = None) -> BlindNames:
     """Write a fresh anonymous working problem; keep the source and answer key untouched."""
     import pandas as pd
-    import petab.v1 as petab
     import yaml
+    from petab_mcp.problem import WorkingProblem
+    from petab_mcp.validation_data import HELD_OUT_UNITS, as_v2, read_held_out
 
     private = private_dir(work)
     if private.exists():
         shutil.rmtree(private)
     private.mkdir(parents=True)
-    problem = petab.Problem.from_yaml(str(source_yaml))
-    tables = {
-        "parameters": problem.parameter_df.reset_index(),
-        "observables": problem.observable_df.reset_index(),
-        "conditions": problem.condition_df.reset_index(),
-        "measurements": problem.measurement_df.copy(),
-    }
-    document = problem.model.sbml_model.getSBMLDocument()
+    problem = WorkingProblem.from_yaml(source_yaml)
+    tables = _tables(problem)
+    document = None if problem.model is None else problem.model.sbml_document
     names = BlindNames(
-        reserved={
-            element.getId() for element in document.getListOfAllElements() if element.isSetId()
-        }
+        reserved=set()
+        if document is None
+        else {element.getId() for element in document.getListOfAllElements() if element.isSetId()}
     )
     for table in tables.values():
         for column in table:
@@ -259,45 +290,43 @@ def prepare(source_yaml: Path, work: Path, validation_dir: Path | None = None) -
     for kind, table in tables.items():
         names.register_table(kind, table)
     names.protocols = _anonymous_protocols(Path(source_yaml).parent / "inputs.tsv", names)
-    sbml = _anonymous_sbml(document, names)
     work.mkdir(parents=True, exist_ok=True)
-    (work / "model.xml").write_text(sbml)
+    config: dict = {"format_version": "2.0.0"}
+    if document is not None:
+        (work / "model.xml").write_text(_anonymous_sbml(document, names))
+        # The model id is the YAML's key, not the SBML's: a fixed one names nothing.
+        config["model_files"] = {"model": {"location": "model.xml", "language": "sbml"}}
     for kind, table in tables.items():
-        names.table(kind, table).to_csv(work / f"{kind}.tsv", sep="\t", index=False)
-    (work / "problem.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "format_version": 1,
-                "parameter_file": "parameters.tsv",
-                "problems": [
-                    {
-                        "sbml_files": ["model.xml"],
-                        "condition_files": ["conditions.tsv"],
-                        "observable_files": ["observables.tsv"],
-                        "measurement_files": ["measurements.tsv"],
-                    }
-                ],
-            },
-            sort_keys=False,
-        )
-    )
+        _write(names.table(kind, table), work / _FILES[kind])
+        config[_YAML_KEYS[kind]] = [_FILES[kind]]
+    (work / "problem.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
     # Held-out files remain outside the problem loaded by the agent's server. Extending
     # the mapping here cannot change any training alias or expose a held-out label.
     if validation_dir and (validation_dir / "measurements.tsv").is_file():
         destination = private / "validation"
         destination.mkdir()
-        for kind in ("measurements", "conditions", "parameters"):
-            path = validation_dir / f"{kind}.tsv"
-            if path.is_file():
-                table = pd.read_csv(path, sep="\t")
-                names.table(kind, table).to_csv(destination / path.name, sep="\t", index=False)
-        units = validation_dir / "units.tsv"
-        if units.is_file():
-            # The refit units of a transfer set: condition ids under their training aliases,
+        # Keyed by experiment against the SOURCE problem first, as the server would key it, so a
+        # held-out row repeating a training design lands in that experiment's alias. The blinded
+        # set is then v2 and the server's `as_v2` leaves it as it is.
+        held_out = as_v2(read_held_out(validation_dir / "measurements.tsv"), problem)
+        parameters = held_out.parameter_df
+        for kind, table in (
+            ("measurements", held_out.measurement_df),
+            ("conditions", held_out.condition_df),
+            ("experiments", held_out.experiment_df),
+            ("parameters", None if parameters is None else parameters.reset_index()),
+        ):
+            if table is not None and len(table):
+                _write(names.table(kind, table), destination / _FILES[kind])
+        if held_out.units is not None:
+            # The refit units of a transfer set: experiment ids under their training aliases,
             # unit ids as they are (harness-private, never shown to the agent).
-            table = pd.read_csv(units, sep="\t", dtype=str)
-            table["conditionId"] = table["conditionId"].map(lambda v: _translate(v, names.forward))
-            table.to_csv(destination / units.name, sep="\t", index=False)
+            pd.DataFrame(
+                {
+                    "experimentId": [_translate(e, names.forward) for e in held_out.units],
+                    "unitId": list(held_out.units.values()),
+                }
+            ).to_csv(destination / HELD_OUT_UNITS, sep="\t", index=False)
     (private / "identifiers.json").write_text(
         json.dumps(
             {
@@ -320,8 +349,9 @@ def _anonymous_protocols(path: Path, names: BlindNames) -> list[tuple[str, str]]
     and end time are constant in training. The visible arms read the rule, with its real names, in
     the scenario's known-constants note, which the blind task replaces; without it here the
     blinded agent saw three anonymous columns and an instruction to use them, and put the
-    constant two in roles no data could identify. Each rule may read only condition columns and
-    ``time``: anything else would carry a name the aliases do not cover, so it is refused.
+    constant two in roles no data could identify. Each rule may read only condition targets (the
+    v1 condition columns ``conditionInputs`` names) and ``time``: anything else would carry a name
+    the aliases do not cover, so it is refused.
     """
     if not path.is_file():
         return []
@@ -331,7 +361,7 @@ def _anonymous_protocols(path: Path, names: BlindNames) -> list[tuple[str, str]]
     for row in pd.read_csv(path, sep="\t", dtype=str).itertuples():
         quantity = names.add(row.inputId, "stimulus")
         rule = _translate(row.formula, names.forward)
-        # Only the row's own condition columns: every table symbol has an alias by now, so
+        # Only the row's own condition targets: every table symbol has an alias by now, so
         # accepting any alias would let a rule read a model parameter as ``parameter_005``.
         columns = [c for c in str(row.conditionInputs).split(";") if c]
         allowed = {
@@ -350,8 +380,8 @@ def _anonymous_protocols(path: Path, names: BlindNames) -> list[tuple[str, str]]
         if leaked or len(allowed) != len(columns):
             raise ValueError(
                 f"input protocol {row.inputId!r} must read only its condition "
-                f"columns {columns}; it reads {
-                    leaked or 'a column the condition table does not have'
+                f"targets {columns}; it reads {
+                    leaked or 'a target the condition table does not set'
                 }, so it cannot be anonymized"
             )
         out.append((quantity, rule))

@@ -5,13 +5,15 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 
 import pandas as pd
-import petab.v1 as petab
 import pytest
+from petab import v2
+from petab_mcp.problem import WorkingProblem
 
 from gemot.biology_blinding import (
     AnonymousSession,
@@ -20,6 +22,7 @@ from gemot.biology_blinding import (
     private_dir,
     read_names,
 )
+from petab_mcp.validation_data import as_v2, read_held_out, read_units
 
 TOY = Path(__file__).parent / "data/toy_v1"
 
@@ -52,12 +55,15 @@ def test_metadata_formulas_overrides_and_source_are_blinded(tmp_path):
 
     work = tmp_path / "anonymous"
     names = prepare(source / "problem.yaml", work)
-    anonymous = petab.Problem.from_yaml(str(work / "problem.yaml"))
+    anonymous = WorkingProblem.from_yaml(work / "problem.yaml")
     alias = names.forward["obs_B"]
     assert anonymous.observable_df.loc[alias, "observableFormula"] == (
         f"observableParameter1_{alias} * {names.forward['B']}"
     )
     assert anonymous.observable_df.loc[alias, "noiseFormula"] == f"noiseParameter1_{alias}"
+    assert anonymous.observable_df.loc[alias, "observablePlaceholders"] == (
+        f"observableParameter1_{alias}"
+    )
     assert anonymous.measurement_df["noiseParameters"].unique().tolist() == [
         names.forward["sigma_B"]
     ]
@@ -72,6 +78,7 @@ def test_metadata_formulas_overrides_and_source_are_blinded(tmp_path):
     assert not (work / "model.ant").exists()
     assert not (work / "reference.json").exists()
     assert "sboTerm" not in (work / "model.xml").read_text()
+    assert not v2.lint_problem(anonymous.to_petab()).has_errors()
     assert {p.name: p.read_bytes() for p in source.iterdir() if p.is_file()} == before
     assert read_names(work).forward == names.forward
 
@@ -82,22 +89,28 @@ def test_aliases_do_not_capture_existing_identifiers_or_change_numeric_enums():
         {
             "parameterId": ["normal", "log10"],
             "parameterScale": ["log10", "lin"],
-            "objectivePriorType": ["normal", "normal"],
+            "priorDistribution": ["normal", "normal"],
             "nominalValue": [1.0, 2.0],
         }
     )
     result = names.table("parameters", table)
     assert result.parameterId.tolist() == ["parameter_002", "parameter_003"]
     assert result.parameterScale.tolist() == table.parameterScale.tolist()
-    assert result.objectivePriorType.tolist() == table.objectivePriorType.tolist()
+    assert result.priorDistribution.tolist() == table.priorDistribution.tolist()
+    observables = pd.DataFrame({"observableId": ["o"], "noiseDistribution": ["log-normal"]})
+    assert names.table("observables", observables).noiseDistribution[0] == "log-normal"
     assert result.nominalValue.tolist() == table.nominalValue.tolist()
 
 
 def test_held_out_data_stays_private_and_uses_training_aliases(tmp_path):
+    """A v1 held-out set is moved onto experiments against the SOURCE problem before it is
+    blinded, so the server reads it as v2 and its experiments carry the run's aliases."""
     validation = tmp_path / "validation"
     validation.mkdir()
-    measurements = pd.read_csv(TOY / "measurements.tsv", sep="\t").iloc[:1].copy()
-    measurements["simulationConditionId"] = "unseen_EGFR_treatment"
+    measurements = pd.read_csv(TOY / "measurements.tsv", sep="\t").iloc[:2].copy()
+    # One row under a new condition, one under the training condition (which changes nothing,
+    # so it is simulated without an experiment, as in training).
+    measurements["simulationConditionId"] = ["unseen_EGFR_treatment", "c0"]
     measurements.to_csv(validation / "measurements.tsv", sep="\t", index=False)
     conditions = pd.DataFrame({"conditionId": ["unseen_EGFR_treatment"], "k1": [0.2]})
     conditions.to_csv(validation / "conditions.tsv", sep="\t", index=False)
@@ -108,27 +121,84 @@ def test_held_out_data_stays_private_and_uses_training_aliases(tmp_path):
     work = tmp_path / "anonymous"
     training_names = prepare(TOY / "problem.yaml", baseline)
     names = prepare(TOY / "problem.yaml", work, validation)
-    for name in (
-        "problem.yaml",
-        "measurements.tsv",
-        "observables.tsv",
-        "parameters.tsv",
-        "conditions.tsv",
-        "model.xml",
-    ):
-        assert (baseline / name).read_bytes() == (work / name).read_bytes()
+    assert sorted(p.name for p in work.iterdir()) == sorted(p.name for p in baseline.iterdir())
+    for path in baseline.iterdir():
+        assert path.read_bytes() == (work / path.name).read_bytes()
     assert all(names.forward[k] == v for k, v in training_names.forward.items())
     assert not private_dir(work).is_relative_to(work)
-    heldout = pd.read_csv(private_dir(work) / "validation/measurements.tsv", sep="\t")
-    assert heldout.observableId[0] == names.forward["obs_B"]
-    assert heldout.simulationConditionId[0] == names.forward["unseen_EGFR_treatment"]
-    heldconditions = pd.read_csv(private_dir(work) / "validation/conditions.tsv", sep="\t")
-    assert heldconditions[names.forward["k1"]][0] == 0.2
+    held = private_dir(work) / "validation"
+    experiment = names.forward["experiment____unseen_EGFR_treatment"]
+    heldout = pd.read_csv(held / "measurements.tsv", sep="\t", keep_default_na=False)
+    assert "simulationConditionId" not in heldout
+    assert heldout.observableId.tolist() == [names.forward["obs_B"]] * 2
+    assert heldout.experimentId.tolist() == [experiment, ""]
+    experiments = pd.read_csv(held / "experiments.tsv", sep="\t")
+    assert experiments.to_dict("records") == [
+        {
+            "experimentId": experiment,
+            "time": 0.0,
+            "conditionId": names.forward["unseen_EGFR_treatment"],
+        }
+    ]
+    heldconditions = pd.read_csv(held / "conditions.tsv", sep="\t")
+    assert heldconditions.to_dict("records") == [
+        {
+            "conditionId": names.forward["unseen_EGFR_treatment"],
+            "targetId": names.forward["k1"],
+            "targetValue": 0.2,
+        }
+    ]
     # The refit units ride along under the same aliases, or a blinded run would refit the whole
     # table as one system against a reference refit per unit.
-    units = pd.read_csv(private_dir(work) / "validation/units.tsv", sep="\t")
-    assert units.conditionId[0] == names.forward["unseen_EGFR_treatment"]
-    assert units.unitId[0] == "patient_EGFR"
+    assert read_units(held / "units.tsv") == {experiment: "patient_EGFR"}
+    # The server reads the blinded set back as the v2 set it is.
+    read = read_held_out(held / "measurements.tsv")
+    assert as_v2(read, WorkingProblem.from_yaml(work / "problem.yaml")) is read
+    assert not any("EGFR_treatment" in p.read_text() for p in held.iterdir())
+
+
+def test_a_native_v2_problem_blinds_like_its_v1_original(tmp_path):
+    """The blinded problem is the server's v2 problem under other names, whichever version the
+    source is: a v2 source and the v1 problem it was upgraded from blind to the same files."""
+    from petab.v2.petab1to2 import petab1to2
+
+    v1 = tmp_path / "v1"
+    shutil.copytree(TOY, v1)
+    (v1 / "model.ant").unlink()
+    pd.DataFrame({"conditionId": ["low", "high"], "A": [1.0, 2.0]}).to_csv(
+        v1 / "conditions.tsv", sep="\t", index=False
+    )
+    measurements = pd.read_csv(v1 / "measurements.tsv", sep="\t")
+    measurements["simulationConditionId"] = ["low", "high"] * (len(measurements) // 2) + (
+        ["low"] if len(measurements) % 2 else []
+    )
+    measurements["preequilibrationConditionId"] = "low"
+    measurements.to_csv(v1 / "measurements.tsv", sep="\t", index=False)
+    native = tmp_path / "v2"
+    petab1to2(v1 / "problem.yaml", native, validate=False)
+    # v2 has no estimation scale; the server's extension column carries it, as on upgrade.
+    parameters = pd.read_csv(native / "parameters.tsv", sep="\t")
+    scales = pd.read_csv(v1 / "parameters.tsv", sep="\t").set_index("parameterId").parameterScale
+    parameters["parameterScale"] = parameters.parameterId.map(scales).fillna("lin")
+    parameters.to_csv(native / "parameters.tsv", sep="\t", index=False)
+
+    from_v1, from_v2 = tmp_path / "from_v1", tmp_path / "from_v2"
+    names_v1 = prepare(v1 / "problem.yaml", from_v1)
+    names_v2 = prepare(native / "problem.yaml", from_v2)
+    assert names_v1.forward == names_v2.forward
+    assert sorted(p.name for p in from_v1.iterdir()) == sorted(p.name for p in from_v2.iterdir())
+    for path in from_v1.iterdir():
+        assert path.read_bytes() == (from_v2 / path.name).read_bytes(), path.name
+    conditions = pd.read_csv(from_v2 / "conditions.tsv", sep="\t")
+    assert set(conditions.targetId) == {names_v2.forward["A"]}
+    assert names_v2.forward["A"].startswith("input_")
+    experiments = pd.read_csv(from_v2 / "experiments.tsv", sep="\t")
+    assert set(experiments.conditionId) == {names_v2.forward["low"], names_v2.forward["high"]}
+    assert float("-inf") in set(experiments.time)
+    for path in from_v2.iterdir():
+        tokens = set(re.findall(r"\w+", path.read_text()))
+        assert not tokens & {"low", "high", "A"}, path.name
+        assert not any(t.startswith("experiment__") for t in tokens), path.name
 
 
 def test_judge_translates_model_arguments_and_noise_keys():
@@ -190,16 +260,28 @@ def test_anonymous_sbml_preserves_training_and_held_out_likelihood(tmp_path, ami
     from petab_mcp.session import PetabSession
     from petab_mcp.validation_data import read_held_out, score_session
 
-    validation = tmp_path / "validation"
-    validation.mkdir()
-    measurements = pd.read_csv(TOY / "measurements.tsv", sep="\t").iloc[:1].copy()
-    measurements["time"] = 1.5
-    measurements["measurement"] = 0.45
-    measurements.to_csv(validation / "measurements.tsv", sep="\t", index=False)
-    work = tmp_path / "anonymous"
-    prepare(TOY / "problem.yaml", work, validation)
+    # Two conditions setting an initial amount, one experiment pre-equilibrated under the
+    # other, and held-out rows repeating the training design: every v2 table the blinding
+    # rewrites carries something. One held-out row per training experiment, so the held-out view
+    # compiles to the training module rather than to one of its own on each side.
     original = tmp_path / "original_problem"
     shutil.copytree(TOY, original)
+    pd.DataFrame({"conditionId": ["low", "high"], "A": [1.0, 2.0]}).to_csv(
+        original / "conditions.tsv", sep="\t", index=False
+    )
+    measurements = pd.read_csv(original / "measurements.tsv", sep="\t")
+    half = len(measurements) // 2
+    measurements["simulationConditionId"] = ["low"] * half + ["high"] * (len(measurements) - half)
+    measurements["preequilibrationConditionId"] = [""] * half + ["low"] * (len(measurements) - half)
+    measurements.to_csv(original / "measurements.tsv", sep="\t", index=False)
+    validation = tmp_path / "validation"
+    validation.mkdir()
+    held = measurements.iloc[[0, -1]].copy()
+    held["time"] = 1.5
+    held["measurement"] = [0.45, 0.6]
+    held.to_csv(validation / "measurements.tsv", sep="\t", index=False)
+    work = tmp_path / "anonymous"
+    prepare(original / "problem.yaml", work, validation)
     values = []
     heldout_values = []
     for label, yaml in (
