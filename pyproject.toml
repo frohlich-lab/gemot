@@ -83,7 +83,11 @@ dev = [
 # loop runs; petab-sciml writes the network definition and its initial weights in the standard's
 # own formats. None of this is imported by the server or the panel.
 neural = [
-    "amici[jax]>=1.1",
+    # The AMICI commit petab-mcp pins, by the same URL: pip refuses an `amici[jax]` from the index
+    # beside the direct reference petab-mcp brings (ResolutionImpossible), so the extra has to
+    # name the identical one. Move it with petab-mcp's pin; back to `amici[jax]>=...` once that
+    # pin is a release.
+    "amici[jax] @ git+https://github.com/AMICI-dev/AMICI.git@712c44a60753ea3910eac2a2753041dc0cf2ec6e#subdirectory=python/sdist",
     "optax>=0.2",
     # The curriculum multiple shooting rewrite (`petab_sciml.training`) is unreleased,
     # PEtab-dev/petab_sciml#92. Pinned to GitHub's test-merge commit of that PR, because the
