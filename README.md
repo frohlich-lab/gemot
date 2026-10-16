@@ -5,36 +5,37 @@
 
 ## Overview
 
-The agent harness built around [PEtab MCP](https://github.com/frohlich-lab/PEtab-MCP), an MCP
-server that wraps a single [PEtab v1](https://petab.readthedocs.io) parameter-estimation problem
-and lets an LLM agent change the model only through one constrained tool, with every change
-**scored** (fit and simulated), **versioned** and **justified**.
+The agent harness built around [PEtab MCP](https://github.com/frohlich-lab/PEtab-MCP), an
+MCP server that wraps a single [PEtab v1](https://petab.readthedocs.io) parameter-estimation
+problem and lets an LLM agent change the model only through one constrained tool, with every
+change **scored** (fit and simulated), **versioned** and **justified**.
 
-gemot spawns that server as a subprocess, launches a panel of agent specialists (mathematician,
-systems scientist, signal engineer) on it and then hands off to the **judge**, which selects the
-best-scoring version and scores it against a true or published reference — or, for a model-free
-data package with no reference, by an absolute goodness-of-fit test. Phoenix tracing and the
-run explorer read the trace and version history this pipeline leaves behind.
+gemot spawns that server as a subprocess, launches a panel of agent specialists
+(mathematician, systems scientist, signal engineer) on it and then hands off to the
+**judge**, which selects the best-scoring version and scores it against a true or published
+reference — or, for a model-free data package with no reference, by an absolute goodness-of-fit
+test. Phoenix tracing and the run explorer read the trace and version history this pipeline
+leaves behind.
 
-The benchmark it drives — the zero-shot examples, the Slurm sweep tooling and the paper — lives in
-[frohlich-lab/gemot_iclr_2026](https://github.com/frohlich-lab/gemot_iclr_2026), which installs gemot pinned
-to a commit. gemot is a checkout tool: it finds that checkout from the running script or the
-working directory, or from `PETAB_MCP_REPO_ROOT` (see [`src/gemot/paths.py`](src/gemot/paths.py)).
+The zero-shot problems it drives — and the code that materializes them from the PEtab
+Benchmark-Models collection and fits their reference bars — live in
+[frohlich-lab/PEtabAgentBench](https://github.com/frohlich-lab/PEtabAgentBench). The Slurm sweep
+tooling and the paper live in
+[frohlich-lab/gemot_iclr_2026](https://github.com/frohlich-lab/gemot_iclr_2026), which mounts
+those problems at `examples/` and installs gemot pinned to a commit. gemot is a checkout tool: it
+finds that checkout
+from the running script or the working directory, or from `PETAB_MCP_REPO_ROOT` (see
+[`src/gemot/paths.py`](src/gemot/paths.py)).
 
-## Install
+## Quickstart
+
+### Installation and dependencies
+
+Python 3.12+ and a C++ toolchain for AMICI (see [Troubleshooting](#troubleshooting)).
 
 ```bash
-pip install -e .          # gemot + the pinned server (AMICI + pyPESTO; a C++ toolchain is required)
-```
-
-AMICI compiles generated C++ and needs a toolchain: a C++ compiler, CMake, Ninja, and the
-pip `swig` binary on `PATH` (OpenBLAS ships in the AMICI wheel).
-
-The server repository is private, and pip fetches it with `git`, so `git` needs read access to
-it — through `gh auth setup-git`, or by fetching that one URL over SSH:
-
-```bash
-git config --global url."git@github.com:frohlich-lab/PEtab-MCP".insteadOf https://github.com/frohlich-lab/PEtab-MCP
+pip install -e .              # gemot + the pinned server
+pip install -e '.[harness]'   # + the deepagents panel and Phoenix tracing, for LLM-driven runs
 ```
 
 To work on the server and gemot together, install your server checkout over the pinned one
@@ -44,6 +45,34 @@ To work on the server and gemot together, install your server checkout over the 
 pip install -e ../PEtab-MCP
 ```
 
+### Running an example
+
+The problems come from [PEtabAgentBench](https://github.com/frohlich-lab/PEtabAgentBench).
+Check it out inside this repo at `examples/` so gemot finds it, then let the deepagents
+panel build the synthetic predator–prey model through an OpenRouter-hosted model:
+
+```bash
+git clone https://github.com/frohlich-lab/PEtabAgentBench.git examples
+export OPENROUTER_API_KEY=sk-or-...         # go to https://openrouter.ai/keys to get your key
+python examples/predator_prey/run.py        # --driver deepagents (default)
+```
+
+The full example can take at least an hour to run on a laptop, so you may want to track the
+agent's progress via the Phoenix trace. To view this, serve Phoenix in a second terminal and
+point the run at it:
+
+```bash
+phoenix serve                                                   # UI at http://localhost:6006
+export PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006         # in the run's terminal
+```
+
+The run exits `0` if the judge accepts the built model, writes its verdict to
+`examples/predator_prey/work/result.json` and archives the run under
+`examples/_runs_archive/`.
+
+`--model` picks another OpenRouter model, and `--driver scripted` builds the true model
+without an LLM as a self-test of the pipeline.
+
 ## Project structure
 
 [`gemot`](src/gemot/) (under `src/`); each submodule is documented in its own docstrings.
@@ -51,16 +80,16 @@ pip install -e ../PEtab-MCP
 - `gemot.runner` — cleanup → server → driver → judge, and the command line every example's
   `run.py` drives.
 - `gemot.agent` — the deepagents panel: tool curation, guards, finish gate, driver.
-  `--driver barebones` is the **null arm**: the same model, problem, libraries and compute, but
-  a stock deepagent with file tools and a sandboxed shell over the PEtab files on disk — no
-  server, no panel, no scored editing loop — asked to deliver a finished PEtab problem in place,
-  which the same judge then scores at its delivered parameter values (see
+  `--driver barebones` is the **null arm**: the same model, problem, libraries and compute,
+  but a stock deepagent with file tools and a sandboxed shell over the PEtab files on disk —
+  no server, no panel, no scored editing loop — asked to deliver a finished PEtab problem in
+  place, which the same judge then scores at its delivered parameter values (see
   [`src/gemot/agent/barebones.py`](src/gemot/agent/barebones.py)).
 - `gemot.neural_ode` — the non-LLM model producer. It reads a PEtab problem's tables without
-  opening the shipped model, restates the problem as a PEtab SciML neural ODE, fits it through
-  AMICI's JAX backend, scores it against the example's held-out set, and distils the field into
-  Antimony rate laws with PySR for the same judge. `python -m gemot.neural_ode fit|propose` runs
-  either half.
+  opening the shipped model, restates the problem as a PEtab SciML neural ODE, fits it
+  through AMICI's JAX backend, scores it against the example's held-out set, and distils the
+  field into Antimony rate laws with PySR for the same judge.
+  `python -m gemot.neural_ode fit|propose` runs either half.
 - `gemot.explorer` — the run viewer over archived and in-flight runs.
 - `gemot.analysis`, `gemot.ablations` — sweep analysis (`python -m gemot.analysis`) and the
   registry of every switch that changes what a run does (`python -m gemot.ablations`).
@@ -81,3 +110,15 @@ pytest                    # needs the full install (AMICI/pyPESTO are hard deps)
 ## License
 
 MIT
+
+## Troubleshooting
+
+AMICI compiles generated C++ and needs a toolchain: a C++ compiler, CMake, Ninja, and the
+pip `swig` binary on `PATH` (OpenBLAS ships in the AMICI wheel).
+
+The server repository is private, and pip fetches it with `git`, so `git` needs read access
+to it — through `gh auth setup-git`, or by fetching that one URL over SSH:
+
+```bash
+git config --global url."git@github.com:frohlich-lab/PEtab-MCP".insteadOf https://github.com/frohlich-lab/PEtab-MCP
+```

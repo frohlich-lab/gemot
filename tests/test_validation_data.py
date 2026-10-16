@@ -1,62 +1,17 @@
-"""The fixed-θ HELD-OUT check, from gemot's side: the materialisation of a held-out set and the
-judge's projection of the score.
+"""The fixed-θ HELD-OUT check, from gemot's side: the judge's projection of the score.
 
 The scorer itself, :func:`petab_mcp.validation_data.score_problem`, and its guards are pinned in
-PEtab-MCP's tests/test_validation_data.py. What is tested here is what gemot does around it: which
-tables the materialiser writes and refuses, and how the judge, result.json and the history CSV
-carry a held-out score, an absent one and a failed one.
+PEtab-MCP's tests/test_validation_data.py, and which tables the materialiser writes and refuses in
+PEtabAgentBench's tests/with_gemot/. What is tested here is what gemot does around it: how the
+judge, result.json and the history CSV carry a held-out score, an absent one and a failed one.
 """
 
 from __future__ import annotations
 
-import copy
-
-import pandas as pd
 import pytest
 
-from gemot import benchmark
+from gemot.paths import validation_measurements_path
 from gemot.runner.scoring import _validation_fields
-
-
-def _problem(measurements, *, observables=("obs_A",), conditions=("c_train", "c_test")):
-    """A minimal petab problem stand-in with just the tables the guards read."""
-    import petab.v1 as petab
-
-    return petab.Problem(
-        model=None,
-        measurement_df=measurements,
-        observable_df=pd.DataFrame(
-            {
-                "observableFormula": ["x"] * len(observables),
-                "noiseFormula": ["1"] * len(observables),
-            },
-            index=pd.Index(list(observables), name="observableId"),
-        ),
-        condition_df=pd.DataFrame(
-            {"dose": [0.0] * len(conditions)}, index=pd.Index(list(conditions), name="conditionId")
-        ),
-        parameter_df=pd.DataFrame(
-            {
-                "parameterScale": ["lin"],
-                "lowerBound": [0.0],
-                "upperBound": [1.0],
-                "nominalValue": [0.5],
-                "estimate": [1],
-            },
-            index=pd.Index(["k"], name="parameterId"),
-        ),
-    )
-
-
-def _rows(condition, times=(0.0, 1.0), observable="obs_A"):
-    return pd.DataFrame(
-        {
-            "observableId": [observable] * len(times),
-            "simulationConditionId": [condition] * len(times),
-            "time": list(times),
-            "measurement": [1.0] * len(times),
-        }
-    )
 
 
 # ------------------------------------------------------- the scorer does not disturb the session
@@ -93,81 +48,6 @@ def test_the_validation_tool_is_not_exposed_to_the_panel():
     assert "evaluate_validation_data" not in ALLOWED_TOOLS
 
 
-def test_a_held_out_row_that_is_also_a_training_row_is_refused(monkeypatch, tmp_path):
-    """The whole claim of the number is that the model never saw this data. An overlap makes it
-    partly in-sample, which no downstream check could detect — the likelihoods would simply be a bit
-    too good, indistinguishable from a model that predicts well."""
-    train = _rows("c_train")
-    published = _problem(train)
-    overlapping = pd.concat([_rows("c_test"), _rows("c_train")], ignore_index=True)
-
-    monkeypatch.setattr(benchmark, "benchmark_dir", lambda *a, **k: tmp_path)
-    (tmp_path / "held_out.yaml").write_text("format_version: 1\n")
-
-    import petab.v1 as petab
-
-    held = _problem(overlapping)
-    monkeypatch.setattr(petab.Problem, "from_yaml", staticmethod(lambda *a, **k: held))
-
-    with pytest.raises(ValueError, match="also in the TRAINING table"):
-        benchmark._validation_measurement_df(
-            name="X",
-            validation_yaml="held_out.yaml",
-            collection=None,
-            published=published,
-            training_measurement_df=train,
-        )
-
-
-def test_a_held_out_problem_that_changed_the_model_tables_is_refused(monkeypatch, tmp_path):
-    """A held-out set is the SAME problem's data under unseen conditions. If its condition or
-    observable table differs, the two scores are computed over two different models and their
-    difference means nothing — so this refuses rather than scoring it."""
-    train = _rows("c_train")
-    published = _problem(train)
-    # same measurements-are-disjoint story, but the held-out problem declares an extra condition
-    held = _problem(_rows("c_test"), conditions=("c_train", "c_test", "c_extra"))
-
-    monkeypatch.setattr(benchmark, "benchmark_dir", lambda *a, **k: tmp_path)
-    (tmp_path / "held_out.yaml").write_text("format_version: 1\n")
-    import petab.v1 as petab
-
-    monkeypatch.setattr(petab.Problem, "from_yaml", staticmethod(lambda *a, **k: held))
-
-    with pytest.raises(ValueError, match="condition table differs"):
-        benchmark._validation_measurement_df(
-            name="X",
-            validation_yaml="held_out.yaml",
-            collection=None,
-            published=published,
-            training_measurement_df=train,
-        )
-
-
-def test_an_absent_validation_yaml_names_itself(monkeypatch, tmp_path):
-    """A typo'd path must say which path, at setup time. Falling through to "no held-out data" would
-    leave the example silently unvalidated for as long as nobody read the setup log."""
-    monkeypatch.setattr(benchmark, "benchmark_dir", lambda *a, **k: tmp_path)
-    with pytest.raises(FileNotFoundError, match="nope.yaml"):
-        benchmark._validation_measurement_df(
-            name="X",
-            validation_yaml="nope.yaml",
-            collection=None,
-            published=_problem(_rows("c_train")),
-            training_measurement_df=_rows("c_train"),
-        )
-
-
-def test_the_held_out_table_lands_outside_the_problem_directory():
-    """Structural, not incidental: the runner copies ``problem/`` into ``work/`` and points the MCP
-    server at it, so a held-out table inside ``problem/`` would sit in the tree the agent's server
-    reads. The path helper is what every writer and reader goes through, so pin it."""
-    path = benchmark.validation_measurements_path(benchmark.Path("/tmp/ex"))
-    assert path.parent.name == benchmark.VALIDATION_DIR
-    assert path.parent.name != "problem"
-    assert path.name == benchmark.VALIDATION_MEASUREMENTS
-
-
 def test_delta_is_candidate_minus_reference_and_positive_means_worse():
     out = _validation_fields({"status": "ok", "nll": 560.0, "n": 276, "chi2": None}, _REF)
     assert out["delta_nll"] == pytest.approx(60.0)
@@ -176,8 +56,9 @@ def test_delta_is_candidate_minus_reference_and_positive_means_worse():
 
 def test_a_held_out_n_that_disagrees_with_the_reference_withholds_the_difference():
     """The two sides are computed at different times from different files — the reference at
-    ``setup.py --refit``, the candidate at run time. A held-out set that changed in between would
-    otherwise yield a plausible difference of two likelihoods over different data."""
+    ``python -m petab_agent_bench --refit``, the candidate at run time. A held-out set that changed
+    in between would otherwise yield a plausible difference of two likelihoods over different
+    data."""
     out = _validation_fields({"status": "ok", "nll": 560.0, "n": 200, "chi2": None}, _REF)
     assert out["n_mismatch"] is True
     assert "delta_nll" not in out
@@ -291,12 +172,11 @@ def _run_judge(work, *, has_held_out, payload, reference=None, nll=100.0):
     import asyncio
     import time
 
-    from gemot import benchmark as bm
     from gemot.runner import _judge, _ToolClock
 
     scenario = _Scenario(work, reference)
     if has_held_out:
-        p = bm.validation_measurements_path(scenario.example_dir)
+        p = validation_measurements_path(scenario.example_dir)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("observableId\tsimulationConditionId\ttime\tmeasurement\n")
 
@@ -406,24 +286,6 @@ def test_the_span_and_the_csv_cannot_disagree_about_the_held_out_columns(monkeyp
 # Each of these exists because its ABSENCE was a silent-wrong-number risk, so each needs a test
 # that fails if it is relaxed back. (The repo's own lesson: 15 defects survived a green suite
 # because the plumbing around the statistic went untested — this IS the plumbing.)
-def test_the_recorded_reference_vector_must_be_full_dimensional():
-    """`_recorded_vector`'s two callers zip it against `pp.x_names` and index it by free position,
-    so a reduced or reordered `x` would surface as wrong sigmas and a wrong held-out score rather
-    than as an error."""
-    from gemot.simulate import _recorded_vector
-
-    class _PP:
-        x_names = ["a", "b", "c"]
-
-    class _Result:
-        class optimize_result:
-            list = [{"x": [1.0, 2.0]}]  # pypesto returning a REDUCED vector
-
-    assert list(_recorded_vector(_Result(), [1.0, 2.0, 3.0], _PP())) == [1.0, 2.0, 3.0]
-    with pytest.raises(ValueError, match="must be the FULL vector"):
-        _recorded_vector(_Result(), None, _PP())
-
-
 def test_a_failed_reference_refit_is_distinguishable_from_no_bar_at_all(tmp_path):
     """Both leave `val_reference_nll` blank. Without `val_reference_status` the two are byte-
     identical in the history CSV, which would make the guarded refit's whole point — record the
@@ -459,251 +321,3 @@ def test_an_attempted_check_with_no_reference_bar_is_reported_not_skipped():
     assert "reference_chi2" in _validation_fields(
         None, {"validation": {"status": "ok", "nll": 1.0, "n": 4, "chi2": 2.0}}
     )
-
-
-def test_a_time_written_as_1_and_1_0_is_the_same_held_out_row(monkeypatch, tmp_path):
-    """The two tables are parsed from different TSVs, so one can render a timepoint as `1` and the
-    other as `1.0`. Stringifying the key made those different rows and let a genuinely in-sample
-    row past the disjointness check — the one guard that keeps the held-out score out-of-sample."""
-    import pandas as pd
-
-    def _table(time_value):
-        return pd.DataFrame(
-            {
-                "observableId": ["obs_A"],
-                "simulationConditionId": ["c1"],
-                "time": [time_value],
-                "measurement": [1.0],
-            }
-        )
-
-    class _V:
-        measurement_df = _table(1.0)
-        observable_df = _problem(_rows("c1")).observable_df
-
-    monkeypatch.setattr("petab.v1.lint.check_measurement_df", lambda *a, **k: None)
-    monkeypatch.setattr("petab_mcp.fitting.needs_flattening", lambda *a, **k: False)
-
-    with pytest.raises(ValueError, match="also in the TRAINING table"):
-        benchmark._check_held_out_rows("Toy", _V(), _problem(_rows("c1")), _table(1))
-
-
-# ------------------------------------------- the point a caller hands in, matched by name
-# ------------------------------------------------------- a held-out table the EXAMPLE ships
-def test_a_curated_table_is_read_against_the_published_problems_own_tables(tmp_path):
-    """The curated path has no second problem to compare against, so the published problem IS the
-    reference for the table: read it, check it, hand it back unchanged. Pinned on the value, not on
-    the reader, because a table silently returned empty would score a model against nothing."""
-    (tmp_path / "curated").mkdir()
-    _rows("c_test").to_csv(tmp_path / "curated" / "measurements.tsv", sep="\t", index=False)
-
-    held = benchmark._curated_held_out(
-        name="X",
-        validation_table="curated/measurements.tsv",
-        example_dir=tmp_path,
-        published=_problem(_rows("c_train")),
-    )
-
-    assert list(held.measurement_df["simulationConditionId"]) == ["c_test", "c_test"]
-    assert held.condition_df is None and held.mode == "fixed"
-
-
-def test_a_curated_table_naming_an_unpublished_condition_is_refused(tmp_path):
-    """Fixed-θ scores at the training point, so every held-out condition has to be one the model was
-    told about. A row on a condition neither the problem nor a conditions.tsv beside the table
-    defines asks for a prediction nobody could have made — that data is a TRANSFER set, which
-    refits, and is not scored here."""
-    (tmp_path / "curated").mkdir()
-    _rows("c_knockdown").to_csv(tmp_path / "curated" / "measurements.tsv", sep="\t", index=False)
-
-    with pytest.raises(ValueError, match="c_knockdown"):
-        benchmark._curated_held_out(
-            name="X",
-            validation_table="curated/measurements.tsv",
-            example_dir=tmp_path,
-            published=_problem(_rows("c_train")),
-        )
-
-
-def test_a_curated_row_that_is_also_a_training_row_is_refused(tmp_path):
-    """Same claim as for the yaml path, same check: the curated table goes through
-    ``_check_held_out_rows``, so shipping a training row by hand is caught at setup."""
-    (tmp_path / "curated").mkdir()
-    _rows("c_train").to_csv(tmp_path / "curated" / "measurements.tsv", sep="\t", index=False)
-
-    with pytest.raises(ValueError, match="also in the TRAINING table"):
-        benchmark._curated_held_out(
-            name="X",
-            validation_table="curated/measurements.tsv",
-            example_dir=tmp_path,
-            published=_problem(_rows("c_train")),
-        )
-
-
-def test_an_absent_curated_table_names_itself(tmp_path):
-    """As for a typo'd yaml: say which path, at setup, rather than leaving the example silently
-    unvalidated."""
-    with pytest.raises(FileNotFoundError, match="nope.tsv"):
-        benchmark._curated_held_out(
-            name="X",
-            validation_table="nope.tsv",
-            example_dir=tmp_path,
-            published=_problem(_rows("c_train")),
-        )
-
-
-def test_a_malformed_curated_table_reports_lint_before_reading_condition_ids(tmp_path):
-    """A missing required column must name the malformed table, not leak a raw KeyError."""
-    _rows("c_test").drop(columns="simulationConditionId").to_csv(
-        tmp_path / "measurements.tsv", sep="\t", index=False
-    )
-
-    with pytest.raises(ValueError, match="validation measurement table fails petab's lint"):
-        benchmark._curated_held_out(
-            name="X",
-            validation_table="measurements.tsv",
-            example_dir=tmp_path,
-            published=_problem(_rows("c_train")),
-        )
-
-
-def test_declaring_both_held_out_sources_is_refused(tmp_path):
-    """One example, one held-out file. Two declarations write to the same path, so whichever ran
-    last would silently win and the example would be scored against a set nobody chose."""
-    with pytest.raises(ValueError, match="BOTH"):
-        benchmark._held_out_source(
-            name="X",
-            validation_yaml="test_data/held.yaml",
-            validation_table="curated/measurements.tsv",
-            example_dir=tmp_path,
-            collection=None,
-            published=_problem(_rows("c_train")),
-        )
-
-
-def test_no_declaration_means_no_held_out_table(tmp_path):
-    """The default: an example without held-out data returns None here, which is what leaves the
-    server's scoring tool unregistered."""
-    assert (
-        benchmark._held_out_source(
-            name="X",
-            validation_yaml=None,
-            validation_table=None,
-            example_dir=tmp_path,
-            collection=None,
-            published=_problem(_rows("c_train")),
-        )
-        is None
-    )
-
-
-# ----------------------------------- a fixed-θ set that brings new rows of the training inputs
-def _curated(tmp_path, measurements, conditions=None):
-    (tmp_path / "curated").mkdir(exist_ok=True)
-    measurements.to_csv(tmp_path / "curated" / "measurements.tsv", sep="\t", index=False)
-    if conditions is not None:
-        conditions.to_csv(tmp_path / "curated" / "conditions.tsv", sep="\t", index=False)
-    return "curated/measurements.tsv"
-
-
-def test_a_curated_set_may_bring_new_values_of_the_training_inputs(tmp_path):
-    """A conditions.tsv beside the table adds rows on the training table's own columns — another
-    cell type's Smad abundances, a knockdown level — and the conditions it names are then known.
-    Still fixed-θ: no parameter table, so the fitted point is what gets scored."""
-    table = _curated(
-        tmp_path,
-        _rows("c_knockdown"),
-        pd.DataFrame({"conditionId": ["c_knockdown"], "dose": [0.5]}),
-    )
-
-    held = benchmark._curated_held_out(
-        name="X", validation_table=table, example_dir=tmp_path, published=_problem(_rows("c_train"))
-    )
-
-    assert held.mode == "fixed"
-    assert list(held.condition_df.index) == ["c_knockdown"]
-    assert float(held.condition_df.loc["c_knockdown", "dose"]) == 0.5
-
-
-@pytest.mark.parametrize(
-    "conditions, needle",
-    [
-        (
-            pd.DataFrame({"conditionId": ["c_new"], "dose": [0.5], "temperature": [37.0]}),
-            "different models",
-        ),
-        (pd.DataFrame({"conditionId": ["c_train"], "dose": [0.5]}), "does not redefine"),
-    ],
-)
-def test_a_curated_condition_table_may_only_add_rows(tmp_path, conditions, needle):
-    """A new column is a new input, i.e. a different model; a training id redefines a condition
-    the model was fitted under. Both are refused at setup, in the score-time rule's own words."""
-    table = _curated(tmp_path, _rows("c_test"), conditions)
-
-    with pytest.raises(ValueError, match=needle):
-        benchmark._curated_held_out(
-            name="X",
-            validation_table=table,
-            example_dir=tmp_path,
-            published=_problem(_rows("c_train")),
-        )
-
-
-def test_a_curated_preequilibration_condition_must_be_known_too(tmp_path):
-    """The knockdown rows pre-equilibrate at the knockdown, so the preeq id is a condition the
-    table names and is checked like the simulation one."""
-    table = _curated(tmp_path, _rows("c_test").assign(preequilibrationConditionId="c_basal"))
-
-    with pytest.raises(ValueError, match="c_basal"):
-        benchmark._curated_held_out(
-            name="X",
-            validation_table=table,
-            example_dir=tmp_path,
-            published=_problem(_rows("c_train")),
-        )
-
-
-def test_materialize_writes_a_fixed_sets_condition_rows_beside_its_measurements(
-    tmp_path, monkeypatch
-):
-    """What lands on disk is the contract with the server: conditions.tsv beside measurements.tsv,
-    in the shape of the problem's own (no conditionName), and gone again when the set stops
-    bringing any. The directory is gitignored and outlives a branch switch, so every file an
-    earlier definition of the example wrote is removed first: a leftover parameters.tsv would flip
-    the set to TRANSFER and refit, a leftover set would score an example that declares none."""
-    from petab_mcp import validation_data
-
-    published = _problem(_rows("c_train"))
-    published.condition_df["conditionName"] = ["train", "test"]
-    monkeypatch.setattr(benchmark, "_load_problem", lambda *a, **k: copy.deepcopy(published))
-    monkeypatch.setattr(benchmark, "_write_empty_sbml", lambda d: None)
-    monkeypatch.setattr(benchmark, "_write_problem_yaml", lambda d: None)
-    table = _curated(
-        tmp_path,
-        _rows("c_knockdown"),
-        pd.DataFrame({"conditionId": ["c_knockdown"], "conditionName": ["kd"], "dose": [0.5]}),
-    )
-    vpath = benchmark.validation_measurements_path(tmp_path)
-    vpath.parent.mkdir()
-    stale = vpath.with_name(validation_data.HELD_OUT_PARAMETERS)
-    stale.write_text("parameterId\tnominalValue\testimate\nk\t0.5\t1\n")
-
-    out = benchmark.materialize(
-        name="X", shipped_param_ids=["k"], example_dir=tmp_path, validation_table=table
-    )
-    held = validation_data.read_held_out(vpath)
-
-    assert out["validation_conditions"] == 1
-    assert held.mode == validation_data.MODE_FIXED and not stale.exists()
-    assert list(held.condition_df.index) == ["c_knockdown"]
-    assert list(held.condition_df.columns) == ["dose"]
-
-    _curated(tmp_path, _rows("c_test"))
-    (tmp_path / "curated" / "conditions.tsv").unlink()
-    benchmark.materialize(
-        name="X", shipped_param_ids=["k"], example_dir=tmp_path, validation_table=table
-    )
-    assert validation_data.read_held_out(vpath).condition_df is None
-
-    benchmark.materialize(name="X", shipped_param_ids=["k"], example_dir=tmp_path)
-    assert not vpath.exists()

@@ -5,8 +5,8 @@ rate law cost nothing however it was obtained: fujita run ``53685907_4`` had 21 
 species and ``k = 4`` — its rate laws read ``0.000878``, ``2.69e-5``, ``1.333``… — and scored best
 of 29 runs. The RULE (which literals count) and the server's half of the ASSEMBLY (the fit payload
 and the stored version's bic read the same addend) are pinned in PEtab-MCP. What is pinned here is
-gemot's half: the judge derives the same ``k`` from its own reads, and the reference bar pays for its
-fitted literals too.
+gemot's half: the judge derives the same ``k`` from its own reads. That the reference bar pays for its
+fitted literals too is pinned in PEtabAgentBench, with the reference fit.
 """
 
 from __future__ import annotations
@@ -91,22 +91,6 @@ def test_the_server_reports_the_constants_on_the_edit_result_and_the_summary(tmp
         assert _candidate_k(rows, summary)[0] == summary["k"]
 
     asyncio.run(go())
-
-
-# ------------------------------------------------------------------- the reference side
-def test_the_reference_pays_for_its_fitted_literals():
-    """`setup.py --refit` charges the published model's FITTED literals to the bar's k (fujita's
-    68190 is the author's fitted pro_EGFR, inlined by the collection) and records them, so a
-    reference whose k exceeds its estimated-row count is auditable. Nothing else on the result
-    moves: the published fit is unchanged, only its count."""
-    from gemot.benchmark import charge_hardcoded_parameters
-
-    ref = {"nll": -66.58, "k": 19, "n": 144, "noise_sigma": {}}
-    charged = charge_hardcoded_parameters(ref, {"68190": "pro_EGFR, the author's fitted pool"})
-    assert charged == {**ref, "k": 20, "hardcoded_constants": ["68190"]}
-    assert ref["k"] == 19  # pure: the input is not mutated
-    assert charge_hardcoded_parameters(ref, None) is ref
-    assert charge_hardcoded_parameters(ref, {}) is ref
 
 
 def test_the_judge_records_the_parameter_vector_it_scored():

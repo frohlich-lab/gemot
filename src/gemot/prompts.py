@@ -42,16 +42,6 @@ from . import ablations as _ablations
 # They are the same for every scenario, so they default here and each example just omits
 # them. Only the fixed FACT that the parameters are already fitted is stated — a capable
 # lead infers from that that re-tuning cannot help, without being told the answer.
-# --- ablation arm: the data-regimes tool + independence-audit skill -------------------------
-# `PETAB_DATA_REGIMES=0` removes BOTH from a run: the tool from every agent's toolset (see
-# agent.tools) and this guidance from the lead's prompt. They ship together and are tested together,
-# so they are one arm rather than two.
-#
-# Read at import and folded into the prompt TEXT on purpose, so `prompt_version()` differs between
-# the arms. Gating only the tool would leave two arms sharing a prompt_version while actually
-# receiving different prompts — which is precisely the provenance failure this branch spent a
-# commit closing for the subagent turn notices.
-DATA_REGIMES_ENABLED = _ablations.enabled("data_regimes")
 BIOLOGY_BLIND_ENABLED = _ablations.enabled("biology_blind")
 # One effective policy for prompt text, roster, model construction and bio connections.
 BIOCURATOR_ENABLED = _ablations.enabled("biocurator") and not BIOLOGY_BLIND_ENABLED
@@ -81,15 +71,6 @@ def _inline_skill(name: str) -> str:
 
 
 _PETAB_SKILL_INLINE = _inline_skill("petab-model-building")
-
-# Same shape as the arm above: the schema (make_changes grows `model_edits`/`base_version`, the lead
-# grows `get_model`) AND the prompt text ship together (changes_prompt=True), so prompt_version
-# separates the halves of an A/B.
-DIFF_EDITS_ENABLED = _ablations.enabled("diff_edits")
-
-# Prompt-only arm (no tools change; changes_prompt=True so prompt_version separates the halves).
-# Rationale and the measured numbers live on the registry entry in ablations.py.
-FREE_EXPONENTS_ENABLED = _ablations.enabled("free_exponents")
 
 # ------------------------------------------- rules that are read on more than one surface
 # The lead reads its system prompt, a tool's description and the finish gate's own text within
@@ -154,20 +135,14 @@ _ADEQUATE_IS_NOT_DONE = (
 
 #: The `model_edits` operation vocabulary, with one example each. The lead reads it in its own
 #: prompt and again in the editor's description; an op documented on only one of the two is an op
-#: half the panel never learns about. Empty outside the `diff_edits` arm — like the guidance blocks
-#: below, both of its consumers are arm-gated, and a non-empty constant no surface composes would
-#: be untracked text.
+#: half the panel never learns about.
 _MODEL_EDIT_OPS = (
-    (
-        "`{op:'add_reaction', antimony:'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'}`, "
-        "`{op:'remove_reaction', id}`, `{op:'set_rate_law', id, antimony:'k*EGF*EGFR'}`, "
-        "`{op:'set_initial', id, antimony:'5'}`, "
-        "`{op:'set_assignment', id, antimony:'pAkt + pAkt_S6'}` (an `id := expr` rule holding at "
-        "ALL times — how a `readout_*` symbol an observable formula references is defined in terms "
-        "of YOUR states), `{op:'remove_assignment', id}`, `{op:'rename', old, new}`"
-    )
-    if DIFF_EDITS_ENABLED
-    else ""
+    "`{op:'add_reaction', antimony:'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'}`, "
+    "`{op:'remove_reaction', id}`, `{op:'set_rate_law', id, antimony:'k*EGF*EGFR'}`, "
+    "`{op:'set_initial', id, antimony:'5'}`, "
+    "`{op:'set_assignment', id, antimony:'pAkt + pAkt_S6'}` (an `id := expr` rule holding at "
+    "ALL times — how a `readout_*` symbol an observable formula references is defined in terms "
+    "of YOUR states), `{op:'remove_assignment', id}`, `{op:'rename', old, new}`"
 )
 
 #: The read-only tools the lead is told it may use ITSELF (everything else it delegates). Rendered
@@ -189,79 +164,49 @@ LEAD_SELF_READ_TOOLS = (
 
 
 _FREE_EXPONENTS_GUIDANCE = (
-    (
-        " EXPONENTS ARE PARAMETERS. EVERY time you write a cooperative or ligand-gated dependence "
-        "(any Hill or saturating term) — in the first model, in a later edit, or when you sharpen an "
-        "existing rate law — declare its exponent as a named, estimated parameter with its own "
-        "bounds. Never hardcode it as 1 or a literal 2 inside the formula. A hardcoded exponent "
-        "silently FIXES a quantity the fit may need, and it is the one mis-specification no later "
-        "bounds edit can reach: the only repair is re-authoring that rate law. An estimated exponent "
-        "costs exactly one ln(n) of bic and is cheap to TRIM at any point if the data cannot support "
-        "it — pay that price when you introduce the term and take it back later, not the reverse."
-    )
-    if FREE_EXPONENTS_ENABLED
-    else ""
+    " EXPONENTS ARE PARAMETERS. EVERY time you write a cooperative or ligand-gated dependence "
+    "(any Hill or saturating term) — in the first model, in a later edit, or when you sharpen an "
+    "existing rate law — declare its exponent as a named, estimated parameter with its own "
+    "bounds. Never hardcode it as 1 or a literal 2 inside the formula. A hardcoded exponent "
+    "silently FIXES a quantity the fit may need, and it is the one mis-specification no later "
+    "bounds edit can reach: the only repair is re-authoring that rate law. An estimated exponent "
+    "costs exactly one ln(n) of bic and is cheap to TRIM at any point if the data cannot support "
+    "it — pay that price when you introduce the term and take it back later, not the reverse."
 )
 
 _DIFF_EDITS_GUIDANCE = (
-    (
-        " EDIT BY OPERATION, NOT BY RE-AUTHORING. Your FIRST model is authored wholesale "
-        "(`antimony=`). Every LATER change goes through `model_edits`: a BATCH of structured "
-        "operations, each written as ANTIMONY and addressed by ID — " + _MODEL_EDIT_OPS + ". "
-        "You write the model "
-        "language you already know; you just say WHICH reaction, instead of quoting its text. "
-        "EVERY reaction needs an id — an unnamed one cannot be changed later without re-authoring "
-        "the whole model, so authoring is refused until they are all named. "
-        "PUT THE WHOLE CHANGE IN ONE CALL. One call is one fit and one version, so a mechanism plus "
-        "the rate-law change it forces is ONE batch of two operations, not two calls — splitting it "
-        "pays a full multistart per operation and scores intermediate states you never meant to "
-        "test. Operations apply in order, all-or-nothing: a failure names the failing "
-        "`model_edits[i]` and lists the valid reaction ids, and nothing is applied. "
-        "NAME YOUR REACTIONS FOR YOURSELF. The id is how you will address a reaction for the rest "
-        "of the run, so use a meaningful one — `egfr_activation`, `akt_dephos`, `s6_feedback` — not "
-        "`reaction_7`. Numbered ids invite renumbering when you re-author, and a renumbered model is "
-        "one whose history cannot be read. Ids are yours to choose and are stable across the "
-        "server's re-rendering. "
-        "To ROLL BACK AND CHANGE, pass `base_version=N` with `model_edits`: the operations apply to "
-        "that version's stored model — one call forks and changes, and you never retype an earlier "
-        "model from memory. It restores that version's SEARCH SPACE too — its bounds and scales — and "
-        "the point the fit starts from, that version's own best fit, so the fork picks up where "
-        "version N got to instead of from the branch you are abandoning. You never have to remember "
-        "any of it. Parameters your operations newly introduce keep the defaults the reconcile mints, "
-        "and any parameter you name in this call's `parameters` keeps YOUR bound and scale rather "
-        "than the restored one. "
-        "`base_version` is a MODIFIER, never an action: sent on its own it is REJECTED. There is no "
-        "revert-and-stop, because re-committing an earlier version unchanged would spend a fit to "
-        "reproduce a result you already have. Say what you want DIFFERENT about that version in the "
-        "same call; to merely look at it first, use `get_model(version=N)`. "
-        "Wholesale re-authoring (`antimony=`) on a LATER model is for genuinely starting over — "
-        "legitimate when the structure is abandoned, discouraged otherwise: operations preserve the "
-        "working core and keep your reaction ids stable."
-    )
-    if DIFF_EDITS_ENABLED
-    else ""
-)
-
-_DATA_REGIMES_GUIDANCE = (
-    (
-        " Two things help here and they answer different questions. "
-        "`get_data_regimes` answers WHAT THE DATA REQUIRES — read straight off the measurements, no "
-        "model and no fit, so it is valid before you have written anything: whether the response rises "
-        "AND falls (which constant production plus first-order decay cannot do at any rate constants), "
-        "whether a second timescale is distinguishable, how steep the dose-response is, whether a total "
-        "is conserved. READ IT AS THREE OUTCOMES, not as an answer: a non-null `requirement` is "
-        "ESTABLISHED and any model must reproduce it; `support_for_extension: suggestive` means the "
-        "estimate leans toward richer structure without establishing it — a reason to TRY it; and a "
-        "null `requirement`, like `testable: false`, means this DESIGN did not settle the question. "
-        "None of these can ever rule structure OUT: silence is what an underpowered test returns, so it "
-        "is never permission to simplify, and your own mechanistic judgement still governs there. "
-        "`get_skill('independence-audit')` answers HOW TO ENCODE the fix cheaply once you know the "
-        "requirement — and what to do when the data cannot tell you. Reach for both when a fit is "
-        "adequate on chi2 but `residual_structure` still flags an observable: that combination means a "
-        "factorisation is wrong, and no amount of re-fitting will move it."
-    )
-    if DATA_REGIMES_ENABLED
-    else ""
+    " EDIT BY OPERATION, NOT BY RE-AUTHORING. Your FIRST model is authored wholesale "
+    "(`antimony=`). Every LATER change goes through `model_edits`: a BATCH of structured "
+    "operations, each written as ANTIMONY and addressed by ID — " + _MODEL_EDIT_OPS + ". "
+    "You write the model "
+    "language you already know; you just say WHICH reaction, instead of quoting its text. "
+    "EVERY reaction needs an id — an unnamed one cannot be changed later without re-authoring "
+    "the whole model, so authoring is refused until they are all named. "
+    "PUT THE WHOLE CHANGE IN ONE CALL. One call is one fit and one version, so a mechanism plus "
+    "the rate-law change it forces is ONE batch of two operations, not two calls — splitting it "
+    "pays a full multistart per operation and scores intermediate states you never meant to "
+    "test. Operations apply in order, all-or-nothing: a failure names the failing "
+    "`model_edits[i]` and lists the valid reaction ids, and nothing is applied. "
+    "NAME YOUR REACTIONS FOR YOURSELF. The id is how you will address a reaction for the rest "
+    "of the run, so use a meaningful one — `egfr_activation`, `akt_dephos`, `s6_feedback` — not "
+    "`reaction_7`. Numbered ids invite renumbering when you re-author, and a renumbered model is "
+    "one whose history cannot be read. Ids are yours to choose and are stable across the "
+    "server's re-rendering. "
+    "To ROLL BACK AND CHANGE, pass `base_version=N` with `model_edits`: the operations apply to "
+    "that version's stored model — one call forks and changes, and you never retype an earlier "
+    "model from memory. It restores that version's SEARCH SPACE too — its bounds and scales — and "
+    "the point the fit starts from, that version's own best fit, so the fork picks up where "
+    "version N got to instead of from the branch you are abandoning. You never have to remember "
+    "any of it. Parameters your operations newly introduce keep the defaults the reconcile mints, "
+    "and any parameter you name in this call's `parameters` keeps YOUR bound and scale rather "
+    "than the restored one. "
+    "`base_version` is a MODIFIER, never an action: sent on its own it is REJECTED. There is no "
+    "revert-and-stop, because re-committing an earlier version unchanged would spend a fit to "
+    "reproduce a result you already have. Say what you want DIFFERENT about that version in the "
+    "same call; to merely look at it first, use `get_model(version=N)`. "
+    "Wholesale re-authoring (`antimony=`) on a LATER model is for genuinely starting over — "
+    "legitimate when the structure is abandoned, discouraged otherwise: operations preserve the "
+    "working core and keep your reaction ids stable."
 )
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -333,20 +278,10 @@ DEFAULT_SYSTEM_PROMPT = (
     "Antimony. `make_changes` is the ONLY way to change anything — a rate-law form, a reaction, "
     "a parameter's bounds or scale — and it ALWAYS fits, so one call is one coherent change "
     "scored as ONE version. "
-    + (
-        # ARM-GATED for the same reason the TOOL_DESCRIPTIONS clause is: shipped ungated, this
-        # sentence tells the arm-ON lead that `antimony` is the only model route, 50 lines
-        # before _DIFF_EDITS_GUIDANCE tells it to patch instead — two incompatible contracts in
-        # one prompt, which is how a lead ends up re-authoring wholesale in the arm built to
-        # stop that.
-        "Give `antimony` to author the FIRST model, `model_edits` (structured operations) to "
-        "change it thereafter, `parameters` to retune the search space, or a model route AND "
-        "`parameters` when a structural change needs bounds; at least one is required. "
-        if DIFF_EDITS_ENABLED
-        else "Give `antimony` to re-author, `parameters` to retune the search "
-        "space, or BOTH when a structural change needs bounds; at least one is required. "
-    )
-    + "Your step "
+    "Give `antimony` to author the FIRST model, `model_edits` (structured operations) to "
+    "change it thereafter, `parameters` to retune the search space, or a model route AND "
+    "`parameters` when a structural change needs bounds; at least one is required. "
+    "Your step "
     "budget is the scarce resource, so put a whole coherent change in one call rather than "
     "dribbling it out. The result IS the fit (`bic`, `neg_log_likelihood`, `k` = `n_estimated` + "
     "`hardcoded_constants`: a numeric literal in your model's math is a parameter too, bar a few "
@@ -402,11 +337,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "few parameters underfits and too many is charged for nothing, and both lose. Note which side "
     "you are on: while the residuals are still structured you are underfitting, and the arithmetic "
     "above is for pricing what you keep at the end, not for talking yourself out of a mechanism "
-    "the data is asking for."
-    + _FREE_EXPONENTS_GUIDANCE
-    + _DATA_REGIMES_GUIDANCE
-    + _DIFF_EDITS_GUIDANCE
-    + "\n"
+    "the data is asking for." + _FREE_EXPONENTS_GUIDANCE + _DIFF_EDITS_GUIDANCE + "\n"
     "3. Read the CURRENT HEAD's metrics (never an earlier version's) after each `make_changes` and decide "
     "what to do next. The DEFAULT is to KEEP ITERATING while the model is still mis-specified — "
     "bic is still improving fit-over-fit by more than a few units, OR get_fit_diagnosis shows a "
@@ -845,34 +776,25 @@ TOOL_DESCRIPTIONS = {
     "make_changes": (
         "THE editor, and it always FITS. Pass `antimony` to author the WHOLE model "
         "(builds the first one when model_authored: false"
-        + (
-            "; on a LATER model it is the start-over route, and EVERY reaction "
-            "must be named — an unnamed one cannot be changed afterwards). OR "
-            "`model_edits`: a BATCH of structured operations, each written as "
-            "Antimony and addressed by ID — " + _MODEL_EDIT_OPS + ". "
-            "The DEFAULT route for every change after the first: nothing to quote, "
-            "in order, all-or-nothing, a bad id rejected with the valid ids listed. "
-            "Put the WHOLE change in ONE call — one call is one fit and one "
-            "version. With `base_version=N` the operations apply to that version's "
-            "stored model AND its search space and starting point are restored "
-            "with it: fork and change in one call. It is a MODIFIER of "
-            "`model_edits`, never an action on its own — sent alone it is "
-            "rejected, since re-committing a version unchanged re-fits it to "
-            "the result it already has. "
-            if DIFF_EDITS_ENABLED
-            else ", and re-authors an existing one wholesale — every structural change "
-            "is a whole-model re-author)"
-        )
-        + ("And/or " if DIFF_EDITS_ENABLED else ", and/or ")
-        + "`parameters` = [{parameter_id, lower_bound?, "
+        "; on a LATER model it is the start-over route, and EVERY reaction "
+        "must be named — an unnamed one cannot be changed afterwards). OR "
+        "`model_edits`: a BATCH of structured operations, each written as "
+        "Antimony and addressed by ID — " + _MODEL_EDIT_OPS + ". "
+        "The DEFAULT route for every change after the first: nothing to quote, "
+        "in order, all-or-nothing, a bad id rejected with the valid ids listed. "
+        "Put the WHOLE change in ONE call — one call is one fit and one "
+        "version. With `base_version=N` the operations apply to that version's "
+        "stored model AND its search space and starting point are restored "
+        "with it: fork and change in one call. It is a MODIFIER of "
+        "`model_edits`, never an action on its own — sent alone it is "
+        "rejected, since re-committing a version unchanged re-fits it to "
+        "the result it already has. "
+        "And/or "
+        "`parameters` = [{parameter_id, lower_bound?, "
         "upper_bound?, scale?}, ...] to set the estimation BOUNDS/SCALE (never a "
         "value). At least ONE is required. "
-        + (
-            "Give both a model route and `parameters` when a structural change needs "
-            if DIFF_EDITS_ENABLED
-            else "Give both when a structural change needs "
-        )
-        + "bounds — they apply atomically, after the reconcile, so an entry may target "
+        "Give both a model route and `parameters` when a structural change needs "
+        "bounds — they apply atomically, after the reconcile, so an entry may target "
         "a parameter this call introduces. One call is one coherent change and ONE "
         "version. ALL-OR-NOTHING: a change that cannot be scored is REVERTED, so the "
         "working model is always a scored one. The result IS the fit, flat: read "
@@ -927,47 +849,15 @@ TOOL_DESCRIPTIONS = {
         "(bounds, scale, fixed/estimated, any prior), so a shipped constant costs "
         "you nothing to adopt and a shipped-FIXED one must stay declared."
     ),
-    # Dropped in the ablation arm so ALLOWED_TOOLS and TOOL_DESCRIPTIONS stay in
-    # agreement (test_every_panel_tool_has_a_description asserts it).
-    **(
-        {
-            "get_data_regimes": (
-                "What the MEASUREMENTS require of ANY model — from the data alone: no "
-                "model, no fit, no compile, valid before you have written anything. Per "
-                "observable, measured against its own noise floor: `shape` (does the "
-                "response rise AND fall? a pulse cannot come from constant production plus "
-                "first-order decay at any rate constants, so it REQUIRES a depletable pool, "
-                "a second state, or feedback), `timescales` (is a second one "
-                "distinguishable, by BIC), `dose_response` (steepest log-log slope vs a "
-                "numeric input; above 1 rules out a single mass-action binding step), and "
-                "`conservation` (is the sum of observables constant while the parts move? "
-                "imposing it REMOVES a parameter). A non-null `requirement` is ESTABLISHED "
-                "and any model must reproduce it; `support_for_extension: suggestive` "
-                "means the estimate leans toward richer structure without establishing "
-                "it — a reason to TRY it. THESE CAN FORCE STRUCTURE IN, NEVER RULE IT OUT: "
-                "`testable: false` or a null `requirement` means this design did not "
-                "settle it, which is NOT permission to simplify."
-            )
-        }
-        if DATA_REGIMES_ENABLED
-        else {}
-    ),
-    # Dropped in the ablation arm, same agreement rule as get_data_regimes above.
-    **(
-        {
-            "get_model": (
-                "The COMMITTED model as raw Antimony text. With `model_edits` you address "
-                "reactions by ID and never quote text, so reach for `get_model_structure` "
-                "first — this is for reading the model as written. Pass `version=N` for a PRIOR version's stored text — use THAT "
-                "before `base_version=N`, not `get_version`, which also returns that "
-                "version's per-point simulation and optimizer trace. The trailing "
-                "`const ...;` line is DERIVED (regenerated every render; a parameter is "
-                "constant unless declared `var`) — read past it; no operation addresses "
-                "it."
-            ),
-        }
-        if DIFF_EDITS_ENABLED
-        else {}
+    "get_model": (
+        "The COMMITTED model as raw Antimony text. With `model_edits` you address "
+        "reactions by ID and never quote text, so reach for `get_model_structure` "
+        "first — this is for reading the model as written. Pass `version=N` for a PRIOR version's stored text — use THAT "
+        "before `base_version=N`, not `get_version`, which also returns that "
+        "version's per-point simulation and optimizer trace. The trailing "
+        "`const ...;` line is DERIVED (regenerated every render; a parameter is "
+        "constant unless declared `var`) — read past it; no operation addresses "
+        "it."
     ),
     "get_fit_summary": (
         "Current fit metrics only (neg_log_likelihood, chi2, n_data_points) — a "
@@ -1468,12 +1358,6 @@ BIOLOGY_BLIND_SYSTEM_PROMPT = (
     + _FREE_EXPONENTS_GUIDANCE.replace(
         "cooperative or ligand-gated", "nonlinear or input-dependent"
     )
-    + (
-        " Use get_data_regimes to inspect statistical evidence about the measured signal shapes "
-        "and input dependence. A null or untestable result does not rule out richer structure. "
-        if DATA_REGIMES_ENABLED
-        else ""
-    )
     + _SIGMA_CAP_ADVISORY
     + " "
     + _ADEQUATE_IS_NOT_DONE
@@ -1559,6 +1443,8 @@ BIOLOGY_BLIND_TOOL_DESCRIPTIONS = {
     "get_measurements": "Read a page of numerical measurements by observable and condition.",
     "list_data_tables": "List queryable numerical tables and their columns.",
     "query_data": "Run read-only SQL over numerical data, simulations and fit diagnostics.",
+    # No agent holds this tool since the data_regimes arm retired; the entry stays only because
+    # this dict is hashed into prompt_version, and dropping it would split the biology-blind runs.
     "get_data_regimes": "Inspect statistical evidence for signal shape and input dependence.",
     "get_fit_summary": "Read the committed fit's objective, complexity, residual and noise diagnostics.",
     "get_fit_diagnosis": "Read compact residual diagnostics; sections='parameters' requests parameter geometry.",

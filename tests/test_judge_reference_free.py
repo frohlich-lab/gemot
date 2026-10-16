@@ -16,8 +16,9 @@ import time
 
 import pytest
 
-from gemot import benchmark, metrics, tracing
+from gemot import metrics, tracing
 from gemot import scenario as S
+from gemot.paths import validation_measurements_path
 from gemot.runner import REFERENCE_FREE_GOF_ALPHA, _judge, _reference_free_adequacy, _ToolClock
 
 #: A fit that estimated no noise sigma: the problem's own noise model is fully specified.
@@ -340,7 +341,7 @@ def test_reference_free_held_out_is_absolute_and_report_only(tmp_path, capsys):
     """With no reference there is nothing to subtract, so the held-out numbers are printed as they
     are — and, as on every other example, they never enter the verdict."""
     scenario = _data_package(tmp_path, S.ADEQUACY_CHI2)
-    held_out = benchmark.validation_measurements_path(scenario.example_dir)
+    held_out = validation_measurements_path(scenario.example_dir)
     held_out.parent.mkdir(parents=True)
     held_out.write_text("observableId\tsimulationConditionId\ttime\tmeasurement\n")
     payload = {"status": "ok", "nll": 900.0, "n": 12, "chi2": 400.0, "n_conditions": 4}

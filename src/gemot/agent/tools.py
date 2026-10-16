@@ -17,8 +17,6 @@ from __future__ import annotations
 from ..prompts import (
     BIOLOGY_BLIND_ENABLED,
     BIOLOGY_BLIND_TOOL_DESCRIPTIONS,
-    DATA_REGIMES_ENABLED,
-    DIFF_EDITS_ENABLED,
     LEAD_SELF_READ_TOOLS,
     TOOL_DESCRIPTIONS,
 )
@@ -33,11 +31,6 @@ from ..prompts import (
 MATHEMATICIAN_TOOLS = [
     "get_model_structure",  # species, reactions, rate laws (empty until a model is built)
     "get_measurements",  # the DATA — dynamics/shape to reason about candidate structure
-    # The same shape questions, already decided against the noise floor. A feasibility argument is
-    # far stronger stated against a computed verdict ("the data REQUIRES a pulse, and this topology
-    # cannot make one") than against an eyeballed trace, and this is the analyst whose job is that
-    # argument.
-    "get_data_regimes",
     "list_observables",  # what is measured
     "get_parameters",  # scales, bounds — identifiability / conditioning
     "get_fit_summary",
@@ -53,9 +46,6 @@ SYSTEMS_SCIENTIST_TOOLS = [
     "get_model_structure",  # the mechanism as written
     "list_observables",  # what quantity is measured
     "get_measurements",  # the actual data / dynamic behaviour
-    # What any mechanism must reproduce, before proposing one — a requirement is better known up
-    # front than discovered after a topology has been built that cannot meet it.
-    "get_data_regimes",
     "get_parameters",  # are the rate magnitudes plausible?
 ]
 
@@ -63,10 +53,6 @@ SYSTEMS_SCIENTIST_TOOLS = [
 SIGNAL_ENGINEER_TOOLS = [
     "list_data_tables",  # the queryable tables (simulations, residuals, ...) + columns
     "query_data",  # SQL over measured-vs-simulated points + residual breakdowns
-    # The standing verdicts this analyst would otherwise re-derive in SQL every run, already
-    # measured against the noise floor. Its own reads stay the way to answer anything bespoke; this
-    # keeps the routine shape/timescale/dose questions off the lottery of whether it thought to ask.
-    "get_data_regimes",
     "get_fit_summary",
 ]
 
@@ -84,15 +70,6 @@ ORCHESTRATOR_TOOLS = [
     # FOR is documented at that tuple.
     *LEAD_SELF_READ_TOOLS,
     "list_conditions",  # per-condition inputs/doses set in the condition table (match by name)
-    # What the DATA requires of any model — excursion vs monotone, how many timescales,
-    # dose-response steepness, a conserved total — computed from the measurement table alone. It is
-    # a lead tool despite the "no bulky data" rule because it returns VERDICTS, not data: 1-9 kB on
-    # the shipped examples, no model, no fit, no compile. That bound is enforced, not hoped for —
-    # the report is capped at 12 observables and takes an `observables=` filter, because an
-    # unscoped report on a 123-observable problem measured 61 kB (~15k tokens) re-sent every turn.
-    # Available before the first model exists, which is the point: a structural requirement is
-    # better known up front than discovered after ten fits that cannot meet it.
-    "get_data_regimes",
     # score / diagnose (both COMPACT + bounded) / history
     # NOTE: get_fit_summary is deliberately NOT here. `make_changes` already returns
     # the whole fit block — metrics, bic, parameters_at_bound, the noise-sigma verdict + advice,
@@ -132,14 +109,11 @@ ORCHESTRATOR_TOOLS = [
     # This costs tokens rather than saving them: nothing prunes history, so a fetched skill is
     # re-sent every subsequent turn. Both skills are kept short for exactly that reason.
     "get_skill",
-    # The diff-edit read (ablation arm `diff_edits`, default ON since 2026-08-19 — subtracted below
-    # like get_data_regimes, which genuinely IS default-off): the raw Antimony of the COMMITTED
-    # model, which is the text
-    # the lead reads when it wants the model AS WRITTEN. `model_edits` addresses reactions by
-    # id, so this is no longer required for editing (get_model_structure is the cheaper read
-    # for that) — it is kept for reading a prior version's source before a base_version fork,
-    # and is a candidate for removal if the traces show it going unused. Baseline does not get
-    # it: its re-author route never needs the committed text verbatim.
+    # The raw Antimony of the COMMITTED model, which is the text the lead reads when it wants the
+    # model AS WRITTEN. `model_edits` addresses reactions by id, so this is no longer required for
+    # editing (get_model_structure is the cheaper read for that) — it is kept for reading a prior
+    # version's source before a base_version fork, and is a candidate for removal if the traces
+    # show it going unused.
     "get_model",
     # NOTE: the BULK data/diagnostic tools (get_measurements, query_data, get_fitting_log,
     # list_data_tables) are deliberately NOT here — they belong to the analyst subagents, since
@@ -165,11 +139,7 @@ _TOOLSETS = (
 # The ablation arms. Applied to the lists AFTER they are defined, so each persona's rationale
 # above reads as the intended design and this is visibly a subtraction from it — and so a future
 # tool added to a list cannot forget to be gated. One strip helper, not one loop per arm.
-_ARM_TOOLS = (
-    (DATA_REGIMES_ENABLED, ("get_data_regimes",)),
-    (DIFF_EDITS_ENABLED, ("get_model",)),
-    (not BIOLOGY_BLIND_ENABLED, ("get_skill",)),
-)
+_ARM_TOOLS = ((not BIOLOGY_BLIND_ENABLED, ("get_skill",)),)
 for _on, _names in _ARM_TOOLS:
     if _on:
         continue

@@ -53,6 +53,25 @@ def examples_root() -> Path:
     return repo_root() / "examples"
 
 
+#: Where an example's HELD-OUT measurements land, relative to its example dir. A sibling of
+#: ``problem/``, deliberately NOT inside it: the runner copies ``problem/`` wholesale into ``work/``
+#: and points the MCP server at it, so a file placed there is one directory listing away from the
+#: agent. Nothing about the current server would expose it — but "the held-out data is not in the
+#: tree the server is given" is a property worth having structurally rather than by audit.
+#:
+#: Written by PEtabAgentBench's materializer (``petab_agent_bench.materialization``, which defines
+#: the same location), read here by the runner and the judge.
+VALIDATION_DIR = "validation"
+
+#: The held-out measurement table inside :data:`VALIDATION_DIR`.
+VALIDATION_MEASUREMENTS = "measurements.tsv"
+
+
+def validation_measurements_path(example_dir: Path) -> Path:
+    """Where an example's held-out measurements are materialized (may not exist)."""
+    return Path(example_dir) / VALIDATION_DIR / VALIDATION_MEASUREMENTS
+
+
 #: Synthetic (truth-model) demos: they simulate their own data via their own
 #: ``generate_data.py`` and are NOT materialized from the pinned benchmark collection.
 SYNTHETIC_EXAMPLES = ["enzyme_kinetics", "predator_prey", "repressilator"]

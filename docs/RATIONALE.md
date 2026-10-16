@@ -22,6 +22,19 @@ The numbers on the entries below are pull requests of
 [frohlich-lab/gemot_iclr_2026](https://github.com/frohlich-lab/gemot_iclr_2026) (then named petab_mcp), where this
 package was developed before it moved here.
 
+2026-10 Three ablation arms are retired and fixed at their old defaults (`ablations.py` docstring);
+re-adding one needs a fresh A/B with both arms on one code version.
+- `data_regimes` (off): a 115-run A/B scored 10/58 with it on vs 30/57 off (p=8e-5), almost all on
+  sneyd, where its null verdicts, read before the first model, steered runs away from the free
+  exponent the best models need. The tool changed afterwards without a re-run.
+- `diff_edits` (on): ID-addressed `model_edits` moved no outcome over five A/Bs (~90 runs) but cut
+  tokens 28% on alkan's 53-reaction models (p=0.0065). It replaced text patching, whose binding cost
+  was agents failing to quote their own earlier text exactly.
+- `free_exponents` (on): telling the lead to estimate every Hill/gating exponent raised sneyd
+  basin-hits from 2/10 to 7/10 (p=0.07) and moved first-commit free exponents 1.4 -> 3.4 with
+  nothing else changing. The mechanism is the strong half; the rate is weak and measured on sneyd
+  alone.
+
 #347 An estimated sigma starts at its data's spread (`stage._sigma_seeds`), not at the table's
 nominal: Adam in log space moves at most its learning rate per step, and perelson's `sd_viral_load`
 nominal of 1e5 for a log10 sigma kept the likelihood flat for the whole budget -- the weights saw
@@ -63,9 +76,10 @@ figure is `None`, never 0.0, which would read as free in a mean.
 
 #192 `TRAINING_MEASUREMENTS` restates the published measurement table from one the example commits.
 The collection's perelson series is a digitisation of Fig. 1B where the study's own release has the
-measured values, and they disagree materially at one point. Restating happens in `_load_problem`, so
-the agent's copy and every reference stage read one source; a table naming an observable or condition
-the published problem lacks is refused rather than silently extending it.
+measured values, and they disagree materially at one point. Restating happens in
+PEtabAgentBench's `materialization.load_published_problem`, so the agent's copy and every reference
+stage read one source; a table naming an observable or condition the published problem lacks is
+refused rather than silently extending it.
 
 #192 A transfer set may free a parameter the (patched) reference model defines even when the
 published parameter table lacks it: what makes one unmanageable is having no counterpart at all, not
