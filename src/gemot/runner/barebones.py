@@ -8,7 +8,10 @@ parameter values. Same ``result.json`` shape and archive (plus a ``delivered/`` 
 Between the agent and the judge: :func:`sandbox_preflight` (before any LLM call),
 :func:`stage_workspace` (moves the problem files into ``work/agent/`` — the only directory the
 agent sees, so the harness's own ``run_live.json``/logs/result stay outside it — withholding
-``reference.json`` and the ``model.ant`` seed and hashing the design tables), :func:`barebones_task` (the same known-constants note and entity names the panel gets),
+``reference.json`` and the ``model.ant`` seed and hashing the design tables),
+:func:`barebones_system_prompt` (the instructions for the problem's PEtab version, naming the
+design tables the check hashes), :func:`barebones_task` (the same known-constants note and entity
+names the panel gets),
 and :func:`check_delivery` (design tables untouched, shipped parameter rows intact, petab lint).
 A tampered or unloadable delivery is recorded as a loss (``unscoreable_reason``), not an abort.
 Reasons are in ``docs/RATIONALE.md`` (the ``#203`` entries).
@@ -33,7 +36,12 @@ from ..bio_sessions import open_bio_sessions
 from ..explorer.archive import archive_run
 from ..fit_budget import FIT_N_WORKERS, fit_time_budget
 from ..agent.tools import ALLOWED_TOOLS
-from ..prompts import BAREBONES_ENTITIES_TMPL, BAREBONES_SYSTEM_PROMPT_TMPL, BAREBONES_TASK
+from ..prompts import (
+    BAREBONES_ENTITIES_TMPL,
+    BAREBONES_PETAB_FORMATS,
+    BAREBONES_SYSTEM_PROMPT_TMPL,
+    BAREBONES_TASK,
+)
 from ..scenario import Baseline, Scenario
 from .clock import _make_call, _wrap_call_timeout, _wrap_tool_clock
 from .endpoints import BIO_MCP_URLS
@@ -104,8 +112,11 @@ def _sha256(path: Path) -> str:
 
 def stage_workspace(work: Path) -> dict:
     """Move the problem files from ``work/`` into ``work/agent/`` (the agent's workspace) and return
-    what the delivery check needs afterwards: ``agent_dir``, the withheld files, the design-table
-    hashes, and the shipped parameter rows' ``(estimate, nominalValue)``."""
+    what the prompt and the delivery check need afterwards: ``agent_dir``, the withheld files, the
+    problem's ``petab_version`` (its YAML's major version), the design-table hashes, and the
+    shipped parameter rows' ``(estimate, nominalValue)``."""
+    from petab.versions import get_major_version
+
     agent_dir = work / AGENT_SUBDIR
     agent_dir.mkdir()
     withheld = []
@@ -130,6 +141,7 @@ def stage_workspace(work: Path) -> dict:
     return {
         "agent_dir": agent_dir,
         "withheld": withheld,
+        "petab_version": get_major_version(str(agent_dir / "problem.yaml")),
         "files": files,
         "design_hashes": hashes,
         "shipped_rows": shipped_rows,
@@ -336,6 +348,28 @@ def check_note_is_tool_free(note: str) -> str:
     return note
 
 
+def barebones_system_prompt(
+    staged: dict, *, execute_timeout: float, n_cpus: int, n_starts: int
+) -> str:
+    """``BAREBONES_SYSTEM_PROMPT_TMPL`` for the problem :func:`stage_workspace` staged: the slots
+    for its PEtab version, and the design tables it may not modify named as its YAML lists them —
+    the files :func:`check_delivery` holds to their staged bytes."""
+    version = staged["petab_version"]
+    slots = BAREBONES_PETAB_FORMATS.get(f"v{version}")
+    if slots is None:
+        raise ValueError(f"the null arm has no prompt for a PEtab v{version} problem")
+    design = [f"`{name}`" for role in _DESIGN_ROLES for name in staged["files"][role]]
+    if len(design) > 1:
+        design = [f"{', '.join(design[:-1])} or {design[-1]}"]
+    return BAREBONES_SYSTEM_PROMPT_TMPL.format(
+        **slots,
+        design=design[0],
+        execute_timeout=execute_timeout,
+        n_cpus=n_cpus,
+        n_starts=n_starts,
+    )
+
+
 def barebones_task(scenario: Scenario) -> str:
     """``BAREBONES_TASK`` (which carries its own tool-free readout instruction) plus the
     scenario's ``known_constants`` and curated ``biocurator_entities``."""
@@ -401,8 +435,8 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
 
     # One shell command may run as long as one server fit would.
     execute_timeout_s = fit_time_budget(args.n_starts)
-    system_prompt = BAREBONES_SYSTEM_PROMPT_TMPL.format(
-        execute_timeout=execute_timeout_s, n_cpus=FIT_N_WORKERS, n_starts=args.n_starts
+    system_prompt = barebones_system_prompt(
+        staged, execute_timeout=execute_timeout_s, n_cpus=FIT_N_WORKERS, n_starts=args.n_starts
     )
     task = barebones_task(scenario)
 

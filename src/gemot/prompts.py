@@ -429,14 +429,14 @@ DEFAULT_TASK = (
 
 # ---------------------------------------------------------------- the barebones (null) agent
 # What the NULL ARM (agent/barebones.py) is told: the problem and the delivery contract, none of
-# the lead's modelling guidance (RATIONALE.md, #203). A template: the driver fills in
-# the shell timeout, core count and standard multistart.
+# the lead's modelling guidance (RATIONALE.md, #203). A template: the driver fills in the shell
+# timeout, core count and standard multistart, and describes the problem it staged — the slots
+# for its PEtab version from BAREBONES_PETAB_FORMATS, and the design tables its YAML lists
+# (`runner.barebones.barebones_system_prompt`).
 BAREBONES_SYSTEM_PROMPT_TMPL = (
     "You are a computational modeller working in a Unix shell. Your working directory holds a "
-    "PEtab v1 parameter-estimation problem (`problem.yaml`, the TSV tables it lists, and an SBML "
-    "model file) that ships WITHOUT a model: the measurements, observables and conditions are "
-    "given, the SBML file is empty. Build a mechanistic ODE model that explains the data and "
-    "deliver it IN PLACE as a complete, valid PEtab problem.\n\n"
+    "{problem} Build a mechanistic ODE model that explains the data and deliver it IN PLACE as "
+    "a complete, valid PEtab problem.{files}\n\n"
     "TOOLS. The file tools (ls, read_file, write_file, edit_file, glob, grep) are rooted at the "
     "working directory — `/` in a file path means the working directory itself. `execute` runs a "
     "shell command in a SANDBOX whose current directory is `/work`, the same working directory. "
@@ -450,17 +450,13 @@ BAREBONES_SYSTEM_PROMPT_TMPL = (
     "the background (`nohup ... > log 2>&1 &`) and poll its log. You have {n_cpus} CPU cores; a "
     "pyPESTO multistart of {n_starts} starts is the standard fit here.\n\n"
     "DELIVERABLE. When you finish, `problem.yaml` in the working directory must load as a valid "
-    "PEtab v1 problem: its SBML model file contains your model, and `parameters.tsv` lists every "
-    "parameter you estimate with `estimate` = 1, `nominalValue` set to YOUR fitted value (a "
-    "LINEAR value, whatever the `parameterScale`), and sensible bounds and scale. Write the model "
-    "in Antimony and export it to SBML with the `antimony` package — do not compose SBML XML by "
-    "hand. Fit with AMICI + pyPESTO (`pypesto.petab.PetabImporter` on your problem, a multistart "
-    "`pypesto.optimize.minimize`), not with a hand-rolled ODE solver. Run `petablint problem.yaml` "
-    "before you stop and fix everything it reports. Do NOT modify "
-    "`measurements.tsv`, `conditions.tsv` or `observables.tsv`: the experimental design is fixed, "
-    "and a changed design table fails the run. Keep the shipped parameter rows — a row that "
-    "ships fixed (`estimate` = 0) stays fixed at its value; a row that ships estimated stays "
-    "estimated.\n\n"
+    "{contract} Write the model in Antimony and export it to SBML with the `antimony` package — "
+    "do not compose SBML XML by hand. Fit with AMICI + pyPESTO (`pypesto.petab.PetabImporter` on "
+    "your problem, a multistart `pypesto.optimize.minimize`), not with a hand-rolled ODE "
+    "solver.{scales} Run `petablint problem.yaml` before you stop and fix everything it reports. "
+    "Do NOT modify {design}: the experimental design is fixed, and a changed design table fails "
+    "the run. Keep the shipped parameter rows — a row that ships fixed ({fixed}) stays fixed at "
+    "its value; a row that ships estimated stays estimated.\n\n"
     "KEEP THE BEST ON DISK. As soon as you have a scorable model, always keep your best "
     "complete, valid PEtab problem on disk, selected by the working directory's `problem.yaml`, "
     "with its fitted parameter values saved. Develop further candidates separately; replace "
@@ -476,7 +472,7 @@ BAREBONES_SYSTEM_PROMPT_TMPL = (
     "You have a wall-clock budget of hours; use it, and deliver the best model you found.\n\n"
     "SCORING. Your delivered problem is scored EXACTLY AS DELIVERED: the model is simulated with "
     "AMICI at the `nominalValue`s in `parameters.tsv` — no refit — and the score is "
-    "BIC = 2·nll + k·ln(n), with k the number of `estimate` = 1 rows and n the number of "
+    "BIC = 2·nll + k·ln(n), with k the number of {estimated} rows and n the number of "
     "measurements; lower is better, and it is compared against a reference mechanism you cannot "
     "see. So fit your parameters well before you finish, write the fitted values back into "
     "`parameters.tsv`, and re-evaluate the likelihood of the SAVED files once more before you "
@@ -484,6 +480,58 @@ BAREBONES_SYSTEM_PROMPT_TMPL = (
     "model at all. When you are done, reply with a short summary of the model you built and its "
     "nll and BIC."
 )
+
+#: What the null is told about its files, by the PEtab major version of the problem it is handed:
+#: the slots of BAREBONES_SYSTEM_PROMPT_TMPL that differ between v1 and v2. A v1 problem is
+#: staged as it ships, in v1; the server upgrades it only for the judge.
+#:
+#: The v2 ``scales`` sentence is plumbing, not modelling guidance. pyPESTO's importer reads a v1
+#: problem's ``parameterScale`` column itself, but estimates a v2 problem only on the
+#: ``parameter_scales`` it is handed, and on a linear scale otherwise. The native v2 problems ship
+#: the column as an extension and the panel's server passes it, so a null told nothing would fit
+#: their log10-boxed parameters linearly. Scoring does not refit, so nothing checks the scale a
+#: delivery ships.
+BAREBONES_PETAB_FORMATS = {
+    "v1": {
+        "problem": "PEtab v1 parameter-estimation problem (`problem.yaml`, the TSV tables it "
+        "lists, and an SBML model file) that ships WITHOUT a model: the measurements, observables "
+        "and conditions are given, the SBML file is empty.",
+        "files": "",
+        "contract": "PEtab v1 problem: its SBML model file contains your model, and "
+        "`parameters.tsv` lists every parameter you estimate with `estimate` = 1, `nominalValue` "
+        "set to YOUR fitted value (a LINEAR value, whatever the `parameterScale`), and sensible "
+        "bounds and scale.",
+        "scales": "",
+        "fixed": "`estimate` = 0",
+        "estimated": "`estimate` = 1",
+    },
+    "v2": {
+        "problem": "PEtab v2 parameter-estimation problem (`problem.yaml`, the TSV tables it "
+        "lists, and the SBML model file it names under `model_files`) that ships WITHOUT a model: "
+        "the measurements, observables, conditions and experiments are given, the SBML file is "
+        "empty.",
+        "files": "\n\nTHE FILES. `problem.yaml` declares `format_version: 2.0.0` and lists its "
+        "tables at the top level; load it with `petab.v2.Problem.from_yaml`. Each row of "
+        "`conditions.tsv` sets one `targetId` — a parameter, species or compartment your model "
+        "must define under that name — to `targetValue`. `experiments.tsv` says when: from `time` "
+        "on, experiment `experimentId` applies condition `conditionId`; rows of one experiment at "
+        "the same `time` apply together, an empty `conditionId` applies none, and a `time` of "
+        "-inf is a pre-equilibration to steady state before the experiment starts. Each "
+        "measurement names the experiment it was taken in (`experimentId`; empty: the model "
+        "simulated as is). In `parameters.tsv`, `estimate` is `true` or `false`.",
+        "contract": "PEtab v2 problem: the SBML file it names under `model_files` contains your "
+        "model, and `parameters.tsv` lists every parameter you estimate with `estimate` = `true`, "
+        "`nominalValue` set to YOUR fitted value (a LINEAR value, whatever the `parameterScale`), "
+        "and sensible bounds and scale.",
+        "scales": " PEtab v2 itself has no estimation scale: a parameter's scale is the "
+        "`parameterScale` column of `parameters.tsv` (`lin`, `log` or `log10`; blank or missing "
+        "reads as `lin`), and `PetabImporter` does not read it. Construct the importer from the "
+        "loaded problem as `PetabImporter(problem, parameter_scales=...)`, with that column as a "
+        "mapping from parameterId to scale, or it estimates every parameter on a linear scale.",
+        "fixed": "`estimate` = `false`",
+        "estimated": "`estimate` = `true`",
+    },
+}
 
 # DEFAULT_TASK restated without tool names; the scenario's `known_constants` note follows it.
 BAREBONES_TASK = (
@@ -1509,6 +1557,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
     # The null arm's single agent (its own group, so a change is attributable).
     "barebones": {
         "petab-barebones-system": BAREBONES_SYSTEM_PROMPT_TMPL,
+        "petab-barebones-formats": BAREBONES_PETAB_FORMATS,
         "petab-barebones-task": BAREBONES_TASK,
         "petab-barebones-entities": BAREBONES_ENTITIES_TMPL,
         "petab-barebones-bio-tools": BAREBONES_BIO_TOOLS_TMPL,

@@ -11,6 +11,7 @@ in the same array as a `deepagents` sweep.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -306,14 +307,21 @@ def test_unscoreable_result_is_a_loss_not_an_abort(tmp_path):
 
 
 # --------------------------------------------------------------------------- wiring
-def test_prompt_template_formats_and_is_tracked():
+def _system_prompt(staged: dict) -> str:
+    return R.barebones_system_prompt(staged, execute_timeout=1234.0, n_cpus=8, n_starts=100)
+
+
+@pytest.mark.parametrize("workspace", [_workspace, _workspace_v2], ids=["v1", "v2"])
+def test_prompt_template_formats_and_is_tracked(tmp_path, workspace):
     from gemot import prompts as P
 
-    text = P.BAREBONES_SYSTEM_PROMPT_TMPL.format(execute_timeout=1234.0, n_cpus=8, n_starts=100)
+    text = _system_prompt(R.stage_workspace(workspace(tmp_path)))
     assert "1234s" in text and "8 CPU" in text and "100 starts" in text
     assert "{" not in text and "}" not in text
     assert "barebones" in P.PROMPT_GROUPS
     assert P.BAREBONES_TASK in P.tracked_leaves()
+    for slots in P.BAREBONES_PETAB_FORMATS.values():
+        assert set(slots.values()) <= P.tracked_leaves()
     bio = P.BAREBONES_BIO_TOOLS_TMPL.format(n=2, names="get_interactions, omnipath_query")
     assert "2 tools" in bio and "omnipath_query" in bio and "{" not in bio
     # the null gets the contract, not the treatment: none of the lead's modelling rules
@@ -324,6 +332,32 @@ def test_prompt_template_formats_and_is_tracked():
         "subagent_type",
     ):
         assert treatment not in text
+
+
+def test_a_v2_problem_gets_v2_instructions(tmp_path):
+    """The null's instructions said "PEtab v1" whatever it was handed: on a native v2 problem it
+    was told of `estimate` = 1, of a design without `experiments.tsv`, and nothing of the estimation
+    scale pyPESTO's v2 importer only takes as an argument. The version is read from the staged
+    YAML, and the tables it may not modify are the ones the delivery check hashes."""
+    v1 = R.stage_workspace(_workspace(tmp_path / "a"))
+    v2 = R.stage_workspace(_workspace_v2(tmp_path / "b"))
+    assert (v1["petab_version"], v2["petab_version"]) == (1, 2)
+    text_v1, text_v2 = _system_prompt(v1), _system_prompt(v2)
+
+    assert "PEtab v2 problem" in text_v2 and "PEtab v1" not in text_v2
+    assert "`estimate` = 1" not in text_v2 and "`estimate` = `true`" in text_v2
+    assert "parameter_scales" in text_v2 and "petab.v2.Problem.from_yaml" in text_v2
+    assert "PEtab v1 problem" in text_v1 and "PEtab v2" not in text_v1
+    assert "parameter_scales" not in text_v1
+    for staged, text in ((v1, text_v1), (v2, text_v2)):
+        named = set(re.findall(r"Do NOT modify (.*?): the experimental design", text)[0].split("`"))
+        assert set(staged["design_hashes"]) == named - {"", ", ", " or "}
+
+
+def test_an_unknown_petab_version_is_refused_before_the_agent_starts(tmp_path):
+    staged = R.stage_workspace(_workspace(tmp_path))
+    with pytest.raises(ValueError, match="PEtab v3"):
+        _system_prompt({**staged, "petab_version": 3})
 
 
 def test_the_lead_still_gets_the_readout_note_with_its_constants():
