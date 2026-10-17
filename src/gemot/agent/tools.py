@@ -95,6 +95,10 @@ ORCHESTRATOR_TOOLS = [
     # (parameters=), or both — and always fits, snapshotting one version. It replaces the
     # set_model -> change_parameters -> fit cycle that was 55% of the lead's calls.
     "make_changes",
+    # The indra_statements arm's mechanism library, each entry as the PySB rules it builds, so a
+    # row's policy is chosen knowing what it does and a new one is written from a near one
+    # (stripped off the arm below).
+    "list_mechanisms",
     # ...and READ them, so the lead can see what it is changing: id, bounds, scale, nominalValue,
     # plus each row's `role` (kinetic / noise_sigma / observable_scaling / initial_condition /
     # exponent / constant) and `status` (estimated / fixed). The prompt directs the lead here to
@@ -141,7 +145,10 @@ _TOOLSETS = (
 # The ablation arms. Applied to the lists AFTER they are defined, so each persona's rationale
 # above reads as the intended design and this is visibly a subtraction from it — and so a future
 # tool added to a list cannot forget to be gated. One strip helper, not one loop per arm.
-_ARM_TOOLS = ((not BIOLOGY_BLIND_ENABLED, ("get_skill",)),)
+_ARM_TOOLS = (
+    (not BIOLOGY_BLIND_ENABLED, ("get_skill",)),
+    (INDRA_STATEMENTS_ENABLED, ("list_mechanisms",)),
+)
 for _on, _names in _ARM_TOOLS:
     if _on:
         continue

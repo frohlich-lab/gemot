@@ -393,6 +393,14 @@ DEFAULT_SYSTEM_PROMPT = (
     "final bic/neg_log_likelihood and the model you built."
 )
 
+# The indra_statements arm's description of `list_mechanisms` (TOOL_DESCRIPTIONS holds it only on
+# that arm, where the tool is curated in).
+LIST_MECHANISMS_DESCRIPTION = (
+    "Every mechanism a `statements` row can use, as the PySB rules it builds, for one "
+    "`statement_type` or all: the library's own and those you wrote. Read it before choosing a "
+    "row's policy, and to write a new one as a `scheme`: copy the nearest entry and edit it."
+)
+
 # The indra_statements arm: the lead builds the model as INDRA statements. The server's entity map
 # is EMPTY (runner.main._empty_entity_map), so nothing binds the observables or the inputs for it.
 _INDRA_STATEMENTS = (
@@ -407,7 +415,10 @@ _INDRA_STATEMENTS = (
     "and parameter ids; (2) every target the condition table sets is a parameter id your rows "
     "read: bind a row's rate to an expression over it (`kf=\"k*dose\"`) or start an agent at it "
     "in `starts`. There are no input agents. Name new agents freely; unmeasured intermediates "
-    "are yours to add. Read `get_model(format='statements')` to see the current model as rows."
+    "are yours to add. Read `get_model(format='statements')` to see the current model as rows. "
+    "`list_mechanisms` shows what each mechanism builds, as PySB rules over the statement's "
+    "roles; choose a row's policy from it, and when none builds the reactions you mean, write "
+    "your own in `mechanisms` as a `scheme` in the same notation."
 )
 if INDRA_STATEMENTS_ENABLED:
     DEFAULT_SYSTEM_PROMPT += _INDRA_STATEMENTS
@@ -1016,6 +1027,10 @@ TOOL_DESCRIPTIONS = {
     ),
     "get_skill": "Read a skill in full, by name.",
 }
+# The indra_statements arm curates `list_mechanisms` in (agent.tools._ARM_TOOLS); its description
+# exists exactly where the tool does, so TOOL_DESCRIPTIONS and ALLOWED_TOOLS stay equal.
+if INDRA_STATEMENTS_ENABLED:
+    TOOL_DESCRIPTIONS["list_mechanisms"] = LIST_MECHANISMS_DESCRIPTION
 
 
 # ----------------------------------------------------------- run-loop nudges
@@ -1527,6 +1542,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
         # Appended to the system prompt only on the indra_statements arm; tracked on its own so
         # an edit to it moves prompt_version in either arm.
         "petab-lead-indra-statements": _INDRA_STATEMENTS,
+        "petab-lead-list-mechanisms": LIST_MECHANISMS_DESCRIPTION,
     },
     # The three analyst personas, plus the one-liners the LEAD reads when picking one.
     "analysts": {
