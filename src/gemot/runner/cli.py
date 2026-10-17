@@ -87,6 +87,15 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
         help="LLM sampling temperature (deepagents driver); recorded per run for sweeps.",
     )
     p.add_argument(
+        "--reasoning-effort",
+        choices=["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        default=None,
+        help="OpenRouter reasoning effort for every panel model (deepagents driver), replacing "
+        "the model's own setting (gemot.models); omitted, each model keeps its default. `max` "
+        "is the largest thinking budget a budget-based model (Anthropic) is given, ~95%% of its "
+        "output ceiling. Recorded per run for sweeps.",
+    )
+    p.add_argument(
         "--recursion-limit",
         type=int,
         default=250,

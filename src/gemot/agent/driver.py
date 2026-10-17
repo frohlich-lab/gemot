@@ -347,7 +347,7 @@ def _content_filter_stop_reason(exc: BaseException) -> str | None:
     return f"content_filtered: {text.strip('{} ')[:200]}"
 
 
-def _extra_body(model: str) -> dict[str, Any]:
+def _extra_body(model: str, reasoning_effort: str | None = None) -> dict[str, Any]:
     """OpenRouter-specific request fields: the billed-cost flag (``usage.include``, always), and
     provider pinning and reasoning where the model has an entry.
 
@@ -358,6 +358,9 @@ def _extra_body(model: str) -> dict[str, Any]:
         body["provider"] = routing
     if (reasoning := models.reasoning_config(model)) is not None:
         body["reasoning"] = reasoning
+    if reasoning_effort is not None:
+        # The run's own effort (--reasoning-effort) replaces the model's setting.
+        body["reasoning"] = {"effort": reasoning_effort}
     return body
 
 
@@ -548,6 +551,7 @@ async def run_deepagents(
     task: str,
     recursion_limit: int,
     temperature: float = 0.0,
+    reasoning_effort: str | None = None,
     n_starts: int = 1,
     max_wall_seconds: float | None = None,
     max_run_tokens: int | None = _MAX_RUN_TOKENS,
@@ -805,7 +809,7 @@ async def run_deepagents(
             # object, so a per-agent key would need per-call middleware for marginal gain.
             model_kwargs={"prompt_cache_key": prompt_cache_key},
             # OpenRouter request fields, sent verbatim in the body: see _extra_body and models.py.
-            extra_body=_extra_body(model_id),
+            extra_body=_extra_body(model_id, reasoning_effort),
         )
 
     llm = _build_llm(model)
@@ -1504,7 +1508,7 @@ async def run_deepagents(
         # the server -- the case that mattered: a run making 134 failing make_changes calls
         # recorded `edit_rejects.attempted: 0`, so nothing in result.json showed the failure.
         "make_changes_calls": call_outcomes(breaker_state, "make_changes"),
-        "openrouter_extra_body": _extra_body(model),
+        "openrouter_extra_body": _extra_body(model, reasoning_effort),
         # What the request ASKED for is `openrouter_extra_body`; this is what it GOT. The two are
         # not the same claim -- `provider.only` bounds routing to a set, so a run can be served by
         # several of its members and still honour the pin.

@@ -26,6 +26,7 @@ MODELS: dict[str, str] = {
     "v4-pro": "deepseek/deepseek-v4-pro",
     "minimax-m3": "minimax/minimax-m3",
     "mimo": "xiaomi/mimo-v2.5",
+    "mimo-flash": "xiaomi/mimo-v2.6-flash",
     "glm-flash": "z-ai/glm-5.3-flash",
     # The tier above the panel: ~10x luna per run, added to test whether capability buys
     # anything on the examples the panel cannot solve. Not defaults -- opt in with --models.
@@ -113,6 +114,9 @@ _ROUTING: dict[str, dict] = {
         "order": ["novita/fp8", "parasail/fp8"],
         "only": ["novita/fp8", "parasail/fp8"],
     },
+    # v2.6 Flash: unlike v2.5's, Xiaomi's own endpoint is not ZDR-blocked here (every one of its
+    # eight endpoints answered a tool call, 2026-10-17); first-party fp8, Novita the standby.
+    "xiaomi/mimo-v2.6-flash": {"order": ["xiaomi/fp8", "novita/fp8"], "only": ["xiaomi/fp8", "novita/fp8"]},
     # v4-pro: Baidu/StreamLake/DeepSeek serve it at ~$0.15/run but are all ZDR-blocked, so Novita
     # ($0.374) is the floor we can actually reach — the 120x cache discount is NOT available here.
     "deepseek/deepseek-v4-pro": {
