@@ -58,13 +58,15 @@ def cleanup(scenario: Scenario) -> Path:
 
 
 # --------------------------------------------------------------------------- server
-def _empty_entity_map(build_root: Path) -> Path:
-    """An entity map with no entries: the server offers the `statements` route, and nothing in it
-    comes from the reference model (a problem's ``indra/entity_map.json`` binds the reference's
-    agents and must never reach an agent)."""
+def _empty_entity_map(build_root: Path, held_inputs: dict | None = None) -> Path:
+    """An entity map with no entries but the scenario's ``held_inputs``: the server offers the
+    `statements` route, and nothing else in it comes from the reference model (a problem's
+    ``indra/entity_map.json`` binds the reference's agents and must never reach an agent). A held
+    input is the experiment's protocol over time (Fujita's EGF ramp), which the server holds its
+    agent to."""
     path = Path(build_root) / "entity_map.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("{}\n")
+    path.write_text(json.dumps(held_inputs or {}, indent=1) + "\n")
     return path
 
 
@@ -130,7 +132,9 @@ async def _petab_server(
         "1" if score_shipped_model else "0",
         # <entity_map>: the indra_statements arm's EMPTY map, which offers the `statements` route
         # and binds nothing; it lives beside the build, outside the agent's work/ tree.
-        str(_empty_entity_map(build_root)) if ablations.enabled("indra_statements") else "",
+        str(_empty_entity_map(build_root, scenario.held_inputs))
+        if ablations.enabled("indra_statements")
+        else "",
     ]
     server_log_path = work / "server.log"
     amici_log_path = work / "amici_build.log"
