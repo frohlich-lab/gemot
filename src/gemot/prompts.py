@@ -418,7 +418,7 @@ INDRA_SYSTEM_PROMPT = (
     "`signal_engineer` (the measured data and the residuals, which you do not read yourself)"
     + (
         ", `biocurator` (the known biology of the entities: interactions, regulators, "
-        "intermediates; it is given the entities itself)"
+        "intermediates; it reads the measured entities itself)"
         if BIOCURATOR_ENABLED
         else ""
     )
@@ -505,6 +505,10 @@ DEFAULT_TASK = (
     "antibody may count a phospho-protein both free and in complex; a channel readout may be a "
     "nonlinear function of state occupancies; a fraction needs the right denominator."
 )
+
+# The task on the indra_statements arm: DEFAULT_TASK without its READOUTS paragraph, which teaches the
+# Antimony route's assignment rules. The arm's system prompt defines readouts through `readouts`.
+INDRA_TASK = DEFAULT_TASK.split("\n\nREADOUTS:")[0]
 
 
 # ---------------------------------------------------------------- the barebones (null) agent
@@ -1626,6 +1630,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
         "petab-lead-system-indra": INDRA_SYSTEM_PROMPT,
         "petab-lead-indra-tools": INDRA_TOOL_DESCRIPTIONS,
         "petab-lead-indra-no-model": INDRA_NO_MODEL_NUDGE,
+        "petab-lead-indra-task": INDRA_TASK,
         "petab-lead-list-mechanisms": LIST_MECHANISMS_DESCRIPTION,
     },
     # The three analyst personas, plus the one-liners the LEAD reads when picking one.

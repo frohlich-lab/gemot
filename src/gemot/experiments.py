@@ -63,6 +63,7 @@ _PROMPT_ROLES = {
     "petab-lead-list-mechanisms": "system",  # a tool description, on the indra_statements arm
     "petab-lead-indra-tools": "system",  # the arm's editor and model-reading descriptions
     "petab-lead-indra-no-model": "user",  # the arm's no-model nudge
+    "petab-lead-indra-task": "user",  # the arm's task, without the Antimony readout paragraph
     "petab-lead-task": "user",
     "petab-lead-readout-note": "user",
     # the null arm's single agent (see agent/barebones.py): same two roles as the lead's pair

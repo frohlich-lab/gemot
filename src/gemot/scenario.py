@@ -233,14 +233,30 @@ class Scenario:
         """The task handed to the deepagents driver: the base task plus any scenario-specific
         ``known_constants`` note (so the agent is told about shipped fixed constants) and, with
         it, the readout-mapping note (a benchmark problem ships blinded ``readout_*``
-        observables; the synthetic demos carry no note)."""
+        observables; the synthetic demos carry no note).
+
+        On the indra_statements arm the task is the arm's own and the readout note is left off:
+        both teach the Antimony route's assignment rules. With the reference_handoff ablation off
+        the note is left off altogether."""
         from . import ablations, prompts
 
         if ablations.enabled("biology_blind"):
             return prompts.BIOLOGY_BLIND_TASK
-        if not self.known_constants:
-            return self.task
-        return f"{self.task}\n\n{self.known_constants}{KNOWN_CONSTANTS_READOUT_NOTE}"
+        indra = ablations.enabled("indra_statements")
+        task = prompts.INDRA_TASK if indra else self.task
+        if not self.known_constants or not ablations.enabled("reference_handoff"):
+            return task
+        return f"{task}\n\n{self.known_constants}{'' if indra else KNOWN_CONSTANTS_READOUT_NOTE}"
+
+    @property
+    def agent_entities(self) -> list[str]:
+        """The curated entity names the biocurator is handed: none with the reference_handoff
+        ablation off, when it finds the measured entities through ``list_observables`` itself."""
+        from . import ablations
+
+        if not ablations.enabled("reference_handoff"):
+            return []
+        return list(self.biocurator_entities)
 
     def reference(self) -> dict[str, Any] | None:
         """The true-model fit reference {nll, k, n} from ``problem/reference.json``.

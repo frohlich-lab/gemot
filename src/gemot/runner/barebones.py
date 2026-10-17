@@ -338,7 +338,12 @@ def check_note_is_tool_free(note: str) -> str:
 
 def barebones_task(scenario: Scenario) -> str:
     """``BAREBONES_TASK`` (which carries its own tool-free readout instruction) plus the
-    scenario's ``known_constants`` and curated ``biocurator_entities``."""
+    scenario's ``known_constants`` and curated ``biocurator_entities``, both withheld with the
+    reference_handoff ablation off."""
+    from .. import ablations
+
+    if not ablations.enabled("reference_handoff"):
+        return BAREBONES_TASK
     task = BAREBONES_TASK
     if scenario.known_constants:
         task = f"{task}\n\n{check_note_is_tool_free(scenario.known_constants)}"

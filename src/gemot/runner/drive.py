@@ -214,7 +214,7 @@ async def _drive(
                     bio_literature=ablations.enabled("bio_literature"),
                     # Hand-curated biological entities for the blinded biocurator (issue #91);
                     # empty for scenarios with no lookupable biology (the abstract toys).
-                    curated_entities=getattr(scenario, "biocurator_entities", None),
+                    curated_entities=scenario.agent_entities,
                     biocurator_model=getattr(args, "biocurator_model", None),
                     biology_blinded=blind_names is not None,
                     # The anonymized input protocols; the driver writes them into the blind task.

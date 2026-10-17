@@ -124,6 +124,15 @@ ABLATIONS: tuple[Ablation, ...] = (
         "observables or inputs for it: the readouts and how the condition targets enter are its "
         "own, so no reference structure reaches the agent",
     ),
+    Ablation(
+        name="reference_handoff",
+        env="PETAB_REFERENCE_HANDOFF",
+        default_on=True,
+        changes_prompt=True,
+        effect="OFF withholds what a problem's author wrote knowing the reference model: its "
+        "known-constants note and the entity names curated for the biocurator. The agent has the "
+        "problem's tables alone, its constants still shipping as named fixed rows",
+    ),
 )
 
 _BY_NAME = {a.name: a for a in ABLATIONS}
