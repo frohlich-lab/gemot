@@ -460,9 +460,13 @@ INDRA_SYSTEM_PROMPT = (
     "`kf=k_shared` on two rows merging their constants), `add_row`/`remove_row`, `set_start`, "
     "`set_readout`, `set_amount`, `remove_start` and `remove_amount`. KEEP a row's prefix while "
     "the row stays, so its parameters keep their ids and fitted values, and name prefixes for "
-    "yourself (`egfr_act`, not `r7`). One call is one fit and one version: put a whole change in it. To go "
-    "back and change, add `base_version=N`: the edits apply to version N's rows and the fit "
-    "starts from version N's best fit. `get_model(format='statements')` shows the current rows.\n"
+    "yourself (`egfr_act`, not `r7`). One call is one fit and one version: put a whole change in "
+    "it. To go back AND change, add `base_version=N` to the `statement_edits`: they apply to "
+    "version N's rows and the fit starts from version N's best fit. `base_version` is a "
+    "MODIFIER, never an action: without a change to the rows (alone, with only `parameters`, or "
+    "to refit with more `n_starts`) it is REJECTED, since a version refitted unchanged reproduces "
+    "a result you already have, and every fitted version is kept and the best one scored. "
+    "`get_model(format='statements')` shows the current rows, `version=N` an earlier one's.\n"
     "STRUCTURE BEFORE POLISH: while the residuals are systematic, change the mechanism (a "
     "statement, a policy, a species); bounds, merges and pinned initials finish a model whose "
     "residuals are already clean. When bic stalls for a few calls, call "
@@ -1601,8 +1605,9 @@ INDRA_TOOL_DESCRIPTIONS: "dict[str, str]" = {
         "And/or "
         "`parameters` = [{parameter_id, lower_bound?, upper_bound?, scale?}, ...] to set the "
         "estimation BOUNDS/SCALE (never a value). With `base_version=N` the edits apply to "
-        "version N's rows and the fit starts from its search space and best fit. One call is one "
-        "coherent change and ONE version. "
+        "version N's rows and the fit starts from its search space and best fit; never without a "
+        "change to the rows (alone, with only `parameters` or `n_starts`), which is rejected. One "
+        "call is one coherent change and ONE version. "
         # The route-neutral rest (reading a result, what it refuses) is the default's own, so the
         # two cannot drift apart.
         + "ALL-OR-NOTHING" + TOOL_DESCRIPTIONS["make_changes"].split("ALL-OR-NOTHING", 1)[1]
