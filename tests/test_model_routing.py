@@ -219,7 +219,7 @@ def test_caching_is_not_asked_for_in_the_request_body():
 
     for model in ("anthropic/claude-sonnet-5", "openai/gpt-5.6-luna-pro"):
         assert "cache_control" not in _extra_body(model)
-    assert _extra_body("anthropic/claude-sonnet-5")["provider"]["only"] == ["google-vertex/global"]
+    assert _extra_body("anthropic/claude-sonnet-5")["provider"]["only"] == ["anthropic"]
 
 
 def test_breakpoints_land_on_the_system_message_and_the_last_message():
@@ -306,7 +306,7 @@ def test_the_request_langchain_builds_actually_carries_the_breakpoints():
         if isinstance(m.get("content"), list) and any(b.get("cache_control") for b in m["content"])
     ]
     assert marked == ["system", "tool"]
-    assert payload["extra_body"]["provider"] == {"only": ["google-vertex/global"]}
+    assert payload["extra_body"]["provider"] == {"only": ["anthropic"]}
     # a model with no caching entry is untouched
     plain = _chat_model_class()(
         name="ChatOpenAI",
