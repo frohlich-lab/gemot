@@ -438,6 +438,16 @@ INDRA_SYSTEM_PROMPT = (
     "`mechanisms`: a `scheme` of PySB rules over the statement's roles, copied from the nearest "
     "entry and edited. Name agents freely; unmeasured intermediates and complexes are yours to "
     "add.\n"
+    # Stated outright: GLM and MiMo almost never read what their rows expanded into, and "rules
+    # never fire" / "readouts read no species" kept coming from expecting a form to exist that
+    # nothing made (STAT5A phosphorylated in the cytoplasm, for an import row).
+    "THE MODEL IS RULE-BASED. A row is a RULE over molecule patterns, not a reaction between "
+    "fixed species: the server expands the rows into every species the starts and the rules can "
+    "form, and every reaction among them. A form exists only if a start declares it or a rule "
+    "makes it: a rule whose reactant nothing forms never fires, and a readout's pattern reads "
+    "only species that are formed. `get_model` shows the expanded reactions, "
+    "`get_model_structure` the species and reactions; read them after a build that surprises "
+    "you.\n"
     "NOTHING IS BOUND FOR YOU. Every readout_* symbol an observable formula reads is yours to "
     "define in `readouts`: a formula over `amounts` (each the amount of an agent pattern, "
     "`{\"pAKT\": \"AKT1{pS473}\"}`, or written in place as `amount(AKT1{pS473})`) and "
