@@ -438,7 +438,8 @@ INDRA_SYSTEM_PROMPT = (
     "add.\n"
     "NOTHING IS BOUND FOR YOU. Every readout_* symbol an observable formula reads is yours to "
     "define in `readouts`: a formula over `amounts` (each the amount of an agent pattern, "
-    "`{\"pAKT\": \"AKT1{pS473}\"}`) and parameter ids. Every target the condition table sets is a "
+    "`{\"pAKT\": \"AKT1{pS473}\"}`, or written in place as `amount(AKT1{pS473})`) and "
+    "parameter ids; a readout reads at least one amount. Every target the condition table sets is a "
     "parameter id your rows read, through a rate binding (`kf=\"k*EGF_dose\"`) or a start. "
     "`starts` declares what is present at time zero (an amount, or an expression over parameter "
     "ids); a species no rule makes and no start declares starts at an ESTIMATED `<name>_init`, a "
@@ -452,12 +453,14 @@ INDRA_SYSTEM_PROMPT = (
     "(get_fit_diagnosis). "
     + _SIGMA_CAP_ADVISORY
     + "\n"
-    "4. REVISE BY ROWS. Every call gives the WHOLE set of rows, revised: add, drop or rewrite a "
-    "row, change its policy, or rebind a rate (`kf=k_shared` on two rows merges their constants). "
-    "KEEP a row's prefix while the row stays, so its parameters keep their ids and fitted values, "
-    "and name prefixes for yourself (`egfr_act`, not `r7`). One call is one fit and one version: "
-    "put a whole change in it. To go back and change, add `base_version=N`, and the fit starts "
-    "from version N's best fit. `get_model(format='statements')` shows the current rows.\n"
+    "4. REVISE BY ROWS with `statement_edits`, which change the current rows and leave the rest: "
+    "`replace_row` rewrites the row with that prefix (a new policy, a rebound rate, "
+    "`kf=k_shared` on two rows merging their constants), `add_row`/`remove_row`, and `set_start`, "
+    "`set_readout`, `set_amount` or their `remove_`. KEEP a row's prefix while the row stays, so "
+    "its parameters keep their ids and fitted values, and name prefixes for yourself "
+    "(`egfr_act`, not `r7`). One call is one fit and one version: put a whole change in it. To go "
+    "back and change, add `base_version=N`: the edits apply to version N's rows and the fit "
+    "starts from version N's best fit. `get_model(format='statements')` shows the current rows.\n"
     "STRUCTURE BEFORE POLISH: while the residuals are systematic, change the mechanism (a "
     "statement, a policy, a species); bounds, merges and pinned initials finish a model whose "
     "residuals are already clean. When bic stalls for a few calls, call "
@@ -1331,11 +1334,12 @@ FINISH_CHI2_UNAVAILABLE_NOTE = (
 # The indra_statements arm's refusal of a make_changes that carries another model route.
 STATEMENTS_ONLY_REJECT_TMPL = (
     "MAKE_CHANGES REJECTED — in this run the model is authored as INDRA statements only, and this "
-    "call carried {routes}, which NOTHING applied. Send the change as `statements`: the WHOLE set "
-    "of rows, revised (`get_model(format='statements')` shows the current rows, mechanisms, "
-    "starts, amounts and readouts to start from). Merging two rate constants is a row binding "
-    "(`kf=shared_k` on both rows); fixing one is `kf=0.5` or `parameters`. `parameters` (bounds, "
-    "scales) and `base_version` still go alongside `statements`."
+    "call carried {routes}, which NOTHING applied. Send the change as `statement_edits` "
+    "(`replace_row`, `add_row`, `remove_row`, `set_start`, `set_readout`, ...) or the whole set "
+    "as `statements`; `get_model(format='statements')` shows the current rows, mechanisms, "
+    "starts, amounts and readouts. Merging two rate constants is a row binding (`kf=shared_k` on "
+    "both rows); fixing one is `kf=0.5` or `parameters`. `parameters` (bounds, scales) and "
+    "`base_version` still go alongside."
 )
 
 TASK_ARG_REJECT_TMPL = (
@@ -1582,15 +1586,17 @@ def _hash_input(entries: "dict[str, str]") -> str:
 # (agent.tools._trim_descriptions, agent.driver), as the biology-blind arm's are.
 INDRA_TOOL_DESCRIPTIONS: "dict[str, str]" = {
     "make_changes": (
-        "THE editor, and it always FITS. In this run it takes the model as INDRA `statements` "
-        "only: each call gives the WHOLE set of rows, the first model and every revision, with "
-        "the `mechanisms` you write (a `scheme` of PySB rules, or a `rate` on an existing "
-        "entry's reaction; `list_mechanisms` shows the library), the `starts`, and the "
-        "`readouts` over `amounts` that define the observables' readout_* symbols. And/or "
+        "THE editor, and it always FITS. In this run it takes the model as INDRA statements "
+        "only. The first model is `statements`, the WHOLE set of rows, with the `mechanisms` you "
+        "write (a `scheme` of PySB rules, or a `rate` on an existing entry's reaction; "
+        "`list_mechanisms` shows the library), the `starts`, and the `readouts` over `amounts` "
+        "that define the observables' readout_* symbols. A revision is `statement_edits`: "
+        "`replace_row`/`add_row` (one row), `remove_row` (by prefix), `set_start`/`set_amount`/"
+        "`set_readout` and their `remove_`; or the whole set as `statements` again. And/or "
         "`parameters` = [{parameter_id, lower_bound?, upper_bound?, scale?}, ...] to set the "
-        "estimation BOUNDS/SCALE (never a value). With `base_version=N` beside `statements` the "
-        "fit starts from version N's search space and best fit. One call is one coherent change "
-        "and ONE version. "
+        "estimation BOUNDS/SCALE (never a value). With `base_version=N` the edits apply to "
+        "version N's rows and the fit starts from its search space and best fit. One call is one "
+        "coherent change and ONE version. "
         # The route-neutral rest (reading a result, what it refuses) is the default's own, so the
         # two cannot drift apart.
         + "ALL-OR-NOTHING" + TOOL_DESCRIPTIONS["make_changes"].split("ALL-OR-NOTHING", 1)[1]

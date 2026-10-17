@@ -47,6 +47,7 @@ from .circuit_breaker import (
 from .finish_gate import _finish_tool
 from .guards import (
     _empty_report_guard,
+    _leaked_argument_repair,
     _statements_only_guard,
     _task_arg_guard,
     _tool_dispatch_guard,
@@ -892,6 +893,8 @@ async def run_deepagents(
     if guard_installed:
         kwargs["middleware"] = [
             _builtin_tool_filter(),
+            # Outermost of the tool-call guards, so every guard after it sees the call repaired.
+            _leaked_argument_repair(guard_stats),
             _disabled_tool_filter(breaker_state),
             # _task_arg_guard is placed OUTSIDE _tool_dispatch_guard (earlier in the list = outer
             # tool-call wrapper) so a REJECTED `task` call short-circuits before the dispatch guard

@@ -213,7 +213,13 @@ def _statements_route(tool) -> str:
             "indra_statements is on, but the server's make_changes offers no `statements` route "
             "(was it started without an entity map?)"
         )
-    return desc[i:].split("\n\n", 1)[0]
+    # The route's paragraphs, `statements` and then `statement_edits`, up to the contract.
+    paragraphs = []
+    for paragraph in desc[i:].split("\n\n"):
+        if not paragraph.startswith("`statement"):
+            break
+        paragraphs.append(paragraph)
+    return "\n\n".join(paragraphs)
 
 
 def _drop_args(tool, names: tuple[str, ...]) -> None:

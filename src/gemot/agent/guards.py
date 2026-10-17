@@ -17,6 +17,8 @@ All three mutate a caller-owned ``stats`` dict the driver reads after the run.
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 from .. import prompts
@@ -382,6 +384,103 @@ def _non_statement_routes(args: Any) -> list[str]:
     if not isinstance(args, dict):
         return []
     return [k for k in _NON_STATEMENT_ROUTES if args.get(k)]
+
+
+_LEAKED_ARGUMENT = re.compile(r'<parameter name="([A-Za-z_]\w*)">')
+#: The other way a string argument swallows the rest of the call: the model escapes the quote
+#: that should close it and writes the remaining keys as JSON inside it, `...why.", "base_version":
+#: 2}` (17 calls in one sweep, each applied with its `base_version` dropped).
+_LEAKED_JSON = re.compile(r'",\s*"([A-Za-z_]\w*)"\s*:')
+
+
+def _recover_leaked_arguments(args: Any) -> tuple[Any, list[str]]:
+    """``args`` with the arguments a model wrote INSIDE another string argument moved back out,
+    and the names it moved. Pure.
+
+    Claude Haiku 4.5 sometimes closes a string argument and carries on in Anthropic's own XML
+    tool-call syntax inside the JSON: ``"justification": "...decline.\",\n<parameter
+    name=\"statements\">[...]"``. The server then sees a call with no ``statements``: 141
+    "nothing to do" rejections in one sweep, two runs ended without a model, and the retries were
+    byte-identical, so no message could have fixed it. The text before the first tag stays the
+    argument it was in; each tag's value is parsed as JSON where it is JSON. An argument the call
+    already carries is never overwritten. The JSON form (``_LEAKED_JSON``) is read the same way.
+    """
+    if not isinstance(args, dict):
+        return args, []
+    out, moved = dict(args), []
+
+    def give(name, value):
+        if out.get(name) in (None, "", [], {}):
+            out[name] = value
+            moved.append(name)
+
+    for key, value in args.items():
+        # Not in a value that is JSON itself: an object sent as a string (`amounts` as
+        # '{"a": "A", "b": "B"}') has the same `", "b":` inside it, and is the server's to unwrap.
+        if (
+            isinstance(value, str)
+            and not value.lstrip().startswith(("{", "["))
+            and "<parameter name=" not in value  # the XML form, whose values are JSON
+            and (m := _LEAKED_JSON.search(value))
+        ):
+            rest = "{" + value[m.start() + 1 :].strip().lstrip(",")
+            for text in (rest, rest + "}", rest.removesuffix("}")):
+                try:
+                    leaked = json.loads(text)
+                except ValueError:
+                    continue
+                if isinstance(leaked, dict):
+                    out[key] = value[: m.start()]
+                    for name, leaked_value in leaked.items():
+                        give(name, leaked_value)
+                    break
+            continue
+        if not isinstance(value, str) or "<parameter name=" not in value:
+            continue
+        head, *rest = _LEAKED_ARGUMENT.split(value)
+        head = head.rstrip()
+        for tail in ('",', '"'):
+            if head.endswith(tail):
+                head = head[: -len(tail)]
+                break
+        out[key] = head
+        for name, raw in zip(rest[::2], rest[1::2]):
+            raw = raw.strip().removesuffix("</parameter>").strip()
+            for text in (raw, raw.rstrip('"').strip()):
+                try:
+                    parsed = json.loads(text)
+                    break
+                except ValueError:
+                    parsed = raw
+            give(name, parsed)
+    return out, moved
+
+
+def _leaked_argument_repair(stats: dict[str, Any]):
+    """Lead middleware: move arguments a model leaked into another argument's string back out
+    (:func:`_recover_leaked_arguments`) before the call is checked or dispatched. A transport
+    repair, like the server's list unwrapping: the model meant the argument, and its serialiser
+    put it in the wrong place. ``stats`` counts ``leaked_arguments_recovered``.
+    """
+    from langchain.agents.middleware.types import AgentMiddleware
+
+    def _repaired(request):
+        tc = getattr(request, "tool_call", None) or {}
+        args, moved = _recover_leaked_arguments(tc.get("args"))
+        if not moved:
+            return request
+        stats["leaked_arguments_recovered"] = stats.get("leaked_arguments_recovered", 0) + 1
+        print(f"[leak repair] moved {moved} out of a string argument of {tc.get('name')}")
+        return request.override(tool_call={**tc, "args": args})
+
+    class _LeakedArgumentRepair(AgentMiddleware):
+        def wrap_tool_call(self, request, handler):
+            return handler(_repaired(request))
+
+        async def awrap_tool_call(self, request, handler):
+            return await handler(_repaired(request))
+
+    return _LeakedArgumentRepair()
 
 
 def _statements_only_guard(stats: dict[str, Any]):

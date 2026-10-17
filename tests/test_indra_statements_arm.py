@@ -73,6 +73,16 @@ def test_the_route_paragraph_is_the_servers_own():
     assert tools._statements_route(tool) == _ROUTE
 
 
+def test_the_route_keeps_its_edits_paragraph():
+    """The server documents `statement_edits` in a paragraph of its own after the route's."""
+    edits = "`statement_edits` CHANGES the current rows instead of giving them all again."
+    tool = types.SimpleNamespace(
+        name="make_changes",
+        description=f"THE editor.\n\n{_ROUTE}\n\n{edits}\n\nThere is no fit-free edit.",
+    )
+    assert tools._statements_route(tool) == f"{_ROUTE}\n\n{edits}"
+
+
 def test_a_server_without_the_route_is_refused():
     tool = types.SimpleNamespace(name="make_changes", description="THE editor.")
     with pytest.raises(RuntimeError, match="without an entity map"):
