@@ -131,7 +131,8 @@ ABLATIONS: tuple[Ablation, ...] = (
         changes_prompt=True,
         effect="OFF withholds what a problem's author wrote knowing the reference model: its "
         "known-constants note and the entity names curated for the biocurator. The agent has the "
-        "problem's tables alone, its constants still shipping as named fixed rows",
+        "problem's tables, its constants still shipping as named fixed rows, and the biocurator "
+        "the measured entities and inputs with their identifiers, derived (`entity_ids`)",
     ),
 )
 

@@ -415,6 +415,13 @@ def _chat_model_class():
     It also copies a stream's usage chunk onto ``response_metadata["token_usage"]``, where a
     non-streamed response already carries it.
 
+    And it carries each turn's REASONING back to the provider. ``langchain_openai`` drops
+    OpenRouter's ``reasoning_details`` both ways, so every request after the first sent the
+    assistant's tool-call turns without the thinking that produced them; Anthropic then runs the
+    next call without thinking at all (Haiku 4.5 reasoned on 0 of 1,466 calls after a tool result).
+    The details ride the AIMessage's ``additional_kwargs`` and are put back, untouched (their
+    signatures are verified), on that assistant message of every later request.
+
     ``lru_cache``d, and the caller passes ``name="ChatOpenAI"`` -- both for reasons that bite
     silently. LangChain derives a run's name (and openinference the SPAN name) from the class name,
     so an un-named subclass would rename every LLM span to ``_ChatOpenAIRecordingProvider``: every
@@ -428,6 +435,7 @@ def _chat_model_class():
     class _ChatOpenAIRecordingProvider(ChatOpenAI):
         def _get_request_payload(self, input_, *, stop=None, **kwargs):
             payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+            _return_reasoning(self._convert_input(input_).to_messages(), payload)
             config = models.caching_config(payload.get("model") or self.model_name)
             if config is not None:
                 _apply_cache_breakpoints(payload, config)
@@ -435,6 +443,7 @@ def _chat_model_class():
 
         def _create_chat_result(self, response, generation_info=None):
             result = super()._create_chat_result(response, generation_info)
+            _keep_reasoning(response, result)
             try:
                 served = getattr(response, "provider", None)
                 if served is None and isinstance(response, dict):
@@ -464,6 +473,31 @@ def _chat_model_class():
             return gen
 
     return _ChatOpenAIRecordingProvider
+
+
+def _keep_reasoning(response, result) -> None:
+    """Copy each choice's OpenRouter ``reasoning_details`` onto its AIMessage's
+    ``additional_kwargs`` (see :func:`_chat_model_class`). Best-effort."""
+    try:
+        raw = response if isinstance(response, dict) else response.model_dump()
+        for choice, gen in zip(raw.get("choices") or [], result.generations):
+            details = (choice.get("message") or {}).get("reasoning_details")
+            if details:
+                gen.message.additional_kwargs["reasoning_details"] = details
+    except Exception:  # pragma: no cover - a lost reasoning block must never break a run
+        pass
+
+
+def _return_reasoning(messages, payload) -> None:
+    """Put each AIMessage's ``reasoning_details`` back on its assistant message in ``payload``.
+    The payload's messages are the input's, one for one; when they are not, nothing is touched."""
+    sent = payload.get("messages")
+    if not isinstance(sent, list) or len(sent) != len(messages):
+        return
+    for message, out in zip(messages, sent):
+        details = (getattr(message, "additional_kwargs", None) or {}).get("reasoning_details")
+        if details and isinstance(out, dict) and out.get("role") == "assistant":
+            out["reasoning_details"] = details
 
 
 # A provider 5xx that arrives UNCLASSIFIED. OpenRouter returns HTTP 200 with an `{"error": ...}`
@@ -811,6 +845,7 @@ async def run_deepagents(
             model_kwargs={"prompt_cache_key": prompt_cache_key},
             # OpenRouter request fields, sent verbatim in the body: see _extra_body and models.py.
             extra_body=_extra_body(model_id, reasoning_effort),
+            default_headers=models.request_headers(model_id),
         )
 
     llm = _build_llm(model)
@@ -1512,6 +1547,7 @@ async def run_deepagents(
         # recorded `edit_rejects.attempted: 0`, so nothing in result.json showed the failure.
         "make_changes_calls": call_outcomes(breaker_state, "make_changes"),
         "openrouter_extra_body": _extra_body(model, reasoning_effort),
+        "request_headers": models.request_headers(model),
         # What the request ASKED for is `openrouter_extra_body`; this is what it GOT. The two are
         # not the same claim -- `provider.only` bounds routing to a set, so a run can be served by
         # several of its members and still honour the pin.

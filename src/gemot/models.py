@@ -204,6 +204,20 @@ _REASONING: dict[str, dict] = {
 }
 
 
+#: Per-model request headers. Haiku 4.5 thinks between tool calls only under Anthropic's
+#: interleaved-thinking beta, which OpenRouter forwards: without it Haiku reasoned on the first call
+#: of each turn and on none of the 1,466 calls that followed a tool result (October 2026 sweep, 6%
+#: of calls reasoning). Sonnet 4.6 and later interleave on their own (adaptive thinking).
+_HEADERS: dict[str, dict[str, str]] = {
+    "anthropic/claude-haiku-4.5": {"x-anthropic-beta": "interleaved-thinking-2025-05-14"},
+}
+
+
+def request_headers(model_id: str) -> dict[str, str] | None:
+    """Extra HTTP headers for ``model_id``'s requests, or ``None``."""
+    return _HEADERS.get(model_id)
+
+
 def reasoning_config(model_id: str) -> dict | None:
     """The OpenRouter ``reasoning`` block for ``model_id``, or ``None`` to leave it at the
     provider default (which for most models already means thinking is on)."""

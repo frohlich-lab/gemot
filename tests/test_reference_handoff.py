@@ -78,3 +78,14 @@ def test_the_indra_arm_task_teaches_no_assignment_rules(arm):
 def test_the_indra_arm_without_the_handoff_is_its_task_alone(arm):
     arm(indra_statements=True, reference_handoff=False)
     assert _scenario().agent_task == prompts.INDRA_TASK
+
+
+def test_derived_entity_ids_reach_the_biocurator_on_every_arm(arm):
+    """Identifiers derived from the formulation are setup, not the author's curation: handed with
+    the handoff off too, and in place of the curated names."""
+    ids = ["STAT5A (HGNC:11366, UP:P42229; measured)"]
+    for handoff in (True, False):
+        arm(reference_handoff=handoff)
+        s = _scenario(entity_ids=ids)
+        assert s.agent_entities == ids
+        assert "STAT5A (HGNC:11366" in R.barebones_task(s)

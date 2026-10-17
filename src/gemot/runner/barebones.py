@@ -338,16 +338,18 @@ def check_note_is_tool_free(note: str) -> str:
 
 def barebones_task(scenario: Scenario) -> str:
     """``BAREBONES_TASK`` (which carries its own tool-free readout instruction) plus the
-    scenario's ``known_constants`` and curated ``biocurator_entities``, both withheld with the
-    reference_handoff ablation off."""
+    scenario's ``known_constants`` and the entities the biocurator is handed: its derived
+    ``entity_ids``, else its curated ``biocurator_entities``. The reference_handoff ablation off
+    withholds the note and the curated names, not the derived ones (``Scenario.agent_entities``)."""
     from .. import ablations
 
-    if not ablations.enabled("reference_handoff"):
-        return BAREBONES_TASK
+    handoff = ablations.enabled("reference_handoff")
     task = BAREBONES_TASK
-    if scenario.known_constants:
+    if scenario.known_constants and handoff:
         task = f"{task}\n\n{check_note_is_tool_free(scenario.known_constants)}"
-    names = list(getattr(scenario, "biocurator_entities", None) or [])
+    names = list(getattr(scenario, "entity_ids", None) or []) or (
+        list(getattr(scenario, "biocurator_entities", None) or []) if handoff else []
+    )
     if names:
         task += BAREBONES_ENTITIES_TMPL.format(names=", ".join(str(n) for n in names))
     return task

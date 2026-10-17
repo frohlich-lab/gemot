@@ -226,8 +226,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "subagent's ENTIRE input is the `description` string you pass to `task` — put your question and "
     "any framing THERE; `task` takes no other content argument. "
     + (
-        "(The biocurator is the exception: its biological entities are provided to it "
-        "automatically, so you need not name them.) "
+        "(The biocurator is the exception: it HOLDS the problem's entities — what each assay "
+        "measures, in which modified forms, and which inputs the conditions set, each with its "
+        "database identifiers — so you need not name them; ask it for that list.) "
         if BIOCURATOR_ENABLED
         else ""
     )
@@ -417,8 +418,9 @@ INDRA_SYSTEM_PROMPT = (
     "identifiability, the fitting log), `systems_scientist` (mechanistic plausibility), "
     "`signal_engineer` (the measured data and the residuals, which you do not read yourself)"
     + (
-        ", `biocurator` (the known biology of the entities: interactions, regulators, "
-        "intermediates; it reads the measured entities itself)"
+        ", `biocurator` (it HOLDS the problem's entities: what each assay measures, in which "
+        "modified forms, and which inputs the conditions set, with database identifiers; ask it "
+        "for that list, and for their known biology: interactions, regulators, intermediates)"
         if BIOCURATOR_ENABLED
         else ""
     )
@@ -455,10 +457,10 @@ INDRA_SYSTEM_PROMPT = (
     + "\n"
     "4. REVISE BY ROWS with `statement_edits`, which change the current rows and leave the rest: "
     "`replace_row` rewrites the row with that prefix (a new policy, a rebound rate, "
-    "`kf=k_shared` on two rows merging their constants), `add_row`/`remove_row`, and `set_start`, "
-    "`set_readout`, `set_amount` or their `remove_`. KEEP a row's prefix while the row stays, so "
-    "its parameters keep their ids and fitted values, and name prefixes for yourself "
-    "(`egfr_act`, not `r7`). One call is one fit and one version: put a whole change in it. To go "
+    "`kf=k_shared` on two rows merging their constants), `add_row`/`remove_row`, `set_start`, "
+    "`set_readout`, `set_amount`, `remove_start` and `remove_amount`. KEEP a row's prefix while "
+    "the row stays, so its parameters keep their ids and fitted values, and name prefixes for "
+    "yourself (`egfr_act`, not `r7`). One call is one fit and one version: put a whole change in it. To go "
     "back and change, add `base_version=N`: the edits apply to version N's rows and the fit "
     "starts from version N's best fit. `get_model(format='statements')` shows the current rows.\n"
     "STRUCTURE BEFORE POLISH: while the residuals are systematic, change the mechanism (a "
@@ -808,9 +810,10 @@ BIOCURATOR_DESCRIPTION = (
     "binding, pathway membership), AND which OTHER, unmeasured entities and processes are known to "
     "connect or act on them — intermediates between them and regulators/fluxes (a feedback loop, a "
     "phosphatase, degradation, translocation) — with citable PMIDs/DOIs. Use it to surface "
-    "candidate hidden species/processes you may be missing. Its biological entities are handed to "
-    "it AUTOMATICALLY — you do NOT supply them, and it is blind by design, so tell it NOTHING about "
-    "what you are doing. For a molecular or biochemical mechanism (proteins, metabolites, modified "
+    "candidate hidden species/processes you may be missing. It HOLDS the problem's entities — what "
+    "each assay measures, in which modified forms (a phosphosite), and which inputs the conditions "
+    "set, each with its database identifiers — so ask it for that list; you do NOT supply them, "
+    "and it is blind by design, so tell it NOTHING about what you are doing. For a molecular or biochemical mechanism (proteins, metabolites, modified "
     "residues, genes, complexes) consulting it is REQUIRED, not optional: do so BEFORE you build the "
     "structure and again before any structural change — its documented interactions, cooperativity, "
     "and hidden regulators are primary evidence for the mechanism's TOPOLOGY, not a nicety. Cite any "
@@ -821,7 +824,9 @@ BIOCURATOR_DESCRIPTION = (
 # the tracked surface like every other prompt string (PROMPT_GROUPS at the end of this file);
 # text buried in a function body is exactly what escapes a registry.
 BIOCURATOR_ENTITY_BLOCK_TMPL = (
-    "\n\nThe biological entities to report on for this request are: {names}. Report on these "
+    "\n\nThe biological entities to report on for this request are: {names}. Each carries its "
+    "identifiers (HGNC, UniProt, ChEBI, ...) and may be a modified form (\"phosphorylated at "
+    "Y694\") or name what sets it. Asked for the list, return it as given. Report on these "
     "entities; if the request names additional entities, include those too."
 )
 
@@ -1592,7 +1597,8 @@ INDRA_TOOL_DESCRIPTIONS: "dict[str, str]" = {
         "`list_mechanisms` shows the library), the `starts`, and the `readouts` over `amounts` "
         "that define the observables' readout_* symbols. A revision is `statement_edits`: "
         "`replace_row`/`add_row` (one row), `remove_row` (by prefix), `set_start`/`set_amount`/"
-        "`set_readout` and their `remove_`; or the whole set as `statements` again. And/or "
+        "`set_readout`, `remove_start`/`remove_amount`; or the whole set as `statements` again. "
+        "And/or "
         "`parameters` = [{parameter_id, lower_bound?, upper_bound?, scale?}, ...] to set the "
         "estimation BOUNDS/SCALE (never a value). With `base_version=N` the edits apply to "
         "version N's rows and the fit starts from its search space and best fit. One call is one "
