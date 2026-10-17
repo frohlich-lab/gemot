@@ -623,6 +623,11 @@ async def run_deepagents(
         # (``input_protocols``, from the anonymous view) and ``biology_blind_task`` refuses a rule
         # that is not made of input aliases, ``time`` and functions.
         task = prompts.biology_blind_task(input_protocols)
+    if prompts.INDRA_STATEMENTS_ENABLED:
+        if biology_blind:
+            raise ValueError("the indra_statements arm has no biology-blind variant")
+        # The arm's own lead prompt, whatever the scenario passed: the default teaches Antimony.
+        system_prompt = prompts.INDRA_SYSTEM_PROMPT
 
     # Adapt the MCP tools bound to this already-initialized session, then curate to the
     # union of the lead's + analysts' tools. This pool is only used to resolve each analyst's
@@ -1368,7 +1373,10 @@ async def run_deepagents(
                     and not past_deadline
                 ):
                     silent_bounces += 1
-                    nudge = _NO_MODEL_NUDGE if not model_committed else _SILENT_FINISH_NUDGE
+                    no_model = (
+                        prompts.INDRA_NO_MODEL_NUDGE if INDRA_STATEMENTS_ENABLED else _NO_MODEL_NUDGE
+                    )
+                    nudge = no_model if not model_committed else _SILENT_FINISH_NUDGE
                     what = (
                         "NO model authored" if not model_committed else "no finish through the gate"
                     )

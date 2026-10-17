@@ -15,6 +15,7 @@ the text the panel actually reads, and the reason every tool here needs an entry
 from __future__ import annotations
 
 from ..prompts import (
+    INDRA_TOOL_DESCRIPTIONS,
     BIOLOGY_BLIND_ENABLED,
     INDRA_STATEMENTS_ENABLED,
     BIOLOGY_BLIND_TOOL_DESCRIPTIONS,
@@ -179,6 +180,8 @@ def _trim_descriptions(tools: list) -> list:
             BIOLOGY_BLIND_TOOL_DESCRIPTIONS if BIOLOGY_BLIND_ENABLED else TOOL_DESCRIPTIONS
         )
         short = descriptions.get(name)
+        if INDRA_STATEMENTS_ENABLED and name in INDRA_TOOL_DESCRIPTIONS:
+            short = INDRA_TOOL_DESCRIPTIONS[name]
         if BIOLOGY_BLIND_ENABLED and short is None:
             raise ValueError(f"No anonymous description registered for tool {name!r}")
         if short is None:
@@ -187,6 +190,7 @@ def _trim_descriptions(tools: list) -> list:
                 short = desc.strip().split("\n", 1)[0]
         if short and name == "make_changes" and INDRA_STATEMENTS_ENABLED:
             short = f"{short}\n\n{_statements_route(t)}"
+            _drop_args(t, ("antimony", "model_edits"))
         if short:
             try:
                 t.description = short
@@ -210,6 +214,19 @@ def _statements_route(tool) -> str:
             "(was it started without an entity map?)"
         )
     return desc[i:].split("\n\n", 1)[0]
+
+
+def _drop_args(tool, names: tuple[str, ...]) -> None:
+    """Remove arguments from a tool's schema, so the model is not offered them at all (the
+    indra_statements arm's other model routes; its guard still bounces a call that sends one)."""
+    schema = getattr(tool, "args_schema", None)
+    if not isinstance(schema, dict):
+        raise RuntimeError(f"cannot drop {names} from {tool.name}: its schema is no dict")
+    props = schema.get("properties") or {}
+    for name in names:
+        props.pop(name, None)
+    if "required" in schema:
+        schema["required"] = [r for r in schema["required"] if r not in names]
 
 
 def _select_tools(tools: list) -> list:

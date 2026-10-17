@@ -35,10 +35,30 @@ def test_the_arm_is_registered_off_and_moves_the_prompt():
     assert arm.default_on is False and arm.changes_prompt is True
 
 
-def test_the_lead_section_is_tracked_on_its_own():
+def test_the_arm_texts_are_tracked_on_their_own():
     leaves = prompts.tracked_leaves()
-    assert prompts._INDRA_STATEMENTS in leaves
+    assert prompts.INDRA_SYSTEM_PROMPT in leaves
+    assert set(prompts.INDRA_TOOL_DESCRIPTIONS.values()) <= leaves
+    assert prompts.INDRA_NO_MODEL_NUDGE in leaves
     assert prompts.STATEMENTS_ONLY_REJECT_TMPL in leaves
+
+
+def test_the_arm_texts_do_not_teach_antimony():
+    """The first runs on the arm kept the default lead prompt, with an INDRA note appended: Claude
+    Haiku authored Antimony against the guard until the circuit breaker ended the run."""
+    import re
+
+    for text in (
+        prompts.INDRA_SYSTEM_PROMPT,
+        prompts.INDRA_TOOL_DESCRIPTIONS["make_changes"],
+        prompts.INDRA_NO_MODEL_NUDGE,
+    ):
+        assert not re.search(r"(?i)antimony", text)
+    assert len(prompts.INDRA_SYSTEM_PROMPT) < len(prompts.DEFAULT_SYSTEM_PROMPT) / 2
+
+
+def test_the_default_lead_prompt_is_not_the_arms():
+    assert "INDRA" not in prompts.DEFAULT_SYSTEM_PROMPT
 
 
 def test_the_server_gets_an_empty_entity_map(tmp_path):
@@ -59,13 +79,32 @@ def test_a_server_without_the_route_is_refused():
         tools._statements_route(tool)
 
 
-@pytest.mark.parametrize("arm", [True, False])
-def test_make_changes_keeps_the_route_only_on_the_arm(monkeypatch, arm):
-    monkeypatch.setattr(tools, "INDRA_STATEMENTS_ENABLED", arm)
-    tool = types.SimpleNamespace(name="make_changes", description=_SERVER_MAKE_CHANGES)
+def _make_changes_tool():
+    return types.SimpleNamespace(
+        name="make_changes",
+        description=_SERVER_MAKE_CHANGES,
+        args_schema={
+            "properties": {"statements": {}, "antimony": {}, "model_edits": {}, "parameters": {}},
+            "required": ["justification"],
+        },
+    )
+
+
+def test_on_the_arm_make_changes_is_the_statements_editor(monkeypatch):
+    monkeypatch.setattr(tools, "INDRA_STATEMENTS_ENABLED", True)
+    tool = _make_changes_tool()
     tools._trim_descriptions([tool])
-    assert tool.description.startswith(prompts.TOOL_DESCRIPTIONS["make_changes"])
-    assert (_ROUTE in tool.description) is arm
+    assert tool.description.startswith(prompts.INDRA_TOOL_DESCRIPTIONS["make_changes"])
+    assert _ROUTE in tool.description
+    assert set(tool.args_schema["properties"]) == {"statements", "parameters"}
+
+
+def test_off_the_arm_make_changes_is_untouched(monkeypatch):
+    monkeypatch.setattr(tools, "INDRA_STATEMENTS_ENABLED", False)
+    tool = _make_changes_tool()
+    tools._trim_descriptions([tool])
+    assert tool.description == prompts.TOOL_DESCRIPTIONS["make_changes"]
+    assert "antimony" in tool.args_schema["properties"]
 
 
 # ------------------------------------------------------------------ the statements-only guard
