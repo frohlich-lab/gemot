@@ -477,8 +477,20 @@ INDRA_SYSTEM_PROMPT = (
     "data cannot tell apart, so bic has not bottomed out while they stand. "
     + _MERGE_TAKE_RULE
     + " Merge only parameters that plausibly ARE the same physical quantity.\n"
-    + _ADEQUATE_IS_NOT_DONE
-    + "\nWhen you finish, report the final bic and the model."
+    # The arm's own stopping rule, in place of _ADEQUATE_IS_NOT_DONE's "three failed calls and bic
+    # has bottomed out": Claude Haiku finished after 12-21 minutes of a two-hour budget, on models
+    # the fit itself flagged, calling `finish` again after each refusal until the gate relented.
+    "NEVER FINISH ON A MODEL THAT IS NOT ADEQUATE: systematic residuals, a noise sigma inflated "
+    "past its cap, a rank-deficient FIM or a replicate lack-of-fit each say the MECHANISM is "
+    "wrong, and a refused `finish` names which. Fix that; never just call `finish` again. And "
+    "an adequate model is not done either: KEEP GOING UNTIL YOU HAVE EXHAUSTED THE OPTIONS. "
+    "Every fitted version is kept and the run is scored on the best one wherever you end, so a "
+    "worse attempt costs nothing and time left unspent is bic forfeited. Before you finish, have "
+    "tried each kind of change: other mechanisms for what each observable measures (an "
+    "unmeasured intermediate or complex, a feedback or regulation, another policy or a `scheme` "
+    "of your own), dropping what the data does not need, every merge the fit names, and from "
+    "the best version (`base_version`) the next idea."
+    "\nWhen you finish, report the final bic and the model."
 )
 
 # Appended to the lead's task after a scenario's `known_constants` (Scenario.agent_task): how the
