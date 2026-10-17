@@ -59,6 +59,7 @@ _PROMPT_ROLES = {
     "petab-anonymous-tools": "system",
     "petab-active-biology-context": "system",
     "petab-lead-system": "system",
+    "petab-lead-indra-statements": "system",  # appended to the system prompt on that arm
     "petab-lead-task": "user",
     "petab-lead-readout-note": "user",
     # the null arm's single agent (see agent/barebones.py): same two roles as the lead's pair

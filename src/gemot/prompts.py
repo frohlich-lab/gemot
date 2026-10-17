@@ -45,6 +45,7 @@ from . import ablations as _ablations
 BIOLOGY_BLIND_ENABLED = _ablations.enabled("biology_blind")
 # One effective policy for prompt text, roster, model construction and bio connections.
 BIOCURATOR_ENABLED = _ablations.enabled("biocurator") and not BIOLOGY_BLIND_ENABLED
+INDRA_STATEMENTS_ENABLED = _ablations.enabled("indra_statements")
 
 
 # The petab-model-building skill, INLINED into the analyst persona prompts. Measured: every
@@ -391,6 +392,25 @@ DEFAULT_SYSTEM_PROMPT = (
     "Repeat until you call `finish`. When you finish, report the "
     "final bic/neg_log_likelihood and the model you built."
 )
+
+# The indra_statements arm: the lead builds the model as INDRA statements. The server's entity map
+# is EMPTY (runner.main._empty_entity_map), so nothing binds the observables or the inputs for it.
+_INDRA_STATEMENTS = (
+    "\n\nBUILD THE MODEL AS INDRA STATEMENTS. In this run you author the model through "
+    "`make_changes(statements=[...])`: mechanism assertions, one row each, never `antimony=`. "
+    "Its description gives the row notation, the mechanisms (policies) a row can use, and how to "
+    "write a mechanism of your own in `mechanisms`. Each `statements` call authors the WHOLE "
+    "model, so a revision resends every row, changed. NOTHING is bound for you: the problem's "
+    "entity map is EMPTY, whatever the route's description says about it. So: (1) every "
+    "readout_* symbol an observable formula reads is yours to define, in `readouts`, as a formula "
+    "over `amounts` (each the amount of an agent pattern, e.g. `{\"pAKT\": \"AKT1{pS473}\"}`) "
+    "and parameter ids; (2) every target the condition table sets is a parameter id your rows "
+    "read: bind a row's rate to an expression over it (`kf=\"k*dose\"`) or start an agent at it "
+    "in `starts`. There are no input agents. Name new agents freely; unmeasured intermediates "
+    "are yours to add. Read `get_model(format='statements')` to see the current model as rows."
+)
+if INDRA_STATEMENTS_ENABLED:
+    DEFAULT_SYSTEM_PROMPT += _INDRA_STATEMENTS
 
 # Appended to the lead's task after a scenario's `known_constants` (Scenario.agent_task): how the
 # blinded readout_* observables are defined through the lead's tools. Harness-owned so a
@@ -1240,6 +1260,16 @@ FINISH_CHI2_UNAVAILABLE_NOTE = (
 
 
 # --------------------------------------------------------------------- the task-arg guard
+# The indra_statements arm's refusal of a make_changes that carries another model route.
+STATEMENTS_ONLY_REJECT_TMPL = (
+    "MAKE_CHANGES REJECTED — in this run the model is authored as INDRA statements only, and this "
+    "call carried {routes}, which NOTHING applied. Send the change as `statements`: the WHOLE set "
+    "of rows, revised (`get_model(format='statements')` shows the current rows, mechanisms, "
+    "starts, amounts and readouts to start from). Merging two rate constants is a row binding "
+    "(`kf=shared_k` on both rows); fixing one is `kf=0.5` or `parameters`. `parameters` (bounds, "
+    "scales) and `base_version` still go alongside `statements`."
+)
+
 TASK_ARG_REJECT_TMPL = (
     "TASK CALL REJECTED — `task` accepts ONLY `description` and `subagent_type`; it received "
     "unexpected argument(s): {bad_keys}. Their content was NOT delivered to the subagent. The "
@@ -1494,6 +1524,9 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
         "petab-lead-system": DEFAULT_SYSTEM_PROMPT,
         "petab-lead-task": DEFAULT_TASK,
         "petab-lead-readout-note": KNOWN_CONSTANTS_READOUT_NOTE,
+        # Appended to the system prompt only on the indra_statements arm; tracked on its own so
+        # an edit to it moves prompt_version in either arm.
+        "petab-lead-indra-statements": _INDRA_STATEMENTS,
     },
     # The three analyst personas, plus the one-liners the LEAD reads when picking one.
     "analysts": {
@@ -1552,6 +1585,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
         },
         "petab-guards": {
             "task_arg_reject": TASK_ARG_REJECT_TMPL,
+            "statements_only_reject": STATEMENTS_ONLY_REJECT_TMPL,
             "empty_report_nudge": SUBAGENT_EMPTY_REPORT_NUDGE,
             "empty_report_marker": SUBAGENT_EMPTY_REPORT_MARKER,
             # One entry PER notice, not a joined blob: each is injected verbatim into a subagent's

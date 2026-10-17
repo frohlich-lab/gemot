@@ -58,6 +58,16 @@ def cleanup(scenario: Scenario) -> Path:
 
 
 # --------------------------------------------------------------------------- server
+def _empty_entity_map(build_root: Path) -> Path:
+    """An entity map with no entries: the server offers the `statements` route, and nothing in it
+    comes from the reference model (a problem's ``indra/entity_map.json`` binds the reference's
+    agents and must never reach an agent)."""
+    path = Path(build_root) / "entity_map.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}\n")
+    return path
+
+
 class _ServerHandle:
     """What :func:`_petab_server` hands its caller: the server process and a live MCP session."""
 
@@ -118,6 +128,9 @@ async def _petab_server(
         # path). Passed either way, never omitted -- the bootstrap unpacks a fixed arity so a
         # dropped argument fails loudly at startup.
         "1" if score_shipped_model else "0",
+        # <entity_map>: the indra_statements arm's EMPTY map, which offers the `statements` route
+        # and binds nothing; it lives beside the build, outside the agent's work/ tree.
+        str(_empty_entity_map(build_root)) if ablations.enabled("indra_statements") else "",
     ]
     server_log_path = work / "server.log"
     amici_log_path = work / "amici_build.log"

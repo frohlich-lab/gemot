@@ -371,6 +371,55 @@ def _task_arg_reject_message(bad_keys: "list[str]") -> str:
     return prompts.TASK_ARG_REJECT_TMPL.format(bad_keys=bad_keys)
 
 
+#: The model routes the indra_statements arm refuses: each authors or edits the model other than
+#: through `statements`, so the model would stop being the statements' and the arm would measure
+#: Antimony after its first build.
+_NON_STATEMENT_ROUTES = ("antimony", "model_edits")
+
+
+def _non_statement_routes(args: Any) -> list[str]:
+    """The non-statement model routes a ``make_changes`` call carries (empty if none). Pure."""
+    if not isinstance(args, dict):
+        return []
+    return [k for k in _NON_STATEMENT_ROUTES if args.get(k)]
+
+
+def _statements_only_guard(stats: dict[str, Any]):
+    """Lead-only middleware for the indra_statements arm: bounce a ``make_changes`` that carries
+    ``antimony`` or ``model_edits``, in place of dispatching it, and say how to send it as
+    ``statements``. It never relents: letting one through would end the arm. ``stats`` records
+    ``statements_only_rejections``.
+    """
+    from langchain.agents.middleware.types import AgentMiddleware
+    from langchain_core.messages import ToolMessage
+
+    def _reject(request):
+        tc = getattr(request, "tool_call", None) or {}
+        if tc.get("name") != "make_changes":
+            return None
+        routes = _non_statement_routes(tc.get("args"))
+        if not routes:
+            return None
+        stats["statements_only_rejections"] = stats.get("statements_only_rejections", 0) + 1
+        print(f"[statements-only guard] rejecting make_changes carrying {routes}")
+        return ToolMessage(
+            content=prompts.STATEMENTS_ONLY_REJECT_TMPL.format(routes=routes),
+            tool_call_id=tc.get("id") or "",
+            status="error",
+        )
+
+    class _StatementsOnlyGuard(AgentMiddleware):
+        def wrap_tool_call(self, request, handler):
+            rejection = _reject(request)
+            return rejection if rejection is not None else handler(request)
+
+        async def awrap_tool_call(self, request, handler):
+            rejection = _reject(request)
+            return rejection if rejection is not None else await handler(request)
+
+    return _StatementsOnlyGuard()
+
+
 def _task_arg_guard(stats: dict[str, Any], *, max_rejections: int = _MAX_TASK_ARG_REJECTIONS):
     """Lead-only middleware: reject a ``task`` call that carries unexpected kwargs (see above).
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from ..prompts import (
     BIOLOGY_BLIND_ENABLED,
+    INDRA_STATEMENTS_ENABLED,
     BIOLOGY_BLIND_TOOL_DESCRIPTIONS,
     LEAD_SELF_READ_TOOLS,
     TOOL_DESCRIPTIONS,
@@ -177,6 +178,8 @@ def _trim_descriptions(tools: list) -> list:
             desc = getattr(t, "description", None)
             if isinstance(desc, str):
                 short = desc.strip().split("\n", 1)[0]
+        if short and name == "make_changes" and INDRA_STATEMENTS_ENABLED:
+            short = f"{short}\n\n{_statements_route(t)}"
         if short:
             try:
                 t.description = short
@@ -185,6 +188,21 @@ def _trim_descriptions(tools: list) -> list:
                     raise
                 pass
     return tools
+
+
+def _statements_route(tool) -> str:
+    """The server's own paragraph on `make_changes`' `statements` route: the row notation and the
+    mechanisms its library holds. The curated description replaces the server's, so on the
+    indra_statements arm this is kept beside it; it is the server's text (versioned with the
+    server), because the library it lists is the server's."""
+    desc = getattr(tool, "description", "") or ""
+    i = desc.find("`statements` is a third model route")
+    if i < 0:
+        raise RuntimeError(
+            "indra_statements is on, but the server's make_changes offers no `statements` route "
+            "(was it started without an entity map?)"
+        )
+    return desc[i:].split("\n\n", 1)[0]
 
 
 def _select_tools(tools: list) -> list:

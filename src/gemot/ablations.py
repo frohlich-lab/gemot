@@ -114,6 +114,16 @@ ABLATIONS: tuple[Ablation, ...] = (
         "scenario context and the three modeling analysts are preserved. The "
         "biology_blind arm also removes the curator, regardless of this setting",
     ),
+    Ablation(
+        name="indra_statements",
+        env="PETAB_INDRA_STATEMENTS",
+        default_on=False,
+        changes_prompt=True,
+        effect="ON starts the server with an EMPTY entity map, which offers make_changes' INDRA "
+        "`statements` route, and has the lead build the model as statements. Nothing binds the "
+        "observables or inputs for it: the readouts and how the condition targets enter are its "
+        "own, so no reference structure reaches the agent",
+    ),
 )
 
 _BY_NAME = {a.name: a for a in ABLATIONS}

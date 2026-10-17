@@ -47,6 +47,7 @@ from .circuit_breaker import (
 from .finish_gate import _finish_tool
 from .guards import (
     _empty_report_guard,
+    _statements_only_guard,
     _task_arg_guard,
     _tool_dispatch_guard,
     _reasoning_runaway_guard,
@@ -62,7 +63,7 @@ from .subagents import (
 )
 from .token_usage import _LEAD_AGENT_NAME, _token_accountant
 from .tools import ORCHESTRATOR_TOOLS, _select_tools, _trim_descriptions
-from ..prompts import _NO_MODEL_NUDGE, _SILENT_FINISH_NUDGE
+from ..prompts import INDRA_STATEMENTS_ENABLED, _NO_MODEL_NUDGE, _SILENT_FINISH_NUDGE
 from .. import models, prompts
 
 # --- guards on the (input-dominated, occasionally-hanging) LLM loop -----------------------
@@ -902,6 +903,9 @@ async def run_deepagents(
             # no tool calls, so _dedupe_response finds nothing to do), but stated correctly so a
             # future reorder is not reasoned from a false invariant.
             _task_arg_guard(guard_stats),
+            # Outside _tool_dispatch_guard for the same reason as _task_arg_guard: a bounced call
+            # applied nothing and must not count as an executed tool.
+            *([_statements_only_guard(guard_stats)] if INDRA_STATEMENTS_ENABLED else []),
             _reasoning_runaway_guard(guard_stats),
             _tool_dispatch_guard(guard_stats),
             _empty_report_guard(guard_stats),
