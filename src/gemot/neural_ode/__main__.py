@@ -46,10 +46,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     fit = commands.add_parser("fit", help="train the field on one problem and score it")
-    fit.add_argument("problem", type=Path, help="a PEtab v1 problem yaml or its directory")
+    fit.add_argument(
+        "problem", type=Path, help="a PEtab problem yaml or its directory; v1 is upgraded on load"
+    )
     fit.add_argument("--out", type=Path, required=True)
     fit.add_argument(
-        "--dosed", default="", help="condition columns that dose a state, comma-separated"
+        "--dosed", default="", help="condition targets that dose a state, comma-separated"
     )
     fit.add_argument("--windows", type=int, default=1)
     fit.add_argument("--optimiser", choices=["adam", "fides", "adam+fides"], default="adam")
@@ -97,7 +99,9 @@ def main(argv: list[str] | None = None) -> int:
         "--reference", type=Path, default=None, help="reference.json to compare against"
     )
     propose = commands.add_parser("propose", help="train, distil and write proposals")
-    propose.add_argument("problem", type=Path, help="a PEtab v1 problem yaml or its directory")
+    propose.add_argument(
+        "problem", type=Path, help="a PEtab problem yaml or its directory; v1 is upgraded on load"
+    )
     propose.add_argument("--out", type=Path, required=True)
     propose.add_argument("--config", type=Path, default=None)
     propose.add_argument("--interpreter", default=None)
@@ -105,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     propose.add_argument("--seconds", type=float, default=None)
     propose.add_argument("--threads", type=int, default=None)
     propose.add_argument(
-        "--dosed", default=None, help="condition columns that dose a state, comma-separated"
+        "--dosed", default=None, help="condition targets that dose a state, comma-separated"
     )
     score = commands.add_parser("score", help="judge the proposals through the server")
     score.add_argument("proposals", type=Path, help="the route's proposals.json")

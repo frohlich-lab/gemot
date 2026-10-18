@@ -365,9 +365,7 @@ def trajectories(result: TrainResult, n_times: int = 200) -> dict[str, dict[str,
         staged.directory,
         dense,
         dirs_exist_ok=True,
-        ignore=shutil.ignore_patterns(
-            "dense", "curriculum", "cl_prob", "jax_*", "v1", "__pycache__"
-        ),
+        ignore=shutil.ignore_patterns("dense", "curriculum", "cl_prob", "jax_*", "__pycache__"),
     )
     measurements = pd.read_csv(dense / "measurements.tsv", sep="\t")
     grid = np.linspace(0.0, staged.horizon, int(n_times))
@@ -420,9 +418,7 @@ def save_bundle(result: TrainResult, directory: Path | str) -> Path:
         result.staged.directory,
         directory,
         dirs_exist_ok=True,
-        ignore=shutil.ignore_patterns(
-            "dense", "curriculum", "cl_prob", "jax_*", "v1", "__pycache__"
-        ),
+        ignore=shutil.ignore_patterns("dense", "curriculum", "cl_prob", "jax_*", "__pycache__"),
     )
     network = result.problem.model.nns[S.NETWORK_ID]
     arrays = {

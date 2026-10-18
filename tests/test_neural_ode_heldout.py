@@ -7,12 +7,19 @@ import math
 from pathlib import Path
 
 import h5py
+import numpy as np
 import pandas as pd
 import pytest
-from test_neural_ode_problem import write_problem
+from test_neural_ode_problem import (
+    write_problem,
+    write_v2_conditions,
+    write_v2_experiments,
+    write_v2_problem,
+)
 
 from gemot.neural_ode import heldout as H
 from gemot.neural_ode import problem as P
+from gemot.neural_ode import stage as S
 from gemot.neural_ode import train as T
 from gemot.neural_ode.__main__ import main
 
@@ -46,6 +53,20 @@ def write_held_out(
     return directory / "measurements.tsv"
 
 
+def write_v2_held_out(directory: Path, *, basal: str | None = None, dose: str = "init_E") -> Path:
+    """A native v2 fixed-θ set: experiment ``e_new`` applying ``c_new``, which sets new values of
+    the training targets, after ``basal``'s pre-equilibration where one is given."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "measurements.tsv").write_text(
+        "experimentId\tobservableId\ttime\tmeasurement\tnoiseParameters\n"
+        "e_new\tobs_P\t0.0\t0.05\t\ne_new\tobs_P\t1.0\t0.9\t\ne_new\tobs_P\t2.0\t1.6\t\n"
+        "e_new\tobs_Q\t1.5\t4.0\t0.2\n"
+    )
+    write_v2_conditions(directory / "conditions.tsv", {"c_new": (4.0, 1.0, 2.0)}, dose)
+    write_v2_experiments(directory / "experiments.tsv", {"e_new": "c_new"}, basal)
+    return directory / "measurements.tsv"
+
+
 def _trained(tmp_path):
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
     config = T.TrainConfig(width=4, depth=1, steps=8, n_restarts=1, patience=1000)
@@ -62,7 +83,7 @@ def test_fixed_theta_scores_a_new_condition_in_the_training_units(tmp_path):
     assert payload["status"] == "ok" and payload["mode"] == "fixed" and payload["n"] == 4
     assert math.isfinite(payload["nll"]) and "k" not in payload
     # Staged in the training design: same rate-rule constants, the trained weights carried over.
-    model = (tmp_path / "score" / "staged" / "v1" / "model.ant").read_text()
+    model = (tmp_path / "score" / "staged" / "model.ant").read_text()
     assert f"P' = ({result.staged.scales['P']!r} / 2.0) * f_P;" in model
 
 
@@ -95,31 +116,30 @@ def test_a_new_input_column_is_a_different_field(tmp_path):
     assert payload["status"] == "table_mismatch" and "light" in payload["reason"]
 
 
-def test_a_v1_set_read_as_v2_is_staged_with_its_v1_condition_columns(tmp_path):
-    """`read_held_out` hands back v2's long condition table whatever the files are; the route
-    stages v1, so the held-out row comes back as one row of the training columns."""
-    from petab_mcp.validation_data import read_held_out
+def test_a_v1_set_is_keyed_by_experiment_as_the_server_keys_it(tmp_path):
+    """A v1 set names a simulation condition; the server moves it onto the training problem's
+    experiments (`as_v2`) before it scores it, and the field must be scored on that same view, or
+    the two scorers would be reading different held-out problems."""
+    from petab_mcp.validation_data import as_v2, read_held_out
 
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
     held_out = read_held_out(write_held_out(tmp_path / "validation", new_condition=True))
-    assert "targetId" in held_out.condition_df
-    H._held_out_problem(problem, held_out, tmp_path / "v1")
-    training = pd.read_csv(tmp_path / "toy" / "conditions.tsv", sep="\t").set_index("conditionId")
-    staged = pd.read_csv(tmp_path / "v1" / "conditions.tsv", sep="\t").set_index("conditionId")
-    assert list(staged.columns) == list(training.columns)
-    assert staged.loc["c_new"].astype(float).to_dict() == {"S": 4.0, "init_E": 1.0, "drug": 2.0}
-    assert staged.drop(index="c_new").astype(float).equals(training.astype(float))
+    view = H._held_out_problem(problem, held_out)
+    (experiment,) = view.experiment_ids
+    assert set(as_v2(held_out, problem.tables).measurement_df["experimentId"]) == {experiment}
+    assert view.periods[experiment] == ((0.0, ("c_new",)),)
+    assert view.condition_values[experiment] == {"S": 4.0, "init_E": 1.0, "drug": 2.0}
 
 
-def test_a_set_keyed_by_experiment_is_a_table_mismatch(tmp_path):
+def test_an_experiment_neither_table_defines_is_a_table_mismatch(tmp_path):
     from petab_mcp.validation_data import HeldOut
 
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
     measurements = pd.DataFrame(
         {"observableId": ["obs_P"], "experimentId": ["e1"], "time": [1.0], "measurement": [0.9]}
     )
-    with pytest.raises(P.ProblemError, match="experiments"):
-        H._held_out_problem(problem, HeldOut(measurement_df=measurements), tmp_path / "v1")
+    with pytest.raises(P.ProblemError, match="e1"):
+        H._held_out_problem(problem, HeldOut(measurement_df=measurements))
 
 
 def test_the_command_line_writes_the_record_and_the_trained_bundle(tmp_path):
@@ -176,6 +196,122 @@ def test_the_command_line_writes_the_record_and_the_trained_bundle(tmp_path):
     assert not bool(parameters.loc["scale_Q", "estimate"])
     with h5py.File(tmp_path / "out" / "model" / "net1_ps.hdf5") as weights:
         assert weights["parameters/net1/layer1/weight"].shape == (4, 5)
+
+
+def test_a_native_v2_problem_and_set_run_end_to_end(tmp_path):
+    """The route on PEtab v2 as the benchmark ships it: training tables keyed by experiment, and a
+    held-out set that brings its own experiment and long condition table beside its measurements.
+    Before the port the loader refused the problem and the scorer refused the set."""
+    example = tmp_path / "toy"
+    write_v2_problem(example / "problem")
+    write_v2_held_out(example / "validation")
+    (example / "problem" / "reference.json").write_text(
+        json.dumps({"validation": {"status": "ok", "mode": "fixed", "nll": 3.0, "n": 4}})
+    )
+    out = tmp_path / "out"
+    argv = ["fit", str(example / "problem"), "--out", str(out), "--dosed", "S"]
+    argv += ["--width", "4", "--depth", "1", "--steps", "6", "--restarts", "1"]
+    assert main(argv) == 0
+    record = json.loads((out / "result.json").read_text())
+    assert record["held_out_path"] == str(example / "validation" / "measurements.tsv")
+    assert record["validation"]["status"] == "ok" and record["validation"]["mode"] == "fixed"
+    assert record["validation"]["n"] == 4 and math.isfinite(record["validation"]["nll"])
+    experiments = pd.read_csv(out / "heldout" / "staged" / "experiments.tsv", sep="\t")
+    assert experiments["experimentId"].tolist() == ["e_new"]
+
+
+def _settling_field(staged: S.Staged) -> list[np.ndarray]:
+    """Weights for a width-``len(states)`` field with one stable steady state that ``drug`` moves:
+    ``f_k = b_k - tanh(x_k / s_k + 0.3 drug / s_drug [k = 0])``. A field drawn at random has no
+    steady state to pre-equilibrate to, so a held-out score under pre-equilibration needs one built."""
+    n = len(staged.states)
+    first = np.zeros((n, len(staged.field_inputs)))
+    first[:, :n] = np.eye(n)
+    first[0, staged.field_inputs.index("drug")] = 0.3
+    return [first, np.zeros(n), -np.eye(n), np.array([0.2, -0.1, 0.3, 0.1])]
+
+
+def _twin(staged: S.Staged, weights, starts: dict[str, str]) -> str:
+    """The staged model with the network written out as rate laws: the same ODE as a plain SBML
+    model the server can score, with ``starts`` as its states' initial values."""
+    first, bias, second, offset = weights
+    text = (staged.directory / "model.ant").read_text()
+    hidden = [
+        "tanh("
+        + " + ".join(
+            f"{float(w)!r} * {name}_norm" for w, name in zip(row, staged.field_inputs) if w
+        )
+        + f" + {float(b)!r})"
+        for row, b in zip(first, bias)
+    ]
+    for state, row, b in zip(staged.states, second, offset):
+        rate = (
+            " + ".join(f"{float(w)!r} * {h}" for w, h in zip(row, hidden) if w) + f" + {float(b)!r}"
+        )
+        text = text.replace(f"  f_{state} = 0;", f"  f_{state} := {rate};")
+    for state, start in starts.items():
+        text = text.replace(f"  {state} = 0;", f"  {state} = {start};")
+    return text
+
+
+def test_the_held_out_nll_is_the_servers_at_the_same_point(tmp_path):
+    """The field's held-out nll is the one the server's `evaluate_validation_data` computes for the
+    same model at the same point -- here the field written out as an SBML twin -- on a native v2
+    set that pre-equilibrates. The two read one held-out view, built by the server's own functions
+    (`as_v2`, `_with_held_out_design`), and differ only in the integrator: AMICI's JAX backend
+    against SUNDIALS, so the tolerance is the server's own for solver error."""
+    from types import SimpleNamespace
+
+    import equinox as eqx
+    import jax.numpy as jnp
+    from petab.v2.models.sbml_model import SbmlModel
+    from petab_mcp.problem import WorkingProblem
+    from petab_mcp.validation_data import read_held_out, score_problem
+
+    yaml_path = write_v2_problem(tmp_path / "toy", preequilibration=True, dose="E")
+    problem = P.load(yaml_path, dosed=("S", "E"))
+    config = T.TrainConfig(width=4, depth=1)
+    staged = T.stage_only(problem, tmp_path / "field", config)
+    held_out = read_held_out(write_v2_held_out(tmp_path / "validation", basal="c_basal", dose="E"))
+    prepared = H.prepare(
+        SimpleNamespace(staged=staged, config=config),
+        held_out,
+        tmp_path / "score",
+        training=problem,
+    )
+    assert not isinstance(prepared, dict), prepared
+    # The starts the route stages: P's pre-equilibration start is the one scalar it estimates.
+    assert prepared.ids == ["P_0_c_basal"]
+
+    weights = _settling_field(staged)
+    networks = prepared.imported.model.nns
+    net = eqx.tree_at(
+        lambda n: (
+            n.layers["layer1"].weight,
+            n.layers["layer1"].bias,
+            n.layers["layer2"].weight,
+            n.layers["layer2"].bias,
+        ),
+        networks[S.NETWORK_ID],
+        tuple(jnp.asarray(w) for w in weights),
+    )
+    route = H.score_prepared(prepared, {**networks, S.NETWORK_ID: net}, {"P_0_c_basal": 0.3})
+
+    twin = WorkingProblem.from_yaml(yaml_path)
+    model = tmp_path / "twin.ant"
+    model.write_text(_twin(staged, weights, {"P": "0.3", "Q": "Q_init;\n  Q_init = 0.5"}))
+    twin.model = SbmlModel.from_antimony(model)
+    server = score_problem(
+        twin,
+        held_out.measurement_df,
+        condition_df=held_out.condition_df,
+        experiment_df=held_out.experiment_df,
+        build_dir=tmp_path / "amici",
+        model_name="twin",
+    )
+    assert route["status"] == server["status"] == "ok", (route, server)
+    assert route["n"] == server["n"] == 4 and server["n_experiments"] == 1
+    assert route["nll"] == pytest.approx(server["nll"], rel=1e-4)
 
 
 def test_a_curve_of_checkpoints_imports_the_held_out_set_once(tmp_path, monkeypatch):

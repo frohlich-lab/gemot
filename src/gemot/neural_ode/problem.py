@@ -1,21 +1,30 @@
-"""What a PEtab v1 problem tells the neural route: its states, knobs, starts and scales.
+"""What a PEtab problem tells the neural route: its states, knobs, starts and scales.
 
-Only the data tables are read: measurements, observables, conditions, parameters and, where a
-problem ships one, an ``inputs.tsv`` protocol table. The model is never opened. A neural ODE's
-whole point here is to ask how much mechanism the DATA carry, so the species, reactions and
-parameters of the shipped model would leak the answer being measured -- the same reason the
-zero-shot examples ship an empty SBML.
+The problem is read as the server reads it, by :meth:`petab_mcp.problem.WorkingProblem.from_yaml`:
+PEtab v2 tables, a v1 problem upgraded on load by the server's own conversion. There is one
+upgrade, the server's, so the route and the server name the same experiments and score the same
+likelihood; a v1 reader beside it would be a second conversion that could only drift from it.
 
-The states are the symbols the observable formulas read that are neither parameters nor
+Only the data tables are read: measurements, observables, conditions, experiments and parameters
+and, where a problem ships one, an ``inputs.tsv`` protocol table. The model is never opened. A
+neural ODE's whole point here is to ask how much mechanism the DATA carry, so the species,
+reactions and parameters of the shipped model would leak the answer being measured -- the same
+reason the zero-shot examples ship an empty SBML.
+
+The states are the symbols the observable formulas read that are neither parameters nor declared
 placeholders: ``obs_P = P`` names the state ``P``, fujita's ``scaleFactor * (pAkt + pAkt_S6)``
 names two. The formulas themselves are kept, so the staged problem's observation model is the
-shipped one and AMICI evaluates it. Condition-table columns are experimental knobs. One that
-names a state (``S2`` or ``init_S2``) sets that state's starting amount; any other ``init_*``
-column is a dosed species the data never observe, which becomes a named state of its own;
-everything else is a clamped input the field reads as a constant. A fixed parameter named
-``<state>_init`` or ``init_<state>`` pins that state's start too. These are conventions about
-experimental setup and are labelled as such; ``dosed`` lets a caller declare a column dosed where
-the convention cannot see it.
+shipped one and AMICI evaluates it. Condition targets are experimental knobs. One that names a
+state (``S2`` or ``init_S2``) sets that state's starting amount; any other ``init_*`` target is a
+dosed species the data never observe, which becomes a named state of its own; everything else is
+a clamped input the field reads as a constant. A fixed parameter named ``<state>_init`` or
+``init_<state>`` pins that state's start too. These are conventions about experimental setup and
+are labelled as such; ``dosed`` lets a caller declare a target dosed where the convention cannot
+see it.
+
+An experiment's knobs are what its periods have set by the time it is simulated: a v2 change
+persists, so a target only the pre-equilibration sets still holds afterwards. A later period that
+sets a knob again is a schedule, kept per experiment (:meth:`Problem.input_values`).
 
 Magnitudes are read off the tables as well: the field works in units of each state's and
 input's root-mean-square value and of the last measured time, so one width serves a problem
@@ -27,17 +36,16 @@ from __future__ import annotations
 import csv
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
-import petab.v1 as petab
 from petab.math import sympify_petab
-from petab.v1 import C
-from petab.versions import get_major_version
+from petab.v2 import C
 
-#: Symbols a protocol formula may use besides its declared condition columns.
+#: Symbols a protocol formula may use besides its declared condition targets.
 PROTOCOL_ALLOWED = frozenset(
     {
         "time",
@@ -56,9 +64,11 @@ PROTOCOL_ALLOWED = frozenset(
         "pi",
     }
 )
+#: The experiment a measurement without one is staged under: its starts need a condition to sit on.
 _SINGLE = "__single__"
+#: The basal key of a pre-equilibration period that applies no condition.
+_BASAL = "basal"
 _SYMBOL = re.compile(r"[A-Za-z_]\w*")
-_PLACEHOLDER = re.compile(r"^(observable|noise)Parameter\d+_")
 
 
 class ProblemError(ValueError):
@@ -77,30 +87,39 @@ class TimedInput:
 @dataclass(frozen=True)
 class Problem:
     name: str
-    #: The yaml the tables were read from; staging reads them again.
-    source: Path
+    #: Where an ``inputs.tsv`` protocol is read from: the problem's own directory, or the training
+    #: problem's for a held-out view of it.
+    directory: Path
     observable_ids: tuple[str, ...]
     #: States the observable formulas read, in order of first appearance.
     observed: tuple[str, ...]
     #: Unobserved states whose starting amount the condition table doses.
     dosed: tuple[str, ...]
-    #: Condition columns the field reads as clamped constants.
+    #: Condition targets the field reads as clamped constants.
     inputs: tuple[str, ...]
     timed_inputs: tuple[TimedInput, ...]
-    #: Experiment -> every condition column's value there, a parameter read as its nominal.
+    #: Experiment -> every target's value when it is first simulated, and basal key -> every
+    #: target's value under that pre-equilibration; a parameter read as its nominal.
     condition_values: dict[str, dict[str, float]]
-    #: Condition column -> the state whose start it sets.
+    #: Experiment -> ``(time, values)`` for each later period that sets a target again, the values
+    #: in effect from that time on. Empty for an experiment simulated in one period.
+    switches: dict[str, tuple[tuple[float, dict[str, float]], ...]]
+    #: Condition target -> the state whose start it sets.
     start_columns: dict[str, str]
-    #: ``(experiment, state)`` a start column actually pins. A column sets a start only where its
-    #: cell carries a value: a blank reads as zero like any other missing knob, and zero is a
-    #: legitimate start, so the column's mere existence cannot stand in for the cell being filled.
+    #: ``(experiment, state)`` a start target actually pins. A target sets a start only where a
+    #: condition the experiment applies before it is simulated carries a value for it: an unset
+    #: one reads as zero like any other missing knob, and zero is a legitimate start, so the
+    #: target's mere existence cannot stand in for it being set.
     column_starts: frozenset[tuple[str, str]]
     #: State -> the start a fixed ``<state>_init`` parameter pins in every experiment.
     pinned_starts: dict[str, float]
-    #: ``(experiment, state)`` -> the t=0 datum of an identity readout.
+    #: ``(experiment, state)`` -> the datum of an identity readout where the experiment starts.
     measured_starts: dict[tuple[str, str], float]
     experiment_ids: tuple[str, ...]
-    #: Experiment -> its preequilibration condition; empty without preequilibration.
+    #: Experiment -> its periods in time order, each ``(time, condition ids)``.
+    periods: dict[str, tuple[tuple[float, tuple[str, ...]], ...]]
+    #: Experiment -> its basal key, which names the conditions its pre-equilibration applies;
+    #: empty without pre-equilibration.
     preequilibration: dict[str, str]
     n_measurements: int
     #: Noise parameters the problem estimates, one entry per distinct symbol.
@@ -113,6 +132,9 @@ class Problem:
     #: The last finite measurement time: the field's unit of time.
     horizon: float
     warnings: tuple[str, ...]
+    #: The tables as the server holds them, a :class:`petab_mcp.problem.WorkingProblem`. Staging
+    #: writes them out again around the generated model.
+    tables: Any = field(repr=False, compare=False)
 
     @property
     def state_names(self) -> tuple[str, ...]:
@@ -120,7 +142,7 @@ class Problem:
 
     @property
     def field_input_names(self) -> tuple[str, ...]:
-        """What the field reads besides its states: clamped columns no protocol consumes, then the
+        """What the field reads besides its states: clamped targets no protocol consumes, then the
         protocol targets."""
         consumed = {c for item in self.timed_inputs for c in item.columns}
         return tuple(
@@ -136,20 +158,33 @@ class Problem:
 
     @property
     def basal_conditions(self) -> tuple[str, ...]:
-        """Distinct preequilibration conditions, in order of first use."""
+        """Distinct basal keys, in order of first use."""
         return tuple(
             dict.fromkeys(
                 self.preequilibration[e] for e in self.experiment_ids if e in self.preequilibration
             )
         )
 
-    def start_is_known(self, experiment: str, state: str) -> bool:
-        """Whether the tables pin ``state``'s start in ``experiment`` at no parameter cost: a t=0
-        datum, a setup-sheet column or a fixed ``<state>_init``. bruno starts at t=5 and crauste at
-        t=4, so this is read off the data rather than configured.
+    def start_key(self, experiment: str) -> str:
+        """What an experiment's starts are keyed by: its basal key under pre-equilibration, where
+        the experiments that settle in the same conditions share one start, else the experiment."""
+        return self.preequilibration.get(experiment, experiment)
 
-        The column clause is per experiment, not per column: an incomplete start column leaves the
-        experiments whose cell is blank unpinned, and counting those as fixed would understate
+    def input_values(self, experiment: str, name: str, times) -> np.ndarray:
+        """Target ``name``'s value in ``experiment`` at each of ``times``, following its schedule."""
+        times = np.asarray(times, dtype=float)
+        values = np.full(times.shape, self.condition_values[experiment][name])
+        for start, later in self.switches.get(experiment, ()):
+            values[times >= start] = later[name]
+        return values
+
+    def start_is_known(self, experiment: str, state: str) -> bool:
+        """Whether the tables pin ``state``'s start in ``experiment`` at no parameter cost: a datum
+        where it starts, a setup-sheet target or a fixed ``<state>_init``. bruno starts at t=5 and
+        crauste at t=4, so this is read off the data rather than configured.
+
+        The target clause is per experiment, not per target: an incompletely set start target leaves
+        the experiments that do not set it unpinned, and counting those as fixed would understate
         ``k``, and an over-generous parameter budget is how a field gets latents the data cannot pay for.
         """
         return (
@@ -179,58 +214,64 @@ class Problem:
 
 
 def load(problem: Path | str, *, name: str | None = None, dosed: tuple[str, ...] = ()) -> Problem:
-    """Read a PEtab v1 problem directory (or its yaml) into a :class:`Problem`.
+    """Read a PEtab problem directory (or its yaml), of either version, into a :class:`Problem`.
 
-    ``dosed`` names condition columns that are dosed species although no naming convention says so
+    ``dosed`` names condition targets that are dosed species although no naming convention says so
     (enzyme_kinetics' ``S`` is substrate added at t=0 and consumed). Raises :class:`ProblemError`
-    on a v2 problem or a table this reader cannot make consistent.
+    on a problem the server cannot read or this reader cannot make consistent.
     """
+    from petab_mcp.problem import WorkingProblem  # noqa: PLC0415
+
     path = Path(problem)
     yaml_path = path if path.is_file() else path / "problem.yaml"
-    if get_major_version(str(yaml_path)) != 1:
-        raise ProblemError(f"{yaml_path} is not a PEtab v1 problem; this route reads v1 directly")
-    pp = petab.Problem.from_yaml(str(yaml_path))
     name = name or (
         yaml_path.parent.parent.name
         if yaml_path.parent.name == "problem"
         else yaml_path.parent.name
     )
+    try:
+        tables = WorkingProblem.from_yaml(yaml_path)
+    except (OSError, KeyError, ValueError) as why:
+        raise ProblemError(f"{name}: {yaml_path} is not a PEtab problem the server reads: {why}")
+    return read(tables, name=name, directory=yaml_path.parent, dosed=dosed)
+
+
+def read(tables, *, name: str, directory: Path, dosed: tuple[str, ...] = ()) -> Problem:
+    """A :class:`Problem` from tables the server already holds, a
+    :class:`petab_mcp.problem.WorkingProblem` such as the held-out view of a training problem;
+    ``directory`` is where ``inputs.tsv`` is."""
+    from petab_mcp.problem import placeholder_ids  # noqa: PLC0415
+
     warnings: list[str] = []
-
-    meas = pp.measurement_df.reset_index(drop=True).copy()
-    if meas.empty:
+    meas = tables.measurement_df
+    if meas is None or meas.empty:
         raise ProblemError(f"{name}: the problem has no measurements")
-    for column in (C.SIMULATION_CONDITION_ID, C.PREEQUILIBRATION_CONDITION_ID):
-        if column not in meas.columns:
-            meas[column] = _SINGLE if column == C.SIMULATION_CONDITION_ID else None
-    meas[C.SIMULATION_CONDITION_ID] = (
-        meas[C.SIMULATION_CONDITION_ID].fillna(_SINGLE).astype(str).replace("", _SINGLE)
-    )
-    experiment_ids = tuple(pd.unique(meas[C.SIMULATION_CONDITION_ID]))
+    meas = meas.reset_index(drop=True).copy()
+    meas[C.EXPERIMENT_ID] = [
+        str(e) if isinstance(e, str) and e.strip() else _SINGLE for e in meas[C.EXPERIMENT_ID]
+    ]
+    experiment_ids = tuple(pd.unique(meas[C.EXPERIMENT_ID]))
 
-    observables = pp.observable_df.reset_index()
-    observable_ids = tuple(str(o) for o in observables[C.OBSERVABLE_ID])
+    observables = tables.observable_df
+    observable_ids = tuple(str(o) for o in (observables.index if observables is not None else ()))
     unknown = set(meas[C.OBSERVABLE_ID].astype(str)) - set(observable_ids)
     if unknown:
         raise ProblemError(
             f"{name}: measurements reference undeclared observables {sorted(unknown)}"
         )
-    nominal, estimated = _parameters(pp.parameter_df)
+    nominal, estimated = _parameters(tables.parameter_df)
+    placeholders = placeholder_ids(observables)
     formulas = {oid: str(f) for oid, f in zip(observable_ids, observables[C.OBSERVABLE_FORMULA])}
     observed: list[str] = []
     for formula in formulas.values():
-        for symbol in _symbols(formula):
+        for symbol in _symbols(formula, placeholders):
             if symbol not in nominal and symbol not in estimated and symbol not in observed:
                 observed.append(symbol)
     if not observed:
         raise ProblemError(f"{name}: no observable formula reads a state; nothing to model")
 
-    conditions = pp.condition_df
-    targets = [
-        str(c)
-        for c in (conditions.columns if conditions is not None else ())
-        if str(c) != C.CONDITION_NAME
-    ]
+    changes = _changes(tables.condition_df)
+    targets = list(dict.fromkeys(t for c in changes.values() for t in c))
     lower = {s.lower(): s for s in observed}
     start_columns: dict[str, str] = {}
     dosed_states: list[str] = []
@@ -255,87 +296,94 @@ def load(problem: Path | str, *, name: str | None = None, dosed: tuple[str, ...]
             if stem != key and stem in lower and lower[stem] not in pinned_starts:
                 pinned_starts[lower[stem]] = float(value)
 
-    preequilibration = _preequilibration(meas, experiment_ids, name)
-    # The preequilibration conditions are read too, not just the experiments'. Their input values
-    # are the ONLY place a gated input takes its other value -- perelson's `rit` is 1 in its single
-    # experiment and 0 only in `preeq_untreated` -- and the distiller needs both to recover any
-    # dependence on it at all (`distil.sample`).
-    basal = tuple(dict.fromkeys(preequilibration.values()))
-    values, given = _condition_values(
-        conditions, targets, (*experiment_ids, *basal), nominal, warnings
-    )
+    periods = _periods(tables.experiment_df, experiment_ids, name)
+    preequilibration = _preequilibration(periods, experiment_ids, name)
+    values, given, switches = _knobs(changes, targets, periods, preequilibration, nominal, warnings)
     column_starts = frozenset(
         (experiment, state)
         for target, state in start_columns.items()
-        for e, experiment in enumerate(experiment_ids)
-        if given[target][e]
+        for experiment in experiment_ids
+        if target in given[experiment]
     )
     identity = {oid: f for oid, f in formulas.items() if f.strip() in observed}
+    start_time = {
+        e: next((t for t, _ in periods[e] if t != C.TIME_PREEQUILIBRATION), 0.0)
+        for e in experiment_ids
+    }
     measured_starts: dict[tuple[str, str], float] = {}
-    at_start = meas[(meas[C.TIME] == 0.0) & meas[C.OBSERVABLE_ID].isin(identity)]
-    for (experiment, oid), rows in at_start.groupby([C.SIMULATION_CONDITION_ID, C.OBSERVABLE_ID]):
+    at_start = meas[
+        (meas[C.TIME].astype(float) == meas[C.EXPERIMENT_ID].map(start_time))
+        & meas[C.OBSERVABLE_ID].isin(identity)
+    ]
+    for (experiment, oid), rows in at_start.groupby([C.EXPERIMENT_ID, C.OBSERVABLE_ID]):
         measured_starts[(str(experiment), identity[str(oid)].strip())] = float(
             rows[C.MEASUREMENT].astype(float).mean()
         )
 
     scales: dict[str, float] = {}
     for state in observed:
-        scales[state] = _observed_scale(state, meas, formulas, nominal)
-    n_experiments = len(experiment_ids)
+        scales[state] = _observed_scale(state, meas, formulas, nominal, observables)
+    # Every value a target takes while an experiment is simulated, a switch's included.
+    simulated = {
+        target: [values[e][target] for e in experiment_ids]
+        + [later[target] for e in experiment_ids for _, later in switches.get(e, ())]
+        for target in targets
+    }
     for target, state in start_columns.items():
         if state in dosed_states:
-            scales[state] = _rms(values[target][:n_experiments])
+            scales[state] = _rms(simulated[target])
     for target in inputs:
-        scales[target] = _rms(values[target][:n_experiments])
+        scales[target] = _rms(simulated[target])
     finite = meas[C.TIME].astype(float)
     finite = finite[np.isfinite(finite)]
     horizon = float(finite.max()) if len(finite) and finite.max() > 0 else 1.0
-    timed = _timed_inputs(yaml_path.parent, inputs, warnings)
+    timed = _timed_inputs(directory, inputs, warnings)
     for item in timed:
         scales[item.target] = 1.0
 
     return Problem(
         name=name,
-        source=yaml_path,
+        directory=Path(directory),
         observable_ids=observable_ids,
         observed=tuple(observed),
         dosed=tuple(dosed_states),
         inputs=tuple(inputs),
         timed_inputs=timed,
-        condition_values={
-            e: {t: float(values[t][i]) for t in targets}
-            for i, e in enumerate((*experiment_ids, *basal))
-        },
+        condition_values=values,
+        switches=switches,
         start_columns=start_columns,
         column_starts=column_starts,
         pinned_starts=pinned_starts,
         measured_starts=measured_starts,
         experiment_ids=experiment_ids,
+        periods=periods,
         preequilibration=preequilibration,
         n_measurements=int(len(meas)),
         noise_parameters=_noise_parameters(meas, observables, nominal, estimated),
-        observable_parameters=_observable_parameters(pp, estimated),
+        observable_parameters=_observable_parameters(tables, estimated),
         scales=scales,
         horizon=horizon,
         warnings=tuple(dict.fromkeys(warnings)),
+        tables=tables,
     )
 
 
-def _symbols(formula: str) -> list[str]:
-    """Free symbols of a PEtab formula in order of appearance, placeholders excluded."""
-    names = [str(s) for s in sympify_petab(formula).free_symbols if not _PLACEHOLDER.match(str(s))]
+def _symbols(formula: str, placeholders=frozenset()) -> list[str]:
+    """Free symbols of a PEtab formula in order of appearance, ``placeholders`` excluded."""
+    names = [str(s) for s in sympify_petab(formula).free_symbols if str(s) not in placeholders]
     return sorted(names, key=formula.find)
 
 
 def _parameters(parameter_df) -> tuple[dict, dict]:
     """``{id: nominalValue}`` and ``{id: estimated}``; a row without a value counts as estimated."""
+    from petab_mcp.problem import as_bool  # noqa: PLC0415
+
     nominal, estimated = {}, {}
     if parameter_df is None or parameter_df.empty:
         return nominal, estimated
     for pid, row in parameter_df.iterrows():
         value = _as_float(row.get(C.NOMINAL_VALUE))
-        flag = row.get(C.ESTIMATE)
-        estimated[str(pid)] = value is None or bool(int(float(flag))) if not _blank(flag) else True
+        estimated[str(pid)] = value is None or as_bool(row.get(C.ESTIMATE))
         if value is not None:
             nominal[str(pid)] = value
     return nominal, estimated
@@ -344,13 +392,16 @@ def _parameters(parameter_df) -> tuple[dict, dict]:
 def _noise_parameters(meas, observables, nominal, estimated) -> tuple[str, ...]:
     """Distinct symbols the noise formulas resolve to that the parameter table estimates: a
     ``noiseFormula`` naming a parameter, or a placeholder the measurements override with one."""
+    from petab_mcp.problem import placeholder_ids, placeholders  # noqa: PLC0415
+
     found: dict[str, None] = {}
+    declared = placeholder_ids(observables)
     overrides = (
         meas[C.NOISE_PARAMETERS].astype(str)
         if C.NOISE_PARAMETERS in meas.columns
         else pd.Series([""] * len(meas))
     )
-    for _, row in observables.iterrows():
+    for oid, row in observables.iterrows():
         formula = "" if _blank(row.get(C.NOISE_FORMULA)) else str(row[C.NOISE_FORMULA])
         # Free symbols, not a regex over identifiers: `sigma * exp(-decay * time)` makes `exp` look
         # like a name, and since no parameter row carries it, the estimated-by-default rule below
@@ -363,8 +414,8 @@ def _noise_parameters(meas, observables, nominal, estimated) -> tuple[str, ...]:
             if formula.strip()
             else set()
         )
-        if any(_PLACEHOLDER.match(n) for n in names):
-            rows = (meas[C.OBSERVABLE_ID].astype(str) == str(row[C.OBSERVABLE_ID])).to_numpy()
+        if names & set(placeholders(observables, oid, "noise")):
+            rows = (meas[C.OBSERVABLE_ID].astype(str) == str(oid)).to_numpy()
             for cell in overrides[rows]:
                 names.update(
                     n
@@ -372,7 +423,7 @@ def _noise_parameters(meas, observables, nominal, estimated) -> tuple[str, ...]:
                     if _SYMBOL.fullmatch(n.strip())
                 )
         for symbol in sorted(names):
-            if not _PLACEHOLDER.match(symbol) and estimated.get(symbol, symbol not in nominal):
+            if symbol not in declared and estimated.get(symbol, symbol not in nominal):
                 found.setdefault(symbol)
     return tuple(found)
 
@@ -393,9 +444,11 @@ def _observable_parameters(source, estimated) -> tuple[str, ...]:
     return tuple(sorted(s for s in observable_scaling_ids(source) if estimated.get(s)))
 
 
-def _observed_scale(state, meas, formulas, nominal) -> float:
+def _observed_scale(state, meas, formulas, nominal, observables) -> float:
     """RMS of the measurements reading ``state``, each divided by its observable's gain in the
     state, so the number is the state's own magnitude rather than the readout's."""
+    from petab_mcp.problem import placeholders  # noqa: PLC0415
+
     parts = []
     for oid, formula in formulas.items():
         expr = sympify_petab(formula)
@@ -407,22 +460,24 @@ def _observed_scale(state, meas, formulas, nominal) -> float:
             if C.OBSERVABLE_PARAMETERS in rows.columns
             else pd.Series([None] * len(rows), index=rows.index)
         )
-        gains = {cell: _gain(expr, state, nominal, cell) for cell in cells.astype(str).unique()}
+        declared = placeholders(observables, oid, "observable")
+        gains = {
+            cell: _gain(expr, state, nominal, cell, declared) for cell in cells.astype(str).unique()
+        }
         parts.append(
             rows[C.MEASUREMENT].to_numpy(dtype=float) / cells.astype(str).map(gains).to_numpy()
         )
     return _rms(np.concatenate(parts)) if parts else 1.0
 
 
-def _gain(expr, state: str, nominal, cell) -> float:
+def _gain(expr, state: str, nominal, cell, placeholders=()) -> float:
     """The observable's slope in ``state``: the formula at ``state = 1`` less the formula at
-    ``state = 0``, with every parameter at its nominal, every placeholder at the row's override
-    and every other state at zero -- so an additive offset does not enter the scale."""
-    placeholders = sorted(
-        (str(s) for s in expr.free_symbols if _PLACEHOLDER.match(str(s))),
-        key=lambda n: int(re.search(r"\d+", n).group()),
+    ``state = 0``, with every parameter at its nominal, every declared placeholder at the row's
+    override and every other state at zero -- so an additive offset does not enter the scale."""
+    placeholders = list(placeholders)
+    overrides = (
+        [] if _blank(cell) or cell in ("None", "nan") else str(cell).split(C.PARAMETER_SEPARATOR)
     )
-    overrides = [] if _blank(cell) or cell == "None" else str(cell).split(C.PARAMETER_SEPARATOR)
     values = {}
     own = [symbol for symbol in expr.free_symbols if str(symbol) == state]
     for symbol in expr.free_symbols:
@@ -454,49 +509,93 @@ def _rms(values) -> float:
     return magnitude if magnitude > 0.0 else 1.0
 
 
-def _condition_values(
-    conditions, targets, experiment_ids, nominal, warnings
-) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
-    """Per column, one value per experiment: numeric cells as given, a parameter's name as its
-    nominal value; a missing row or cell reads as zero, and says so.
+def _changes(condition_df) -> dict[str, dict[str, Any]]:
+    """Condition -> ``{target: value}``, the long v2 table folded per condition."""
+    if condition_df is None or not len(condition_df):
+        return {}
+    return {
+        str(cid): {str(t): v for t, v in zip(rows[C.TARGET_ID], rows[C.TARGET_VALUE])}
+        for cid, rows in condition_df.groupby(C.CONDITION_ID, sort=False)
+    }
 
-    Also returns, per column, which experiments actually carried a value. Zero is a legitimate
-    start, so the values alone cannot say whether a cell was filled in -- and a start column with
-    a hole in it pins no start for that experiment, however the column is named.
+
+def _periods(experiment_df, experiment_ids, name) -> dict:
+    """Experiment -> its periods in time order, each ``(time, condition ids)``, the conditions of
+    one period applied together. A measurement without an experiment is simulated from the model's
+    own start, so its stand-in has one period at t=0 that applies nothing."""
+    periods: dict[str, tuple] = {}
+    if experiment_df is not None and len(experiment_df):
+        for eid, rows in experiment_df.groupby(C.EXPERIMENT_ID, sort=False):
+            by_time: dict[float, list[str]] = {}
+            for t, cid in zip(rows[C.TIME].astype(float), rows[C.CONDITION_ID]):
+                by_time.setdefault(float(t), [])
+                if not _blank(cid):
+                    by_time[float(t)].append(str(cid).strip())
+            periods[str(eid)] = tuple((t, tuple(c)) for t, c in sorted(by_time.items()))
+    missing = [e for e in experiment_ids if e != _SINGLE and e not in periods]
+    if missing:
+        raise ProblemError(
+            f"{name}: measurements name experiments {missing} the experiment table does not define"
+        )
+    periods[_SINGLE] = ((0.0, ()),)
+    return {e: periods[e] for e in experiment_ids}
+
+
+def _knobs(changes, targets, periods, preequilibration, nominal, warnings):
+    """Per experiment and per basal key, every target's value, a parameter's name read as its
+    nominal; per experiment, the targets set by the time it is simulated, and its later switches.
+
+    The values accumulate across periods, as v2 changes persist; a target nothing sets reads as
+    zero, and says so where an experiment sets none at all.
     """
-    values = {target: np.zeros(len(experiment_ids)) for target in targets}
-    given = {target: np.zeros(len(experiment_ids), dtype=bool) for target in targets}
-    for e, experiment in enumerate(experiment_ids):
-        if conditions is None or experiment not in conditions.index:
-            if targets:
-                warnings.append(f"experiment {experiment!r} has no condition row; knobs read as 0")
-            continue
-        for target in targets:
-            cell = conditions.loc[experiment, target]
-            value = _as_float(cell)
-            if value is not None:
-                given[target][e] = True
-            elif str(cell).strip() in nominal:
-                value = nominal[str(cell).strip()]
-                given[target][e] = True
-            else:
-                if not _blank(cell):
-                    warnings.append(
-                        f"{target}={cell!r} in {experiment!r} is not numeric; read as 0"
-                    )
-                value = 0.0
-            values[target][e] = value
-    return values, given
+
+    def value(target, cell, where):
+        number = _as_float(cell)
+        if number is not None:
+            return number
+        if str(cell).strip() in nominal:
+            return float(nominal[str(cell).strip()])
+        if not _blank(cell):
+            warnings.append(f"{target}={cell!r} in {where!r} is not numeric; read as 0")
+        return 0.0
+
+    values: dict[str, dict[str, float]] = {}
+    given: dict[str, set[str]] = {}
+    switches: dict[str, tuple] = {}
+    for experiment, sequence in periods.items():
+        applied: dict[str, float] = {}
+        later: list[tuple[float, dict[str, float]]] = []
+        for time, condition_ids in sequence:
+            for cid in condition_ids:
+                for target, cell in changes.get(cid, {}).items():
+                    applied[target] = value(target, cell, cid)
+            if time == C.TIME_PREEQUILIBRATION:
+                values[preequilibration[experiment]] = {t: applied.get(t, 0.0) for t in targets}
+            elif experiment not in values:
+                values[experiment] = {t: applied.get(t, 0.0) for t in targets}
+                given[experiment] = set(applied)
+            elif condition_ids:
+                later.append((time, {t: applied.get(t, 0.0) for t in targets}))
+        if experiment not in values:
+            raise ProblemError(f"experiment {experiment!r} has no period after pre-equilibration")
+        # An empty first period followed by a switch is how the server's conversion starts a
+        # converted protocol at t=0; only an experiment that never sets a knob is worth a word.
+        if targets and not given[experiment] and not later:
+            warnings.append(f"experiment {experiment!r} sets no condition target; knobs read as 0")
+        if later:
+            switches[experiment] = tuple(later)
+    return values, given, switches
 
 
-def _preequilibration(meas, experiment_ids, name) -> dict[str, str]:
-    """Experiment -> preequilibration condition, for every experiment or none."""
-    found: dict[str, str] = {}
-    for experiment, value in zip(
-        meas[C.SIMULATION_CONDITION_ID], meas[C.PREEQUILIBRATION_CONDITION_ID]
-    ):
-        if not _blank(value):
-            found.setdefault(str(experiment), str(value).strip())
+def _preequilibration(periods, experiment_ids, name) -> dict[str, str]:
+    """Experiment -> its basal key, for every experiment or none: the conditions its
+    pre-equilibration applies, joined, or :data:`_BASAL` where it applies none."""
+    found = {
+        e: "__".join(sorted(cids)) or _BASAL
+        for e in experiment_ids
+        for t, cids in periods[e]
+        if t == C.TIME_PREEQUILIBRATION
+    }
     if not found:
         return {}
     missing = [e for e in experiment_ids if e not in found]

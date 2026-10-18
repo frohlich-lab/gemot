@@ -32,7 +32,7 @@ class Config:
     """``interpreter`` holds the JAX stack (unset: run here if it imports, else refuse);
     ``pysr_interpreter`` holds PySR (unset: this interpreter); ``seconds`` is the clock for the
     whole route; ``threads`` above one lifts the inherited one-thread BLAS pinning;
-    ``dosed`` names condition columns that dose a
+    ``dosed`` names condition targets that dose a
     state where no naming convention says so; ``train`` and ``distil`` override the two config
     types field by field."""
 
