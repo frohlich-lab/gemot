@@ -620,7 +620,7 @@ async def _judge(
                 f"  held-out (validation): nll {validation['nll']:.6g} | true-model "
                 f"{validation['reference_nll']:.6g} | Δnll "
                 f"{validation['delta_nll']:+.6g}  over {validation['n']} point(s) in "
-                f"{validation.get('n_conditions')} unseen condition(s)  [report-only]"
+                f"{validation.get('n_experiments')} unseen experiment(s)  [report-only]"
             )
             # Explicitly non-None AND non-zero on the reference side: the ratio below divides by
             # it, so zero has to be excluded on purpose rather than by the accident of a

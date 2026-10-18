@@ -115,7 +115,10 @@ def _validation_fields(payload, reference, *, asked: bool = False) -> dict | Non
         "nll": payload.get("nll"),
         "n": payload.get("n"),
         "chi2": payload.get("chi2"),
-        "n_conditions": payload.get("n_conditions"),
+        # The server keys a held-out set by experiment since its move onto PEtab v2. No fallback
+        # to the old `n_conditions`: the pinned server never sends it, and the reference blocks
+        # that still carry it are never read for the count.
+        "n_experiments": payload.get("n_experiments"),
         "reference_status": ref_status,
         "reference_nll": ref_nll,
         "reference_chi2": ref_chi2,
