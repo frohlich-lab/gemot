@@ -131,6 +131,16 @@ def _content_is_empty(content: Any) -> bool:
     return False
 
 
+def _thinking_handoff(result: Any) -> dict | None:
+    """What agent.thinking recorded on the turn's terminal AI message, if it handed thinking back."""
+    msgs = getattr(result, "result", None) or ([result] if result is not None else [])
+    for m in reversed(list(msgs)):
+        if getattr(m, "type", None) == "ai":
+            record = (getattr(m, "response_metadata", None) or {}).get("thinking_handoff")
+            return record if isinstance(record, dict) else None
+    return None
+
+
 def _effort_is_set(request) -> bool:
     """Whether the run set its reasoning effort itself: ``reasoning`` in the request body,
     where --reasoning-effort puts it (driver._extra_body)."""
@@ -166,11 +176,23 @@ def _reasoning_runaway_guard(
         at detection, so ``reasoning_runaways`` counts events and ``reasoning_runaway_recovered``
         the subset that a retry rescued.
         """
+        handoff = _thinking_handoff(result) if rung == 0 else None
+        if handoff is not None:
+            # The model class already stopped this turn's thinking and handed it back
+            # (agent.thinking): counted here, from what it recorded.
+            stats["reasoning_runaways"] += 1
+            cutoffs = stats.setdefault("thinking_cutoffs", {})
+            cutoffs[handoff.get("reason")] = cutoffs.get(handoff.get("reason"), 0) + 1
+            if handoff.get("recovered"):
+                stats["reasoning_runaway_recovered"] += 1
+            if handoff.get("streamed") is False:
+                stats.setdefault("thinking_unstreamed_turns", 0)
+                stats["thinking_unstreamed_turns"] += 1
         if not _is_reasoning_runaway(result):
             if rung > 0:
                 stats["reasoning_runaway_recovered"] += 1
             return None
-        if rung == 0:
+        if rung == 0 and handoff is None:
             stats["reasoning_runaways"] += 1
         if rung >= len(ladder) or _effort_is_set(request):
             # Empty at every effort: hand it back honestly rather than loop. A run that set its
@@ -266,6 +288,10 @@ def new_guard_stats() -> dict[str, Any]:
         "reasoning_runaways": 0,
         "reasoning_runaway_recovered": 0,
         "reasoning_runaway_retry_errors": 0,
+        # agent.thinking: turns whose thinking was stopped, by why (repetition, budget, or the
+        # provider's own length cap), and how many of them a model that would not stream ran.
+        "thinking_cutoffs": {},
+        "thinking_unstreamed_turns": 0,
         # driver-side: how often the stall watchdog could not read the graph state (it then
         # falls back to the run-default fit window, so a non-zero count means some step was
         # sized by the default rather than by its pending fit).
