@@ -53,9 +53,12 @@ def write_held_out(
     return directory / "measurements.tsv"
 
 
-def write_v2_held_out(directory: Path, *, basal: str | None = None, dose: str = "init_E") -> Path:
+def write_v2_held_out(
+    directory: Path, *, basal: str | None = None, dose: str = "init_E", switch: bool = False
+) -> Path:
     """A native v2 fixed-θ set: experiment ``e_new`` applying ``c_new``, which sets new values of
-    the training targets, after ``basal``'s pre-equilibration where one is given."""
+    the training targets, after ``basal``'s pre-equilibration where one is given; with ``switch``,
+    a later period at t=1 sets ``drug`` again, as a protocol moved into the experiment table does."""
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "measurements.tsv").write_text(
         "experimentId\tobservableId\ttime\tmeasurement\tnoiseParameters\n"
@@ -64,6 +67,11 @@ def write_v2_held_out(directory: Path, *, basal: str | None = None, dose: str = 
     )
     write_v2_conditions(directory / "conditions.tsv", {"c_new": (4.0, 1.0, 2.0)}, dose)
     write_v2_experiments(directory / "experiments.tsv", {"e_new": "c_new"}, basal)
+    if switch:
+        with (directory / "conditions.tsv").open("a") as table:
+            table.write("c_drug\tdrug\t6.0\n")
+        with (directory / "experiments.tsv").open("a") as table:
+            table.write("e_new\t1.0\tc_drug\n")
     return directory / "measurements.tsv"
 
 
@@ -257,9 +265,11 @@ def _twin(staged: S.Staged, weights, starts: dict[str, str]) -> str:
 def test_the_held_out_nll_is_the_servers_at_the_same_point(tmp_path):
     """The field's held-out nll is the one the server's `evaluate_validation_data` computes for the
     same model at the same point -- here the field written out as an SBML twin -- on a native v2
-    set that pre-equilibrates. The two read one held-out view, built by the server's own functions
-    (`as_v2`, `_with_held_out_design`), and differ only in the integrator: AMICI's JAX backend
-    against SUNDIALS, so the tolerance is the server's own for solver error."""
+    set that pre-equilibrates and then switches its input mid-run, the shape the benchmark's
+    protocols take once they live in the experiment table. The two read one held-out view, built by
+    the server's own functions (`as_v2`, `_with_held_out_design`), and differ only in the
+    integrator: AMICI's JAX backend against SUNDIALS, so the tolerance is the server's own for
+    solver error. The field reads `drug`, so a switch either side ignored would show in the nll."""
     from types import SimpleNamespace
 
     import equinox as eqx
@@ -272,7 +282,9 @@ def test_the_held_out_nll_is_the_servers_at_the_same_point(tmp_path):
     problem = P.load(yaml_path, dosed=("S", "E"))
     config = T.TrainConfig(width=4, depth=1)
     staged = T.stage_only(problem, tmp_path / "field", config)
-    held_out = read_held_out(write_v2_held_out(tmp_path / "validation", basal="c_basal", dose="E"))
+    held_out = read_held_out(
+        write_v2_held_out(tmp_path / "validation", basal="c_basal", dose="E", switch=True)
+    )
     prepared = H.prepare(
         SimpleNamespace(staged=staged, config=config),
         held_out,
@@ -282,6 +294,8 @@ def test_the_held_out_nll_is_the_servers_at_the_same_point(tmp_path):
     assert not isinstance(prepared, dict), prepared
     # The starts the route stages: P's pre-equilibration start is the one scalar it estimates.
     assert prepared.ids == ["P_0_c_basal"]
+    periods = pd.read_csv(prepared.staged.directory / "experiments.tsv", sep="\t")
+    assert periods["conditionId"].tolist() == ["start_c_basal", "c_new", "c_drug"]
 
     weights = _settling_field(staged)
     networks = prepared.imported.model.nns
