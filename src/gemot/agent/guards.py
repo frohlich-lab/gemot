@@ -52,9 +52,9 @@ _MAX_IDLE_MODEL_STEPS = 3  # consecutive no-tool turns to push back on before gi
 
 
 #: Effort ladder for a reasoning runaway. Each retry steps DOWN one rung; the run keeps its
-#: normal effort everywhere else.
-#: Starts at "low", NOT "medium". Without --reasoning-effort the baseline is the provider
-#: default — and for the gpt-5 family (luna, luna-pro, terra) that default IS medium.
+#: normal (provider-default) effort everywhere else.
+#: Starts at "low", NOT "medium". The driver sets no reasoning_effort, so the baseline is the
+#: provider default — and for the gpt-5 family (luna, luna-pro, terra) that default IS medium.
 #: A "medium" first rung would re-issue a semantically identical request and burn a second
 #: full-budget call (~25 min, ~65k completion tokens on the measured runaways) with no chance
 #: of recovering from it. "low" is a real change on every model in the panel; the second rung
@@ -130,6 +130,14 @@ def _content_is_empty(content: Any) -> bool:
     return False
 
 
+def _effort_is_set(request) -> bool:
+    """Whether the run set its reasoning effort itself: ``reasoning`` in the request body,
+    where --reasoning-effort puts it (driver._extra_body)."""
+    settings = getattr(request, "model_settings", None) or {}
+    body = settings.get("extra_body") or getattr(getattr(request, "model", None), "extra_body", None)
+    return isinstance(body, dict) and "reasoning" in body
+
+
 def _reasoning_runaway_guard(
     stats: dict[str, Any], *, ladder: "tuple[str, ...]" = _RUNAWAY_EFFORT_LADDER
 ):
@@ -144,17 +152,7 @@ def _reasoning_runaway_guard(
 
     def _retry_settings(request, effort):
         settings = dict(getattr(request, "model_settings", None) or {})
-        body = settings.get("extra_body") or getattr(getattr(request, "model", None), "extra_body", None)
-        if isinstance(body, dict) and "reasoning" in body:
-            # The run set its reasoning in the body (--reasoning-effort, or the model's own
-            # entry, see driver._extra_body), so the retry lowers it THERE. A top-level
-            # reasoning_effort beside it is a conflicting value OpenRouter refuses (400), which
-            # left every runaway at max effort unrecovered. A call's extra_body replaces the
-            # model's whole body rather than merging into it, hence the copy: the provider pin and
-            # the usage flag ride along unchanged.
-            settings["extra_body"] = {**body, "reasoning": {"effort": effort}}
-        else:
-            settings["reasoning_effort"] = effort
+        settings["reasoning_effort"] = effort
         return settings
 
     def _ladder_step(rung, request, result):
@@ -173,8 +171,12 @@ def _reasoning_runaway_guard(
             return None
         if rung == 0:
             stats["reasoning_runaways"] += 1
-        if rung >= len(ladder):
-            return None  # empty at every effort: hand it back honestly rather than loop
+        if rung >= len(ladder) or _effort_is_set(request):
+            # Empty at every effort: hand it back honestly rather than loop. A run that set its
+            # own effort (--reasoning-effort) is never retried at another: effort is then the
+            # variable under test, and a max-effort run rescued at "low" is no longer one. The
+            # runaway is counted and the empty turn handed back, which the idle nudge answers.
+            return None
         effort = ladder[rung]
         print(
             f"[reasoning guard] the model spent its whole completion budget thinking "

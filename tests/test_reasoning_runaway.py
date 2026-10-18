@@ -101,26 +101,24 @@ def test_ladder_retries_at_reduced_effort_and_recovers():
     assert stats["reasoning_runaway_recovered"] == 1
 
 
-def test_a_run_with_reasoning_in_its_body_lowers_it_there():
-    # --reasoning-effort sends `reasoning: {effort: max}` in the body. A top-level
-    # reasoning_effort beside it is a conflicting value OpenRouter refuses with a 400 (GLM at max,
-    # sweep_indra_glm13 blasi r2), so the retry lowers the body's own field, keeping the rest of it.
+def test_a_run_that_set_its_effort_is_never_retried_at_another():
+    # --reasoning-effort puts `reasoning: {effort: max}` in the body; effort is then the variable
+    # under test, so a runaway is counted and handed back, not rescued at "low" (as PEtabAgentGym).
     stats = new_guard_stats()
     guard = _reasoning_runaway_guard(stats)
-    body = {"usage": {"include": True}, "provider": {"only": ["x"]}, "reasoning": {"effort": "max"}}
     request = _Request()
-    request.model = type("_Model", (), {"extra_body": body})()
-    seen: list = []
+    request.model = type("_Model", (), {"extra_body": {"reasoning": {"effort": "max"}}})()
+    calls: list = []
 
     async def handler(request):
-        seen.append(dict(request.model_settings or {}))
-        return _resp(content="") if len(seen) == 1 else _resp(content="ok", finish="stop")
+        calls.append(request)
+        return _resp(content="")
 
     out = asyncio.run(guard.awrap_model_call(request, handler))
-    assert not _is_reasoning_runaway(out)
-    assert seen[0] == {}
-    assert seen[1] == {"extra_body": {**body, "reasoning": {"effort": "low"}}}
-    assert body["reasoning"] == {"effort": "max"}  # the model's own body is not touched
+    assert _is_reasoning_runaway(out)
+    assert len(calls) == 1
+    assert stats["reasoning_runaways"] == 1
+    assert stats["reasoning_runaway_recovered"] == 0
 
 
 def test_ladder_is_bounded_when_every_effort_fails():
