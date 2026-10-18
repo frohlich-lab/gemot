@@ -52,9 +52,9 @@ _MAX_IDLE_MODEL_STEPS = 3  # consecutive no-tool turns to push back on before gi
 
 
 #: Effort ladder for a reasoning runaway. Each retry steps DOWN one rung; the run keeps its
-#: normal (provider-default) effort everywhere else.
-#: Starts at "low", NOT "medium". The driver sets no reasoning_effort, so the baseline is the
-#: provider default — and for the gpt-5 family (luna, luna-pro, terra) that default IS medium.
+#: normal effort everywhere else.
+#: Starts at "low", NOT "medium". Without --reasoning-effort the baseline is the provider
+#: default — and for the gpt-5 family (luna, luna-pro, terra) that default IS medium.
 #: A "medium" first rung would re-issue a semantically identical request and burn a second
 #: full-budget call (~25 min, ~65k completion tokens on the measured runaways) with no chance
 #: of recovering from it. "low" is a real change on every model in the panel; the second rung
@@ -144,7 +144,17 @@ def _reasoning_runaway_guard(
 
     def _retry_settings(request, effort):
         settings = dict(getattr(request, "model_settings", None) or {})
-        settings["reasoning_effort"] = effort
+        body = settings.get("extra_body") or getattr(getattr(request, "model", None), "extra_body", None)
+        if isinstance(body, dict) and "reasoning" in body:
+            # The run set its reasoning in the body (--reasoning-effort, or the model's own
+            # entry, see driver._extra_body), so the retry lowers it THERE. A top-level
+            # reasoning_effort beside it is a conflicting value OpenRouter refuses (400), which
+            # left every runaway at max effort unrecovered. A call's extra_body replaces the
+            # model's whole body rather than merging into it, hence the copy: the provider pin and
+            # the usage flag ride along unchanged.
+            settings["extra_body"] = {**body, "reasoning": {"effort": effort}}
+        else:
+            settings["reasoning_effort"] = effort
         return settings
 
     def _ladder_step(rung, request, result):
