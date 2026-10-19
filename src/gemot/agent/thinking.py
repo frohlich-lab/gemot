@@ -14,7 +14,8 @@ usable action, in seconds.
    calls that thought past 32k tokens ended in a tool call).
 2. The HAND-OFF: the same conversation, the thinking so far as the model's own text, and one
    instruction (:data:`HANDOFF`) -- state the gist, then make the next tool call -- with thinking
-   off. Its answer becomes the model's turn, so the next turn need not re-derive the analysis.
+   off and the call's own output budget: no cap of its own. Its answer becomes the model's turn,
+   so the next turn need not re-derive the analysis.
 3. A model whose host refuses to stream is called whole, once refused (:data:`NO_STREAM`): it cannot
    be stopped early, but a truncated call's thinking (OpenRouter's ``reasoning``) is handed back
    all the same.
@@ -38,8 +39,6 @@ from typing import Any
 REPEAT_N, REPEAT_WINDOW, REPEAT_STEP, REPEAT_SHARE = 8, 2000, 2000, 0.5
 #: Fewest shingles in the window before the share is read at all.
 REPEAT_MIN = 50
-#: Output cap of the hand-off: a gist and a tool call, even from a model that thinks regardless.
-HANDOFF_MAX_TOKENS = 32_768
 HANDOFF = (
     "Your thinking budget for this step is used up; the text above is your reasoning so far. "
     "Without further deliberation: first state in a few sentences the gist of your analysis -- "
@@ -346,7 +345,7 @@ async def generate(llm: Any, plain, stream, messages, stop=None, run_manager=Non
         try:
             reply, hcap, hstopped = await _call(
                 llm, plain, stream, handoff, stop, run_manager,
-                {**kwargs, "extra_body": body, "max_tokens": HANDOFF_MAX_TOKENS}, Watch(),
+                {**kwargs, "extra_body": body}, Watch(),
             )
         except Exception as exc:
             if not known and _is_bad_request(exc):

@@ -98,7 +98,8 @@ def test_a_looping_stream_is_stopped_and_its_thinking_handed_back(monkeypatch):
     assert isinstance(handoff[-2], AIMessage) and handoff[-2].content.startswith("Let me reconsider")
     assert handoff[-1].content == thinking.HANDOFF
     assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
-    assert kwargs["max_tokens"] == thinking.HANDOFF_MAX_TOKENS
+    # The hand-off asks for the same output budget as the call it answers: no cap of its own.
+    assert kwargs.get("max_tokens") == sent[0][1].get("max_tokens")
     # Both calls are on the bill: the stopped stream's from /generation, the hand-off's own.
     assert msg.response_metadata["token_usage"]["cost"] == pytest.approx(0.012)
     assert msg.usage_metadata["output_tokens"] == 5020
