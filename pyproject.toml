@@ -51,6 +51,10 @@ dependencies = [
     "amici>=1.1",
     "pypesto[petab]>=0.5",
     "fides>=0.7",
+    # Promised to the barebones agent's sandbox by name (BAREBONES_SYSTEM_PROMPT_TMPL), and
+    # nothing above brings it. 1.4.2 is the first release built against NumPy 2; an older one
+    # fails to import beside the numpy 2 this environment resolves.
+    "scikit-learn>=1.4.2",
 ]
 
 [project.optional-dependencies]
