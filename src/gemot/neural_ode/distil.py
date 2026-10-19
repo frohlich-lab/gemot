@@ -16,7 +16,7 @@ The regression runs in normalised units, the network's own; the emitted model is
 with ``z = y / s`` and a regressed ``dz/dt = g(z, u)``, ``dy/dt = s / horizon * g(y / s, u / r)``,
 and every fitted constant of the data-unit expression becomes a named parameter seeded at its
 value, shared where one magnitude appears in two equations, integers left as structure. Species
-keep their names, so the shipped observables apply unchanged; the condition columns are declared
+keep their names, so the shipped observables apply unchanged; the condition targets are declared
 as parameters the condition table sets; a protocol stays an assignment rule.
 
 PySR is optional: without it the result says so and carries no model.
@@ -214,8 +214,7 @@ def sample(
             columns.append(by_name[name] / staged.scales[name])
         elif name in problem.inputs:
             columns.append(
-                np.array([problem.condition_values[e][name] for e in experiments[draw]])
-                / staged.scales[name]
+                _input_values(problem, name, experiments[draw], times[draw]) / staged.scales[name]
             )
         else:
             columns.append(
@@ -254,15 +253,22 @@ def _network_inputs(features: np.ndarray, staged: S.Staged) -> np.ndarray:
 def _protocol_values(
     problem: Problem, target: str, times: np.ndarray, experiments: np.ndarray
 ) -> np.ndarray:
-    """A protocol's value at each sample, from its formula over time and its condition columns."""
-    from petab.math import sympify_petab  # noqa: PLC0415
+    """A protocol's value at each sample, from its formula over time and its condition targets."""
+    item = next(t for t in problem.timed_inputs if t.id == target)
+    values = {c: _input_values(problem, c, experiments, times) for c in item.targets}
+    return item.evaluate(values, times)
 
-    item = next(t for t in problem.timed_inputs if t.target == target)
-    expr = sympify_petab(item.formula)
-    symbols = [sp.Symbol("time"), *(sp.Symbol(c) for c in item.columns)]
-    fn = sp.lambdify(symbols, expr, modules=["numpy"])
-    values = np.array([[problem.condition_values[e][c] for c in item.columns] for e in experiments])
-    return np.asarray([float(fn(t, *row)) for t, row in zip(times, values)])
+
+def _input_values(
+    problem: Problem, name: str, experiments: np.ndarray, times: np.ndarray
+) -> np.ndarray:
+    """Input ``name`` at each sample: its experiment's value at the sample's time, so a later
+    period that sets it again is followed (:meth:`Problem.input_values`)."""
+    out = np.empty(len(experiments))
+    for experiment in dict.fromkeys(experiments):
+        rows = experiments == experiment
+        out[rows] = problem.input_values(str(experiment), name, times[rows])
+    return out
 
 
 def _regress(features, derivatives, placeholders, config: DistilConfig) -> list[dict]:
@@ -370,7 +376,7 @@ def emit(
         lines.append("  // per-condition experimental inputs, set by the condition table")
         lines.append("  " + "; ".join(f"{u} = 0" for u in problem.inputs) + ";")
     for item in problem.timed_inputs:
-        lines.append(f"  {item.target} := {item.formula};")
+        lines.append(f"  {item.rule};")
     readouts = [(name, emitted[name]) for name in species if emitted[name] != name]
     if readouts:
         lines.append("  // measurement mappings: the observables reference readout_*")
@@ -433,10 +439,10 @@ def _name_constants(expression: sp.Expr, existing: list[tuple[str, float]]) -> t
 def _species_id(name: str, states, problem: Problem) -> str:
     """The id a state is emitted under: its own, unless it carries a ``readout_`` prefix, which
     belongs to the assignment rule instead. Suffixed until it collides with nothing else named in
-    the model -- another state, a condition column, a protocol target."""
+    the model -- another state, a condition target, a protocol target."""
     if not name.startswith(READOUT_PREFIX):
         return name
-    taken = {*states, *problem.inputs, *(item.target for item in problem.timed_inputs)}
+    taken = {*states, *problem.inputs, *(item.id for item in problem.timed_inputs)}
     candidate = base = f"s_{name[len(READOUT_PREFIX) :]}"
     while candidate in taken:
         candidate = f"{base}_"

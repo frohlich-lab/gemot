@@ -20,24 +20,25 @@ def test_training_fits_counts_and_simulates(tmp_path):
     # k is what PEtab estimates besides the weights: the latent's two starts (the readout scale
     # factor is fixed by the staging).
     assert result.n_ode_parameters == 2
-    assert set(result.parameters) == {"z1_0_c_lo", "z1_0_c_hi"}
+    lo, hi = problem.experiment_ids
+    assert set(result.parameters) == {f"z1_0_{lo}", f"z1_0_{hi}"}
     assert all(v > 0 for v in result.parameters.values())
     assert result.n_network_weights == result.staged.n_weights and result.steps_run == 60
     assert result.config.key() == "aug1_w4d1_s0"
     assert result.stage_objectives == (result.nll,) and result.notes == ()
 
     trajectories = T.trajectories(result, n_times=10)
-    assert set(trajectories) == {"c_lo", "c_hi"}
-    assert trajectories["c_lo"]["states"].shape == (10, 5) and T.state_names(result) == (
+    assert set(trajectories) == {lo, hi}
+    assert trajectories[lo]["states"].shape == (10, 5) and T.state_names(result) == (
         "P",
         "Q",
         "S",
         "E",
         "z1",
     )
-    assert trajectories["c_hi"]["times"][-1] == pytest.approx(problem.horizon)
+    assert trajectories[hi]["times"][-1] == pytest.approx(problem.horizon)
     # The dosed starts are the condition table's, so the simulated start is the dose.
-    assert trajectories["c_hi"]["states"][0, 2] == pytest.approx(8.0)
+    assert trajectories[hi]["states"][0, 2] == pytest.approx(8.0)
 
 
 def test_curriculum_multiple_shooting_runs_its_stages_and_ends_single_shooting(tmp_path):
@@ -53,6 +54,7 @@ def test_curriculum_multiple_shooting_runs_its_stages_and_ends_single_shooting(t
     # The final problem is the staged one: its k has no window starts, the stage before does.
     assert result.n_ode_parameters == 0 and result.parameters == {}
     stage1 = tmp_path / "run" / "curriculum" / "stage1"
+    hi = problem.experiment_ids[1]
     parameters = pd.read_csv(stage1 / "parameters.tsv", sep="\t").set_index("parameterId")
     windows = [p for p in parameters.index if p.startswith("WINDOW1_")]
     assert windows and all("_PARAMETER_" in p for p in windows) and (stage1 / "net1.py").exists()
@@ -60,15 +62,15 @@ def test_curriculum_multiple_shooting_runs_its_stages_and_ends_single_shooting(t
     # where the window starts (P at t=0.5 in c_hi is 0.9), an unmeasured state at its guess.
     assert (
         pd.read_csv(stage1 / "experiments.tsv", sep="\t")
-        .query("experimentId == 'WINDOW1_EXPERIMENT_c_hi'")["time"]
+        .query(f"experimentId == 'WINDOW1_EXPERIMENT_{hi}'")["time"]
         .min()
         == 0.5
     )
     assert float(
-        parameters.loc["WINDOW1_EXPERIMENT_c_hi_PARAMETER_P", "nominalValue"]
+        parameters.loc[f"WINDOW1_EXPERIMENT_{hi}_PARAMETER_P", "nominalValue"]
     ) == pytest.approx(0.9)
     assert float(
-        parameters.loc["WINDOW1_EXPERIMENT_c_hi_PARAMETER_S", "nominalValue"]
+        parameters.loc[f"WINDOW1_EXPERIMENT_{hi}_PARAMETER_S", "nominalValue"]
     ) == pytest.approx(0.1 * problem.scales["S"])
 
 
@@ -262,7 +264,8 @@ def test_checkpoints_record_the_best_so_far_and_reconstruct_a_scorable_result(tm
     assert stand_in.nll == early.nll and stand_in.parameters == early.parameters
     assert stand_in.staged is result.staged and stand_in.config is result.config
     assert stand_in.checkpoints == ()
-    assert T.trajectories(stand_in, n_times=4)["c_lo"]["states"].shape == (4, 5)
+    lo = problem.experiment_ids[0]
+    assert T.trajectories(stand_in, n_times=4)[lo]["states"].shape == (4, 5)
 
 
 def test_checkpoints_are_refused_where_a_step_is_not_a_budget(tmp_path):

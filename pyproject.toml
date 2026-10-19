@@ -26,10 +26,11 @@ dependencies = [
     # developing both at once.
     # PEtab-MCP main as of its move onto PEtab v2 (frohlich-lab/PEtab-MCP#4, #5) and its dask/SLURM
     # fits (#34): the first commit whose tables, tools and held-out sets this harness's v2 port
-    # reads (`petab_mcp.problem`, `validation_data.as_v2`), so nothing before it will do. Interim:
-    # move to the commit that also pins pyPESTO#1786 merged with main and libpetab#557, and merges
-    # the INDRA stack (#28-#36), before this lands.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@0a181cc31af286a58a523c43c8fbd9710f7a1744",
+    # reads (`petab_mcp.problem`, `validation_data.as_v2`), so nothing before it will do; and
+    # `petab_mcp.protocols` (frohlich-lab/PEtab-MCP#72), which reads every input protocol, at its
+    # PR head until it merges. Interim: move to the commit that also pins pyPESTO#1786 merged with
+    # main and libpetab#557, and merges the INDRA stack (#28-#36), before this lands.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@25940844b6871cf9a59ef17b680775abdf13e2f0",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
     # deleted, and mcp 2.0 reworks the client API used here (streamablehttp_client ->

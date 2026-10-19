@@ -1,6 +1,6 @@
 """Propose ODE models by training a neural vector field and distilling it into rate laws.
 
-:func:`propose` takes a PEtab v1 problem directory and a :class:`Config` and returns an
+:func:`propose` takes a PEtab problem directory and a :class:`Config` and returns an
 :class:`Outcome`: Antimony proposals with the record of how each was made, or one
 :class:`Refusal` saying why nothing was proposed. It fits nothing itself and reports no
 likelihood; the distilled model is scored downstream by refitting it on the data, and the
@@ -304,7 +304,7 @@ def propose(
     train_config=None,
     distil_config=None,
 ) -> Outcome:
-    """Train a neural ODE on a PEtab v1 problem, distil it, return the distilled models.
+    """Train a neural ODE on a PEtab problem, distil it, return the distilled models.
 
     ``seconds`` overrides :attr:`Config.seconds` as the clock for the whole route. Refuses on
     settled data, an absent yaml, a problem the reader cannot make consistent, an absent JAX
