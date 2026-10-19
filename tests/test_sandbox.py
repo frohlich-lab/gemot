@@ -9,15 +9,19 @@ command and not merely ``bwrap``, and that a node without bubblewrap is refused 
 
 from __future__ import annotations
 
-import shutil
+import os
 from pathlib import Path
 
 import pytest
 
 from gemot.agent import sandbox as S  # noqa: E402
 
+#: Skipped where there is no bubblewrap (macOS: the sandbox is Linux-only by design), but never
+#: under CI: there a missing bwrap fails `sandbox_preflight` and a broken one fails it with bwrap's
+#: own error. Every isolation check below skipped green in CI until ci.yml installed bubblewrap.
 requires_bwrap = pytest.mark.skipif(
-    shutil.which("bwrap") is None, reason="bubblewrap not installed on this node"
+    S._bwrap_binary() is None and not os.environ.get("CI"),
+    reason="bubblewrap not installed on this node",
 )
 
 

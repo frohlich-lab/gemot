@@ -53,6 +53,20 @@ jobs:
           sudo apt-get install -y --no-install-recommends ninja-build cmake build-essential
           sudo apt-get install -y libhdf5-dev  # with its recommends, as AMICI's own CI does
 
+      # tests/test_sandbox.py runs the barebones agent's shell under bubblewrap and checks what it
+      # must not reach (the example directory above the workspace, $HOME, the network, the
+      # harness source). Those tests skip where bwrap is absent, but not under CI: there a missing
+      # or broken bwrap FAILS them, so this step is what keeps them running rather than skipped.
+      # Ubuntu 24.04 lets an unprivileged process create a user namespace only under an AppArmor
+      # profile that strips its capabilities, and bwrap cannot build a sandbox in one; lift that
+      # restriction on this throwaway VM, as `sandbox_preflight` requires of every node that runs
+      # an agent shell. The last line proves a sandbox starts before any test relies on it.
+      - name: Install bubblewrap (the agent shell's sandbox)
+        run: |
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --unshare-all --ro-bind / / --proc /proc --dev /dev true
+
       # petab-mcp is a git dependency on a PRIVATE repository (pyproject.toml), which this job's
       # GITHUB_TOKEN cannot read: fetch that one URL over SSH with a read-only deploy key of that
       # repository, held here as a secret.
