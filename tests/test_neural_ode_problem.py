@@ -265,7 +265,7 @@ def test_a_later_period_that_sets_an_input_again_is_followed(tmp_path):
 
 
 def test_an_offset_does_not_enter_a_states_scale():
-    from petab.math import sympify_petab
+    from petab.v1.math import sympify_petab
 
     assert P._gain(sympify_petab("offset + 2 * Q"), "Q", {"offset": 5.0}, None) == 2.0
     assert (

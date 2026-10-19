@@ -254,7 +254,7 @@ def _protocol_values(
     problem: Problem, target: str, times: np.ndarray, experiments: np.ndarray
 ) -> np.ndarray:
     """A protocol's value at each sample, from its formula over time and its condition targets."""
-    from petab.math import sympify_petab  # noqa: PLC0415
+    from petab.v1.math import sympify_petab  # noqa: PLC0415
 
     item = next(t for t in problem.timed_inputs if t.target == target)
     expr = sympify_petab(item.formula)
