@@ -14,14 +14,18 @@ re-estimates its own dynamics (crauste's bar refits all twelve rate constants pe
 refits c and delta). The old code did exactly that and reported it as `transfer`, so the two sides
 of every such comparison were doing different tasks and the field was doing the harder one.
 
-The held-out measurements are staged as a PEtab SciML problem in the TRAINING design -- its
-scales, horizon, latents, network and weights -- because the field is only defined in those
-units; a set whose states or inputs differ from the training set's is ``table_mismatch``, exactly
-as the server refuses a condition column it has not seen. Fixed-θ also needs every scalar the
-held-out problem estimates to be one the training run fitted: shared starts, or starts the
-held-out data pin. Where that fails, the scalars are refit and the payload says ``transfer``, so
-nothing downstream subtracts it from a fixed-θ bar. A transfer set's readout scale factors are
-refit too: another system's scalings are not the training ones, which is the set's whole point.
+The held-out set, PEtab v2 and so keyed by experiment, is laid onto the training problem exactly as
+the server lays it on for the panel's model -- ``_with_held_out_design`` adds its conditions and
+experiments to the training ones and refuses what would redefine them -- so the two scorers read
+one held-out problem. That view is staged as a PEtab SciML problem in the TRAINING design -- its
+scales, horizon, latents, network and weights -- because the field is only defined in those units;
+a set whose states or inputs differ from the training set's is ``table_mismatch``, exactly as the
+server refuses a condition target it has not seen. Fixed-θ also needs every scalar the held-out
+problem estimates to be one the training run fitted: shared starts, starts the held-out data pin,
+or the start of a pre-equilibration the training experiments share. Where that fails, the scalars
+are refit and the payload says ``transfer``, so nothing downstream subtracts it from a fixed-θ bar.
+A transfer set's readout scale factors are refit too: another system's scalings are not the
+training ones, which is the set's whole point.
 
 Report-only, like the server's: nothing here gates anything.
 """
@@ -30,10 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
-import shutil
 from pathlib import Path
-
-import pandas as pd
 
 from . import problem as P
 from . import stage as S
@@ -84,7 +85,7 @@ def prepare(
             "reference bar answers, so no number is reported",
         }
     try:
-        problem = _held_out_problem(training, held_out, directory / "v1")
+        problem = _held_out_problem(training, held_out)
         staged = S.stage(
             problem,
             directory / "staged",
@@ -152,78 +153,34 @@ def score(result: T.TrainResult, held_out, directory: Path | str, *, training: P
     return score_prepared(prepared, result.problem.model.nns, result.parameters)
 
 
-def _held_out_problem(training: P.Problem, held_out, directory: Path) -> P.Problem:
-    """The held-out set as a PEtab v1 problem beside the training tables: the measurements are the
-    set's, the conditions gain the set's rows, everything else is the training problem's. Fixed-θ
-    only; :func:`prepare` refuses a transfer set before this.
+def _held_out_problem(training: P.Problem, held_out) -> P.Problem:
+    """The held-out set as the server's view of the training problem: its measurements, its
+    conditions and experiments added to the training ones, everything else the training problem's.
+    Fixed-θ only; :func:`prepare` refuses a transfer set before this.
 
-    The set is read as the server reads it (:func:`petab_mcp.validation_data.read_held_out`), so
-    its condition table is v2's long one whatever its files are. The route stages v1 problems
-    (:mod:`.problem`), so those rows go back into v1's columns, one per target. A set keyed by
-    experiment, a native v2 one, has no v1 form and is refused.
+    The view is built by the server's own functions, so a set the server would score is one the
+    field is scored on, and a set it refuses is refused here with its reason.
     """
-    import petab.v1 as petab  # noqa: PLC0415
-    from petab.v1 import C  # noqa: PLC0415
-    from petab.v1.yaml import load_yaml  # noqa: PLC0415
-
-    measurements = held_out.measurement_df
-    if held_out.experiment_df is not None or C.SIMULATION_CONDITION_ID not in measurements:
-        raise P.ProblemError(
-            "the held-out set names experiments, not conditions (PEtab v2); the neural route "
-            "stages PEtab v1 problems, so the set has no form it can score"
-        )
-    source = petab.Problem.from_yaml(str(training.source))
-    directory.mkdir(parents=True, exist_ok=True)
-    petab.write_measurement_df(measurements, str(directory / "measurements.tsv"))
-    petab.write_observable_df(source.observable_df, str(directory / "observables.tsv"))
-    conditions = source.condition_df
-    if held_out.condition_df is not None:
-        if conditions is None:
-            raise P.ProblemError(
-                "the held-out set brings a condition table but the training problem has none, so "
-                "there are no inputs to line the two up by"
-            )
-        mine = conditions.drop(columns=[C.CONDITION_NAME], errors="ignore")
-        named = {
-            str(c)
-            for column in (C.SIMULATION_CONDITION_ID, C.PREEQUILIBRATION_CONDITION_ID)
-            if column in measurements
-            for c in measurements[column].dropna()
-            if str(c)
-        }
-        theirs = _v1_conditions(held_out.condition_df, named - set(map(str, mine.index)))
-        new = sorted(set(map(str, theirs.columns)) - set(map(str, mine.columns)))
-        if new:
-            raise P.ProblemError(
-                f"the held-out conditions set {new}, which no training condition sets; a "
-                "condition target is an input, so the two tables describe different fields"
-            )
-        conditions = pd.concat([mine, theirs.reindex(columns=mine.columns)])
-    petab.write_condition_df(conditions, str(directory / "conditions.tsv"))
-    petab.write_parameter_df(source.parameter_df, str(directory / "parameters.tsv"))
-    document = load_yaml(str(training.source))
-    model = training.source.parent / document["problems"][0]["sbml_files"][0]
-    shutil.copy(model, directory / "model.xml")
-    protocols = training.source.parent / "inputs.tsv"
-    if protocols.is_file():
-        shutil.copy(protocols, directory / "inputs.tsv")
-    (directory / "problem.yaml").write_text(
-        "format_version: 1\nparameter_file: parameters.tsv\nproblems:\n- sbml_files: [model.xml]\n"
-        "  condition_files: [conditions.tsv]\n  measurement_files: [measurements.tsv]\n"
-        "  observable_files: [observables.tsv]\n"
+    from petab_mcp.validation_data import (  # noqa: PLC0415
+        _table_mismatch,
+        _with_held_out_design,
     )
-    return P.load(directory, name=f"{training.name}_held_out", dosed=training.dosed)
 
-
-def _v1_conditions(condition_df, empty: "set[str]") -> pd.DataFrame:
-    """A v2 condition table in v1's shape: indexed by condition, one column per target. v2 has no
-    row for a condition that changes nothing; each id in ``empty`` comes back as an empty row, as
-    v1 has it."""
-    from petab.v2.C import CONDITION_ID, TARGET_ID, TARGET_VALUE  # noqa: PLC0415
-
-    wide = condition_df.pivot(index=CONDITION_ID, columns=TARGET_ID, values=TARGET_VALUE)
-    wide.columns.name = None
-    return wide.reindex(wide.index.union(sorted(empty)))
+    view = training.tables.replace(measurement_df=held_out.measurement_df)
+    for name in ("condition_df", "experiment_df"):
+        if getattr(view, name) is not None:
+            setattr(view, name, getattr(view, name).copy())
+    mismatch = _with_held_out_design(
+        view, held_out.condition_df, held_out.experiment_df
+    ) or _table_mismatch(view, view.measurement_df)
+    if mismatch:
+        raise P.ProblemError(mismatch)
+    return P.read(
+        view,
+        name=f"{training.name}_held_out",
+        directory=training.directory,
+        dosed=training.dosed,
+    )
 
 
 def score_of(nll: float, k: int, n: int, *, criterion=None) -> float | None:

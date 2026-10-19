@@ -170,11 +170,11 @@ def test_refusals_at_entry(monkeypatch, tmp_path):
     assert "no problem.yaml" in R.propose(tmp_path / "missing").refusal.reason
 
     def refuse(path, *, name, dosed=()):
-        raise _ProblemError(f"{path} is not a PEtab v1 problem")
+        raise _ProblemError(f"{name}: no observable formula reads a state; nothing to model")
 
     monkeypatch.setattr(R, "_modules", lambda: _modules(load=refuse))
-    v2 = R.propose(_write_problem(tmp_path / "p" / "problem", [0.0, 1.0], version="2.0.0"))
-    assert v2.problem == "p" and "not a PEtab v1 problem" in v2.refusal.reason
+    refused = R.propose(_write_problem(tmp_path / "p" / "problem", [0.0, 1.0], version="2.0.0"))
+    assert refused.problem == "p" and "nothing to model" in refused.refusal.reason
 
     def absent():
         raise ImportError("No module named 'jax'")
@@ -297,7 +297,8 @@ def test_the_worker_never_delegates_again_and_the_real_round_trip_carries_an_out
     monkeypatch.undo()
 
     # A REAL subprocess: this interpreter plays the JAX one after the parent's stack is declared
-    # absent. The child reads the toy problem, refuses it as not v1, and the boundary carries that.
+    # absent. The child reads the toy problem, refuses it for declaring no observables, and the
+    # boundary carries that.
     def absent():
         raise ImportError("no jax in the parent")
 
@@ -306,7 +307,7 @@ def test_the_worker_never_delegates_again_and_the_real_round_trip_carries_an_out
     outcome = R.propose(
         problem, Config(interpreter=sys.executable, seconds=300.0), work_dir=tmp_path / "work"
     )
-    assert outcome.problem == "toy" and "not a PEtab v1 problem" in outcome.refusal.reason
+    assert outcome.problem == "toy" and "undeclared observables" in outcome.refusal.reason
     assert json.loads((tmp_path / "work" / "neural_proposals.json").read_text())["interpreter"]
 
 

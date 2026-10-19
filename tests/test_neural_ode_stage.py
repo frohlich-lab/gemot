@@ -16,9 +16,17 @@ from gemot.neural_ode import problem as P
 from gemot.neural_ode import stage as S
 
 
-def _starts(staged: S.Staged) -> dict[tuple[str, str], str]:
+def _conditions(staged: S.Staged) -> dict[tuple[str, str], str]:
     conditions = pd.read_csv(staged.directory / "conditions.tsv", sep="\t")
     return {(r.conditionId, r.targetId): str(r.targetValue) for r in conditions.itertuples()}
+
+
+def _starts(staged: S.Staged) -> dict[tuple[str, str], str]:
+    """``(experiment, target) -> value`` of the condition each experiment starts in."""
+    experiments = pd.read_csv(staged.directory / "experiments.tsv", sep="\t")
+    first = experiments.groupby("experimentId", sort=False)["conditionId"].first()
+    rows = _conditions(staged)
+    return {(e, t): v for e, c in first.items() for (cid, t), v in rows.items() if cid == c}
 
 
 def test_the_staged_problem_is_lint_clean_and_wired_end_to_end(tmp_path):
@@ -35,7 +43,7 @@ def test_the_staged_problem_is_lint_clean_and_wired_end_to_end(tmp_path):
     hybrid = pd.read_csv(staged.directory / "hybridization.tsv", sep="\t")
     assert list(hybrid["targetValue"][:7]) == [f"{s}_norm" for s in staged.field_inputs]
     assert list(hybrid["targetId"][7:]) == [f"f_{s}" for s in staged.states]
-    model = (staged.directory / "v1" / "model.ant").read_text()
+    model = (staged.directory / "model.ant").read_text()
     assert "pulse := piecewise(drug, time < 1, 0);" in model and "clock' = 1;" in model
     assert f"Q' = ({problem.scales['Q']!r} / 2.0) * f_Q;" in model
     with h5py.File(staged.directory / "net1_ps.hdf5") as weights:
@@ -43,18 +51,19 @@ def test_the_staged_problem_is_lint_clean_and_wired_end_to_end(tmp_path):
         assert weights["parameters/net1/layer3/weight"].shape == (5, 4)
     assert staged.n_weights == (7 * 4 + 4) + (4 * 4 + 4) + (4 * 5 + 5)
 
-    # Starts: the dosing columns from the upgrader, P's t=0 data, the pinned Q_init as a number,
-    # the latent as one estimated parameter per experiment.
+    # Starts: the dosing targets renamed to the states they dose, P's t=0 data, the pinned Q_init
+    # as a number, the latent as one estimated parameter per experiment.
+    lo, hi = problem.experiment_ids
     starts = _starts(staged)
-    assert starts[("c_lo", "S")] == "2.0" and starts[("c_hi", "E")] == "1.0"
-    assert starts[("c_lo", "P")] == "0.0" and starts[("c_hi", "P")] == "0.1"
-    assert starts[("c_lo", "Q")] == "0.5" and starts[("c_hi", "z1")] == "z1_0_c_hi"
-    assert staged.estimated_starts == ("z1_0_c_lo", "z1_0_c_hi")
+    assert starts[(lo, "S")] == "2.0" and starts[(hi, "E")] == "1.0"
+    assert starts[(lo, "P")] == "0.0" and starts[(hi, "P")] == "0.1"
+    assert starts[(lo, "Q")] == "0.5" and starts[(hi, "z1")] == f"z1_0_{hi}"
+    assert staged.estimated_starts == (f"z1_0_{lo}", f"z1_0_{hi}")
     parameters = pd.read_csv(staged.directory / "parameters.tsv", sep="\t").set_index("parameterId")
-    assert set(parameters.index) == {"sigma_P", "scale_Q", "net1_ps", "z1_0_c_lo", "z1_0_c_hi"}
+    assert set(parameters.index) == {"sigma_P", "scale_Q", "net1_ps", f"z1_0_{lo}", f"z1_0_{hi}"}
     assert parameters.loc["net1_ps", "nominalValue"] == "array"
     assert (
-        parameters.loc["z1_0_c_lo", "upperBound"] == 10.0
+        parameters.loc[f"z1_0_{lo}", "upperBound"] == 10.0
         and str(parameters.loc["sigma_P", "estimate"]).lower() == "false"
     )
     # The readout scale factor is fixed at its nominal: the state carries the magnitude.
@@ -64,14 +73,14 @@ def test_the_staged_problem_is_lint_clean_and_wired_end_to_end(tmp_path):
     )
     document = yaml.safe_load(staged.yaml.read_text())
     assert document["extensions"]["sciml"]["neural_networks"]["net1"]["format"] == "equinox"
-    # Experiments and measurements are named after the simulation conditions the route knows.
-    assert pd.read_csv(staged.directory / "experiments.tsv", sep="\t")["experimentId"].tolist() == [
-        "c_lo",
-        "c_hi",
-    ]
+    # Experiments and measurements keep the ids the server's upgrade gave them; each experiment
+    # starts in one condition that carries both the shipped knobs and the starts.
+    experiments = pd.read_csv(staged.directory / "experiments.tsv", sep="\t")
+    assert experiments["experimentId"].tolist() == [lo, hi]
+    assert experiments["conditionId"].tolist() == [f"start_{lo}", f"start_{hi}"]
     assert set(pd.read_csv(staged.directory / "measurements.tsv", sep="\t")["experimentId"]) == {
-        "c_lo",
-        "c_hi",
+        lo,
+        hi,
     }
 
 
@@ -79,13 +88,15 @@ def test_preequilibration_starts_sit_on_the_basal_condition_and_are_always_stage
     problem = P.load(write_problem(tmp_path / "pre", preequilibration=True), dosed=("S",))
     native = S.stage(problem, tmp_path / "native", width=4)
     experiments = pd.read_csv(native.directory / "experiments.tsv", sep="\t")
-    assert experiments["conditionId"].tolist() == ["c_basal", "c_lo", "c_basal", "c_hi"]
+    assert experiments["conditionId"].tolist() == ["start_c_basal", "c_lo", "start_c_basal", "c_hi"]
     assert [math.isinf(t) for t in experiments["time"].astype(float)] == [True, False, True, False]
-    # The settled state carries over, so no start sits on c_lo or c_hi; on c_basal the tables
-    # give S, E and Q, and P is estimated once for the one basal condition.
-    starts = _starts(native)
-    assert not any(c in ("c_lo", "c_hi") and s in ("P", "Q") for c, s in starts)
-    assert starts[("c_basal", "P")] == "P_0_c_basal" and starts[("c_basal", "Q")] == "0.5"
+    # The settled state carries over, so no start sits on c_lo or c_hi; the basal start condition
+    # has the basal knobs, S, E and Q from the tables, and P estimated once for the one basal key.
+    conditions = _conditions(native)
+    assert not any(c in ("c_lo", "c_hi") and s in ("P", "Q") for c, s in conditions)
+    assert conditions[("start_c_basal", "P")] == "P_0_c_basal"
+    assert conditions[("start_c_basal", "Q")] == "0.5"
+    assert conditions[("start_c_basal", "drug")] == "0.0"
     assert native.estimated_starts == ("P_0_c_basal",)
 
     # There is no way to ask for the periods to be dropped: a problem that preequilibrates says
@@ -104,7 +115,8 @@ def test_log10_noise_keeps_the_v1_likelihood_under_v2s_log_normal(tmp_path):
     observables = pd.read_csv(staged.directory / "observables.tsv", sep="\t").set_index(
         "observableId"
     )
-    # The upgrader writes log-normal; the noise formula carries ln 10, ONCE, so the density is v1's.
+    # The server's upgrade writes log-normal; the noise formula carries ln 10, ONCE, so the density
+    # is v1's.
     assert observables.loc["obs_Q", "noiseDistribution"] == "log-normal"
     noise = sp.sympify(observables.loc["obs_Q", "noiseFormula"])
     assert sp.simplify(noise / sp.Symbol("noiseParameter1_obs_Q") - sp.log(10)) == 0
@@ -135,4 +147,5 @@ def test_shared_starts_are_one_parameter_per_state(tmp_path):
         problem, tmp_path / "shared", width=4, n_augmented=2, shared_initial_conditions=True
     )
     assert staged.estimated_starts == ("z1_0", "z2_0")
-    assert _starts(staged)[("c_lo", "z2")] == _starts(staged)[("c_hi", "z2")] == "z2_0"
+    lo, hi = problem.experiment_ids
+    assert _starts(staged)[(lo, "z2")] == _starts(staged)[(hi, "z2")] == "z2_0"

@@ -13,8 +13,9 @@ change **scored** (fit and simulated), **versioned** and **justified**.
 gemot spawns that server as a subprocess, launches a panel of agent specialists
 (mathematician, systems scientist, signal engineer) on it and then hands off to the
 **judge**, which selects the best-scoring version and scores it against a true or published
-reference. Phoenix tracing and the run explorer read the trace and version history this
-pipeline leaves behind.
+reference — or, for a model-free data package with no reference, by an absolute goodness-of-fit
+test. Phoenix tracing and the run explorer read the trace and version history this pipeline
+leaves behind.
 
 The zero-shot problems it drives — and the code that materializes them from the PEtab
 Benchmark-Models collection and fits their reference bars — live in

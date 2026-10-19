@@ -304,7 +304,10 @@ def score_delta(row: dict) -> float | None:
 
 def is_scoreable(row: dict) -> bool:
     """Should this run count toward success rate and Δ? A scored verdict exists and the run was
-    not pure infrastructure noise."""
+    not pure infrastructure noise.
+
+    A reference-free run (``judge_mode``) never is: it has no Δ, and its pass is an absolute
+    adequacy verdict that must not be pooled into a Δcriterion success rate."""
     if score_delta(row) is None:
         return False
     # A DECLINED verdict, not a failed one: `slurm/recover_run.py` writes `success: null` for a
@@ -721,6 +724,7 @@ PETAB_RUN_KEYS = (
     "scenario",
     "model",
     "success",
+    "judge_mode",
     "delta_bic",
     "criterion",
     "delta_criterion",
@@ -994,6 +998,7 @@ _ROW_PASSTHROUGH = (
     "reasoning_runaway_retry_errors",
     "max_output_tokens",
     "ablation_state",
+    "judge_mode",
 )
 
 

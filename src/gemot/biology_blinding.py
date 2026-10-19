@@ -267,7 +267,7 @@ def prepare(source_yaml: Path, work: Path, validation_dir: Path | None = None) -
     import pandas as pd
     import yaml
     from petab_mcp.problem import WorkingProblem
-    from petab_mcp.validation_data import HELD_OUT_UNITS, as_v2, read_held_out
+    from petab_mcp.validation_data import HELD_OUT_UNITS, read_held_out
 
     private = private_dir(work)
     if private.exists():
@@ -289,7 +289,7 @@ def prepare(source_yaml: Path, work: Path, validation_dir: Path | None = None) -
                     names.reserved.update(_TOKEN.findall(value))
     for kind, table in tables.items():
         names.register_table(kind, table)
-    names.protocols = _anonymous_protocols(Path(source_yaml).parent / "inputs.tsv", names)
+    names.protocols = _anonymous_protocols(Path(source_yaml).parent, problem, names)
     work.mkdir(parents=True, exist_ok=True)
     config: dict = {"format_version": "2.0.0"}
     if document is not None:
@@ -305,10 +305,10 @@ def prepare(source_yaml: Path, work: Path, validation_dir: Path | None = None) -
     if validation_dir and (validation_dir / "measurements.tsv").is_file():
         destination = private / "validation"
         destination.mkdir()
-        # Keyed by experiment against the SOURCE problem first, as the server would key it, so a
-        # held-out row repeating a training design lands in that experiment's alias. The blinded
-        # set is then v2 and the server's `as_v2` leaves it as it is.
-        held_out = as_v2(read_held_out(validation_dir / "measurements.tsv"), problem)
+        # A v2 set, keyed by experiment as the training problem is, so a held-out row repeating a
+        # training design lands in that experiment's alias. A v1 set is refused here, as the
+        # server refuses it.
+        held_out = read_held_out(validation_dir / "measurements.tsv")
         parameters = held_out.parameter_df
         for kind, table in (
             ("measurements", held_out.measurement_df),
@@ -341,50 +341,24 @@ def prepare(source_yaml: Path, work: Path, validation_dir: Path | None = None) -
     return names
 
 
-def _anonymous_protocols(path: Path, names: BlindNames) -> list[tuple[str, str]]:
-    """The problem's input protocols (``inputs.tsv``) in the run's aliases.
+def _anonymous_protocols(directory: Path, problem, names: BlindNames) -> list[tuple[str, str]]:
+    """The problem's input protocols (``inputs.tsv``, read and checked by the server's
+    :mod:`petab_mcp.protocols`) in the run's aliases.
 
     A protocol is numerical design, not biology: a time-dependent input the condition table only
     parameterises -- Fujita's EGF stimulus is a pulse or a ramp only under its rule, and its rate
-    and end time are constant in training. The visible arms read the rule, with its real names, in
-    the scenario's known-constants note, which the blind task replaces; without it here the
-    blinded agent saw three anonymous columns and an instruction to use them, and put the
-    constant two in roles no data could identify. Each rule may read only condition targets (the
-    v1 condition columns ``conditionInputs`` names) and ``time``: anything else would carry a name
-    the aliases do not cover, so it is refused.
+    and end time are constant in training. The visible arms are shown the rule, with its real
+    names, by the server; the blind task carries it instead. Without it here the blinded agent saw
+    three anonymous columns and an instruction to use them, and put the constant two in roles no
+    data could identify. The server refuses a rule that reads anything but condition targets and
+    ``time``, or that does not change within a period.
     """
-    if not path.is_file():
-        return []
-    import pandas as pd
+    from petab_mcp.protocols import load
 
     out = []
-    for row in pd.read_csv(path, sep="\t", dtype=str).itertuples():
-        quantity = names.add(row.inputId, "stimulus")
-        rule = _translate(row.formula, names.forward)
-        # Only the row's own condition targets: every table symbol has an alias by now, so
-        # accepting any alias would let a rule read a model parameter as ``parameter_005``.
-        columns = [c for c in str(row.conditionInputs).split(";") if c]
-        allowed = {
-            names.forward[c] for c in columns if names.forward.get(c, "").startswith("input_")
-        }
-        # A token followed by "(" is a function (piecewise, exp), not a name.
-        leaked = sorted(
-            {
-                match[0]
-                for match in _TOKEN.finditer(rule)
-                if match[0] not in allowed
-                and match[0] not in _RESERVED
-                and not rule[match.end() :].lstrip().startswith("(")
-            }
-        )
-        if leaked or len(allowed) != len(columns):
-            raise ValueError(
-                f"input protocol {row.inputId!r} must read only its condition "
-                f"targets {columns}; it reads {
-                    leaked or 'a target the condition table does not set'
-                }, so it cannot be anonymized"
-            )
-        out.append((quantity, rule))
+    for item in load(directory, problem):
+        quantity = names.add(item.id, "stimulus")
+        out.append((quantity, _translate(item.formula, names.forward)))
     return out
 
 
