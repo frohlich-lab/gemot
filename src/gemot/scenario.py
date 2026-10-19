@@ -230,10 +230,6 @@ class Scenario:
     # Experimental setup, not the author's knowledge of the reference model, so the biocurator is
     # handed them on every arm, in place of `biocurator_entities` when there are any.
     entity_ids: list[str] = field(default_factory=list)
-    # The experiment's inputs over time the server holds to their protocol on the indra_statements
-    # arm, as entity-map entries (PEtabAgentBench's `held_inputs`: Fujita's EGF ramp). The arm's
-    # entity map is otherwise empty; other arms ignore it.
-    held_inputs: dict[str, dict] = field(default_factory=dict)
     # Success gate: a repair is accepted iff it can't be rejected against the true model —
     # score(candidate) - score(true) <= bic_threshold, both under the criterion the server ranked
     # by (BIC by default). ~10 = "very strong evidence against" (Kass & Raftery); the verdict is
