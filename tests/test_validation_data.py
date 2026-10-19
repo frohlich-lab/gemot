@@ -206,18 +206,23 @@ def _run_judge(work, *, has_held_out, payload, reference=None, nll=100.0):
     return code, result, asked
 
 
-def test_the_held_out_score_reaches_result_json_without_changing_the_verdict(tmp_path):
+def test_the_held_out_score_reaches_result_json_without_changing_the_verdict(tmp_path, capsys):
     """ΔBIC is 0 here, so the run passes. A held-out score that is far WORSE than the true model's
     must be recorded and must NOT flip that: the check is report-only, and a gate on it would be
-    calibrated against nothing (see scoring._validation_fields)."""
+    calibrated against nothing (see scoring._validation_fields).
+
+    The count is the server's ``n_experiments``: read under its v1 name ``n_conditions``, a v2
+    server's payload printed "None unseen condition(s)"."""
     code, result, _ = _run_judge(
         tmp_path,
         has_held_out=True,
-        payload={"status": "ok", "nll": 900.0, "n": 12, "chi2": 400.0, "n_conditions": 4},
+        payload={"status": "ok", "nll": 900.0, "n": 12, "chi2": 400.0, "n_experiments": 4},
     )
     assert result["delta_bic"] == pytest.approx(0.0)
     assert result["validation"]["delta_nll"] == pytest.approx(500.0)  # 900 - 400, much worse
     assert result["validation"]["reference_chi2"] == 90.0
+    assert result["validation"]["n_experiments"] == 4
+    assert "over 12 point(s) in 4 unseen experiment(s)" in capsys.readouterr().out
     assert result["success"] is True and code == 0
 
 
