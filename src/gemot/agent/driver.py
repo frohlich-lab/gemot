@@ -432,6 +432,8 @@ def _chat_model_class():
     """
     from langchain_openai import ChatOpenAI
 
+    from . import thinking
+
     class _ChatOpenAIRecordingProvider(ChatOpenAI):
         def _get_request_payload(self, input_, *, stop=None, **kwargs):
             payload = super()._get_request_payload(input_, stop=stop, **kwargs)
@@ -441,9 +443,23 @@ def _chat_model_class():
                 _apply_cache_breakpoints(payload, config)
             return payload
 
+        # Every call goes through `_agenerate`, which streams it itself and stops a runaway's
+        # thinking (agent.thinking); langchain's own streaming path would bypass that.
+        def _should_stream(self, **kwargs):
+            return False
+
+        def _should_use_protocol_streaming(self, **kwargs):
+            return False
+
+        async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+            return await thinking.generate(
+                self, super()._agenerate, self._astream, messages, stop, run_manager, **kwargs
+            )
+
         def _create_chat_result(self, response, generation_info=None):
             result = super()._create_chat_result(response, generation_info)
             _keep_reasoning(response, result)
+            thinking.record_response(response)
             try:
                 served = getattr(response, "provider", None)
                 if served is None and isinstance(response, dict):
@@ -463,6 +479,7 @@ def _chat_model_class():
             return result
 
         def _convert_chunk_to_generation_chunk(self, chunk, *args, **kwargs):
+            thinking.record_chunk(chunk)
             gen = super()._convert_chunk_to_generation_chunk(chunk, *args, **kwargs)
             try:
                 usage = chunk.get("usage") if isinstance(chunk, dict) else None
@@ -516,7 +533,22 @@ _PROVIDER_CODE_RE = re.compile(r"['\"]code['\"]\s*:\s*(\d{3})")
 
 
 def _transient_provider_reason(exc: BaseException) -> str | None:
-    """A short reason if ``exc`` is an unclassified provider 5xx worth RESUMING for, else None."""
+    """A short reason if ``exc`` is an unclassified provider 5xx worth RESUMING for, else None.
+
+    Two stream failures count too, now that every call streams (agent.thinking): a stream that
+    went silent (langchain's ``StreamChunkTimeoutError``, no chunk for its chunk timeout), and an
+    upstream failure OpenRouter relays as an error event mid-stream, which the OpenAI client raises
+    as the bare ``APIError`` -- no status, so none of the retryable classes. The bare class only:
+    its subclasses (a 400 for an over-long conversation, say) would fail the same way again.
+    """
+    try:
+        import openai
+        from langchain_openai import StreamChunkTimeoutError
+    except ImportError:  # pragma: no cover - the agent extra installs both
+        pass
+    else:
+        if isinstance(exc, StreamChunkTimeoutError) or type(exc) is openai.APIError:
+            return f"stream: {type(exc).__name__}: {str(exc)[:120]}"
     m = _PROVIDER_CODE_RE.search(str(exc))
     if not m or not 500 <= int(m.group(1)) <= 599:
         return None
