@@ -14,19 +14,18 @@ re-estimates its own dynamics (crauste's bar refits all twelve rate constants pe
 refits c and delta). The old code did exactly that and reported it as `transfer`, so the two sides
 of every such comparison were doing different tasks and the field was doing the harder one.
 
-The held-out set is laid onto the training problem exactly as the server lays it on for the
-panel's model -- :func:`petab_mcp.validation_data.as_v2` keys a v1 set by experiment, and
-``_with_held_out_design`` adds its conditions and experiments to the training ones and refuses what
-would redefine them -- so the two scorers read one held-out problem. That view is staged as a
-PEtab SciML problem in the TRAINING design -- its scales, horizon, latents, network and weights --
-because the field is only defined in those units; a set whose states or inputs differ from the
-training set's is ``table_mismatch``, exactly as the server refuses a condition target it has not
-seen. Fixed-θ also needs every scalar the held-out problem estimates to be one the training run
-fitted: shared starts, starts the held-out data pin, or the start of a pre-equilibration the
-training experiments share. Where that fails, the scalars are refit and the payload says
-``transfer``, so nothing downstream subtracts it from a fixed-θ bar. A transfer set's readout
-scale factors are refit too: another system's scalings are not the training ones, which is the
-set's whole point.
+The held-out set, PEtab v2 and so keyed by experiment, is laid onto the training problem exactly as
+the server lays it on for the panel's model -- ``_with_held_out_design`` adds its conditions and
+experiments to the training ones and refuses what would redefine them -- so the two scorers read
+one held-out problem. That view is staged as a PEtab SciML problem in the TRAINING design -- its
+scales, horizon, latents, network and weights -- because the field is only defined in those units;
+a set whose states or inputs differ from the training set's is ``table_mismatch``, exactly as the
+server refuses a condition target it has not seen. Fixed-θ also needs every scalar the held-out
+problem estimates to be one the training run fitted: shared starts, starts the held-out data pin,
+or the start of a pre-equilibration the training experiments share. Where that fails, the scalars
+are refit and the payload says ``transfer``, so nothing downstream subtracts it from a fixed-θ bar.
+A transfer set's readout scale factors are refit too: another system's scalings are not the
+training ones, which is the set's whole point.
 
 Report-only, like the server's: nothing here gates anything.
 """
@@ -165,10 +164,8 @@ def _held_out_problem(training: P.Problem, held_out) -> P.Problem:
     from petab_mcp.validation_data import (  # noqa: PLC0415
         _table_mismatch,
         _with_held_out_design,
-        as_v2,
     )
 
-    held_out = as_v2(held_out, training.tables)
     view = training.tables.replace(measurement_df=held_out.measurement_df)
     for name in ("condition_df", "experiment_df"):
         if getattr(view, name) is not None:

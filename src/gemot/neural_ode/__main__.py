@@ -194,6 +194,14 @@ def _fit(args) -> int:
         patience=args.patience,
         checkpoints=_checkpoints(args.checkpoints, args.steps),
     )
+    held_out_path = None if args.no_heldout else (args.heldout or _default_held_out(problem_dir))
+    # Read before training, as the server reads it when it starts: a set it refuses (a v1 one) is
+    # refused before the expensive part, not after it.
+    held_out = None
+    if held_out_path is not None:
+        from petab_mcp.validation_data import read_held_out  # noqa: PLC0415
+
+        held_out = read_held_out(held_out_path)
     args.out.mkdir(parents=True, exist_ok=True)
     result = T.train(problem, args.out / "train", config)
     T.save_bundle(result, args.out / "model")
@@ -229,16 +237,11 @@ def _fit(args) -> int:
         "model_dir": str(args.out / "model"),
     }
 
-    held_out_path = None if args.no_heldout else (args.heldout or _default_held_out(problem_dir))
     reference_path = args.reference or (problem_dir / "reference.json")
     reference = json.loads(reference_path.read_text()) if reference_path.is_file() else None
     payload = None
-    if held_out_path is not None and not result.solver_failed:
-        from petab_mcp.validation_data import read_held_out  # noqa: PLC0415
-
-        payload = H.score(
-            result, read_held_out(held_out_path), args.out / "heldout", training=problem
-        )
+    if held_out is not None and not result.solver_failed:
+        payload = H.score(result, held_out, args.out / "heldout", training=problem)
     from ..runner.scoring import _validation_fields  # noqa: PLC0415
 
     record["validation"] = _validation_fields(payload, reference, asked=held_out_path is not None)
@@ -261,12 +264,8 @@ def _fit(args) -> int:
     # This curve DIAGNOSES the method; it must not select a model. The held-out set is the
     # benchmark's test set (`TrainConfig.checkpoints` says why at length): reporting that held-out
     # loss turns upward is a finding, picking the budget where it was lowest is leakage.
-    if result.checkpoints and held_out_path is not None:
-        from petab_mcp.validation_data import read_held_out  # noqa: PLC0415
-
-        prepared = H.prepare(
-            result, read_held_out(held_out_path), args.out / "curve", training=problem
-        )
+    if result.checkpoints and held_out is not None:
+        prepared = H.prepare(result, held_out, args.out / "curve", training=problem)
         curve = []
         for i, point in enumerate(result.checkpoints):
             scored = (

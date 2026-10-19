@@ -267,7 +267,7 @@ def prepare(source_yaml: Path, work: Path, validation_dir: Path | None = None) -
     import pandas as pd
     import yaml
     from petab_mcp.problem import WorkingProblem
-    from petab_mcp.validation_data import HELD_OUT_UNITS, as_v2, read_held_out
+    from petab_mcp.validation_data import HELD_OUT_UNITS, read_held_out
 
     private = private_dir(work)
     if private.exists():
@@ -305,10 +305,10 @@ def prepare(source_yaml: Path, work: Path, validation_dir: Path | None = None) -
     if validation_dir and (validation_dir / "measurements.tsv").is_file():
         destination = private / "validation"
         destination.mkdir()
-        # Keyed by experiment against the SOURCE problem first, as the server would key it, so a
-        # held-out row repeating a training design lands in that experiment's alias. The blinded
-        # set is then v2 and the server's `as_v2` leaves it as it is.
-        held_out = as_v2(read_held_out(validation_dir / "measurements.tsv"), problem)
+        # A v2 set, keyed by experiment as the training problem is, so a held-out row repeating a
+        # training design lands in that experiment's alias. A v1 set is refused here, as the
+        # server refuses it.
+        held_out = read_held_out(validation_dir / "measurements.tsv")
         parameters = held_out.parameter_df
         for kind, table in (
             ("measurements", held_out.measurement_df),
