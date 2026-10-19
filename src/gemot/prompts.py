@@ -24,6 +24,10 @@ experiment row and every ``result.json``. Editing any of this text is therefore 
 — it starts a new prompt version and results either side of it are not directly comparable.
 Rewrapping a line counts. Adding a new model-facing constant means adding it to
 ``PROMPT_GROUPS``; ``tests/test_prompt_tracking.py`` fails if you forget.
+
+Examples in this text are placeholders (agents A, B, C; sites S10, T20; a dose D), never a
+benchmark model's species, sites, readouts or rate laws: such an example hands the agent part of
+the answer on that problem and primes it on the others.
 """
 
 from __future__ import annotations
@@ -137,10 +141,10 @@ _ADEQUATE_IS_NOT_DONE = (
 #: prompt and again in the editor's description; an op documented on only one of the two is an op
 #: half the panel never learns about.
 _MODEL_EDIT_OPS = (
-    "`{op:'add_reaction', antimony:'egfr_act: EGFR => pEGFR; k_act*EGF*EGFR;'}`, "
-    "`{op:'remove_reaction', id}`, `{op:'set_rate_law', id, antimony:'k*EGF*EGFR'}`, "
+    "`{op:'add_reaction', antimony:'a_act: A => pA; ka*D*A;'}`, "
+    "`{op:'remove_reaction', id}`, `{op:'set_rate_law', id, antimony:'k*D*A'}`, "
     "`{op:'set_initial', id, antimony:'5'}`, "
-    "`{op:'set_assignment', id, antimony:'pAkt + pAkt_S6'}` (an `id := expr` rule holding at "
+    "`{op:'set_assignment', id, antimony:'pA + pA_B'}` (an `id := expr` rule holding at "
     "ALL times — how a `readout_*` symbol an observable formula references is defined in terms "
     "of YOUR states), `{op:'remove_assignment', id}`, `{op:'rename', old, new}`"
 )
@@ -188,7 +192,7 @@ _DIFF_EDITS_GUIDANCE = (
     "test. Operations apply in order, all-or-nothing: a failure names the failing "
     "`model_edits[i]` and lists the valid reaction ids, and nothing is applied. "
     "NAME YOUR REACTIONS FOR YOURSELF. The id is how you will address a reaction for the rest "
-    "of the run, so use a meaningful one — `egfr_activation`, `akt_dephos`, `s6_feedback` — not "
+    "of the run, so use a meaningful one — `a_binding`, `b_phos`, `c_degradation` — not "
     "`reaction_7`. Numbered ids invite renumbering when you re-author, and a renumbered model is "
     "one whose history cannot be read. Ids are yours to choose and are stable across the "
     "server's re-rendering. "
@@ -422,8 +426,8 @@ DEFAULT_TASK = (
     "it as a constant), it is not estimated, and it must NEVER appear in a reaction: a readout "
     "is a lens on your states, not a state — a species that is also assigned makes the model "
     "over-determined and the commit is refused. Think about what the assay physically sees: an "
-    "antibody may count a phospho-protein both free and in complex; a channel readout may be a "
-    "nonlinear function of state occupancies; a fraction needs the right denominator."
+    "antibody against pA may count it both free and bound to B; a readout may be a nonlinear "
+    "function of several states; a fraction needs the right denominator."
 )
 
 
@@ -545,9 +549,8 @@ BAREBONES_TASK = (
     "one SBML assignment rule per readout (`readout_x` assigned an expression of your species). "
     "It holds at all times, it is not estimated, and it must never be a species or appear in a "
     "reaction: a readout is a lens on your states, not a state. Think about what the assay "
-    "physically sees: an antibody may count a phospho-protein both free and in complex; a "
-    "channel readout may be a nonlinear function of state occupancies; a fraction needs the "
-    "right denominator."
+    "physically sees: an antibody against pA may count it both free and bound to B; a readout "
+    "may be a nonlinear function of several states; a fraction needs the right denominator."
 )
 
 # Scenario.biocurator_entities, handed to the null as the biocurator gets them.
@@ -735,7 +738,8 @@ BIOCURATOR_PROMPT = (
     # `protein_name`) and the type it sends `species` as, which caps the cache's usefulness and
     # with it the concurrency a sweep can run at. Pinning one spelling costs the model nothing.
     "Spell every lookup the same way: identify an entity by its canonical HGNC gene symbol "
-    "(`TP53`, not `p53` and not a UniProt accession) for every tool that takes one, including the "
+    "(the approved symbol, not a protein name, an alias or a UniProt accession) for every tool "
+    "that takes one, including the "
     "UniProt and Reactome lookups; pass it as `gene_symbol` and leave `protein_id` and "
     "`protein_name` unset rather than repeating the same name across several fields; and give "
     '`species` as the plain string `"9606"` for human, never as a list. Depart from this only '
@@ -944,7 +948,7 @@ TOOL_DESCRIPTIONS = {
         "(high bic / many params), and the remedies IN ORDER: (1) drop the term; "
         "(2) take its limiting form (irreversible / quasi-steady-state); "
         "(3) MERGE a collinear pair — into the combination the data do "
-        "constrain (k_cat*E_tot -> one Vmax), or by giving both ONE SHARED "
+        "constrain (ka*kb -> one kab), or by giving both ONE SHARED "
         "value (one symbol replaces two); either way the survivor is "
         "interpretable. `merge_candidates` prices the SHARED-VALUE tie and only "
         "that one: dnll cheapest first, merge_improves_score for a tie cheaper "
@@ -1140,10 +1144,11 @@ FINISH_DESCRIPTION = (
         if BIOLOGY_BLIND_ENABLED
         else "And a last one, which is a real answer and not an excuse: the pair is not biologically the "
         "same quantity. The "
-        "hints price IDENTIFIABILITY, not biology — tying a synthesis rate to a deactivation rate, or "
-        "a medium factor to an off-rate, buys the bic penalty while making the model assert something "
-        "false. Merge only what could plausibly BE one physical quantity (two isoforms' binding rates, "
-        "dephosphorylation of sibling states). This is NOT a blanket exemption, and declining every "
+        "hints price IDENTIFIABILITY, not biology — tying A's synthesis rate to B's deactivation "
+        "rate, or the gain on a dose D to an off-rate, buys the bic penalty while making the model "
+        "assert something false. Merge only what could plausibly BE one physical quantity "
+        "(dephosphorylation of A at S10 and at T20, B binding two equivalent sites of A). This is "
+        "NOT a blanket exemption, and declining every "
         "hint on it is not credible: for EACH hint you decline, name the two parameters and the "
         "distinct physical processes they measure, in the rationale. Where a hint's priced `dscore` is "
         "large, take it and let the refit adjudicate rather than arguing it away — a large priced "
