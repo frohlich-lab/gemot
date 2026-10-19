@@ -33,37 +33,20 @@ measured in molecules per cell over weeks as well as one in micromolar over minu
 
 from __future__ import annotations
 
-import csv
 import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 from petab.math import sympify_petab
 from petab.v2 import C
 
-#: Symbols a protocol formula may use besides its declared condition targets.
-PROTOCOL_ALLOWED = frozenset(
-    {
-        "time",
-        "piecewise",
-        "exp",
-        "log",
-        "log10",
-        "ln",
-        "sqrt",
-        "pow",
-        "abs",
-        "min",
-        "max",
-        "true",
-        "false",
-        "pi",
-    }
-)
+if TYPE_CHECKING:
+    from petab_mcp.protocols import Input
+
 #: The experiment a measurement without one is staged under: its starts need a condition to sit on.
 _SINGLE = "__single__"
 #: The basal key of a pre-equilibration period that applies no condition.
@@ -73,15 +56,6 @@ _SYMBOL = re.compile(r"[A-Za-z_]\w*")
 
 class ProblemError(ValueError):
     """A table the loader cannot turn into one consistent problem."""
-
-
-@dataclass(frozen=True)
-class TimedInput:
-    """An imposed protocol: ``target`` follows ``formula`` over ``time`` and its ``columns``."""
-
-    target: str
-    formula: str
-    columns: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -97,7 +71,8 @@ class Problem:
     dosed: tuple[str, ...]
     #: Condition targets the field reads as clamped constants.
     inputs: tuple[str, ...]
-    timed_inputs: tuple[TimedInput, ...]
+    #: The protocols of the problem's ``inputs.tsv``.
+    timed_inputs: tuple[Input, ...]
     #: Experiment -> every target's value when it is first simulated, and basal key -> every
     #: target's value under that pre-equilibration; a parameter read as its nominal.
     condition_values: dict[str, dict[str, float]]
@@ -144,11 +119,11 @@ class Problem:
     def field_input_names(self) -> tuple[str, ...]:
         """What the field reads besides its states: clamped targets no protocol consumes, then the
         protocol targets."""
-        consumed = {c for item in self.timed_inputs for c in item.columns}
+        consumed = {c for item in self.timed_inputs for c in item.targets}
         return tuple(
             (
                 *(n for n in self.inputs if n not in consumed),
-                *(item.target for item in self.timed_inputs),
+                *(item.id for item in self.timed_inputs),
             )
         )
 
@@ -337,9 +312,9 @@ def read(tables, *, name: str, directory: Path, dosed: tuple[str, ...] = ()) -> 
     finite = meas[C.TIME].astype(float)
     finite = finite[np.isfinite(finite)]
     horizon = float(finite.max()) if len(finite) and finite.max() > 0 else 1.0
-    timed = _timed_inputs(directory, inputs, warnings)
+    timed = _timed_inputs(tables, name, directory, inputs, warnings)
     for item in timed:
-        scales[item.target] = 1.0
+        scales[item.id] = 1.0
 
     return Problem(
         name=name,
@@ -606,34 +581,28 @@ def _preequilibration(periods, experiment_ids, name) -> dict[str, str]:
     return found
 
 
-def _timed_inputs(directory: Path, input_names, warnings) -> tuple[TimedInput, ...]:
-    """``inputs.tsv``: ``inputId``, Antimony ``formula``, ``;``-separated ``conditionInputs``.
+def _timed_inputs(tables, name: str, directory: Path, input_names, warnings) -> tuple[Input, ...]:
+    """The protocols in the problem's ``inputs.tsv``, read and checked by the server's own
+    :mod:`petab_mcp.protocols`: inputs that change within a period, over condition targets.
 
-    A formula may name only ``time`` and its own condition columns. Anything else would carry
-    model structure in through the protocol, so the row is refused and said so.
+    One that reads a target the field does not clamp (a dosed start) is refused and said so.
     """
-    path = directory / "inputs.tsv"
-    if not path.is_file():
-        return ()
+    from petab_mcp.errors import ProtocolError  # noqa: PLC0415
+    from petab_mcp.protocols import load  # noqa: PLC0415
+
+    try:
+        declared = load(directory, tables)
+    except ProtocolError as why:
+        raise ProblemError(f"{name}: {why}") from None
     out = []
-    with path.open(newline="") as handle:
-        for row in csv.DictReader(handle, delimiter="\t"):
-            target = str(row.get("inputId") or "").strip()
-            formula = str(row.get("formula") or "").strip()
-            columns = tuple(
-                c.strip() for c in str(row.get("conditionInputs") or "").split(";") if c.strip()
+    for item in declared:
+        if outside := set(item.targets) - set(input_names):
+            warnings.append(
+                f"input {item.id!r} REFUSED: it names {sorted(outside)}, which are "
+                "not clamped condition targets of this problem"
             )
-            if not target or not formula:
-                continue
-            symbols = {s for s in _SYMBOL.findall(formula) if s.lower() not in PROTOCOL_ALLOWED}
-            outside = (symbols - set(columns)) | (set(columns) - set(input_names))
-            if outside:
-                warnings.append(
-                    f"input {target!r} REFUSED: it names {sorted(outside)}, which are "
-                    "not clamped condition columns of this problem"
-                )
-                continue
-            out.append(TimedInput(target, formula, columns))
+            continue
+        out.append(item)
     return tuple(out)
 
 

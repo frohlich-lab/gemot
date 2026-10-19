@@ -44,7 +44,6 @@ Q_init\tlin\t0.0\t10.0\t0.5\t0
 """
 _INPUTS = """inputId\tformula\tconditionInputs
 pulse\tpiecewise(drug, time < 1, 0)\tdrug
-leak\tk_hidden * time\t
 """
 _YAML = """format_version: {version}
 parameter_file: parameters.tsv
@@ -105,6 +104,10 @@ sigma_P\t0.0001\t100.0\t0.1\tfalse
 scale_Q\t0.001\t1000.0\t2.0\ttrue
 Q_init\t0.0\t10.0\t0.5\tfalse
 """
+#: fujita's EGF ramp over the toy's ``drug``: a protocol over condition targets alone.
+_RAMP = """inputId\tformula\tconditionInputs
+stim\tpiecewise(drug_rate*time + drug, time <= drug_end, 0)\tdrug_rate;drug;drug_end
+"""
 _V2_YAML = """format_version: 2.0.0
 parameter_files: [parameters.tsv]
 model_files:
@@ -139,12 +142,14 @@ def write_v2_experiments(path: Path, experiments: dict[str, str], basal: str | N
 
 
 def write_v2_problem(
-    directory: Path, *, preequilibration: bool = False, dose: str = "init_E"
+    directory: Path, *, preequilibration: bool = False, dose: str = "init_E", protocol: bool = False
 ) -> Path:
     """The v1 toy written natively in PEtab v2: experiments ``e_lo``/``e_hi`` applying ``c_lo``/
     ``c_hi``, after ``c_basal`` with ``preequilibration``. obs_Q's noise placeholder is ``sd_Q``,
     declared rather than named by v1's convention. ``dose`` is the target that doses ``E``:
-    ``init_E`` as in the v1 toy, or the state ``E`` itself."""
+    ``init_E`` as in the v1 toy, or the state ``E`` itself. With ``protocol``, every condition also
+    sets ``drug_rate`` 0 and ``drug_end`` 10, as fujita's step doses set ``EGF_rate`` and
+    ``EGF_end``, and ``inputs.tsv`` ramps ``stim`` over the three, as fujita's EGF."""
     directory.mkdir(parents=True, exist_ok=True)
     rows = [line.split("\t") for line in _MEASUREMENTS.splitlines()[1:]]
     (directory / "measurements.tsv").write_text(
@@ -159,6 +164,10 @@ def write_v2_problem(
     if preequilibration:
         conditions["c_basal"] = (0.0, 1.0, 0.0)
     write_v2_conditions(directory / "conditions.tsv", conditions, dose)
+    if protocol:
+        with (directory / "conditions.tsv").open("a") as table:
+            table.write("".join(f"{c}\tdrug_rate\t0.0\n{c}\tdrug_end\t10.0\n" for c in conditions))
+        (directory / "inputs.tsv").write_text(_RAMP)
     write_v2_experiments(
         directory / "experiments.tsv",
         {"e_lo": "c_lo", "e_hi": "c_hi"},
@@ -198,11 +207,16 @@ def test_states_knobs_starts_and_scales_are_read_off_the_tables(tmp_path):
 
 
 def test_a_protocol_replaces_the_columns_it_reads_and_hidden_structure_is_refused(tmp_path):
+    """The server's own check refuses a protocol over a fitted constant, as it refuses the
+    problem."""
     problem = P.load(write_problem(tmp_path / "toy", protocol=True), dosed=("S",))
-    assert [t.target for t in problem.timed_inputs] == ["pulse"]
+    assert [t.id for t in problem.timed_inputs] == ["pulse"]
     # drug is consumed by the protocol; the field reads the protocol's value instead.
     assert problem.field_input_names == ("pulse",) and problem.scales["pulse"] == 1.0
-    assert any("leak" in w and "k_hidden" in w for w in problem.warnings)
+    leaky = write_problem(tmp_path / "leak", protocol=True)
+    (leaky.parent / "inputs.tsv").write_text(_INPUTS + "leak\tk_hidden * time\tk_hidden\n")
+    with pytest.raises(P.ProblemError, match="'leak' names k_hidden"):
+        P.load(leaky, dosed=("S",))
 
 
 def test_preequilibration_binds_every_experiment_or_none(tmp_path):

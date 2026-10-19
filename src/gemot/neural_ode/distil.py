@@ -254,14 +254,9 @@ def _protocol_values(
     problem: Problem, target: str, times: np.ndarray, experiments: np.ndarray
 ) -> np.ndarray:
     """A protocol's value at each sample, from its formula over time and its condition targets."""
-    from petab.math import sympify_petab  # noqa: PLC0415
-
-    item = next(t for t in problem.timed_inputs if t.target == target)
-    expr = sympify_petab(item.formula)
-    symbols = [sp.Symbol("time"), *(sp.Symbol(c) for c in item.columns)]
-    fn = sp.lambdify(symbols, expr, modules=["numpy"])
-    columns = [_input_values(problem, c, experiments, times) for c in item.columns]
-    return np.asarray([float(fn(t, *(c[i] for c in columns))) for i, t in enumerate(times)])
+    item = next(t for t in problem.timed_inputs if t.id == target)
+    values = {c: _input_values(problem, c, experiments, times) for c in item.targets}
+    return item.evaluate(values, times)
 
 
 def _input_values(
@@ -381,7 +376,7 @@ def emit(
         lines.append("  // per-condition experimental inputs, set by the condition table")
         lines.append("  " + "; ".join(f"{u} = 0" for u in problem.inputs) + ";")
     for item in problem.timed_inputs:
-        lines.append(f"  {item.target} := {item.formula};")
+        lines.append(f"  {item.rule};")
     readouts = [(name, emitted[name]) for name in species if emitted[name] != name]
     if readouts:
         lines.append("  // measurement mappings: the observables reference readout_*")
@@ -447,7 +442,7 @@ def _species_id(name: str, states, problem: Problem) -> str:
     the model -- another state, a condition target, a protocol target."""
     if not name.startswith(READOUT_PREFIX):
         return name
-    taken = {*states, *problem.inputs, *(item.target for item in problem.timed_inputs)}
+    taken = {*states, *problem.inputs, *(item.id for item in problem.timed_inputs)}
     candidate = base = f"s_{name[len(READOUT_PREFIX) :]}"
     while candidate in taken:
         candidate = f"{base}_"

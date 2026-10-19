@@ -831,7 +831,7 @@ TOOL_DESCRIPTIONS = {
         "starts. Every measurement names the experiment it was taken in; an empty "
         "`experimentId` simulates the model as is."
     ),
-    "describe_problem": "Orientation: whether a mechanism has been authored (model_authored), table/entity counts, current version, and the multistart count a fit uses by default (fit_n_starts_default). Cheap.",
+    "describe_problem": "Orientation: whether a mechanism has been authored (model_authored), table/entity counts, current version, the multistart count a fit uses by default (fit_n_starts_default), and the inputs the experiments impose (inputs), each to define in the model by its rule exactly as given (one without a rule the experiments set themselves). Cheap.",
     "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law) — empty until a model is built.",
     "get_parameters": (
         "Parameter table — pass `parameter_ids` and/or `role` to FILTER: on "

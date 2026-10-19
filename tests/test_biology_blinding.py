@@ -398,7 +398,7 @@ def test_cleanup_and_run_provenance_use_the_anonymous_view(tmp_path, monkeypatch
     assert (work / "model.ant").read_bytes() == (source / "model.ant").read_bytes()
 
 
-def _with_protocol(tmp_path, formula):
+def _with_protocol(tmp_path, formula, reads="dose_rate"):
     """The toy problem with one condition column and a time-dependent input protocol over it."""
     source = tmp_path / "source"
     shutil.copytree(TOY, source)
@@ -406,7 +406,7 @@ def _with_protocol(tmp_path, formula):
     conditions["dose_rate"] = 0.0
     conditions.to_csv(source / "conditions.tsv", sep="\t", index=False)
     (source / "inputs.tsv").write_text(
-        f"inputId\tformula\tconditionInputs\nStimulus_EGF\t{formula}\tdose_rate\n"
+        f"inputId\tformula\tconditionInputs\nStimulus_EGF\t{formula}\t{reads}\n"
     )
     return source
 
@@ -431,17 +431,17 @@ def test_the_input_protocol_reaches_the_blind_task_in_aliases(tmp_path):
     assert prompts.biology_blind_task([]) == prompts.BIOLOGY_BLIND_TASK
 
 
-def test_a_protocol_that_reads_more_than_the_condition_columns_is_refused(tmp_path):
-    source = _with_protocol(tmp_path, "piecewise(dose_rate*time + EGF_basal, time <= 60, 0)")
-    with pytest.raises(ValueError, match="EGF_basal"):
-        prepare(source / "problem.yaml", tmp_path / "anonymous")
-
-
-def test_a_protocol_may_not_read_a_model_parameter_through_its_alias(tmp_path):
+@pytest.mark.parametrize(
+    ("name", "refusal"), [("EGF_basal", "EGF_basal (in no table"), ("k1", "k1 (estimated)")]
+)
+def test_a_protocol_that_reads_more_than_the_condition_targets_is_refused(tmp_path, name, refusal):
     """Every table symbol has an alias by the time a rule is translated, so a rule reading the
-    parameter k1 would read as ``parameter_NNN`` -- no name, but not a condition column either."""
-    source = _with_protocol(tmp_path, "piecewise(dose_rate*time + k1, time <= 60, 0)")
-    with pytest.raises(ValueError, match="parameter_"):
+    parameter k1 would read as ``parameter_NNN``: no name, but not a condition target either."""
+    from petab_mcp.errors import ProtocolError
+
+    formula = f"piecewise(dose_rate*time + {name}, time <= 60, 0)"
+    source = _with_protocol(tmp_path, formula, reads=f"dose_rate;{name}")
+    with pytest.raises(ProtocolError, match=re.escape(refusal)):
         prepare(source / "problem.yaml", tmp_path / "anonymous")
 
 

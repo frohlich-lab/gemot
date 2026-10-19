@@ -274,7 +274,7 @@ def _antimony(problem: Problem, states, integrated, scales, horizon: float, prod
     ]
     lines += [f"  {s} = 0;" for s in integrated]
     lines += [f"  {u} = 0;" for u in problem.inputs]
-    lines += [f"  {item.target} := {item.formula};" for item in problem.timed_inputs]
+    lines += [f"  {item.rule};" for item in problem.timed_inputs]
     lines += [
         f"  {s}_norm := {s} / {scales[s]!r};" for s in (*integrated, *problem.field_input_names)
     ]
