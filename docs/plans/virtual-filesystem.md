@@ -19,7 +19,10 @@ The model still changes, and is fitted, only through `make_changes`.
 - **The tools are deepagents' own:** `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
   and `execute`. They run over gemot's existing bwrap backend (`agent/sandbox.py`), as on
   barebones, and the sandbox stays in gemot.
-- **PEtab-MCP writes the copy of the problem.** That is the only server change.
+- **PEtab-MCP writes the copy of the problem,** with every version's model and parameter table in
+  `/archive`. That is the only server change.
+- **The scratch is shared** by every agent that holds the workspace.
+- **Analysts that hold the workspace get more turns.**
 - **The sandbox holds no fitting packages,** and a prompt rule forbids fitting in it. AMICI and
   scikit-learn stay.
 - **The sandbox uses one core.** Barebones keeps its cores.
@@ -37,6 +40,12 @@ The model still changes, and is fitted, only through `make_changes`.
     the problem has one.
   - A `VERSION` file names HEAD.
   - The copy is written to a fresh directory, swapped in by rename, with files at `0444`.
+- **Every version goes into `DIR/archive/vN/`:** `model.xml`, `model.ant` and `parameters.tsv`
+  only, from the version store's `versions/vN/`.
+  - Each directory is written once, when version N is snapshotted, and never changes, as the store
+    is append-only. On a resumed store, the server writes the versions it already holds at startup.
+  - It is read-only like `problem/`. An agent can diff, reload or simulate any earlier version
+    without a `get_version` call.
 - **It is an allowlist by construction.** It is the server's own state, so nothing else in
   `problem/` can reach the agent:
   - not `reference.json` or `validation_v1_baseline.json`;
@@ -47,11 +56,12 @@ The model still changes, and is fitted, only through `make_changes`.
 ### The workspace and its tools (gemot)
 
 - **The workspace is a fresh directory per run,** outside `examples/`, with a neutral name.
-  `problem/` sits in it, and the rest is scratch.
+  `problem/` and `archive/` sit in it, and the rest is scratch, shared by every agent that holds the
+  workspace.
 - **The backend is `sandbox_backend_class()`:** deepagents' `FilesystemBackend` in virtual mode
   plus the bwrap `execute`. gemot passes it to `create_deep_agent` as `backend=`. Four additions:
-  - `--ro-bind` over `/work/problem`, and the file tools refuse writes under `/problem/`. deepagents'
-    `FilesystemPermission` cannot do this with an executing backend;
+  - `--ro-bind` over `/work/problem` and `/work/archive`, and the file tools refuse writes under
+    both. deepagents' `FilesystemPermission` cannot do this with an executing backend;
   - host paths are scrubbed from file-tool errors, because the example's path names the benchmark;
   - one-core mode: CPU affinity pinned to one CPU, and the thread knobs (`OMP_NUM_THREADS`,
     `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `AMICI_PARALLEL_COMPILE`) set to 1. It is off for
@@ -73,6 +83,9 @@ The model still changes, and is fitted, only through `make_changes`.
     profile's `excluded_tools`. The `subagents.py` note saying this leaked dates from deepagents
     0.6.12. If it still leaks on 0.7.1, that subagent is built as a `CompiledSubAgent` with no
     filesystem middleware.
+  - Analysts that hold the workspace (at `analysts` and `panel`) get `ANALYST_MAX_TURNS` raised
+    from 20 to 40, since a script is several turns of writing, running and reading. Analysts
+    without the workspace keep 20, so `off` is unchanged.
 - **What writing means:** a scratch file is the agent's notebook. The server is started on `work/`,
   and the judge scores the server's best version from the MCP session. Neither ever reads the
   workspace. After the run, gemot archives the scratch files beside the result.
@@ -131,25 +144,28 @@ The model still changes, and is fitted, only through `make_changes`.
    the workspace holds only the copy's files (PEtab-MCP).
 2. **The copy follows HEAD** after a commit, a fork and a restore, and a refused commit leaves it
    unchanged (PEtab-MCP).
-3. **The sandbox's limits hold:**
-   - `/problem/` refuses writes from the shell and from the file tools;
+3. **The archive holds every version:** after N commits, `/archive/v1` to `vN` each hold exactly
+   `model.xml`, `model.ant` and `parameters.tsv`, matching `get_version` (PEtab-MCP).
+4. **The sandbox's limits hold:**
+   - `/problem/` and `/archive/` refuse writes from the shell and from the file tools;
    - nothing above the workspace is visible;
    - the server's port does not connect;
    - `import pypesto` fails;
    - `nproc` prints 1;
    - a command past 5 minutes is killed with its process group.
-4. **Who holds what:** per level, read off the built graph; the biocurator holds no file tool.
-5. **Scoring stays the server's:** a better model in scratch does not change the judged result.
-6. **Prompts:** the `off` prompts are unchanged, and the barebones prompt renders byte-identical to
+5. **Who holds what:** per level, read off the built graph. The biocurator holds no file tool.
+   Analysts with the workspace have 40 turns, and those without have 20.
+6. **Scoring stays the server's:** a better model in scratch does not change the judged result.
+7. **Prompts:** the `off` prompts are unchanged, and the barebones prompt renders byte-identical to
    today's.
-7. **The ablation:** its levels are registered and recorded, and refused where listed above.
+8. **The ablation:** its levels are registered and recorded, and refused where listed above.
 
 These run in CI once frohlich-lab/gemot#37 installs bubblewrap there. A cluster smoke run at
-`panel` repeats check 3 from inside the sandbox.
+`panel` repeats check 4 from inside the sandbox.
 
 ## Rollout
 
-1. **PEtab-MCP: `--workspace` and the copy.**
+1. **PEtab-MCP: `--workspace`, the copy and the archive.**
 2. **gemot:** the sandbox additions, the package tuples, the levelled ablation, the prompts and the
    tests, with the pin bumped to step 1.
 3. **gemot_iclr_2026:** bump the gemot pin and add the levels to the sweep.
@@ -158,6 +174,4 @@ PEtabAgentBench does not change.
 
 ## Open questions
 
-1. **Copy HEAD only, or every version?** Proposed: HEAD only, since `get_version` serves the rest.
-2. **Is `ANALYST_MAX_TURNS = 20` enough** once an analyst can run scripts?
-3. **Shared scratch or one per agent?** Proposed: shared, with a directory per agent by convention.
+None left; the decisions above settle the last ones.
