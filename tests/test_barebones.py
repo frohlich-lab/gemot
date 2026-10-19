@@ -72,8 +72,8 @@ def test_staging_tolerates_an_already_clean_workspace(tmp_path):
 def test_only_the_problem_reaches_the_agent(tmp_path, version):
     """An allowlist, not a denylist. The staging used to withhold only `reference.json` and the
     seed, so the rest of the problem directory reached the agent: `validation_v1_baseline.json`,
-    the reference's held-out score, which PEtabAgentBench tracks for perelson, crauste, fujita,
-    lucarelli and raimundez. The agent gets `problem.yaml`, the files it lists (the model under
+    the reference's held-out score and its parameters by name and fitted value, which
+    PEtabAgentBench tracks for perelson, crauste, fujita, lucarelli and raimundez. The agent gets `problem.yaml`, the files it lists (the model under
     v1's `sbml_files` or v2's `model_files`) and `inputs.tsv`; nothing else stays in `work/`."""
     work = (_workspace if version == 1 else _workspace_v2)(tmp_path)
     (work / "inputs.tsv").write_text("inputId\tformula\tconditionInputs\n")

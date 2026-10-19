@@ -18,8 +18,9 @@ Reasons are in ``docs/RATIONALE.md`` (the ``#203`` entries).
 The workspace holds what a modeller is handed and nothing else: ``problem.yaml``, the files it
 lists, and ``inputs.tsv`` when the problem ships one. That is an allowlist, and must stay one. The
 denylist it replaced (``reference.json`` and the ``model.ant`` seed) let everything else in the
-problem directory through, and PEtabAgentBench tracks ``validation_v1_baseline.json``, the
-reference's held-out score, for perelson, crauste, fujita, lucarelli and raimundez. The seed stays
+problem directory through, and PEtabAgentBench tracks ``validation_v1_baseline.json`` for
+perelson, crauste, fujita, lucarelli and raimundez: the reference's held-out score, and the
+reference model's parameters by name with their fitted values. The seed stays
 out because the judge's server would load it instead of the delivered SBML. What was withheld is
 recorded in ``result.json`` as ``workspace_withheld``.
 """
