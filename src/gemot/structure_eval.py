@@ -201,7 +201,7 @@ _EXAMPLES_ROOT = paths.examples_root()
 def observable_formulas(example: str) -> dict[str, str]:
     """{observable_id: formula} from an example's shipped ``problem/observables.tsv``."""
     import pandas as pd
-    from petab.v1.C import OBSERVABLE_FORMULA, OBSERVABLE_ID
+    from petab.v2.C import OBSERVABLE_FORMULA, OBSERVABLE_ID
 
     df = pd.read_csv(_EXAMPLES_ROOT / example / "problem" / "observables.tsv", sep="\t")
     return {str(r[OBSERVABLE_ID]): str(r[OBSERVABLE_FORMULA]) for _, r in df.iterrows()}
@@ -237,7 +237,7 @@ def _true_antimony(example: str) -> str:
 def reference_coupling(example: str) -> tuple[list[list[str]], int]:
     """The (cached) reference observable-coupling for an example, from its withheld true model.
     Returns ``(edges, n_observables)``."""
-    from petab.v1.models.sbml_model import SbmlModel
+    from petab.v2.models.sbml_model import SbmlModel
 
     obs = observable_formulas(example)
     sbml = SbmlModel.from_antimony(_true_antimony(example), model_id=example).to_sbml_str()
@@ -250,7 +250,7 @@ def evaluate_model_ant(
     """Score a candidate ``model.ant`` for ``example`` against the reference structure. Returns
     ``{jaccard, n_observables, candidate_coupling, reference_coupling}`` (jaccard ``None`` when
     < 2 observables). ``ref`` may be passed pre-computed to avoid recomputing it per run."""
-    from petab.v1.models.sbml_model import SbmlModel
+    from petab.v2.models.sbml_model import SbmlModel
 
     ref_edges, n_obs = ref if ref is not None else reference_coupling(example)
     obs = observable_formulas(example)

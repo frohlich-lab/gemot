@@ -24,7 +24,12 @@ dependencies = [
     # The server this harness drives, from its own repository. Pinned to a commit so a checkout
     # here names the server it was tested against: bump it deliberately, and see the README for
     # developing both at once.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@52d34ca2c0d8ab6115eb6f20fb3d2996140daab1",
+    # PEtab-MCP main as of its move onto PEtab v2 (frohlich-lab/PEtab-MCP#4, #5) and its dask/SLURM
+    # fits (#34): the first commit whose tables, tools and held-out sets this harness's v2 port
+    # reads (`petab_mcp.problem`, `validation_data.as_v2`), so nothing before it will do. Interim:
+    # move to the commit that also pins pyPESTO#1786 merged with main and libpetab#557, and merges
+    # the INDRA stack (#28-#36), before this lands.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@0a181cc31af286a58a523c43c8fbd9710f7a1744",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
     # deleted, and mcp 2.0 reworks the client API used here (streamablehttp_client ->
@@ -78,7 +83,11 @@ dev = [
 # loop runs; petab-sciml writes the network definition and its initial weights in the standard's
 # own formats. None of this is imported by the server or the panel.
 neural = [
-    "amici[jax]>=1.1",
+    # The AMICI commit petab-mcp pins, by the same URL: pip refuses an `amici[jax]` from the index
+    # beside the direct reference petab-mcp brings (ResolutionImpossible), so the extra has to
+    # name the identical one. Move it with petab-mcp's pin; back to `amici[jax]>=...` once that
+    # pin is a release.
+    "amici[jax] @ git+https://github.com/AMICI-dev/AMICI.git@712c44a60753ea3910eac2a2753041dc0cf2ec6e#subdirectory=python/sdist",
     "optax>=0.2",
     # The curriculum multiple shooting rewrite (`petab_sciml.training`) is unreleased,
     # PEtab-dev/petab_sciml#92. Pinned to GitHub's test-merge commit of that PR, because the

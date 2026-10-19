@@ -70,6 +70,7 @@ ORCHESTRATOR_TOOLS = [
     # FOR is documented at that tuple.
     *LEAD_SELF_READ_TOOLS,
     "list_conditions",  # per-condition inputs/doses set in the condition table (match by name)
+    "list_experiments",  # when each condition applies: the periods of every experiment
     # score / diagnose (both COMPACT + bounded) / history
     # NOTE: get_fit_summary is deliberately NOT here. `make_changes` already returns
     # the whole fit block — metrics, bic, parameters_at_bound, the noise-sigma verdict + advice,

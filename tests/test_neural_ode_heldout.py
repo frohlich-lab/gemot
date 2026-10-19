@@ -95,6 +95,33 @@ def test_a_new_input_column_is_a_different_field(tmp_path):
     assert payload["status"] == "table_mismatch" and "light" in payload["reason"]
 
 
+def test_a_v1_set_read_as_v2_is_staged_with_its_v1_condition_columns(tmp_path):
+    """`read_held_out` hands back v2's long condition table whatever the files are; the route
+    stages v1, so the held-out row comes back as one row of the training columns."""
+    from petab_mcp.validation_data import read_held_out
+
+    problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
+    held_out = read_held_out(write_held_out(tmp_path / "validation", new_condition=True))
+    assert "targetId" in held_out.condition_df
+    H._held_out_problem(problem, held_out, tmp_path / "v1")
+    training = pd.read_csv(tmp_path / "toy" / "conditions.tsv", sep="\t").set_index("conditionId")
+    staged = pd.read_csv(tmp_path / "v1" / "conditions.tsv", sep="\t").set_index("conditionId")
+    assert list(staged.columns) == list(training.columns)
+    assert staged.loc["c_new"].astype(float).to_dict() == {"S": 4.0, "init_E": 1.0, "drug": 2.0}
+    assert staged.drop(index="c_new").astype(float).equals(training.astype(float))
+
+
+def test_a_set_keyed_by_experiment_is_a_table_mismatch(tmp_path):
+    from petab_mcp.validation_data import HeldOut
+
+    problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
+    measurements = pd.DataFrame(
+        {"observableId": ["obs_P"], "experimentId": ["e1"], "time": [1.0], "measurement": [0.9]}
+    )
+    with pytest.raises(P.ProblemError, match="experiments"):
+        H._held_out_problem(problem, HeldOut(measurement_df=measurements), tmp_path / "v1")
+
+
 def test_the_command_line_writes_the_record_and_the_trained_bundle(tmp_path):
     example = tmp_path / "toy"
     write_problem(example / "problem")

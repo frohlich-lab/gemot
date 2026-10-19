@@ -72,19 +72,29 @@ _ARCHIVE_SUFFIXES = (
 _SCORE_LISTEN_TIMEOUT_S = 3600.0
 
 
+#: The tables that make up the experimental design, which the agent may not touch. A v1 problem
+#: has no experiment table.
+_DESIGN_ROLES = ("measurement", "condition", "experiment", "observable")
+
+
 # --------------------------------------------------------------------------- staging
 def _design_files(work: Path) -> dict[str, list[str]]:
-    """The design-table and parameter-table file names ``problem.yaml`` lists, by role."""
+    """The design-table and parameter-table file names ``problem.yaml`` lists, by role: from its
+    first ``problems`` entry in PEtab v1, from the top level in v2."""
     import yaml
+    from petab.versions import get_major_version
 
     doc = yaml.safe_load((work / "problem.yaml").read_text(encoding="utf-8")) or {}
-    problems = doc.get("problems") or [{}]
-    first = problems[0] if problems else {}
+    if get_major_version(doc) == 1:
+        problems = doc.get("problems") or [{}]
+        listed = problems[0] if problems else {}
+        parameters = [doc["parameter_file"]] if doc.get("parameter_file") else []
+    else:
+        listed = doc
+        parameters = list(doc.get("parameter_files") or [])
     return {
-        "measurement": list(first.get("measurement_files") or []),
-        "condition": list(first.get("condition_files") or []),
-        "observable": list(first.get("observable_files") or []),
-        "parameter": [doc["parameter_file"]] if doc.get("parameter_file") else [],
+        **{role: list(listed.get(f"{role}_files") or []) for role in _DESIGN_ROLES},
+        "parameter": parameters,
     }
 
 
@@ -111,7 +121,7 @@ def stage_workspace(work: Path) -> dict:
         (agent_dir / name).mkdir(exist_ok=True)
     files = _design_files(agent_dir)
     hashes = {}
-    for role in ("measurement", "condition", "observable"):
+    for role in _DESIGN_ROLES:
         for name in files[role]:
             hashes[name] = _sha256(agent_dir / name)
     shipped_rows = {}
@@ -124,6 +134,18 @@ def stage_workspace(work: Path) -> dict:
         "design_hashes": hashes,
         "shipped_rows": shipped_rows,
     }
+
+
+def _estimate_flag(cell) -> int | None:
+    """A parameter table's ``estimate`` cell as 0/1 -- v1's ``0``/``1`` or v2's ``false``/``true``,
+    so a row compares equal across the two -- or ``None`` where it cannot be read."""
+    text = (cell or "").strip().lower()
+    if text in ("true", "false"):
+        return int(text == "true")
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
 
 
 def _parameter_rows(path: Path) -> dict[str, tuple[int | None, float | None]]:
@@ -139,10 +161,7 @@ def _parameter_rows(path: Path) -> dict[str, tuple[int | None, float | None]]:
             pid = (rec.get("parameterId") or "").strip()
             if not pid:
                 continue
-            try:
-                est = int(float(rec.get("estimate", "")))
-            except (TypeError, ValueError):
-                est = None
+            est = _estimate_flag(rec.get("estimate"))
             try:
                 nominal = float(rec.get("nominalValue", ""))
             except (TypeError, ValueError):
@@ -175,7 +194,7 @@ def check_delivery(work: Path, staged: dict) -> dict:
         out["design_modified"] = sorted(staged["design_hashes"])
         out["petab_lint"] = {"ok": False, "messages": [f"problem.yaml unreadable: {exc}"]}
         return out
-    listed = {n for role in ("measurement", "condition", "observable") for n in files[role]}
+    listed = {n for role in _DESIGN_ROLES for n in files[role]}
     for name, digest in staged["design_hashes"].items():
         f = work / name
         if name not in listed or not f.is_file() or _sha256(f) != digest:
@@ -196,18 +215,30 @@ def check_delivery(work: Path, staged: dict) -> dict:
 
 
 def _lint(yaml_path: Path) -> "tuple[dict, bool | None]":
-    """petab's linter over the delivered problem (messages captured off its logger), plus whether
-    the SBML carries any dynamics."""
+    """petab's linter over the delivered problem in the PEtab version its YAML declares (v1's
+    messages captured off its logger, v2's issues as it returns them), plus whether the SBML
+    carries any dynamics."""
     messages: list[str] = []
     handler = logging.Handler()
     handler.emit = lambda record: messages.append(record.getMessage())  # type: ignore[method-assign]
     logger = logging.getLogger("petab.v1.lint")
     logger.addHandler(handler)
     try:
-        import petab.v1 as petab
+        from petab.versions import get_major_version
 
-        problem = petab.Problem.from_yaml(str(yaml_path))
-        has_problems = bool(petab.lint.lint_problem(problem))
+        if get_major_version(str(yaml_path)) == 1:
+            import petab.v1 as petab
+
+            problem = petab.Problem.from_yaml(str(yaml_path))
+            has_problems = bool(petab.lint.lint_problem(problem))
+        else:
+            from petab import v2
+            from petab.v2.lint import ValidationIssueSeverity
+
+            problem = v2.Problem.from_yaml(str(yaml_path))
+            issues = problem.validate()
+            messages.extend(str(i) for i in issues if i.level >= ValidationIssueSeverity.WARNING)
+            has_problems = issues.has_errors()
         model = problem.model
         authored = None
         if model is not None:
