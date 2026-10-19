@@ -43,6 +43,16 @@ ADEQUACY_REPLICATE_LOF = "replicate_lof"
 ADEQUACY_RESIDUAL_STRUCTURE = "residual_structure"
 ADEQUACY_TESTS = (ADEQUACY_CHI2, ADEQUACY_REPLICATE_LOF, ADEQUACY_RESIDUAL_STRUCTURE)
 
+#: What :attr:`Scenario.amici_tolerances` may set, and the server's environment variable for each.
+#: The server reads them where it configures AMICI's solver
+#: (``petab_mcp.fitting._apply_amici_solver_defaults``), for every fit and every held-out score.
+AMICI_TOLERANCE_ENV = {
+    "absolute_tolerance": "PETAB_MCP_FIT_AMICI_ATOL",
+    "relative_tolerance": "PETAB_MCP_FIT_AMICI_RTOL",
+    "absolute_tolerance_steady_state": "PETAB_MCP_FIT_AMICI_ATOL_STEADY_STATE",
+    "relative_tolerance_steady_state": "PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE",
+}
+
 
 # --------------------------------------------------------------------------- data classes
 @dataclass
@@ -245,6 +255,15 @@ class Scenario:
     # moves only when THIS example changes, so it groups comparable runs across harness
     # commits. Recorded on every run (Phoenix span + result.json + metrics history).
     version: int = 1
+    # AMICI tolerances this problem's likelihood needs, for every fit and held-out score the
+    # server runs. PEtabAgentBench's reference refit applies the same ones, so both sides of a Δ
+    # are integrated alike. Keys are those of AMICI_TOLERANCE_ENV, and an unset key leaves the
+    # server's default. Empty for nearly every problem; raimundez tightens the steady-state one.
+    amici_tolerances: dict[str, float] = field(default_factory=dict)
+
+    def amici_tolerance_env(self) -> dict[str, str]:
+        """:attr:`amici_tolerances` as the server's environment variables; none for an unset key."""
+        return {AMICI_TOLERANCE_ENV[k]: repr(float(v)) for k, v in self.amici_tolerances.items()}
 
     def __post_init__(self) -> None:
         # Both mismatches would otherwise be SILENT: a reference-free example with no test grades
@@ -258,6 +277,14 @@ class Scenario:
             raise ValueError(
                 f"{self.name}: `adequacy={self.adequacy!r}` is the bar of a reference-free scenario; "
                 "a reference-based one is graded by its Δcriterion against the reference"
+            )
+        # Refused here, at the example's own run.py, rather than exported as nothing: a misspelt
+        # key would otherwise leave the server on its default without a word.
+        unknown = sorted(set(self.amici_tolerances) - set(AMICI_TOLERANCE_ENV))
+        if unknown:
+            raise ValueError(
+                f"{self.name}: amici_tolerances sets {unknown}, which the server does not read; "
+                f"it reads {sorted(AMICI_TOLERANCE_ENV)}"
             )
 
     @property
