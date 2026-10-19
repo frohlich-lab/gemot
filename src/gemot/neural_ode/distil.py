@@ -189,10 +189,10 @@ def sample(
         # The BASAL regime as well, where there is one. A gated input takes its other value only
         # in the preequilibration condition -- perelson's `rit` is 1 in its one experiment and 0
         # in `preeq_untreated` -- so sampling the experiments alone leaves that column constant,
-        # the regression cannot see the input at all, and the server then rejects every proposal
-        # for "the condition table sets 'rit' ... but the model never uses 'rit'". The state there
-        # is the trajectory's own t=0, which IS what preequilibration relaxed to, and the field is
-        # at rest in it: the rows say dx/dt = 0 at the untreated steady state, which is true.
+        # the regression cannot see the input at all, and no proposal reads it: none can tell the
+        # untreated regime from the treated one. The state there is the trajectory's own t=0,
+        # which IS what preequilibration relaxed to, and the field is at rest in it: the rows say
+        # dx/dt = 0 at the untreated steady state, which is true.
         basal = problem.preequilibration.get(experiment)
         if basal is not None and finite.any():
             settled = arrays["states"][finite][:1]

@@ -670,7 +670,7 @@ async def _judge(
                 f"  held-out (validation): nll {validation['nll']:.6g}"
                 + (f" | chi2 {_vchi2:.4g}" if isinstance(_vchi2, (int, float)) else "")
                 + f"  over {validation.get('n')} point(s) in "
-                f"{validation.get('n_conditions')} unseen condition(s)  [report-only]"
+                f"{validation.get('n_experiments')} unseen experiment(s)  [report-only]"
             )
         elif validation.get("delta_nll") is not None:
             print(

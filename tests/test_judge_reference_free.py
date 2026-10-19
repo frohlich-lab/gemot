@@ -343,14 +343,14 @@ def test_reference_free_held_out_is_absolute_and_report_only(tmp_path, capsys):
     scenario = _data_package(tmp_path, S.ADEQUACY_CHI2)
     held_out = validation_measurements_path(scenario.example_dir)
     held_out.parent.mkdir(parents=True)
-    held_out.write_text("observableId\tsimulationConditionId\ttime\tmeasurement\n")
-    payload = {"status": "ok", "nll": 900.0, "n": 12, "chi2": 400.0, "n_conditions": 4}
+    held_out.write_text("observableId\texperimentId\ttime\tmeasurement\n")
+    payload = {"status": "ok", "nll": 900.0, "n": 12, "chi2": 400.0, "n_experiments": 4}
     code, result = _run(scenario, tmp_path, _summary(), evaluate_validation_data=payload)
     assert result["success"] is True
     assert result["validation"]["nll"] == 900.0 and "delta_nll" not in result["validation"]
     line = next(x for x in capsys.readouterr().out.splitlines() if "held-out (validation)" in x)
     assert "nll 900" in line and "chi2 400" in line and "12 point(s)" in line
-    assert "true-model" not in line
+    assert "4 unseen experiment(s)" in line and "true-model" not in line
 
 
 class _DuckScenario:

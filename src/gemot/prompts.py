@@ -867,10 +867,10 @@ TOOL_DESCRIPTIONS = {
     "list_conditions": (
         "The fixed conditions, one row per change a condition makes: it sets "
         "`targetId` (a model parameter, species or compartment) to `targetValue` "
-        "— a dose, an input level, a switch. Your model must reference every "
-        "target BY NAME — a target the model never uses is a rejected change, and "
-        "a condition-set initial is an experimental input to reproduce, not a "
-        "value to fit. WHEN a condition applies is `list_experiments`."
+        "— a dose, an input level, a switch. Your model must define every target "
+        "BY NAME, and a condition-set initial is an experimental input to "
+        "reproduce, not a value to fit. WHEN a condition applies is "
+        "`list_experiments`."
     ),
     "list_experiments": (
         "The fixed experiments, one row per period: from `time` on, experiment "
