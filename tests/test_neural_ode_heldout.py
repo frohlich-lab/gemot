@@ -23,35 +23,6 @@ from gemot.neural_ode import stage as S
 from gemot.neural_ode import train as T
 from gemot.neural_ode.__main__ import main
 
-_HELD_OUT = """observableId\tsimulationConditionId\ttime\tmeasurement\tnoiseParameters
-obs_P\t{cond}\t0.0\t0.05\t
-obs_P\t{cond}\t1.0\t0.9\t
-obs_P\t{cond}\t2.0\t1.6\t
-obs_Q\t{cond}\t1.5\t4.0\t0.2
-"""
-
-
-def write_held_out(
-    directory: Path, *, new_condition: bool, transfer: bool = False, extra_column: bool = False
-) -> Path:
-    """A held-out table beside the fixture: a new condition ``c_new`` that adds a row of the
-    training table's inputs, or the training conditions again; ``transfer`` brings a parameter
-    table, ``extra_column`` a condition column the training table does not have."""
-    directory.mkdir(parents=True, exist_ok=True)
-    cond = "c_new" if new_condition else "c_lo"
-    (directory / "measurements.tsv").write_text(_HELD_OUT.format(cond=cond))
-    if new_condition:
-        header = "conditionId\tS\tinit_E\tdrug" + ("\tlight" if extra_column else "")
-        (directory / "conditions.tsv").write_text(
-            header + "\nc_new\t4.0\t1.0\t2.0" + ("\t1" if extra_column else "") + "\n"
-        )
-    if transfer:
-        (directory / "parameters.tsv").write_text(
-            "parameterId\tparameterScale\tlowerBound\tupperBound\tnominalValue\testimate\n"
-            "sigma_P\tlin\t0.0001\t100.0\t0.1\t0\nscale_Q\tlog10\t0.001\t1000.0\t1.0\t1\nQ_init\tlin\t0.0\t10.0\t0.5\t0\n"
-        )
-    return directory / "measurements.tsv"
-
 
 def write_v2_held_out(
     directory: Path,
@@ -60,13 +31,16 @@ def write_v2_held_out(
     dose: str = "init_E",
     switch: bool = False,
     ramp: bool = False,
+    transfer: bool = False,
+    extra_target: bool = False,
 ) -> Path:
     """A native v2 fixed-θ set: experiment ``e_new`` applying ``c_new``, which sets new values of
     the training targets, after ``basal``'s pre-equilibration where one is given; with ``switch``,
     a later period at t=1 sets ``drug`` again, as a protocol moved into the experiment table does;
     with ``ramp``, ``c_new`` also sets ``drug_rate`` 1.5 and ``drug_end`` 1.75, so the training
     problem's protocol (``write_v2_problem(protocol=True)``) ramps from ``drug`` until t=1.75, as
-    fujita's held-out ramps do."""
+    fujita's held-out ramps do. ``transfer`` brings a parameter table, ``extra_target`` a target
+    ``light`` the training table does not set."""
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "measurements.tsv").write_text(
         "experimentId\tobservableId\ttime\tmeasurement\tnoiseParameters\n"
@@ -83,6 +57,15 @@ def write_v2_held_out(
             table.write("c_drug\tdrug\t6.0\n")
         with (directory / "experiments.tsv").open("a") as table:
             table.write("e_new\t1.0\tc_drug\n")
+    if extra_target:
+        with (directory / "conditions.tsv").open("a") as table:
+            table.write("c_new\tlight\t1\n")
+    if transfer:
+        (directory / "parameters.tsv").write_text(
+            "parameterId\tparameterScale\tlowerBound\tupperBound\tnominalValue\testimate\n"
+            "sigma_P\tlin\t0.0001\t100.0\t0.1\tfalse\nscale_Q\tlog10\t0.001\t1000.0\t1.0\ttrue\n"
+            "Q_init\tlin\t0.0\t10.0\t0.5\tfalse\n"
+        )
     return directory / "measurements.tsv"
 
 
@@ -96,7 +79,7 @@ def test_fixed_theta_scores_a_new_condition_in_the_training_units(tmp_path):
     from petab_mcp.validation_data import read_held_out
 
     problem, result = _trained(tmp_path)
-    held_out = read_held_out(write_held_out(tmp_path / "validation", new_condition=True))
+    held_out = read_held_out(write_v2_held_out(tmp_path / "validation"))
     payload = H.score(result, held_out, tmp_path / "score", training=problem)
     # P's start is its t=0 datum, Q's the pinned Q_init, S and E the new row's: nothing to refit.
     assert payload["status"] == "ok" and payload["mode"] == "fixed" and payload["n"] == 4
@@ -115,39 +98,48 @@ def test_a_transfer_set_is_refused_rather_than_scored(tmp_path):
     from petab_mcp.validation_data import read_held_out
 
     problem, result = _trained(tmp_path)
-    held_out = read_held_out(
-        write_held_out(tmp_path / "validation", new_condition=True, transfer=True)
-    )
+    held_out = read_held_out(write_v2_held_out(tmp_path / "validation", transfer=True))
     payload = H.score(result, held_out, tmp_path / "score", training=problem)
     assert payload["status"] == H.STATUS_NO_TRANSFER and payload["mode"] == "transfer"
     assert "nll" not in payload and "bic" not in payload
     assert "weights" in payload["reason"]
 
 
-def test_a_new_input_column_is_a_different_field(tmp_path):
+def test_a_new_input_target_is_a_different_field(tmp_path):
     from petab_mcp.validation_data import read_held_out
 
     problem, result = _trained(tmp_path)
-    held_out = read_held_out(
-        write_held_out(tmp_path / "validation", new_condition=True, extra_column=True)
-    )
+    held_out = read_held_out(write_v2_held_out(tmp_path / "validation", extra_target=True))
     payload = H.score(result, held_out, tmp_path / "score", training=problem)
     assert payload["status"] == "table_mismatch" and "light" in payload["reason"]
 
 
-def test_a_v1_set_is_keyed_by_experiment_as_the_server_keys_it(tmp_path):
-    """A v1 set names a simulation condition; the server moves it onto the training problem's
-    experiments (`as_v2`) before it scores it, and the field must be scored on that same view, or
-    the two scorers would be reading different held-out problems."""
-    from petab_mcp.validation_data import as_v2, read_held_out
+def test_a_held_out_experiment_is_added_to_the_training_design(tmp_path):
+    """A held-out set is PEtab v2, keyed by experiment as the training problem is; the view adds
+    its experiment and condition to the training ones, as the server's does, so the two scorers
+    read one held-out problem."""
+    from petab_mcp.validation_data import read_held_out
 
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
-    held_out = read_held_out(write_held_out(tmp_path / "validation", new_condition=True))
+    held_out = read_held_out(write_v2_held_out(tmp_path / "validation"))
     view = H._held_out_problem(problem, held_out)
-    (experiment,) = view.experiment_ids
-    assert set(as_v2(held_out, problem.tables).measurement_df["experimentId"]) == {experiment}
-    assert view.periods[experiment] == ((0.0, ("c_new",)),)
-    assert view.condition_values[experiment] == {"S": 4.0, "init_E": 1.0, "drug": 2.0}
+    assert view.experiment_ids == ("e_new",)
+    assert view.periods["e_new"] == ((0.0, ("c_new",)),)
+    assert view.condition_values["e_new"] == {"S": 4.0, "init_E": 1.0, "drug": 2.0}
+
+
+def test_a_v1_set_is_refused_before_training(tmp_path, monkeypatch):
+    """The server refuses a v1 held-out set when it starts (convert it with the training problem
+    instead); the route refuses it before the expensive part, not after it."""
+    example = tmp_path / "toy"
+    write_problem(example / "problem")
+    (example / "validation").mkdir()
+    (example / "validation" / "measurements.tsv").write_text(
+        "observableId\tsimulationConditionId\ttime\tmeasurement\nobs_P\tc_lo\t1.0\t0.9\n"
+    )
+    monkeypatch.setattr(T, "train", lambda *a, **k: pytest.fail("trained before reading the set"))
+    with pytest.raises(ValueError, match="petab1to2"):
+        main(["fit", str(example / "problem"), "--out", str(tmp_path / "out"), "--dosed", "S"])
 
 
 def test_an_experiment_neither_table_defines_is_a_table_mismatch(tmp_path):
@@ -164,7 +156,7 @@ def test_an_experiment_neither_table_defines_is_a_table_mismatch(tmp_path):
 def test_the_command_line_writes_the_record_and_the_trained_bundle(tmp_path):
     example = tmp_path / "toy"
     write_problem(example / "problem")
-    write_held_out(example / "validation", new_condition=True)
+    write_v2_held_out(example / "validation")
     (example / "problem" / "reference.json").write_text(
         json.dumps(
             {
@@ -299,10 +291,10 @@ def test_the_held_out_nll_is_the_servers_at_the_same_point(tmp_path):
     set that pre-equilibrates, switches its input mid-run as a protocol moved into the experiment
     table does, and drives the field through the problem's protocol, which ramps and then cuts
     off at condition values only the held-out experiment sets (fujita's EGF). The two read one
-    held-out view, built by the server's own functions (`as_v2`, `_with_held_out_design`), and
-    differ only in the integrator: AMICI's JAX backend against SUNDIALS, so the tolerance is the
-    server's own for solver error. The field reads the protocol's `stim`, so a ramp, a cut-off or
-    a switch either side ignored would show in the nll."""
+    held-out view, built by the server's own function (`_with_held_out_design`), and differ only
+    in the integrator: AMICI's JAX backend against SUNDIALS, so the tolerance is the server's own
+    for solver error. The field reads the protocol's `stim`, so a ramp, a cut-off or a switch
+    either side ignored would show in the nll."""
     from types import SimpleNamespace
 
     import equinox as eqx
@@ -373,7 +365,7 @@ def test_a_curve_of_checkpoints_imports_the_held_out_set_once(tmp_path, monkeypa
     from petab_mcp.validation_data import read_held_out
 
     problem, result = _trained(tmp_path)
-    held_out = read_held_out(write_held_out(tmp_path / "validation", new_condition=True))
+    held_out = read_held_out(write_v2_held_out(tmp_path / "validation"))
 
     imported = []
     real = T._import
@@ -400,9 +392,7 @@ def test_a_prepared_set_refuses_a_transfer_as_score_does(tmp_path):
     from petab_mcp.validation_data import read_held_out
 
     problem, result = _trained(tmp_path)
-    held_out = read_held_out(
-        write_held_out(tmp_path / "validation", new_condition=True, transfer=True)
-    )
+    held_out = read_held_out(write_v2_held_out(tmp_path / "validation", transfer=True))
     prepared = H.prepare(result, held_out, tmp_path / "curve", training=problem)
     assert isinstance(prepared, dict) and prepared["mode"] == "transfer"
 
@@ -413,7 +403,7 @@ def test_scoring_different_fields_against_one_prepared_set_does_not_reuse_a_scor
     from petab_mcp.validation_data import read_held_out
 
     problem, result = _trained(tmp_path)
-    held_out = read_held_out(write_held_out(tmp_path / "validation", new_condition=True))
+    held_out = read_held_out(write_v2_held_out(tmp_path / "validation"))
     prepared = H.prepare(result, held_out, tmp_path / "curve", training=problem)
 
     import jax.tree_util as jtu
