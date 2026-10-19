@@ -143,11 +143,14 @@ async def _petab_server(
     # systemd-coredump, which stores node-locally and is not readable by the job's user — so the
     # in-process traceback is the artifact that actually survives. array_task.sh raises the core
     # limit too, so a core lands as well where the node permits it.
+    # The problem's own AMICI tolerances last, so they win over any inherited from the caller:
+    # they are part of what the example IS, and its reference bar was fitted under them.
     server_env = {
         **os.environ,
         "PYTHONFAULTHANDLER": "1",
         "PETAB_MCP_FIT_PER_START_TIMEOUT": str(FIT_PER_START_TIMEOUT_S),
         "PETAB_MCP_FIT_N_WORKERS": str(FIT_N_WORKERS),
+        **scenario.amici_tolerance_env(),
     }
     try:
         proc = subprocess.Popen(server_cmd, stdout=amici_log, stderr=server_log, env=server_env)
