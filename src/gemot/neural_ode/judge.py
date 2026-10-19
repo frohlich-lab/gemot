@@ -82,6 +82,9 @@ def score_proposals(
                 "field_r2": record.get("field_r2"),
                 "exit_code": code,
                 "success": result.get("success"),
+                # A data-package example is judged reference-free: `success` is then its absolute
+                # adequacy verdict and there is no ΔBIC, so the row says which it is.
+                "judge_mode": result.get("judge_mode"),
                 "final_nll": result.get("final_nll"),
                 "k": result.get("k"),
                 "bic": result.get("bic"),

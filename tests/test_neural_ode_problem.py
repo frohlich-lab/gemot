@@ -1,4 +1,4 @@
-"""What the neural route reads off a PEtab v1 problem's tables, and what it refuses."""
+"""What the neural route reads off a PEtab problem's tables, either version, and what it refuses."""
 
 from __future__ import annotations
 
@@ -44,7 +44,6 @@ Q_init\tlin\t0.0\t10.0\t0.5\t0
 """
 _INPUTS = """inputId\tformula\tconditionInputs
 pulse\tpiecewise(drug, time < 1, 0)\tdrug
-leak\tk_hidden * time\t
 """
 _YAML = """format_version: {version}
 parameter_file: parameters.tsv
@@ -96,15 +95,103 @@ def write_problem(
     return directory / "problem.yaml"
 
 
+_V2_OBSERVABLES = """observableId\tobservableFormula\tnoiseFormula\tnoiseDistribution\tobservablePlaceholders\tnoisePlaceholders
+obs_P\tP\tsigma_P\tnormal\t\t
+obs_Q\tscale_Q * Q\tsd_Q\tnormal\t\tsd_Q
+"""
+_V2_PARAMETERS = """parameterId\tlowerBound\tupperBound\tnominalValue\testimate
+sigma_P\t0.0001\t100.0\t0.1\tfalse
+scale_Q\t0.001\t1000.0\t2.0\ttrue
+Q_init\t0.0\t10.0\t0.5\tfalse
+"""
+#: fujita's EGF ramp over the toy's ``drug``: a protocol over condition targets alone.
+_RAMP = """inputId\tformula\tconditionInputs
+stim\tpiecewise(drug_rate*time + drug, time <= drug_end, 0)\tdrug_rate;drug;drug_end
+"""
+_V2_YAML = """format_version: 2.0.0
+parameter_files: [parameters.tsv]
+model_files:
+  model: {location: model.xml, language: sbml}
+measurement_files: [measurements.tsv]
+condition_files: [conditions.tsv]
+experiment_files: [experiments.tsv]
+observable_files: [observables.tsv]
+"""
+
+
+def write_v2_conditions(path: Path, rows: dict[str, tuple[float, float, float]], dose: str) -> None:
+    """A long v2 condition table: per condition, ``S``, the ``dose`` target and ``drug``."""
+    path.write_text(
+        "conditionId\ttargetId\ttargetValue\n"
+        + "".join(
+            f"{c}\t{t}\t{v}\n"
+            for c, values in rows.items()
+            for t, v in zip(("S", dose, "drug"), values)
+        )
+    )
+
+
+def write_v2_experiments(path: Path, experiments: dict[str, str], basal: str | None) -> None:
+    path.write_text(
+        "experimentId\ttime\tconditionId\n"
+        + "".join(
+            (f"{e}\t-inf\t{basal}\n" if basal else "") + f"{e}\t0.0\t{c}\n"
+            for e, c in experiments.items()
+        )
+    )
+
+
+def write_v2_problem(
+    directory: Path, *, preequilibration: bool = False, dose: str = "init_E", protocol: bool = False
+) -> Path:
+    """The v1 toy written natively in PEtab v2: experiments ``e_lo``/``e_hi`` applying ``c_lo``/
+    ``c_hi``, after ``c_basal`` with ``preequilibration``. obs_Q's noise placeholder is ``sd_Q``,
+    declared rather than named by v1's convention. ``dose`` is the target that doses ``E``:
+    ``init_E`` as in the v1 toy, or the state ``E`` itself. With ``protocol``, every condition also
+    sets ``drug_rate`` 0 and ``drug_end`` 10, as fujita's step doses set ``EGF_rate`` and
+    ``EGF_end``, and ``inputs.tsv`` ramps ``stim`` over the three, as fujita's EGF."""
+    directory.mkdir(parents=True, exist_ok=True)
+    rows = [line.split("\t") for line in _MEASUREMENTS.splitlines()[1:]]
+    (directory / "measurements.tsv").write_text(
+        "experimentId\tobservableId\ttime\tmeasurement\tnoiseParameters\n"
+        + "".join(
+            f"e_{r[1].removeprefix('c_')}\t{r[0]}\t{r[2]}\t{r[3]}\t{'0.2' if r[0] == 'obs_Q' else ''}\n"
+            for r in rows
+        )
+    )
+    (directory / "observables.tsv").write_text(_V2_OBSERVABLES)
+    conditions = {"c_lo": (2.0, 1.0, 0.0), "c_hi": (8.0, 1.0, 5.0)}
+    if preequilibration:
+        conditions["c_basal"] = (0.0, 1.0, 0.0)
+    write_v2_conditions(directory / "conditions.tsv", conditions, dose)
+    if protocol:
+        with (directory / "conditions.tsv").open("a") as table:
+            table.write("".join(f"{c}\tdrug_rate\t0.0\n{c}\tdrug_end\t10.0\n" for c in conditions))
+        (directory / "inputs.tsv").write_text(_RAMP)
+    write_v2_experiments(
+        directory / "experiments.tsv",
+        {"e_lo": "c_lo", "e_hi": "c_hi"},
+        "c_basal" if preequilibration else None,
+    )
+    (directory / "parameters.tsv").write_text(_V2_PARAMETERS)
+    (directory / "model.xml").write_text(_EMPTY_SBML)
+    (directory / "problem.yaml").write_text(_V2_YAML)
+    return directory / "problem.yaml"
+
+
 def test_states_knobs_starts_and_scales_are_read_off_the_tables(tmp_path):
     problem = P.load(write_problem(tmp_path / "toy"), dosed=("S",))
     assert problem.observed == ("P", "Q") and problem.dosed == ("S", "E")
     assert problem.state_names == ("P", "Q", "S", "E") and problem.inputs == ("drug",)
     assert problem.start_columns == {"S": "S", "init_E": "E"}
+    # The v1 problem is upgraded on load: one experiment per simulation condition, in the order
+    # the measurements name them.
+    lo, hi = problem.experiment_ids
+    assert problem.periods == {lo: ((0.0, ("c_lo",)),), hi: ((0.0, ("c_hi",)),)}
+    assert not problem.uses_preequilibration and problem.switches == {}
     # A fixed Q_init pins Q; P's start is its t=0 datum, one per experiment.
     assert problem.pinned_starts == {"Q": 0.5}
-    assert problem.measured_starts == {("c_lo", "P"): 0.0, ("c_hi", "P"): 0.1}
-    assert problem.experiment_ids == ("c_lo", "c_hi") and not problem.uses_preequilibration
+    assert problem.measured_starts == {(lo, "P"): 0.0, (hi, "P"): 0.1}
     # sigma_P is fixed and obs_Q's noise is numeric, so the problem estimates no sigma; scale_Q
     # is the one readout scale factor the table estimates.
     assert problem.noise_parameters == () and problem.observable_parameters == ("scale_Q",)
@@ -120,31 +207,87 @@ def test_states_knobs_starts_and_scales_are_read_off_the_tables(tmp_path):
 
 
 def test_a_protocol_replaces_the_columns_it_reads_and_hidden_structure_is_refused(tmp_path):
+    """The server's own check refuses a protocol over a fitted constant, as it refuses the
+    problem."""
     problem = P.load(write_problem(tmp_path / "toy", protocol=True), dosed=("S",))
-    assert [t.target for t in problem.timed_inputs] == ["pulse"]
+    assert [t.id for t in problem.timed_inputs] == ["pulse"]
     # drug is consumed by the protocol; the field reads the protocol's value instead.
     assert problem.field_input_names == ("pulse",) and problem.scales["pulse"] == 1.0
-    assert any("leak" in w and "k_hidden" in w for w in problem.warnings)
+    leaky = write_problem(tmp_path / "leak", protocol=True)
+    (leaky.parent / "inputs.tsv").write_text(_INPUTS + "leak\tk_hidden * time\tk_hidden\n")
+    with pytest.raises(P.ProblemError, match="'leak' names k_hidden"):
+        P.load(leaky, dosed=("S",))
 
 
 def test_preequilibration_binds_every_experiment_or_none(tmp_path):
     problem = P.load(write_problem(tmp_path / "pre", preequilibration=True), dosed=("S",))
-    assert problem.preequilibration == {"c_lo": "c_basal", "c_hi": "c_basal"}
+    assert problem.preequilibration == dict.fromkeys(problem.experiment_ids, "c_basal")
     assert problem.basal_conditions == ("c_basal",) and problem.uses_preequilibration
     with pytest.raises(P.ProblemError, match="preequilibrate in no condition"):
         P.load(write_problem(tmp_path / "partial", partial_preequilibration=True), dosed=("S",))
 
 
+def test_a_v1_problem_is_upgraded_on_load_and_reads_as_its_native_v2_twin(tmp_path):
+    """There is one upgrade, the server's (`WorkingProblem.from_yaml`), and the route reads what it
+    gives. A v1 problem and the same problem written natively in v2 are the same problem to the
+    route, whatever the upgrade calls the experiments: a reader that kept its own v1 path would be
+    a second conversion that could drift from the server's, which is the likelihood scored."""
+    for preequilibration in (False, True):
+        root = tmp_path / str(preequilibration)
+        v1 = P.load(write_problem(root / "v1", preequilibration=preequilibration), dosed=("S",))
+        v2 = P.load(write_v2_problem(root / "v2", preequilibration=preequilibration), dosed=("S",))
+        assert v2.experiment_ids == ("e_lo", "e_hi")
+        same = dict(zip(v1.experiment_ids, v2.experiment_ids))
+        for name in ("observed", "dosed", "inputs", "start_columns", "pinned_starts", "scales"):
+            assert getattr(v1, name) == getattr(v2, name), name
+        for name in ("noise_parameters", "observable_parameters", "horizon", "n_measurements"):
+            assert getattr(v1, name) == getattr(v2, name), name
+        assert {same[e]: v for e, v in v1.preequilibration.items()} == v2.preequilibration
+        assert {(same[e], s): v for (e, s), v in v1.measured_starts.items()} == v2.measured_starts
+        assert {same.get(k, k): v for k, v in v1.condition_values.items()} == v2.condition_values
+        assert {same[e]: v for e, v in v1.periods.items()} == v2.periods
+    assert v2.preequilibration == {"e_lo": "c_basal", "e_hi": "c_basal"}
+    assert v2.periods["e_hi"] == ((float("-inf"), ("c_basal",)), (0.0, ("c_hi",)))
+
+
+def test_a_later_period_that_sets_an_input_again_is_followed(tmp_path):
+    """A v2 experiment may switch an input mid-run (a protocol `assignments_to_experiments` moved
+    into the experiment table). The field reads it through AMICI's events; the route's own
+    bookkeeping -- the input's scale and the distiller's sample -- must follow it too, or the
+    distilled rate law is regressed against the dose before the switch.
+
+    ``e_hi`` has the shape the server's conversion gives a protocol that starts later: an empty
+    period at t=0, so the experiment starts where a v1 simulation did, then the switch. Its knobs
+    read as zero until then, and that is no reason for a warning."""
+    yaml_path = write_v2_problem(tmp_path / "toy")
+    with (yaml_path.parent / "conditions.tsv").open("a") as table:
+        table.write("c_drug\tdrug\t9.0\n")
+    (yaml_path.parent / "experiments.tsv").write_text(
+        "experimentId\ttime\tconditionId\n"
+        "e_lo\t0.0\tc_lo\ne_lo\t1.0\tc_drug\ne_hi\t0.0\t\ne_hi\t1.0\tc_hi\n"
+    )
+    problem = P.load(yaml_path, dosed=("S",))
+    assert problem.switches == {
+        "e_lo": ((1.0, {"S": 2.0, "init_E": 1.0, "drug": 9.0}),),
+        "e_hi": ((1.0, {"S": 8.0, "init_E": 1.0, "drug": 5.0}),),
+    }
+    assert list(problem.input_values("e_lo", "drug", [0.0, 0.5, 1.0, 2.0])) == [0, 0, 9, 9]
+    assert list(problem.input_values("e_hi", "drug", [0.0, 2.0])) == [0.0, 5.0]
+    assert problem.periods["e_hi"] == ((0.0, ()), (1.0, ("c_hi",)))
+    assert problem.warnings == () and ("e_hi", "S") not in problem.column_starts
+    assert problem.scales["drug"] == pytest.approx(((0.0**2 * 2 + 5.0**2 + 9.0**2) / 4) ** 0.5)
+
+
 def test_an_offset_does_not_enter_a_states_scale():
-    from petab.math import sympify_petab
+    from petab.v1.math import sympify_petab
 
     assert P._gain(sympify_petab("offset + 2 * Q"), "Q", {"offset": 5.0}, None) == 2.0
-    assert P._gain(sympify_petab("observableParameter1_o * Q"), "Q", {}, "0.5") == 0.5
-
-
-def test_a_v2_problem_is_refused(tmp_path):
-    with pytest.raises(P.ProblemError, match="not a PEtab v1 problem"):
-        P.load(write_problem(tmp_path / "v2", version=2))
+    assert (
+        P._gain(
+            sympify_petab("observableParameter1_o * Q"), "Q", {}, "0.5", ["observableParameter1_o"]
+        )
+        == 0.5
+    )
 
 
 def test_a_start_column_with_a_hole_pins_only_the_experiments_it_fills(tmp_path):
@@ -163,11 +306,12 @@ def test_a_start_column_with_a_hole_pins_only_the_experiments_it_fills(tmp_path)
     assert "c_hi\t8.0\t\t5.0" in table.read_text()
 
     problem = P.load(yaml_path, dosed=("S",))
+    lo, hi = problem.experiment_ids
     assert problem.start_columns.get("init_E") == "E"
-    assert problem.start_is_known("c_lo", "E")
-    assert not problem.start_is_known("c_hi", "E"), "a blank cell pins nothing"
+    assert problem.start_is_known(lo, "E")
+    assert not problem.start_is_known(hi, "E"), "a blank cell pins nothing"
     # And the count follows: E is fixed in one experiment, not both.
-    assert ("c_lo", "E") in problem.column_starts and ("c_hi", "E") not in problem.column_starts
+    assert (lo, "E") in problem.column_starts and (hi, "E") not in problem.column_starts
     # Under shared starts a state counts only if EVERY experiment pins it, so E must not count.
     per_experiment = problem.counts(shared_ics=False)["n_fixed_ics"]
     shared = problem.counts(shared_ics=True)["n_fixed_ics"]

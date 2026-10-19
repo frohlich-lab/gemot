@@ -46,10 +46,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     fit = commands.add_parser("fit", help="train the field on one problem and score it")
-    fit.add_argument("problem", type=Path, help="a PEtab v1 problem yaml or its directory")
+    fit.add_argument(
+        "problem", type=Path, help="a PEtab problem yaml or its directory; v1 is upgraded on load"
+    )
     fit.add_argument("--out", type=Path, required=True)
     fit.add_argument(
-        "--dosed", default="", help="condition columns that dose a state, comma-separated"
+        "--dosed", default="", help="condition targets that dose a state, comma-separated"
     )
     fit.add_argument("--windows", type=int, default=1)
     fit.add_argument("--optimiser", choices=["adam", "fides", "adam+fides"], default="adam")
@@ -97,7 +99,9 @@ def main(argv: list[str] | None = None) -> int:
         "--reference", type=Path, default=None, help="reference.json to compare against"
     )
     propose = commands.add_parser("propose", help="train, distil and write proposals")
-    propose.add_argument("problem", type=Path, help="a PEtab v1 problem yaml or its directory")
+    propose.add_argument(
+        "problem", type=Path, help="a PEtab problem yaml or its directory; v1 is upgraded on load"
+    )
     propose.add_argument("--out", type=Path, required=True)
     propose.add_argument("--config", type=Path, default=None)
     propose.add_argument("--interpreter", default=None)
@@ -105,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     propose.add_argument("--seconds", type=float, default=None)
     propose.add_argument("--threads", type=int, default=None)
     propose.add_argument(
-        "--dosed", default=None, help="condition columns that dose a state, comma-separated"
+        "--dosed", default=None, help="condition targets that dose a state, comma-separated"
     )
     score = commands.add_parser("score", help="judge the proposals through the server")
     score.add_argument("proposals", type=Path, help="the route's proposals.json")
@@ -190,6 +194,14 @@ def _fit(args) -> int:
         patience=args.patience,
         checkpoints=_checkpoints(args.checkpoints, args.steps),
     )
+    held_out_path = None if args.no_heldout else (args.heldout or _default_held_out(problem_dir))
+    # Read before training, as the server reads it when it starts: a set it refuses (a v1 one) is
+    # refused before the expensive part, not after it.
+    held_out = None
+    if held_out_path is not None:
+        from petab_mcp.validation_data import read_held_out  # noqa: PLC0415
+
+        held_out = read_held_out(held_out_path)
     args.out.mkdir(parents=True, exist_ok=True)
     result = T.train(problem, args.out / "train", config)
     T.save_bundle(result, args.out / "model")
@@ -225,16 +237,11 @@ def _fit(args) -> int:
         "model_dir": str(args.out / "model"),
     }
 
-    held_out_path = None if args.no_heldout else (args.heldout or _default_held_out(problem_dir))
     reference_path = args.reference or (problem_dir / "reference.json")
     reference = json.loads(reference_path.read_text()) if reference_path.is_file() else None
     payload = None
-    if held_out_path is not None and not result.solver_failed:
-        from petab_mcp.validation_data import read_held_out  # noqa: PLC0415
-
-        payload = H.score(
-            result, read_held_out(held_out_path), args.out / "heldout", training=problem
-        )
+    if held_out is not None and not result.solver_failed:
+        payload = H.score(result, held_out, args.out / "heldout", training=problem)
     from ..runner.scoring import _validation_fields  # noqa: PLC0415
 
     record["validation"] = _validation_fields(payload, reference, asked=held_out_path is not None)
@@ -257,12 +264,8 @@ def _fit(args) -> int:
     # This curve DIAGNOSES the method; it must not select a model. The held-out set is the
     # benchmark's test set (`TrainConfig.checkpoints` says why at length): reporting that held-out
     # loss turns upward is a finding, picking the budget where it was lowest is leakage.
-    if result.checkpoints and held_out_path is not None:
-        from petab_mcp.validation_data import read_held_out  # noqa: PLC0415
-
-        prepared = H.prepare(
-            result, read_held_out(held_out_path), args.out / "curve", training=problem
-        )
+    if result.checkpoints and held_out is not None:
+        prepared = H.prepare(result, held_out, args.out / "curve", training=problem)
         curve = []
         for i, point in enumerate(result.checkpoints):
             scored = (

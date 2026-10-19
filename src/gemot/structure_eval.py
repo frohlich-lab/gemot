@@ -311,6 +311,10 @@ def batch(
         ex = result.get("scenario")
         if not ex or (examples and ex not in examples):
             continue
+        # A reference-free example has no true structure to recover, so nothing to score against:
+        # skipped rather than reported as an ERROR row per run.
+        if result.get("judge_mode") == "reference_free":
+            continue
         model_ant = _final_model_ant(run_dir)
         if model_ant is None:
             continue

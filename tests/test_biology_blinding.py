@@ -22,7 +22,7 @@ from gemot.biology_blinding import (
     private_dir,
     read_names,
 )
-from petab_mcp.validation_data import as_v2, read_held_out, read_units
+from petab_mcp.validation_data import read_held_out, read_units
 
 TOY = Path(__file__).parent / "data/toy_v1"
 
@@ -103,20 +103,29 @@ def test_aliases_do_not_capture_existing_identifiers_or_change_numeric_enums():
 
 
 def test_held_out_data_stays_private_and_uses_training_aliases(tmp_path):
-    """A v1 held-out set is moved onto experiments against the SOURCE problem before it is
-    blinded, so the server reads it as v2 and its experiments carry the run's aliases."""
+    """A v2 held-out set is blinded under the run's aliases, outside the agent's problem, and the
+    server reads it back as the v2 set it is."""
     validation = tmp_path / "validation"
     validation.mkdir()
     measurements = pd.read_csv(TOY / "measurements.tsv", sep="\t").iloc[:2].copy()
-    # One row under a new condition, one under the training condition (which changes nothing,
+    # One row in a new experiment, one in the training design (whose condition changes nothing,
     # so it is simulated without an experiment, as in training).
-    measurements["simulationConditionId"] = ["unseen_EGFR_treatment", "c0"]
+    measurements = measurements.drop(columns="simulationConditionId")
+    measurements.insert(0, "experimentId", ["EGFR_treatment_experiment", ""])
     measurements.to_csv(validation / "measurements.tsv", sep="\t", index=False)
-    conditions = pd.DataFrame({"conditionId": ["unseen_EGFR_treatment"], "k1": [0.2]})
-    conditions.to_csv(validation / "conditions.tsv", sep="\t", index=False)
-    pd.DataFrame({"conditionId": ["unseen_EGFR_treatment"], "unitId": ["patient_EGFR"]}).to_csv(
-        validation / "units.tsv", sep="\t", index=False
-    )
+    pd.DataFrame(
+        {"conditionId": ["unseen_EGFR_treatment"], "targetId": ["k1"], "targetValue": [0.2]}
+    ).to_csv(validation / "conditions.tsv", sep="\t", index=False)
+    pd.DataFrame(
+        {
+            "experimentId": ["EGFR_treatment_experiment"],
+            "time": [0.0],
+            "conditionId": ["unseen_EGFR_treatment"],
+        }
+    ).to_csv(validation / "experiments.tsv", sep="\t", index=False)
+    pd.DataFrame(
+        {"experimentId": ["EGFR_treatment_experiment"], "unitId": ["patient_EGFR"]}
+    ).to_csv(validation / "units.tsv", sep="\t", index=False)
     baseline = tmp_path / "baseline"
     work = tmp_path / "anonymous"
     training_names = prepare(TOY / "problem.yaml", baseline)
@@ -127,7 +136,7 @@ def test_held_out_data_stays_private_and_uses_training_aliases(tmp_path):
     assert all(names.forward[k] == v for k, v in training_names.forward.items())
     assert not private_dir(work).is_relative_to(work)
     held = private_dir(work) / "validation"
-    experiment = names.forward["experiment____unseen_EGFR_treatment"]
+    experiment = names.forward["EGFR_treatment_experiment"]
     heldout = pd.read_csv(held / "measurements.tsv", sep="\t", keep_default_na=False)
     assert "simulationConditionId" not in heldout
     assert heldout.observableId.tolist() == [names.forward["obs_B"]] * 2
@@ -152,9 +161,20 @@ def test_held_out_data_stays_private_and_uses_training_aliases(tmp_path):
     # table as one system against a reference refit per unit.
     assert read_units(held / "units.tsv") == {experiment: "patient_EGFR"}
     # The server reads the blinded set back as the v2 set it is.
-    read = read_held_out(held / "measurements.tsv")
-    assert as_v2(read, WorkingProblem.from_yaml(work / "problem.yaml")) is read
+    assert read_held_out(held / "measurements.tsv").experiment_df.experimentId.tolist() == [
+        experiment
+    ]
     assert not any("EGFR_treatment" in p.read_text() for p in held.iterdir())
+
+
+def test_a_v1_held_out_set_is_refused_as_the_server_refuses_it(tmp_path):
+    """A v1 set names conditions, not experiments; it is converted with the training problem
+    (libpetab's petab1to2), not keyed here."""
+    validation = tmp_path / "validation"
+    validation.mkdir()
+    shutil.copy(TOY / "measurements.tsv", validation / "measurements.tsv")
+    with pytest.raises(ValueError, match="petab1to2"):
+        prepare(TOY / "problem.yaml", tmp_path / "anonymous", validation)
 
 
 def test_a_native_v2_problem_blinds_like_its_v1_original(tmp_path):
@@ -263,7 +283,8 @@ def test_anonymous_sbml_preserves_training_and_held_out_likelihood(tmp_path, ami
     # Two conditions setting an initial amount, one experiment pre-equilibrated under the
     # other, and held-out rows repeating the training design: every v2 table the blinding
     # rewrites carries something. One held-out row per training experiment, so the held-out view
-    # compiles to the training module rather than to one of its own on each side.
+    # compiles to the training module rather than to one of its own on each side. The rows are
+    # taken from the training problem as the server upgrades it, so they name its experiments.
     original = tmp_path / "original_problem"
     shutil.copytree(TOY, original)
     pd.DataFrame({"conditionId": ["low", "high"], "A": [1.0, 2.0]}).to_csv(
@@ -276,7 +297,7 @@ def test_anonymous_sbml_preserves_training_and_held_out_likelihood(tmp_path, ami
     measurements.to_csv(original / "measurements.tsv", sep="\t", index=False)
     validation = tmp_path / "validation"
     validation.mkdir()
-    held = measurements.iloc[[0, -1]].copy()
+    held = WorkingProblem.from_yaml(original / "problem.yaml").measurement_df.iloc[[0, -1]].copy()
     held["time"] = 1.5
     held["measurement"] = [0.45, 0.6]
     held.to_csv(validation / "measurements.tsv", sep="\t", index=False)
@@ -398,7 +419,7 @@ def test_cleanup_and_run_provenance_use_the_anonymous_view(tmp_path, monkeypatch
     assert (work / "model.ant").read_bytes() == (source / "model.ant").read_bytes()
 
 
-def _with_protocol(tmp_path, formula):
+def _with_protocol(tmp_path, formula, reads="dose_rate"):
     """The toy problem with one condition column and a time-dependent input protocol over it."""
     source = tmp_path / "source"
     shutil.copytree(TOY, source)
@@ -406,7 +427,7 @@ def _with_protocol(tmp_path, formula):
     conditions["dose_rate"] = 0.0
     conditions.to_csv(source / "conditions.tsv", sep="\t", index=False)
     (source / "inputs.tsv").write_text(
-        f"inputId\tformula\tconditionInputs\nStimulus_EGF\t{formula}\tdose_rate\n"
+        f"inputId\tformula\tconditionInputs\nStimulus_EGF\t{formula}\t{reads}\n"
     )
     return source
 
@@ -431,17 +452,17 @@ def test_the_input_protocol_reaches_the_blind_task_in_aliases(tmp_path):
     assert prompts.biology_blind_task([]) == prompts.BIOLOGY_BLIND_TASK
 
 
-def test_a_protocol_that_reads_more_than_the_condition_columns_is_refused(tmp_path):
-    source = _with_protocol(tmp_path, "piecewise(dose_rate*time + EGF_basal, time <= 60, 0)")
-    with pytest.raises(ValueError, match="EGF_basal"):
-        prepare(source / "problem.yaml", tmp_path / "anonymous")
-
-
-def test_a_protocol_may_not_read_a_model_parameter_through_its_alias(tmp_path):
+@pytest.mark.parametrize(
+    ("name", "refusal"), [("EGF_basal", "EGF_basal (in no table"), ("k1", "k1 (estimated)")]
+)
+def test_a_protocol_that_reads_more_than_the_condition_targets_is_refused(tmp_path, name, refusal):
     """Every table symbol has an alias by the time a rule is translated, so a rule reading the
-    parameter k1 would read as ``parameter_NNN`` -- no name, but not a condition column either."""
-    source = _with_protocol(tmp_path, "piecewise(dose_rate*time + k1, time <= 60, 0)")
-    with pytest.raises(ValueError, match="parameter_"):
+    parameter k1 would read as ``parameter_NNN``: no name, but not a condition target either."""
+    from petab_mcp.errors import ProtocolError
+
+    formula = f"piecewise(dose_rate*time + {name}, time <= 60, 0)"
+    source = _with_protocol(tmp_path, formula, reads=f"dose_rate;{name}")
+    with pytest.raises(ProtocolError, match=re.escape(refusal)):
         prepare(source / "problem.yaml", tmp_path / "anonymous")
 
 
