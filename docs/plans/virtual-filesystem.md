@@ -1,22 +1,26 @@
 # Plan: a workspace for the panel arms
 
-**Status:** a proposal for review, revised after the first round. Nothing here is implemented.
-Comment on any line.
+**Status:** a proposal for review, revised after two rounds. Nothing here is implemented. Comment
+on any line.
 
 The panel arms are the deepagents driver driving the petab-mcp server. This plan gives them a
 virtual filesystem holding a copy of the PEtab problem, plus a sandboxed Python. This document
 calls that the **workspace**.
 
-## Decisions from the first review
+## Decisions from review
 
 1. **No fitting tools on the panel.** The panel's sandbox ships no optimizer: no pyPESTO, no Fides,
    no petab-mcp. Fitting stays the server's, through `make_changes`.
+   - **AMICI and scikit-learn stay** in the panel's set.
+   - **A prompt rule forbids fitting** in the workspace.
 2. **PEtab-MCP implements the workspace.** The server writes the copy of the problem and offers the
    file and shell tools as MCP tools. The bwrap sandbox moves there too, so both arms share it.
 3. **`PETAB_WORKSPACE` has levels:** `off`, `lead` (the lead only) and `panel` (the lead and the
    three analysts).
-4. **One core.** Nothing in the panel's sandbox runs on more than one core.
+4. **One core.** Nothing in the panel's sandbox runs on more than one core. **Barebones keeps its
+   cores.**
 5. **No `biology_blind`.** The workspace is refused on that arm, permanently.
+6. **A command runs for at most 5 minutes.**
 
 ## Why
 
@@ -80,7 +84,7 @@ Design note by design note:
 | Design note | On the workspace arm |
 |---|---|
 | No free-form editing | Holds for the model. The workspace tools write scratch files only, `/problem/` is read-only, and the server never reads a workspace file back into the problem. |
-| A change and its score never come apart | Holds. No optimizer is shipped. The agent can still simulate, and could hand-write an optimizer with `scipy.optimize`, but its numbers are not scored and the prompt says so. |
+| A change and its score never come apart | Holds. No optimizer is shipped, and the prompt forbids fitting in the workspace. The agent can still simulate. A hand-written optimizer (`scipy.optimize`) is against that rule, and nothing would score its numbers anyway. |
 | SBML and PEtab stay consistent automatically | Holds. The copy is the server's reconciled state. A draft the agent edits locally is not reconciled until it is committed; then the server reconciles it like any `make_changes`. |
 | Every operation is versioned and logged | Holds, and now covers the workspace: the server appends every workspace call to its provenance directory (`workspace.jsonl`). Scratch files are not versioned; gemot archives them with the run. |
 | Iteration is cheap; results are not cached | Unchanged. The server still refuses revisits. |
@@ -274,10 +278,19 @@ The proposal:
 - **PEtab-MCP's `pyproject.toml` names each package as a direct dependency,** with a why-comment,
   per the style guide's "A new import means a new pin".
 
-A shipped optimizer is not the only way to fit. `scipy.optimize` is part of scipy, and
-`scipy.stats` imports it, so it cannot be hidden without breaking statistics. An agent could also
-write a fitter by hand in numpy. The line this plan draws is "no fitting package is shipped".
-Together with the single core and the prompt, that keeps fitting the server's. Open question 3.
+**Where the line on fitting sits:**
+
+- **No fitting package is shipped.**
+- **AMICI and scikit-learn stay.** AMICI simulates a draft at given values. scikit-learn's
+  estimators are for statistics on the data and the residuals, not for the model's parameters.
+- **`scipy.optimize` stays too.** It is part of scipy, and `scipy.stats` imports it, so it cannot
+  be hidden without breaking statistics. An agent could also write a fitter by hand in numpy.
+- **So the prompt draws the rest of the line.** `_WORKSPACE_RULE` (section 4) forbids fitting the
+  model's parameters in the workspace, whether with `scipy.optimize` or by hand. To fit a model,
+  the agent commits it with `make_changes`, which fits it.
+- **The single core and the 5-minute command bound** make a local fit slow besides.
+- **A fit is visible after the fact.** Every command is in `workspace.jsonl`, so the analysis can
+  count the commands that call an optimizer.
 
 ### One core
 
@@ -294,16 +307,28 @@ So the server's fits keep their `FIT_N_WORKERS` cores and their budgets in `fit_
 Compiling a large model for a local simulation is slower on one core; that cost falls on the
 agent's wall-clock budget, not on the server.
 
-Barebones keeps its cores: its fits run in its sandbox, and the server is not running while it
-works. Open question 4.
+**Barebones keeps its cores.** Its fits run in its sandbox, and the server is not running while it
+works. So the one-core mode is a parameter of `petab_mcp.sandbox`, on for the server's workspace
+and off for barebones.
 
 ### Timeouts
 
-A workspace command runs for at most the server's `PETAB_MCP_WORKSPACE_TIMEOUT`. The value is open
-question 5. That timeout must sit below the read timeout gemot applies to the call. A call without
-`n_starts` gets the run default's fit budget (`clock._wrap_call_timeout`), so a timed-out command
-returns cleanly before the client gives up. A test pins that order. The driver's stall window
-already covers such a call, because its floor is that same budget.
+**A workspace command runs for at most 5 minutes.** That is the server's
+`PETAB_MCP_WORKSPACE_TIMEOUT`, default 300 s, a knob like the server's other `PETAB_MCP_*`
+settings.
+
+- **When a command times out,** the server kills the command's process group and returns its
+  partial output with the timeout named, as barebones' `execute` does.
+- **No background jobs.** Nothing outlives its call: the process group goes when the command
+  returns. The prompt offers no `nohup`, unlike barebones', whose commands may run for a whole fit
+  budget.
+- **Some local simulations will not fit in 5 minutes.** A single-core AMICI compile of the largest
+  models (alkan, bachmann) may take longer than that. Such a model cannot be simulated locally, and
+  the server's fits are where it gets simulated. The smoke run measures the compile times.
+- **The timeout sits well below gemot's read timeout for the call.** A call without `n_starts` gets
+  the run default's fit budget (`clock._wrap_call_timeout`), so a timed-out command returns cleanly
+  before the client gives up. A test pins that order.
+- **The driver's stall window already covers such a call,** because its floor is that same budget.
 
 ### What the shell cannot reach
 
@@ -357,13 +382,15 @@ and the other groups' versions do not move.
   - the layout: `/problem/` is the server's problem at HEAD, read-only, and `VERSION` says which
     version it is. The rest is scratch, shared with the other agents that hold the tools, and each
     agent writes under a directory named for itself;
-  - the shell: one core, no network, the command timeout, and the packages (from the server's
-    sentence);
+  - the shell: one core, no network, 5 minutes per command with no background jobs, and the
+    packages (from the server's sentence);
   - the v2 file description, as a constant shared with `BAREBONES_PETAB_FORMATS["v2"]` and lifted
     out of it without changing its text;
-  - **the rule, as one constant, `_WORKSPACE_IS_NOT_SCORED`**: nothing written here reaches the
-    server or the judge, the model changes and is fitted only through `make_changes`, and the only
-    score is the server's.
+  - **the rule, as one constant, `_WORKSPACE_RULE`:**
+    - nothing written here reaches the server or the judge;
+    - do not fit the model's parameters here, with `scipy.optimize` or by hand: the model changes
+      and is fitted only through `make_changes`;
+    - the only score is the server's.
 - **The lead's "You directly read only…" sentence becomes false at `lead` and `panel`.** It says
   the lead reads "only the model, its SCORES … for the raw DATA … you DELEGATE to the analysts".
   At those levels the lead prompt composes a variant instead:
@@ -439,7 +466,9 @@ The checks live in PEtab-MCP (`tests/test_workspace.py`, `tests/test_sandbox.py`
 4. **No fitting package inside:** `import pypesto`, `import fides` and `import petab_mcp` fail in
    the panel's sandbox. Every `SANDBOX_PACKAGES` entry imports, and the base set's closure contains
    no fitting package.
-5. **One core:** inside, `nproc` prints 1 and `os.sched_getaffinity(0)` has one CPU.
+5. **One core, five minutes:** inside, `nproc` prints 1 and `os.sched_getaffinity(0)` has one
+   CPU. A command that sleeps past the timeout is killed with its process group, and a
+   backgrounded process does not outlive its call. On barebones, the one-core mode is off.
 6. **`/problem/` refuses writes** from `workspace_write`, `workspace_edit` and a shell command
    (EROFS), and a path outside `/work` cannot be named.
 7. **No host path in any tool output.** The workspace root's name does not appear.
@@ -476,8 +505,11 @@ on user namespaces, and makes a missing bwrap fail under CI instead of skipping.
 needs the same before the sandbox moves there.
 
 **Cluster smoke run.** Before any sweep, run the toy problem and then one benchmark at `panel`.
-Each runs a probe inside the sandbox: `find / -name reference.json`, `import pypesto`, `nproc`, and
-a connect to the server's port.
+
+- Each runs a probe inside the sandbox: `find / -name reference.json`, `import pypesto`, `nproc`,
+  and a connect to the server's port.
+- It also times a single-core AMICI compile of the largest model, alkan, against the 5-minute
+  bound.
 
 ## 7. Rollout
 
@@ -506,25 +538,19 @@ motivates it.
 
 1. **HEAD only, or every version** (`/versions/vN/`) and the HEAD fit's simulation table? Proposed:
    HEAD only, since `get_version` and `query_data` already serve the rest.
-2. **Four tools, or deepagents' seven?** Proposed: four, with `ls`, `glob` and `grep` done through
-   `workspace_execute`. Against: barebones has the dedicated tools, so the panel's tooling would
-   match it in capability but not in shape.
-3. **Where is the line on fitting?**
-   - Proposed: no fitting package is shipped, and `scipy.optimize` stays, because `scipy.stats`
-     needs it.
-   - Does scikit-learn belong in the panel's set? Its estimators fit statistical models, not ODE
-     parameters.
-   - Should AMICI stay? It simulates and does not fit, but with `scipy.optimize` it is half of a
-     fitter.
-4. **Barebones' cores.** Proposed: barebones keeps them, because its pyPESTO multistarts run in
-   its sandbox and the server is idle then. Confirm, or make barebones one-core too, which would
-   change that arm.
-5. **The command timeout.** With no fitting, what is a command's bound? A single-core AMICI compile
-   of the largest models (alkan, bachmann) is the slowest thing a command should need.
-6. **Analyst turn limit:** is `ANALYST_MAX_TURNS = 20` still enough at `panel`, once an analyst can
+2. **How many file tools: four or seven?**
+   - Barebones holds deepagents' seven: `ls`, `read_file`, `write_file`, `edit_file`, `glob`,
+     `grep` and `execute`.
+   - The proposal gives the panel four server tools: `workspace_read`, `workspace_write`,
+     `workspace_edit` and `workspace_execute`. Listing, globbing and grepping are then shell
+     commands through `workspace_execute` (`ls`, `find`, `grep`).
+   - For four: every tool's schema is re-sent on every turn, so three fewer tools is a smaller
+     prompt for every agent that holds them.
+   - For seven: the panel would have the same tools as barebones, not just the same capability.
+3. **Analyst turn limit:** is `ANALYST_MAX_TURNS = 20` still enough at `panel`, once an analyst can
    write and run a script?
-7. **Shared scratch:** per-agent directories by convention, as proposed, or a workspace per agent?
-8. **Other clients of the server.** The workspace is now a server feature, so any MCP client could
+4. **Shared scratch:** per-agent directories by convention, as proposed, or a workspace per agent?
+5. **Other clients of the server.** The workspace is now a server feature, so any MCP client could
    start it, petabgpt included. Is "off unless `--workspace`" enough, or should the server also
    refuse the workspace without a confirmed sandbox (it already refuses on a failed preflight)?
 
@@ -535,11 +561,14 @@ These are separate fixes, not part of this plan.
 - **Barebones stages an answer key for five problems.**
   - `runner.barebones.stage_workspace` withholds files by name:
     `_WITHHELD = ("reference.json", "model.ant")`.
-  - `problem/validation_v1_baseline.json` holds the reference's held-out score. It is tracked in
-    `problem/` for perelson, crauste, fujita, lucarelli and raimundez (PEtabAgentBench
-    `.gitignore`), so it reaches the barebones agent's `work/agent/`.
-  - The fix is an allowlist built from `problem.yaml`, plus `inputs.tsv`. It is in progress
-    separately.
+  - `problem/validation_v1_baseline.json` is tracked in `problem/` for perelson, crauste, fujita,
+    lucarelli and raimundez (PEtabAgentBench `.gitignore`), so it reaches the barebones agent's
+    `work/agent/`.
+  - The file holds more than the reference's held-out score. It also holds the reference model's
+    fitted parameters by name: `reaction_1_k1` on fujita, `geneA_act1` on lucarelli, the per-patient
+    `c` and `delta` on perelson. The names give away the reference's structure.
+  - frohlich-lab/gemot#38 replaces the list with an allowlist built from `problem.yaml`, plus
+    `inputs.tsv`.
   - Whether earlier barebones runs on those five problems read the file can be checked in their
     `workspace_audit.commands`.
 - **CI skipped every bubblewrap test,** because the runner had no bubblewrap. frohlich-lab/gemot#37
