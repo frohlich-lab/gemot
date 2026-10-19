@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
-from petab.math import sympify_petab
+from petab.v1.math import sympify_petab
 from petab.v2 import C
 
 if TYPE_CHECKING:

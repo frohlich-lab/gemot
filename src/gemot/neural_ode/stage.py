@@ -395,7 +395,7 @@ def _sigma_seeds(problem: Problem) -> dict[str, float]:
     ``log10`` observable upgrades to log-normal noise ``sigma * ln(10)`` (see the module
     docstring), whose sigma is still in decades, so its start is the natural-log spread over
     ``ln 10``."""
-    from petab.math import sympify_petab  # noqa: PLC0415
+    from petab.v1.math import sympify_petab  # noqa: PLC0415
     from petab_mcp.problem import placeholders, split_overrides  # noqa: PLC0415
 
     tables = problem.tables
