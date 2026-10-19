@@ -217,9 +217,9 @@ def test_caching_is_not_asked_for_in_the_request_body():
     """The top-level `cache_control` field is never sent (docs/RATIONALE.md)."""
     from gemot.agent.driver import _extra_body
 
-    for model in ("anthropic/claude-sonnet-5", "openai/gpt-5.6-luna-pro"):
+    for model in ("anthropic/claude-sonnet-5.5", "openai/gpt-5.6-luna-pro"):
         assert "cache_control" not in _extra_body(model)
-    assert _extra_body("anthropic/claude-sonnet-5")["provider"]["only"] == ["anthropic"]
+    assert _extra_body("anthropic/claude-sonnet-5.5")["provider"]["only"] == ["anthropic"]
 
 
 def test_breakpoints_land_on_the_system_message_and_the_last_message():
@@ -280,7 +280,7 @@ def test_the_request_langchain_builds_actually_carries_the_breakpoints():
 
     from gemot.agent.driver import _chat_model_class, _extra_body
 
-    model_id = "anthropic/claude-sonnet-5"
+    model_id = "anthropic/claude-sonnet-5.5"
     llm = _chat_model_class()(
         name="ChatOpenAI",
         model=model_id,

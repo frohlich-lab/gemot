@@ -26,6 +26,13 @@ from .provenance import _agent_meta, _base_meta, _write_live_marker
 from ..scenario import Baseline, Scenario
 
 
+def _reasoning_effort(args) -> str | None:
+    """The run's ``--reasoning-effort`` as the driver sends it: ``None`` for ``default``, each model
+    keeping its own setting (:mod:`gemot.models`)."""
+    effort = getattr(args, "reasoning_effort", None)
+    return None if effort == "default" else effort
+
+
 async def _drive(
     scenario: Scenario,
     session: ClientSession,
@@ -159,7 +166,7 @@ async def _drive(
             "model": args.model,
             "driver": args.driver,
             "temperature": args.temperature,
-            "reasoning_effort": getattr(args, "reasoning_effort", None),
+            "reasoning_effort": _reasoning_effort(args),
             "recursion_limit": args.recursion_limit,
             "n_starts": args.n_starts,
             "git_sha": git_sha,
@@ -203,7 +210,7 @@ async def _drive(
                     task=scenario.agent_task,
                     recursion_limit=args.recursion_limit,
                     temperature=args.temperature,
-                    reasoning_effort=getattr(args, "reasoning_effort", None),
+                    reasoning_effort=_reasoning_effort(args),
                     n_starts=args.n_starts,
                     max_wall_seconds=args.max_wall_seconds,
                     progress_probe=raw_call_tool,

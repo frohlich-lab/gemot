@@ -36,9 +36,9 @@ MODELS: dict[str, str] = {
     "gemini-flash": "google/gemini-3.6-flash",
     "gemini-pro": "google/gemini-3.1-pro-preview",
     # Anthropic, also opt-in: the only models whose caching is not implicit (``_CACHING``).
-    "sonnet": "anthropic/claude-sonnet-5",
-    "opus": "anthropic/claude-opus-5",
-    "haiku": "anthropic/claude-haiku-4.5",
+    "sonnet": "anthropic/claude-sonnet-5.5",
+    "opus": "anthropic/claude-opus-5.5",
+    "haiku": "anthropic/claude-haiku-5.5",
 }
 
 #: Default lead. 1M-token context, single pinned provider (Z.AI), and the best measured accuracy
@@ -181,10 +181,10 @@ _ROUTING: dict[str, dict] = {
     # Anthropic: one tag, no `order` fallback -- pinned for the cache namespace, not the price.
     # `anthropic`, `claude-on-aws` and `azure/*` are ZDR-blocked here (404, verified per tag).
     # Through this account's own Anthropic key (BYOK), which the ZDR block above does not apply to.
-    "anthropic/claude-sonnet-5": {"only": ["anthropic"]},
-    "anthropic/claude-opus-5": {"only": ["google-vertex/global"]},
+    "anthropic/claude-sonnet-5.5": {"only": ["anthropic"]},
+    "anthropic/claude-opus-5.5": {"only": ["google-vertex/global"]},
     # The Anthropic endpoint, through this account's own key (BYOK).
-    "anthropic/claude-haiku-4.5": {"only": ["anthropic"]},
+    "anthropic/claude-haiku-5.5": {"only": ["anthropic"]},
 }
 
 
@@ -197,19 +197,20 @@ _ROUTING: dict[str, dict] = {
 #: broke tool use would be worse than none). Reasoning tokens bill as COMPLETION tokens: ~250 per
 #: call measured, negligible per run but worth watching on a long one.
 _REASONING: dict[str, dict] = {
-    # Haiku 4.5 thinks only when asked; "high" is OpenRouter's largest thinking budget, a share of
-    # max_tokens (set PETAB_MCP_MAX_OUTPUT_TOKENS to Haiku's 64000). Thinking needs temperature 1.
-    "anthropic/claude-haiku-4.5": {"effort": "high"},
-    "anthropic/claude-sonnet-5": {"effort": "high"},
+    # A run at --reasoning-effort default: the effort these think at, a share of max_tokens (set
+    # PETAB_MCP_MAX_OUTPUT_TOKENS to their 128000). Any other --reasoning-effort replaces it.
+    "anthropic/claude-haiku-5.5": {"effort": "high"},
+    "anthropic/claude-sonnet-5.5": {"effort": "high"},
 }
 
 
 #: Per-model request headers. Haiku 4.5 thinks between tool calls only under Anthropic's
 #: interleaved-thinking beta, which OpenRouter forwards: without it Haiku reasoned on the first call
 #: of each turn and on none of the 1,466 calls that followed a tool result (October 2026 sweep, 6%
-#: of calls reasoning). Sonnet 4.6 and later interleave on their own (adaptive thinking).
+#: of calls reasoning). Sonnet 4.6 and later interleave on their own (adaptive thinking); kept for
+#: Haiku 5.5 until a sweep shows it does too.
 _HEADERS: dict[str, dict[str, str]] = {
-    "anthropic/claude-haiku-4.5": {"x-anthropic-beta": "interleaved-thinking-2025-05-14"},
+    "anthropic/claude-haiku-5.5": {"x-anthropic-beta": "interleaved-thinking-2025-05-14"},
 }
 
 
@@ -227,9 +228,9 @@ def reasoning_config(model_id: str) -> dict | None:
 #: Per-model ``cache_control`` block for a provider that caches nothing unless asked, placed as
 #: message breakpoints by ``driver._apply_cache_breakpoints``. See docs/RATIONALE.md.
 _CACHING: dict[str, dict] = {
-    "anthropic/claude-sonnet-5": {"type": "ephemeral", "ttl": "1h"},
-    "anthropic/claude-opus-5": {"type": "ephemeral", "ttl": "1h"},
-    "anthropic/claude-haiku-4.5": {"type": "ephemeral", "ttl": "1h"},
+    "anthropic/claude-sonnet-5.5": {"type": "ephemeral", "ttl": "1h"},
+    "anthropic/claude-opus-5.5": {"type": "ephemeral", "ttl": "1h"},
+    "anthropic/claude-haiku-5.5": {"type": "ephemeral", "ttl": "1h"},
 }
 
 

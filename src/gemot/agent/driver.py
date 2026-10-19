@@ -585,7 +585,7 @@ async def run_deepagents(
     system_prompt: str,
     task: str,
     recursion_limit: int,
-    temperature: float = 0.0,
+    temperature: float = 1.0,
     reasoning_effort: str | None = None,
     n_starts: int = 1,
     max_wall_seconds: float | None = None,

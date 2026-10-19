@@ -329,7 +329,7 @@ def run_experiments(
     base_url: str = "http://localhost:6006",
     driver: str = "deepagents",
     model: str = models.DEFAULT,
-    temperature: float = 0.0,
+    temperature: float = 1.0,
     n_starts: int = 50,
     recursion_limit: int = 250,
     experiment_name: str | None = None,
