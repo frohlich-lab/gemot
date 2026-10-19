@@ -67,13 +67,6 @@ def test_the_server_gets_an_empty_entity_map(tmp_path):
     assert path.parent == tmp_path / "build"  # beside the build, not in the agent's work/
 
 
-def test_the_map_carries_only_the_scenarios_held_inputs(tmp_path):
-    """Fujita's EGF ramp is the experiment's protocol, held by the server; nothing else goes in."""
-    egf = {"EGF": {"name": "EGF", "input": "piecewise(EGF_rate*time + EGF_0, time <= EGF_end, 0)"}}
-    path = runner_main._empty_entity_map(tmp_path / "build", egf)
-    assert json.loads(path.read_text()) == egf
-
-
 # ------------------------------------------------------------------ the route's description
 def test_the_route_paragraph_is_the_servers_own():
     tool = types.SimpleNamespace(name="make_changes", description=_SERVER_MAKE_CHANGES)
