@@ -2,7 +2,10 @@
 mocked HTTP transport: OpenRouter's ``usage.cost`` through to ``token_usage.cost_usd`` (non-streamed
 and streamed, which langchain_openai shapes differently) and the cache breakpoints of
 ``models._CACHING``. test_token_accounting covers the callback on hand-built records and
-test_model_routing the tables; this file is the assembly, where a langchain rename shows up."""
+test_model_routing the tables; this file is the assembly, where a langchain rename shows up.
+
+Every call is streamed (agent.thinking), so a mocked host answers with a stream; a whole response
+is what a host that refuses to stream gets."""
 
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ from langchain_core.messages import (  # noqa: E402
 )
 
 from gemot import models  # noqa: E402
+from gemot.agent import thinking  # noqa: E402
 from gemot.agent.driver import _chat_model_class, _extra_body  # noqa: E402
 from gemot.agent.token_usage import _token_accountant  # noqa: E402
 
@@ -108,9 +112,20 @@ def _llm(handler, model=MODEL):
 
 
 @pytest.mark.asyncio
-async def test_non_streamed_response_records_the_billed_cost():
+async def test_non_streamed_response_records_the_billed_cost(monkeypatch):
+    """A host that refuses to stream is called whole, and that response keeps its cost."""
+    monkeypatch.setattr(thinking, "NO_STREAM", set())
+
+    def handler(request: _httpx.Request) -> _httpx.Response:
+        if json.loads(request.content).get("stream"):
+            return _httpx.Response(
+                400, json={"error": {"message": "Streaming is not supported", "code": 400}}
+            )
+        return _completion(request)
+
     acc = _token_accountant()
-    await _llm(_completion).ainvoke([HumanMessage("x")], config={"callbacks": [acc]})
+    await _llm(handler).ainvoke([HumanMessage("x")], config={"callbacks": [acc]})
+    assert MODEL in thinking.NO_STREAM, "the whole call must come from the refusal path"
     t = acc.totals()
     assert t["cost_usd"] == pytest.approx(0.00123)
     assert t["n_llm_calls"] == 1 and t["n_uncosted_calls"] == 0
@@ -138,7 +153,7 @@ async def test_a_cached_model_sends_its_breakpoints_on_the_wire(model_id):
 
     def handler(request: _httpx.Request) -> _httpx.Response:
         sent.update(json.loads(request.content))
-        return _completion(request)
+        return _stream(request)
 
     await _llm(handler, model=model_id).ainvoke(
         [
