@@ -29,7 +29,7 @@ dependencies = [
     # each problem's training and held-out sets together and ships both as v2. And #81: AMICI at
     # AMICI-dev/AMICI#3408, whose JAX code compiles for `And`/`Or` (the `neural` extra below). At
     # the integration commit of the two (`integrate/49-81`) until both merge; then main.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@11ed15cb555a271235add1d6c19342cd3716af48",
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@7a6684a7d73380ff64203127122faf62486d9a6d",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
     # deleted, and mcp 2.0 reworks the client API used here (streamablehttp_client ->
