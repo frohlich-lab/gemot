@@ -24,12 +24,12 @@ dependencies = [
     # The server this harness drives, from its own repository. Pinned to a commit so a checkout
     # here names the server it was tested against: bump it deliberately, and see the README for
     # developing both at once.
-    # PEtab-MCP main with frohlich-lab/PEtab-MCP#49: held-out sets are PEtab v2 only, so
-    # `read_held_out` refuses a v1 set and `validation_data.as_v2` is gone. PEtabAgentBench converts
-    # each problem's training and held-out sets together and ships both as v2. And #81: AMICI at
-    # AMICI-dev/AMICI#3408, whose JAX code compiles for `And`/`Or` (the `neural` extra below). At
-    # the integration commit of the two (`integrate/49-81`) until both merge; then main.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@7a6684a7d73380ff64203127122faf62486d9a6d",
+    # PEtab-MCP main (4024358), with frohlich-lab/PEtab-MCP#49: held-out sets are PEtab v2 only,
+    # so `read_held_out` refuses a v1 set and `validation_data.as_v2` is gone. PEtabAgentBench
+    # converts each problem's training and held-out sets together and ships both as v2. #81: AMICI
+    # at AMICI-dev/AMICI#3408, whose JAX code compiles for `And`/`Or` (the `neural` extra below).
+    # #73: the server reads the AMICI tolerances `Scenario.amici_tolerances` exports.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@40243583ae778e73bf7a7e1ced13b8e2cd2ec335",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
     # deleted, and mcp 2.0 reworks the client API used here (streamablehttp_client ->
