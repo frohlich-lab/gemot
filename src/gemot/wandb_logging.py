@@ -35,6 +35,9 @@ _CONFIG_KEYS = (
     # on both halves of an A/B (gemot.ablations).
     "ablation_arm",
     "ablation_state",
+    # Which bar `success` was decided by: Δcriterion against a true model, or an absolute adequacy
+    # test where there is none. Group by it before reading `passed` as a rate.
+    "judge_mode",
     "phoenix_project",
     "phoenix_trace_id",
     "stop_reason",
@@ -94,6 +97,10 @@ def log_result(
     from .experiments import reduced_chi2
 
     metrics["reduced_chi2"] = reduced_chi2(result)
+    # A reference-free run's declared test and verdict, under the history CSV's own column names.
+    from .metrics import flatten_adequacy
+
+    metrics.update(flatten_adequacy(result))
 
     run = None
     try:

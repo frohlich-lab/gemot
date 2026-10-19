@@ -405,6 +405,8 @@ _RESULT_METRIC_KEYS = (
     "driver",
     "stop_reason",
     "success",
+    # Which bar `success` was decided by (see metrics._RESULT_FIELDS): group by it before pooling.
+    "judge_mode",
     "baseline_nll",
     "final_nll",
     "delta",
@@ -507,16 +509,18 @@ def record_run_result(span: Any, result: dict[str, Any]) -> None:
     if span is None:
         return
     _set_attrs(span, {f"petab.{k}": result.get(k) for k in _RESULT_METRIC_KEYS})
-    # The HELD-OUT score, as the same scalar `val_*` pairs the history CSV uses — a span attribute
-    # has to be a scalar, and a sweep queries `attributes.petab.val_delta_nll` exactly the way it
-    # queries `attributes.petab.delta_bic`. `metrics.flatten_validation` OWNS those names and hands
-    # back the mapping, so this does not restate them: a tenth column reaches both surfaces or
-    # neither. (metrics is otherwise the CONSUMER of what this module writes; it is imported here
-    # for that single naming authority. The dependency is mutual — metrics imports `phoenix_base_url`
-    # from here — so both directions are deliberately function-local to keep import time acyclic.)
-    from .metrics import flatten_validation
+    # The HELD-OUT score and the reference-free adequacy bar, as the same scalar `val_*` /
+    # `adequacy_*` pairs the history CSV uses — a span attribute has to be a scalar, and a sweep
+    # queries `attributes.petab.val_delta_nll` exactly the way it queries `attributes.petab.delta_bic`.
+    # metrics' keys-only flatteners (`_KEY_FLATTENERS`) OWN those names and hand back the mapping, so
+    # this does not restate them: a new column reaches both surfaces or neither. (metrics is otherwise
+    # the CONSUMER of what this module writes; it is imported here for that single naming authority.
+    # The dependency is mutual — metrics imports `phoenix_base_url` from here — so both directions
+    # are deliberately function-local to keep import time acyclic.)
+    from . import metrics
 
-    _set_attrs(span, {f"petab.{k}": v for k, v in flatten_validation(result).items()})
+    for name in metrics._KEY_FLATTENERS:
+        _set_attrs(span, {f"petab.{k}": v for k, v in getattr(metrics, name)(result).items()})
     _set_attrs(span, {"petab.verdict": "success" if result.get("success") else "not_fixed"})
     with contextlib.suppress(Exception):
         span.set_attribute("metadata", json.dumps(result, default=str))

@@ -5,7 +5,8 @@ A *scenario* is everything that distinguishes one repair demo from another: the 
 a deterministic ``scripted_fix`` (the canonical repair, used by ``--driver scripted`` as a
 no-LLM self-test), a ``bic_threshold``, and an optional ``diagnostics`` hook. Success itself is
 decided generically by the runner's criterion gate (``delta_criterion <= bic_threshold`` in
-``_judge``, under whichever complexity criterion the server ranked by), not
+``_judge``, under whichever complexity criterion the server ranked by) — or, for a
+``reference_free`` example with no true model, by the absolute ``adequacy`` test it declares — not
 by the scenario; ``diagnostics`` is report-only. Everything else — cleanup, the stateful MCP
 server, the deepagents panel, Phoenix tracing, baseline scoring, the RESULT report, and
 ``result.json`` — lives in :mod:`runner` and is identical across examples.
@@ -32,6 +33,15 @@ from .prompts import DEFAULT_SYSTEM_PROMPT, DEFAULT_TASK, KNOWN_CONSTANTS_READOU
 # A bound MCP caller: ``await call("get_fit_summary")`` / ``await call("make_changes",
 # antimony=..., justification=..., references=[...])``.
 Call = Callable[..., Awaitable[Any]]
+
+#: The absolute goodness-of-fit tests a reference-free scenario may declare as its bar
+#: (:attr:`Scenario.adequacy`), graded by ``runner.scoring._reference_free_adequacy``. Named here,
+#: not beside that function, because this module must stay importable without ``petab_mcp``
+#: (``tests/test_import_lightness.py``) and ``runner.scoring`` imports the server's constants.
+ADEQUACY_CHI2 = "chi2"
+ADEQUACY_REPLICATE_LOF = "replicate_lof"
+ADEQUACY_RESIDUAL_STRUCTURE = "residual_structure"
+ADEQUACY_TESTS = (ADEQUACY_CHI2, ADEQUACY_REPLICATE_LOF, ADEQUACY_RESIDUAL_STRUCTURE)
 
 
 # --------------------------------------------------------------------------- data classes
@@ -213,6 +223,19 @@ class Scenario:
     # carries over unchanged when the penalty is swapped. Named for BIC because that is the
     # default and the scale the number was calibrated on.
     bic_threshold: float = 10.0
+    # The example has NO reference model: a model-free data package (paths.DATA_PACKAGE_EXAMPLES),
+    # with nothing published to fit as the bar. The judge then grades the candidate on its own, by
+    # absolute adequacy (`adequacy` below), instead of by Δcriterion against a reference, and
+    # `bic_threshold` is unused. DECLARED, never inferred from a missing reference.json: deleting an
+    # answer key must keep failing the example, not quietly make it reference-free. (Unrelated to a
+    # run.py's REFERENCE_FREE_PARAMS, which are parameters freed INSIDE the reference fit.)
+    reference_free: bool = False
+    # Which absolute goodness-of-fit test is a reference-free example's bar, one of ADEQUACY_TESTS.
+    # The problem's author knows its noise model and so which test is valid for it: `chi2` needs
+    # every noise sigma fixed (an estimated one pins chi2 near n), `replicate_lof` needs replicated
+    # design points, `residual_structure` (the sign and runs tests) needs neither. Required with
+    # `reference_free` and refused without it (see __post_init__).
+    adequacy: str | None = None
     # Short human description of the canonical repair (for the scripted driver's log).
     fix_summary: str = ""
     # Example definition version. BUMP THIS whenever you change what the example *is* — its
@@ -222,6 +245,20 @@ class Scenario:
     # moves only when THIS example changes, so it groups comparable runs across harness
     # commits. Recorded on every run (Phoenix span + result.json + metrics history).
     version: int = 1
+
+    def __post_init__(self) -> None:
+        # Both mismatches would otherwise be SILENT: a reference-free example with no test grades
+        # every run unassessable, and a test on a reference-based one is simply never read.
+        if self.reference_free and self.adequacy not in ADEQUACY_TESTS:
+            raise ValueError(
+                f"{self.name}: a reference-free scenario must declare `adequacy` as one of "
+                f"{ADEQUACY_TESTS}, got {self.adequacy!r}"
+            )
+        if not self.reference_free and self.adequacy is not None:
+            raise ValueError(
+                f"{self.name}: `adequacy={self.adequacy!r}` is the bar of a reference-free scenario; "
+                "a reference-based one is graded by its Δcriterion against the reference"
+            )
 
     @property
     def example_dir(self) -> Path:
@@ -247,9 +284,14 @@ class Scenario:
 
         Written by the example's ``generate_data.py`` (it fits the TRUE structure to the
         data). ``None`` if absent — the runner then can't score the run and says so.
+
+        Always ``None`` for a :attr:`reference_free` scenario, without looking for the file: there
+        is no true model to have fitted.
         """
         import json
 
+        if self.reference_free:
+            return None
         path = self.problem_dir / "reference.json"
         if path.is_file():
             try:

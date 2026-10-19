@@ -425,6 +425,12 @@ _ROW_FIELDS = (
     "model",
     "temperature",
     "success",
+    # Which bar `success` was decided by; a pass rate is only meaningful within one.
+    "judge_mode",
+    # A reference-free run's declared test and its verdict (None = not assessable), so a failed
+    # test can be told from one that could not speak. Absent on a reference-judged run.
+    "adequacy_test",
+    "adequacy_passed",
     "delta_bic",
     # The delta the GATE used, and the criterion it used — `delta_bic` is only the
     # gating number when BIC is that criterion, so aggregating it beside `success`
@@ -529,6 +535,7 @@ def fetch_experiment_rows(base_url: str = "http://localhost:6006") -> list[dict[
     """One flat row per experiment task-run across every ``petab-mcp-repair-*`` dataset."""
     from phoenix.client import Client
 
+    from .metrics import flatten_adequacy
     from .tracing import phoenix_base_url
 
     client = Client(base_url=phoenix_base_url(base_url))
@@ -558,6 +565,7 @@ def fetch_experiment_rows(base_url: str = "http://localhost:6006") -> list[dict[
                         "model": md.get("model") or out.get("model"),
                         "temperature": md.get("temperature"),
                         "success": out.get("success"),
+                        "judge_mode": out.get("judge_mode"),
                         "delta_bic": out.get("delta_bic"),
                         "delta_criterion": out.get("delta_criterion"),
                         "criterion": out.get("criterion"),
@@ -575,6 +583,7 @@ def fetch_experiment_rows(base_url: str = "http://localhost:6006") -> list[dict[
                         "n_fits": out.get("n_fits"),
                         "prompt_version": md.get("prompt_version"),
                         "git_sha": md.get("git_sha"),
+                        **flatten_adequacy(out),
                     }
                 )
     return rows
@@ -612,8 +621,19 @@ def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool 
         if not rows:
             return note + "(no scored runs yet — every run was a no-work infrastructure abort)"
 
+    # Every table below is split by judge mode: a reference-free pass (absolute adequacy) and a
+    # Δcriterion pass are different claims, and one rate over both reads as neither. A row from
+    # before `judge_mode` was judged by reference. The mode is shown only once there are two.
+    def _mode(r):
+        return r.get("judge_mode") or "reference"
+
+    by_mode: dict[str, list[dict]] = {}
+    for r in rows:
+        by_mode.setdefault(_mode(r), []).append(r)
+    split = len(by_mode) > 1
+
     def _key(r):
-        return (r.get("example"), r.get("model"), r.get("temperature"))
+        return (r.get("example"), r.get("model"), r.get("temperature"), _mode(r))
 
     cells: dict[tuple, list[dict]] = {}
     for r in rows:
@@ -632,14 +652,19 @@ def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool 
             return str(v)
 
     lines = [note] if note else []
-    lines += ["Per-cell (example × model × temperature):", ""]
+    cell_axes = "example × model × temperature" + (" × judge mode" if split else "")
+    lines += [f"Per-cell ({cell_axes}):", ""]
     hdr = (
-        f"{'example':<16} {'model':<26} {'temp':>4} {'n':>3} {'pass':>5} "
+        f"{'example':<16} {'model':<26} {'temp':>4} "
+        + (f"{'judge mode':<14} " if split else "")
+        + f"{'n':>3} {'pass':>5} "
         f"{'ΔBIC med':>9} {'ΔBIC min':>9} {'ΔBIC max':>9} {'chi2p med':>9}"
     )
     lines += [hdr, "-" * len(hdr)]
-    for key in sorted(cells, key=lambda k: (str(k[0]), str(k[1]), k[2] is None, str(k[2]))):
-        ex, model, temp = key
+    for key in sorted(
+        cells, key=lambda k: (str(k[0]), str(k[1]), k[2] is None, str(k[2]), str(k[3]))
+    ):
+        ex, model, temp, mode = key
         group = cells[key]
         n = len(group)
         passes = sum(1 for g in group if g.get("success"))
@@ -652,34 +677,41 @@ def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool 
             for g in group
         ]
         lines.append(
-            f"{_fmt(ex):<16} {_fmt(model):<26} {_fmt(temp, 'g'):>4} {n:>3} "
-            f"{passes}/{n:<3} {_fmt(_med(dbs), '+.3g'):>9} "
+            f"{_fmt(ex):<16} {_fmt(model):<26} {_fmt(temp, 'g'):>4} "
+            + (f"{mode:<14} " if split else "")
+            + f"{n:>3} {passes}/{n:<3} {_fmt(_med(dbs), '+.3g'):>9} "
             f"{_fmt(min([d for d in dbs if isinstance(d, (int, float))], default=None), '+.3g'):>9} "
             f"{_fmt(max([d for d in dbs if isinstance(d, (int, float))], default=None), '+.3g'):>9} "
             f"{_fmt(_med([g.get('chi2_gof_pvalue') for g in group]), '.2g'):>9}"
         )
 
     # model × temperature pivot (pooled over examples): pass rate
-    lines += ["", "Pass rate by model × temperature (pooled over examples):", ""]
-    models = sorted({r.get("model") for r in rows}, key=str)
-    temps = sorted({r.get("temperature") for r in rows}, key=lambda t: (t is None, str(t)))
-    head = f"{'model':<26}" + "".join(f"{('t=' + _fmt(t, 'g')):>10}" for t in temps)
-    lines += [head, "-" * len(head)]
-    for model in models:
-        cell_strs = []
-        for t in temps:
-            grp = [r for r in rows if r.get("model") == model and r.get("temperature") == t]
-            if grp:
-                p = sum(1 for g in grp if g.get("success"))
-                cell_strs.append(f"{p}/{len(grp)}")
-            else:
-                cell_strs.append("-")
-        lines.append(f"{_fmt(model):<26}" + "".join(f"{c:>10}" for c in cell_strs))
+    for mode, mode_rows in sorted(by_mode.items()):
+        pooled = f"pooled over examples, {mode}" if split else "pooled over examples"
+        lines += ["", f"Pass rate by model × temperature ({pooled}):", ""]
+        models = sorted({r.get("model") for r in mode_rows}, key=str)
+        temps = sorted({r.get("temperature") for r in mode_rows}, key=lambda t: (t is None, str(t)))
+        head = f"{'model':<26}" + "".join(f"{('t=' + _fmt(t, 'g')):>10}" for t in temps)
+        lines += [head, "-" * len(head)]
+        for model in models:
+            cell_strs = []
+            for t in temps:
+                grp = [
+                    r for r in mode_rows if r.get("model") == model and r.get("temperature") == t
+                ]
+                if grp:
+                    p = sum(1 for g in grp if g.get("success"))
+                    cell_strs.append(f"{p}/{len(grp)}")
+                else:
+                    cell_strs.append("-")
+            lines.append(f"{_fmt(model):<26}" + "".join(f"{c:>10}" for c in cell_strs))
 
-    total_pass = sum(1 for r in rows if r.get("success"))
-    lines += [
-        "",
-        f"overall: {total_pass}/{len(rows)} runs passed "
-        f"({len(cells)} cells, prompt_version={rows[0].get('prompt_version')})",
-    ]
+    lines.append("")
+    for mode, mode_rows in sorted(by_mode.items()):
+        total_pass = sum(1 for r in mode_rows if r.get("success"))
+        lines.append(
+            f"{f'overall ({mode})' if split else 'overall'}: {total_pass}/{len(mode_rows)} runs "
+            f"passed ({len({_key(r) for r in mode_rows})} cells, "
+            f"prompt_version={rows[0].get('prompt_version')})"
+        )
     return "\n".join(lines)

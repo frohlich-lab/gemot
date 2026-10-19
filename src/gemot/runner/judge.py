@@ -13,6 +13,12 @@ fixed scale; under the default criterion the two are the same number.
 
 Scores the run's BEST checkpoint, not whatever HEAD happens to be: a run that ended on a worse
 model is rolled back first.
+
+A ``reference_free`` scenario (a model-free data package) has no true model, so there is no Δ to
+gate on. Its bar is instead the absolute goodness-of-fit test the scenario declares
+(:func:`scoring._reference_free_adequacy`), beside the same valid-fit and sigma-plausibility
+conditions; every reference-based number is recorded as ``None`` and ``judge_mode`` says which bar
+decided ``success``.
 """
 
 from __future__ import annotations
@@ -24,10 +30,11 @@ from pathlib import Path
 
 from .clock import _ToolClock
 from ..paths import validation_measurements_path
-from .provenance import _bic_reference, _now_iso, _reference_score
+from .provenance import _bic_reference, _judge_mode, _now_iso, _reference_score
 from ..scenario import Baseline, JudgeContext, Scenario
 from .scoring import (
     _noise_sigma_flag,
+    _reference_free_adequacy,
     _reference_sigma_flag,
     _residual_structure_fields,
     _validation_fields,
@@ -127,6 +134,18 @@ async def _restore_best_checkpoint(call, reference=None) -> None:
             f"[judge] scoring v{chosen} — the best-scoring version whose noise sigma is "
             f"plausible (v{fallback} scores better but its sigma would fail the gate)"
         )
+
+
+def _implausible_sigma_text(flag: dict) -> str:
+    """Which way an implausible noise sigma failed, for the verdict line."""
+    return " and ".join(
+        w
+        for w, on in (
+            ("inflated (absorbing misfit)", flag["inflated"]),
+            ("collapsed (overfitting the noise)", flag["collapsed"]),
+        )
+        if on
+    )
 
 
 def _candidate_k(params, final) -> "tuple[int, int, list[str]]":
@@ -348,6 +367,10 @@ async def _judge(
     (residuals vs the known noise) is reported alongside. The scenario's optional ``diagnostics``
     hook adds report-only detail.
 
+    For a ``reference_free`` scenario the criterion gate is replaced, not relaxed: success ⇔ a valid
+    fit AND a plausible sigma (the data-std band, there being no reference sigma) AND the scenario's
+    declared adequacy test PASSES — one it could not assess is not a pass.
+
     Returns ``(exit_code, result)``: the process exit code (0 on success, 1 otherwise) and
     the machine-readable result dict (also written to ``work/result.json``), so the caller
     can stamp the outcome onto the run span.
@@ -449,6 +472,8 @@ async def _judge(
     # The raw report is stored in result.json too (it wasn't before) to audit gaming after the fact.
     noise_sigma_report = final.get("noise_sigma_report") if isinstance(final, dict) else None
     ref = scenario.reference()
+    judge_mode = _judge_mode(scenario)
+    reference_free = judge_mode == "reference_free"
 
     # HELD-OUT (validation) score of the SCORED model — its likelihood on measurements it was never
     # fitted to, against the same number for the true model (reference.json's `validation`). The one
@@ -546,6 +571,15 @@ async def _judge(
     # χ² goodness-of-fit vs the known noise (reported, not gating).
     dof = max(0, n - k)
     p_gof = chi2_gof_pvalue(chi2, dof)
+    # REFERENCE-FREE: no true model, so every Δ above is None and `score_pass` can never hold. The
+    # bar is the absolute adequacy test the scenario declares instead; an unassessable verdict is NOT
+    # a pass, the same conservatism as a missing reference.json on a reference-based example.
+    adequacy = None
+    if reference_free:
+        adequacy = _reference_free_adequacy(
+            scenario.adequacy, noise_sigma_report, p_gof, residual_structure
+        )
+        success = final_nll is not None and not sigma_implausible and adequacy["passed"] is True
 
     ctx = JudgeContext(
         call=call,
@@ -588,7 +622,21 @@ async def _judge(
     _col = f"{_label}:".ljust(5) + " "
     if criterion_note:
         print(f"  note: {criterion_note}")
-    if delta_score is not None:
+    if reference_free:
+        # No bar to set the score against: the candidate's own numbers are the headline, comparable
+        # only across runs on this same problem (lower is better).
+        if score_cand is not None:
+            print(f"  {_col}candidate {score_cand:.6g}  (reference-free: no true model, no bar)")
+            if criterion_label != "bic" and bic_cand is not None:
+                print(f"  BIC:  candidate {bic_cand:.6g}  (canonical, recorded)")
+        else:
+            print(f"  {_col}unavailable (no valid fit, n={n})")
+        _adequate = {True: "adequate", False: "INADEQUATE", None: "not assessable"}
+        print(
+            f"  {'adequacy (' + str(adequacy['test']) + '):':<21} "
+            f"{_adequate[adequacy['passed']]} — {adequacy['reason']}"
+        )
+    elif delta_score is not None:
         print(
             f"  {_col}candidate {score_cand:.6g} | true-model {score_ref:.6g} | "
             f"Δ{_label} {delta_score:+.6g}  (accept if <= {scenario.bic_threshold:g})"
@@ -615,7 +663,16 @@ async def _judge(
         # Printed next to ΔBIC because it is the same shape of comparison against the same true
         # model — on data neither side was fitted to.
         # Report-only; it is not part of the verdict.
-        if validation.get("delta_nll") is not None:
+        if reference_free and isinstance(validation.get("nll"), (int, float)):
+            # No reference to subtract, so the ABSOLUTE held-out numbers. Still report-only.
+            _vchi2 = validation.get("chi2")
+            print(
+                f"  held-out (validation): nll {validation['nll']:.6g}"
+                + (f" | chi2 {_vchi2:.4g}" if isinstance(_vchi2, (int, float)) else "")
+                + f"  over {validation.get('n')} point(s) in "
+                f"{validation.get('n_conditions')} unseen condition(s)  [report-only]"
+            )
+        elif validation.get("delta_nll") is not None:
             print(
                 f"  held-out (validation): nll {validation['nll']:.6g} | true-model "
                 f"{validation['reference_nll']:.6g} | Δnll "
@@ -687,7 +744,27 @@ async def _judge(
         print("  model diff (v0 -> HEAD):")
         for line in str(ant_diff).splitlines():
             print("    " + line)
-    if success:
+    if reference_free:
+        if final_nll is None:
+            verdict = "no valid fit (the model was never built or produced a non-finite objective)."
+        elif adequacy["passed"] is False:
+            verdict = f"inadequate by its declared {adequacy['test']} test: {adequacy['reason']}."
+        elif sigma_implausible:
+            verdict = (
+                f"the estimated noise sigma is {_implausible_sigma_text(noise_sigma_flag)} — an "
+                "implausible noise model, so the fit does not count."
+            )
+        elif adequacy["passed"] is None:
+            verdict = (
+                f"adequacy not assessable by its declared {adequacy['test']} test "
+                f"({adequacy['reason']}); an unassessed fit is not a pass."
+            )
+        else:
+            verdict = (
+                f"adequate by its declared {adequacy['test']} test ({adequacy['reason']}) — an "
+                "absolute bar, with no true model to compare against."
+            )
+    elif success:
         verdict = (
             f"not rejectable vs the true model (Δ{criterion_label} {delta_score:+.3g} <= "
             f"{scenario.bic_threshold:g}); the repair explains the data as well as the truth."
@@ -699,18 +776,10 @@ async def _judge(
             f"could not evaluate {criterion_label} (missing reference.json or no data points)."
         )
     elif score_pass and sigma_implausible:
-        which = " and ".join(
-            w
-            for w, on in (
-                ("inflated (absorbing misfit)", noise_sigma_flag["inflated"]),
-                ("collapsed (overfitting the noise)", noise_sigma_flag["collapsed"]),
-            )
-            if on
-        )
         verdict = (
             f"{criterion_label} passes (Δ{criterion_label} {delta_score:+.3g}) but the "
-            f"estimated noise sigma is {which} — the good score rests on an implausible "
-            "noise model, so it does not count."
+            f"estimated noise sigma is {_implausible_sigma_text(noise_sigma_flag)} — the good "
+            "score rests on an implausible noise model, so it does not count."
         )
     else:
         verdict = (
@@ -742,7 +811,8 @@ async def _judge(
         "bic": bic_cand,
         "bic_reference": bic_ref,
         "delta_bic": delta_bic,
-        "bic_threshold": scenario.bic_threshold,
+        # None when reference-free: there is no Δ for it to bound.
+        "bic_threshold": None if reference_free else scenario.bic_threshold,
         # Candidate, reference and delta under EVERY named criterion — the flat `bic*` triple and
         # the `criterion*` quadruple above are the two rows of this table that the CSV/W&B/span
         # allowlists flatten; the rest is here for reading a run under a criterion it was not run
@@ -761,6 +831,12 @@ async def _judge(
         "delta_criterion": delta_score,
         "chi2_dof": dof,
         "chi2_gof_pvalue": p_gof,
+        # Which bar decided `success`: "reference" (Δcriterion against the true model, above) or
+        # "reference_free" (the declared absolute adequacy test below). The two passes are
+        # different claims, so a sweep must group by this before it pools a pass rate.
+        "judge_mode": judge_mode,
+        # The reference-free bar: the declared test, its verdict and why. None on a reference run.
+        "adequacy": adequacy,
         "residual_structure": residual_structure,
         # HELD-OUT prediction: this model's likelihood on measurements it was never fitted to,
         # against the true model's. REPORT-ONLY — deliberately not in the `success` gate above.

@@ -181,6 +181,13 @@ def _reference_score(ref, criterion) -> float | None:
         return None
 
 
+def _judge_mode(scenario) -> str:
+    """Which bar decides the run's ``success``: ``"reference_free"`` (the declared absolute adequacy
+    test, for an example with no true model) or ``"reference"`` (Δcriterion against it). Read off
+    the scenario defensively, since callers that hand in a duck-typed one predate the field."""
+    return "reference_free" if getattr(scenario, "reference_free", False) else "reference"
+
+
 def _write_live_marker(
     work: Path, meta: dict, scenario: Scenario, *, include_reference: bool = True
 ) -> None:
@@ -268,6 +275,9 @@ def _base_meta(
         "model": None if scripted else args.model,
         "git_sha": _git_sha(scenario.example_dir),
         "example_version": scenario.version,
+        # On EVERY result, degraded ones included, so an aborted reference-free run is never filed
+        # among the reference-judged ones its pass rate must not be pooled with.
+        "judge_mode": _judge_mode(scenario),
         # What `git_sha`'s `+dirty` suffix only hinted at: see `_git_diff_digest`. None when clean.
         "git_diff": _git_diff_digest(scenario.example_dir),
         "server_code": _installed_provenance("petab-mcp"),
