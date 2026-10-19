@@ -26,6 +26,7 @@ MODELS: dict[str, str] = {
     "v4-pro": "deepseek/deepseek-v4-pro",
     "minimax-m3": "minimax/minimax-m3",
     "mimo": "xiaomi/mimo-v2.5",
+    "mimo-flash": "xiaomi/mimo-v2.6-flash",
     "glm-flash": "z-ai/glm-5.3-flash",
     # The tier above the panel: ~10x luna per run, added to test whether capability buys
     # anything on the examples the panel cannot solve. Not defaults -- opt in with --models.
@@ -35,8 +36,9 @@ MODELS: dict[str, str] = {
     "gemini-flash": "google/gemini-3.6-flash",
     "gemini-pro": "google/gemini-3.1-pro-preview",
     # Anthropic, also opt-in: the only models whose caching is not implicit (``_CACHING``).
-    "sonnet": "anthropic/claude-sonnet-5",
-    "opus": "anthropic/claude-opus-5",
+    "sonnet": "anthropic/claude-sonnet-5.5",
+    "opus": "anthropic/claude-opus-5.5",
+    "haiku": "anthropic/claude-haiku-5.5",
 }
 
 #: Default lead. 1M-token context, single pinned provider (Z.AI), and the best measured accuracy
@@ -112,6 +114,9 @@ _ROUTING: dict[str, dict] = {
         "order": ["novita/fp8", "parasail/fp8"],
         "only": ["novita/fp8", "parasail/fp8"],
     },
+    # v2.6 Flash: unlike v2.5's, Xiaomi's own endpoint is not ZDR-blocked here (every one of its
+    # eight endpoints answered a tool call, 2026-10-17); first-party fp8, Novita the standby.
+    "xiaomi/mimo-v2.6-flash": {"order": ["xiaomi/fp8", "novita/fp8"], "only": ["xiaomi/fp8", "novita/fp8"]},
     # v4-pro: Baidu/StreamLake/DeepSeek serve it at ~$0.15/run but are all ZDR-blocked, so Novita
     # ($0.374) is the floor we can actually reach — the 120x cache discount is NOT available here.
     "deepseek/deepseek-v4-pro": {
@@ -175,8 +180,11 @@ _ROUTING: dict[str, dict] = {
     },
     # Anthropic: one tag, no `order` fallback -- pinned for the cache namespace, not the price.
     # `anthropic`, `claude-on-aws` and `azure/*` are ZDR-blocked here (404, verified per tag).
-    "anthropic/claude-sonnet-5": {"only": ["google-vertex/global"]},
-    "anthropic/claude-opus-5": {"only": ["google-vertex/global"]},
+    # Through this account's own Anthropic key (BYOK), which the ZDR block above does not apply to.
+    "anthropic/claude-sonnet-5.5": {"only": ["anthropic"]},
+    "anthropic/claude-opus-5.5": {"only": ["google-vertex/global"]},
+    # The Anthropic endpoint, through this account's own key (BYOK).
+    "anthropic/claude-haiku-5.5": {"only": ["anthropic"]},
 }
 
 
@@ -188,7 +196,27 @@ _ROUTING: dict[str, dict] = {
 #: `reasoning` yields non-zero `reasoning_tokens` AND preserves tool calls (a reasoning mode that
 #: broke tool use would be worse than none). Reasoning tokens bill as COMPLETION tokens: ~250 per
 #: call measured, negligible per run but worth watching on a long one.
-_REASONING: dict[str, dict] = {}
+_REASONING: dict[str, dict] = {
+    # A run at --reasoning-effort default: the effort these think at, a share of max_tokens (set
+    # PETAB_MCP_MAX_OUTPUT_TOKENS to their 128000). Any other --reasoning-effort replaces it.
+    "anthropic/claude-haiku-5.5": {"effort": "high"},
+    "anthropic/claude-sonnet-5.5": {"effort": "high"},
+}
+
+
+#: Per-model request headers. Haiku 4.5 thinks between tool calls only under Anthropic's
+#: interleaved-thinking beta, which OpenRouter forwards: without it Haiku reasoned on the first call
+#: of each turn and on none of the 1,466 calls that followed a tool result (October 2026 sweep, 6%
+#: of calls reasoning). Sonnet 4.6 and later interleave on their own (adaptive thinking); kept for
+#: Haiku 5.5 until a sweep shows it does too.
+_HEADERS: dict[str, dict[str, str]] = {
+    "anthropic/claude-haiku-5.5": {"x-anthropic-beta": "interleaved-thinking-2025-05-14"},
+}
+
+
+def request_headers(model_id: str) -> dict[str, str] | None:
+    """Extra HTTP headers for ``model_id``'s requests, or ``None``."""
+    return _HEADERS.get(model_id)
 
 
 def reasoning_config(model_id: str) -> dict | None:
@@ -200,8 +228,9 @@ def reasoning_config(model_id: str) -> dict | None:
 #: Per-model ``cache_control`` block for a provider that caches nothing unless asked, placed as
 #: message breakpoints by ``driver._apply_cache_breakpoints``. See docs/RATIONALE.md.
 _CACHING: dict[str, dict] = {
-    "anthropic/claude-sonnet-5": {"type": "ephemeral", "ttl": "1h"},
-    "anthropic/claude-opus-5": {"type": "ephemeral", "ttl": "1h"},
+    "anthropic/claude-sonnet-5.5": {"type": "ephemeral", "ttl": "1h"},
+    "anthropic/claude-opus-5.5": {"type": "ephemeral", "ttl": "1h"},
+    "anthropic/claude-haiku-5.5": {"type": "ephemeral", "ttl": "1h"},
 }
 
 

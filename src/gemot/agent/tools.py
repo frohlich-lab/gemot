@@ -15,7 +15,9 @@ the text the panel actually reads, and the reason every tool here needs an entry
 from __future__ import annotations
 
 from ..prompts import (
+    INDRA_TOOL_DESCRIPTIONS,
     BIOLOGY_BLIND_ENABLED,
+    INDRA_STATEMENTS_ENABLED,
     BIOLOGY_BLIND_TOOL_DESCRIPTIONS,
     LEAD_SELF_READ_TOOLS,
     TOOL_DESCRIPTIONS,
@@ -94,6 +96,10 @@ ORCHESTRATOR_TOOLS = [
     # (parameters=), or both — and always fits, snapshotting one version. It replaces the
     # set_model -> change_parameters -> fit cycle that was 55% of the lead's calls.
     "make_changes",
+    # The indra_statements arm's mechanism library, each entry as the PySB rules it builds, so a
+    # row's policy is chosen knowing what it does and a new one is written from a near one
+    # (stripped off the arm below).
+    "list_mechanisms",
     # ...and READ them, so the lead can see what it is changing: id, bounds, scale, nominalValue,
     # plus each row's `role` (kinetic / noise_sigma / observable_scaling / initial_condition /
     # exponent / constant) and `status` (estimated / fixed). The prompt directs the lead here to
@@ -140,7 +146,10 @@ _TOOLSETS = (
 # The ablation arms. Applied to the lists AFTER they are defined, so each persona's rationale
 # above reads as the intended design and this is visibly a subtraction from it — and so a future
 # tool added to a list cannot forget to be gated. One strip helper, not one loop per arm.
-_ARM_TOOLS = ((not BIOLOGY_BLIND_ENABLED, ("get_skill",)),)
+_ARM_TOOLS = (
+    (not BIOLOGY_BLIND_ENABLED, ("get_skill",)),
+    (INDRA_STATEMENTS_ENABLED, ("list_mechanisms",)),
+)
 for _on, _names in _ARM_TOOLS:
     if _on:
         continue
@@ -171,12 +180,17 @@ def _trim_descriptions(tools: list) -> list:
             BIOLOGY_BLIND_TOOL_DESCRIPTIONS if BIOLOGY_BLIND_ENABLED else TOOL_DESCRIPTIONS
         )
         short = descriptions.get(name)
+        if INDRA_STATEMENTS_ENABLED and name in INDRA_TOOL_DESCRIPTIONS:
+            short = INDRA_TOOL_DESCRIPTIONS[name]
         if BIOLOGY_BLIND_ENABLED and short is None:
             raise ValueError(f"No anonymous description registered for tool {name!r}")
         if short is None:
             desc = getattr(t, "description", None)
             if isinstance(desc, str):
                 short = desc.strip().split("\n", 1)[0]
+        if short and name == "make_changes" and INDRA_STATEMENTS_ENABLED:
+            short = f"{short}\n\n{_statements_route(t)}"
+            _drop_args(t, ("antimony", "model_edits"))
         if short:
             try:
                 t.description = short
@@ -185,6 +199,40 @@ def _trim_descriptions(tools: list) -> list:
                     raise
                 pass
     return tools
+
+
+def _statements_route(tool) -> str:
+    """The server's own paragraph on `make_changes`' `statements` route: the row notation and the
+    mechanisms its library holds. The curated description replaces the server's, so on the
+    indra_statements arm this is kept beside it; it is the server's text (versioned with the
+    server), because the library it lists is the server's."""
+    desc = getattr(tool, "description", "") or ""
+    i = desc.find("`statements` is a third model route")
+    if i < 0:
+        raise RuntimeError(
+            "indra_statements is on, but the server's make_changes offers no `statements` route "
+            "(was it started without an entity map?)"
+        )
+    # The route's paragraphs, `statements` and then `statement_edits`, up to the contract.
+    paragraphs = []
+    for paragraph in desc[i:].split("\n\n"):
+        if not paragraph.startswith("`statement"):
+            break
+        paragraphs.append(paragraph)
+    return "\n\n".join(paragraphs)
+
+
+def _drop_args(tool, names: tuple[str, ...]) -> None:
+    """Remove arguments from a tool's schema, so the model is not offered them at all (the
+    indra_statements arm's other model routes; its guard still bounces a call that sends one)."""
+    schema = getattr(tool, "args_schema", None)
+    if not isinstance(schema, dict):
+        raise RuntimeError(f"cannot drop {names} from {tool.name}: its schema is no dict")
+    props = schema.get("properties") or {}
+    for name in names:
+        props.pop(name, None)
+    if "required" in schema:
+        schema["required"] = [r for r in schema["required"] if r not in names]
 
 
 def _select_tools(tools: list) -> list:

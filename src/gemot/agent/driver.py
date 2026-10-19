@@ -47,6 +47,8 @@ from .circuit_breaker import (
 from .finish_gate import _finish_tool
 from .guards import (
     _empty_report_guard,
+    _leaked_argument_repair,
+    _statements_only_guard,
     _task_arg_guard,
     _tool_dispatch_guard,
     _reasoning_runaway_guard,
@@ -62,7 +64,7 @@ from .subagents import (
 )
 from .token_usage import _LEAD_AGENT_NAME, _token_accountant
 from .tools import ORCHESTRATOR_TOOLS, _select_tools, _trim_descriptions
-from ..prompts import _NO_MODEL_NUDGE, _SILENT_FINISH_NUDGE
+from ..prompts import INDRA_STATEMENTS_ENABLED, _NO_MODEL_NUDGE, _SILENT_FINISH_NUDGE
 from .. import models, prompts
 
 # --- guards on the (input-dominated, occasionally-hanging) LLM loop -----------------------
@@ -346,7 +348,7 @@ def _content_filter_stop_reason(exc: BaseException) -> str | None:
     return f"content_filtered: {text.strip('{} ')[:200]}"
 
 
-def _extra_body(model: str) -> dict[str, Any]:
+def _extra_body(model: str, reasoning_effort: str | None = None) -> dict[str, Any]:
     """OpenRouter-specific request fields: the billed-cost flag (``usage.include``, always), and
     provider pinning and reasoning where the model has an entry.
 
@@ -357,6 +359,9 @@ def _extra_body(model: str) -> dict[str, Any]:
         body["provider"] = routing
     if (reasoning := models.reasoning_config(model)) is not None:
         body["reasoning"] = reasoning
+    if reasoning_effort is not None:
+        # The run's own effort (--reasoning-effort) replaces the model's setting.
+        body["reasoning"] = {"effort": reasoning_effort}
     return body
 
 
@@ -410,6 +415,13 @@ def _chat_model_class():
     It also copies a stream's usage chunk onto ``response_metadata["token_usage"]``, where a
     non-streamed response already carries it.
 
+    And it carries each turn's REASONING back to the provider. ``langchain_openai`` drops
+    OpenRouter's ``reasoning_details`` both ways, so every request after the first sent the
+    assistant's tool-call turns without the thinking that produced them; Anthropic then runs the
+    next call without thinking at all (Haiku 4.5 reasoned on 0 of 1,466 calls after a tool result).
+    The details ride the AIMessage's ``additional_kwargs`` and are put back, untouched (their
+    signatures are verified), on that assistant message of every later request.
+
     ``lru_cache``d, and the caller passes ``name="ChatOpenAI"`` -- both for reasons that bite
     silently. LangChain derives a run's name (and openinference the SPAN name) from the class name,
     so an un-named subclass would rename every LLM span to ``_ChatOpenAIRecordingProvider``: every
@@ -423,6 +435,7 @@ def _chat_model_class():
     class _ChatOpenAIRecordingProvider(ChatOpenAI):
         def _get_request_payload(self, input_, *, stop=None, **kwargs):
             payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+            _return_reasoning(self._convert_input(input_).to_messages(), payload)
             config = models.caching_config(payload.get("model") or self.model_name)
             if config is not None:
                 _apply_cache_breakpoints(payload, config)
@@ -430,6 +443,7 @@ def _chat_model_class():
 
         def _create_chat_result(self, response, generation_info=None):
             result = super()._create_chat_result(response, generation_info)
+            _keep_reasoning(response, result)
             try:
                 served = getattr(response, "provider", None)
                 if served is None and isinstance(response, dict):
@@ -459,6 +473,31 @@ def _chat_model_class():
             return gen
 
     return _ChatOpenAIRecordingProvider
+
+
+def _keep_reasoning(response, result) -> None:
+    """Copy each choice's OpenRouter ``reasoning_details`` onto its AIMessage's
+    ``additional_kwargs`` (see :func:`_chat_model_class`). Best-effort."""
+    try:
+        raw = response if isinstance(response, dict) else response.model_dump()
+        for choice, gen in zip(raw.get("choices") or [], result.generations):
+            details = (choice.get("message") or {}).get("reasoning_details")
+            if details:
+                gen.message.additional_kwargs["reasoning_details"] = details
+    except Exception:  # pragma: no cover - a lost reasoning block must never break a run
+        pass
+
+
+def _return_reasoning(messages, payload) -> None:
+    """Put each AIMessage's ``reasoning_details`` back on its assistant message in ``payload``.
+    The payload's messages are the input's, one for one; when they are not, nothing is touched."""
+    sent = payload.get("messages")
+    if not isinstance(sent, list) or len(sent) != len(messages):
+        return
+    for message, out in zip(messages, sent):
+        details = (getattr(message, "additional_kwargs", None) or {}).get("reasoning_details")
+        if details and isinstance(out, dict) and out.get("role") == "assistant":
+            out["reasoning_details"] = details
 
 
 # A provider 5xx that arrives UNCLASSIFIED. OpenRouter returns HTTP 200 with an `{"error": ...}`
@@ -546,7 +585,8 @@ async def run_deepagents(
     system_prompt: str,
     task: str,
     recursion_limit: int,
-    temperature: float = 0.0,
+    temperature: float = 1.0,
+    reasoning_effort: str | None = None,
     n_starts: int = 1,
     max_wall_seconds: float | None = None,
     max_run_tokens: int | None = _MAX_RUN_TOKENS,
@@ -622,6 +662,11 @@ async def run_deepagents(
         # (``input_protocols``, from the anonymous view) and ``biology_blind_task`` refuses a rule
         # that is not made of input aliases, ``time`` and functions.
         task = prompts.biology_blind_task(input_protocols)
+    if prompts.INDRA_STATEMENTS_ENABLED:
+        if biology_blind:
+            raise ValueError("the indra_statements arm has no biology-blind variant")
+        # The arm's own lead prompt, whatever the scenario passed: the default teaches Antimony.
+        system_prompt = prompts.INDRA_SYSTEM_PROMPT
 
     # Adapt the MCP tools bound to this already-initialized session, then curate to the
     # union of the lead's + analysts' tools. This pool is only used to resolve each analyst's
@@ -799,7 +844,8 @@ async def run_deepagents(
             # object, so a per-agent key would need per-call middleware for marginal gain.
             model_kwargs={"prompt_cache_key": prompt_cache_key},
             # OpenRouter request fields, sent verbatim in the body: see _extra_body and models.py.
-            extra_body=_extra_body(model_id),
+            extra_body=_extra_body(model_id, reasoning_effort),
+            default_headers=models.request_headers(model_id),
         )
 
     llm = _build_llm(model)
@@ -882,6 +928,8 @@ async def run_deepagents(
     if guard_installed:
         kwargs["middleware"] = [
             _builtin_tool_filter(),
+            # Outermost of the tool-call guards, so every guard after it sees the call repaired.
+            _leaked_argument_repair(guard_stats),
             _disabled_tool_filter(breaker_state),
             # _task_arg_guard is placed OUTSIDE _tool_dispatch_guard (earlier in the list = outer
             # tool-call wrapper) so a REJECTED `task` call short-circuits before the dispatch guard
@@ -902,6 +950,9 @@ async def run_deepagents(
             # no tool calls, so _dedupe_response finds nothing to do), but stated correctly so a
             # future reorder is not reasoned from a false invariant.
             _task_arg_guard(guard_stats),
+            # Outside _tool_dispatch_guard for the same reason as _task_arg_guard: a bounced call
+            # applied nothing and must not count as an executed tool.
+            *([_statements_only_guard(guard_stats)] if INDRA_STATEMENTS_ENABLED else []),
             _reasoning_runaway_guard(guard_stats),
             _tool_dispatch_guard(guard_stats),
             _empty_report_guard(guard_stats),
@@ -1364,7 +1415,10 @@ async def run_deepagents(
                     and not past_deadline
                 ):
                     silent_bounces += 1
-                    nudge = _NO_MODEL_NUDGE if not model_committed else _SILENT_FINISH_NUDGE
+                    no_model = (
+                        prompts.INDRA_NO_MODEL_NUDGE if INDRA_STATEMENTS_ENABLED else _NO_MODEL_NUDGE
+                    )
+                    nudge = no_model if not model_committed else _SILENT_FINISH_NUDGE
                     what = (
                         "NO model authored" if not model_committed else "no finish through the gate"
                     )
@@ -1492,7 +1546,8 @@ async def run_deepagents(
         # the server -- the case that mattered: a run making 134 failing make_changes calls
         # recorded `edit_rejects.attempted: 0`, so nothing in result.json showed the failure.
         "make_changes_calls": call_outcomes(breaker_state, "make_changes"),
-        "openrouter_extra_body": _extra_body(model),
+        "openrouter_extra_body": _extra_body(model, reasoning_effort),
+        "request_headers": models.request_headers(model),
         # What the request ASKED for is `openrouter_extra_body`; this is what it GOT. The two are
         # not the same claim -- `provider.only` bounds routing to a set, so a run can be served by
         # several of its members and still honour the pin.

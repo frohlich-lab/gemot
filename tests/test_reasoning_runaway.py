@@ -101,6 +101,26 @@ def test_ladder_retries_at_reduced_effort_and_recovers():
     assert stats["reasoning_runaway_recovered"] == 1
 
 
+def test_a_run_that_set_its_effort_is_never_retried_at_another():
+    # --reasoning-effort puts `reasoning: {effort: max}` in the body; effort is then the variable
+    # under test, so a runaway is counted and handed back, not rescued at "low" (as PEtabAgentGym).
+    stats = new_guard_stats()
+    guard = _reasoning_runaway_guard(stats)
+    request = _Request()
+    request.model = type("_Model", (), {"extra_body": {"reasoning": {"effort": "max"}}})()
+    calls: list = []
+
+    async def handler(request):
+        calls.append(request)
+        return _resp(content="")
+
+    out = asyncio.run(guard.awrap_model_call(request, handler))
+    assert _is_reasoning_runaway(out)
+    assert len(calls) == 1
+    assert stats["reasoning_runaways"] == 1
+    assert stats["reasoning_runaway_recovered"] == 0
+
+
 def test_ladder_is_bounded_when_every_effort_fails():
     stats = new_guard_stats()
     guard = _reasoning_runaway_guard(stats)

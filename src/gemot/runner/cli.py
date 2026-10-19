@@ -83,8 +83,20 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
     p.add_argument(
         "--temperature",
         type=float,
-        default=0.0,
-        help="LLM sampling temperature (deepagents driver); recorded per run for sweeps.",
+        default=1.0,
+        help="LLM sampling temperature (deepagents driver); recorded per run for sweeps. A model "
+        "that takes none (the Claude 5 family) is sent none.",
+    )
+    p.add_argument(
+        "--reasoning-effort",
+        choices=["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        default="max",
+        help="OpenRouter reasoning effort for every panel model (deepagents driver), replacing "
+        "the model's own setting (gemot.models); OpenRouter maps it to the nearest level a model "
+        "has. `max` (the default) is the largest thinking budget a budget-based model "
+        "(Anthropic) is given, ~95%% of its output ceiling. `default` keeps each model's own "
+        "setting, and only such a run retries a reasoning runaway at lower effort "
+        "(agent.guards). Recorded per run for sweeps.",
     )
     p.add_argument(
         "--recursion-limit",

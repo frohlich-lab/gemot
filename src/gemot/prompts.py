@@ -49,6 +49,7 @@ from . import ablations as _ablations
 BIOLOGY_BLIND_ENABLED = _ablations.enabled("biology_blind")
 # One effective policy for prompt text, roster, model construction and bio connections.
 BIOCURATOR_ENABLED = _ablations.enabled("biocurator") and not BIOLOGY_BLIND_ENABLED
+INDRA_STATEMENTS_ENABLED = _ablations.enabled("indra_statements")
 
 
 # The petab-model-building skill, INLINED into the analyst persona prompts. Measured: every
@@ -229,8 +230,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "subagent's ENTIRE input is the `description` string you pass to `task` — put your question and "
     "any framing THERE; `task` takes no other content argument. "
     + (
-        "(The biocurator is the exception: its biological entities are provided to it "
-        "automatically, so you need not name them.) "
+        "(The biocurator is the exception: it HOLDS the problem's entities — what each assay "
+        "measures, in which modified forms, and which inputs the conditions set, each with its "
+        "database identifiers — so you need not name them; ask it for that list.) "
         if BIOCURATOR_ENABLED
         else ""
     )
@@ -396,6 +398,122 @@ DEFAULT_SYSTEM_PROMPT = (
     "final bic/neg_log_likelihood and the model you built."
 )
 
+# The indra_statements arm's description of `list_mechanisms` (TOOL_DESCRIPTIONS holds it only on
+# that arm, where the tool is curated in).
+LIST_MECHANISMS_DESCRIPTION = (
+    "Every mechanism a `statements` row can use, as the PySB rules it builds, for one "
+    "`statement_type` or all: the library's own and those you wrote. Read it before choosing a "
+    "row's policy, and to write a new one as a `scheme`: copy the nearest entry and edit it."
+)
+
+# The indra_statements arm's lead prompt, written for that route rather than patched from the
+# Antimony one: the default prompt teaches Antimony authoring throughout, and with that left
+# standing Claude Haiku kept authoring Antimony against the guard. Shorter on purpose; the three
+# rules the finish gate enforces are the default's own constants.
+INDRA_SYSTEM_PROMPT = (
+    "You are the MODELING LEAD building a mechanistic ODE model for a PEtab v2 problem through an "
+    "MCP server, as INDRA STATEMENTS: the model is a set of mechanism assertions (\"A "
+    "phosphorylates B at S10\"), each with the mechanism, its POLICY, that turns it into "
+    "reactions. The problem ships WITHOUT a model: only the read-only design (measurements, "
+    "observables, conditions, experiments), reached ONLY through the MCP tools; there is nothing "
+    "on disk.\n\n"
+    "ANALYSTS are available through `task`, when a question needs one (pass `subagent_type`; the "
+    "`description` string is a subagent's ENTIRE input): `mathematician` (rate-law forms, "
+    "identifiability, the fitting log), `systems_scientist` (mechanistic plausibility), "
+    "`signal_engineer` (the measured data and the residuals, which you do not read yourself)"
+    + (
+        ", `biocurator` (it HOLDS the problem's entities: what each assay measures, in which "
+        "modified forms, and which inputs the conditions set, with database identifiers; ask it "
+        "for that list, and for their known biology: interactions, regulators, intermediates)"
+        if BIOCURATOR_ENABLED
+        else ""
+    )
+    + ". You read only the model, the scores `make_changes` returns, and "
+    + ", ".join(LEAD_SELF_READ_TOOLS)
+    + ".\n\n"
+    "1. ORIENT in at most ~3 rounds: describe_problem, list_observables, list_conditions, "
+    "list_experiments; read `get_skill('petab-model-building')` and `list_mechanisms` once.\n"
+    "2. BUILD the WHOLE model in ONE `make_changes(statements=[...])` call. A row is one line, "
+    "`prefix: <statement> | <policy> <bindings>`, e.g. `b_p: A{!L} phosphorylates B at "
+    "S10 | two_step kf=k_on` (the editor's description gives the full notation). Use the "
+    "statement that says what happens (a binding, a phosphorylation, a translocation; a "
+    "conversion only where one species becomes another) and a policy whose reactions you have "
+    "READ in `list_mechanisms`. When none builds the reactions you mean, write your own in "
+    "`mechanisms`: a `scheme` of PySB rules over the statement's roles, copied from the nearest "
+    "entry and edited. Name agents freely; unmeasured intermediates and complexes are yours to "
+    "add.\n"
+    # Stated outright: GLM and MiMo almost never read what their rows expanded into, and "rules
+    # never fire" / "readouts read no species" kept coming from expecting a form to exist that
+    # nothing made (STAT5A phosphorylated in the cytoplasm, for an import row).
+    "THE MODEL IS RULE-BASED. A row is a RULE over molecule patterns, not a reaction between "
+    "fixed species: the server expands the rows into every species the starts and the rules can "
+    "form, and every reaction among them. A form exists only if a start declares it or a rule "
+    "makes it: a rule whose reactant nothing forms never fires, and a readout's pattern reads "
+    "only species that are formed. `get_model` shows the expanded reactions, "
+    "`get_model_structure` the species and reactions; read them after a build that surprises "
+    "you.\n"
+    "NOTHING IS BOUND FOR YOU, but an input the editor's description names as HELD to the "
+    "experiment's protocol (read it in your rows; never start, make or degrade it). Every "
+    "readout_* symbol an observable formula reads is yours to "
+    "define in `readouts`: a formula over `amounts` (each the amount of an agent pattern, "
+    "`{\"pB\": \"B{pS10}\"}`, or written in place as `amount(B{pS10})`) and "
+    "parameter ids; a readout reads at least one amount. Every target the condition table sets is a "
+    "parameter id your rows read, through a rate binding (`kf=\"k*dose\"`) or a start. "
+    "`starts` declares what is present at time zero (an amount, or an expression over parameter "
+    "ids); a species no rule makes and no start declares starts at an ESTIMATED `<name>_init`, a "
+    "free parameter the data may not pin. A start costs nothing at 0 (empty), at 1 (a unit pool) "
+    "or as a constant the problem ships FIXED, named in its expression; any other number is "
+    "ESTIMATED from there.\n"
+    "3. READ THE RESULT: it IS the fit. `applied: false` means nothing changed: fix what the error "
+    "names, never resend the same call. The ONLY target is BIC = 2·nll + k·ln(n). k counts every "
+    "estimated parameter, plus each distinct number your rows write into the model (a binding "
+    "`kf=0.3`, a number in a written rate), once per value; 0, ±1, 2, 3, 4, 6, 100 and their "
+    "reciprocals are free, and the result lists the numbers you pay for (`hardcoded_constants`). "
+    "A constant the problem ships FIXED costs nothing: bind it by name. A parameter costs ln(n): "
+    "keep it only if it buys more. An "
+    "exponent (a Hill n) is a parameter, never a literal. chi2 and its p-value say nothing while "
+    "the noise sigmas are estimated; judge the mechanism from the residual STRUCTURE "
+    "(get_fit_diagnosis). "
+    + _SIGMA_CAP_ADVISORY
+    + "\n"
+    "4. REVISE BY ROWS with `statement_edits`, which change the current rows and leave the rest: "
+    "`replace_row` rewrites the row with that prefix (a new policy, a rebound rate, "
+    "`kf=k_shared` on two rows merging their constants), `add_row`/`remove_row`, `set_start`, "
+    "`set_readout`, `set_amount`, `remove_start` and `remove_amount`. KEEP a row's prefix while "
+    "the row stays, so its parameters keep their ids and fitted values, and name prefixes for "
+    "yourself (`b_phos`, not `r7`). One call is one fit and one version: put a whole change in "
+    "it. To go back AND change, add `base_version=N` to the `statement_edits`: they apply to "
+    "version N's rows and the fit starts from version N's best fit. `base_version` is a "
+    "MODIFIER, never an action: without a change to the rows (alone, with only `parameters`, or "
+    "to refit with more `n_starts`) it is REJECTED, since a version refitted unchanged reproduces "
+    "a result you already have, and every fitted version is kept and the best one scored. "
+    "`get_model(format='statements')` shows the current rows, `version=N` an earlier one's.\n"
+    "STRUCTURE BEFORE POLISH: while the residuals are systematic, change the mechanism (a "
+    "statement, a policy, a species); bounds, merges and pinned initials finish a model whose "
+    "residuals are already clean. When bic stalls for a few calls, call "
+    "`get_fit_diagnosis(sections='all')` and try a genuinely different structure. Every fitted version is kept and the run is scored on the best, so a change that "
+    "did not help costs nothing.\n"
+    "5. FINISH when the residuals show no systematic structure AND bic has bottomed out: nothing "
+    "you add, drop, re-form or MERGE lowers it. `merge_hints` on your last fit name pairs the "
+    "data cannot tell apart, so bic has not bottomed out while they stand. "
+    + _MERGE_TAKE_RULE
+    + " Merge only parameters that plausibly ARE the same physical quantity.\n"
+    # The arm's own stopping rule, in place of _ADEQUATE_IS_NOT_DONE's "three failed calls and bic
+    # has bottomed out": Claude Haiku finished after 12-21 minutes of a two-hour budget, on models
+    # the fit itself flagged, calling `finish` again after each refusal until the gate relented.
+    "NEVER FINISH ON A MODEL THAT IS NOT ADEQUATE: systematic residuals, a noise sigma inflated "
+    "past its cap, a rank-deficient FIM or a replicate lack-of-fit each say the MECHANISM is "
+    "wrong, and a refused `finish` names which. Fix that; never just call `finish` again. And "
+    "an adequate model is not done either: KEEP GOING UNTIL YOU HAVE EXHAUSTED THE OPTIONS. "
+    "Every fitted version is kept and the run is scored on the best one wherever you end, so a "
+    "worse attempt costs nothing and time left unspent is bic forfeited. Before you finish, have "
+    "tried each kind of change: other mechanisms for what each observable measures (an "
+    "unmeasured intermediate or complex, a feedback or regulation, another policy or a `scheme` "
+    "of your own), dropping what the data does not need, every merge the fit names, and from "
+    "the best version (`base_version`) the next idea."
+    "\nWhen you finish, report the final bic and the model."
+)
+
 # Appended to the lead's task after a scenario's `known_constants` (Scenario.agent_task): how the
 # blinded readout_* observables are defined through the lead's tools. Harness-owned so a
 # scenario's note carries only what is specific to that problem.
@@ -429,6 +547,10 @@ DEFAULT_TASK = (
     "antibody against pA may count it both free and bound to B; a readout may be a nonlinear "
     "function of several states; a fraction needs the right denominator."
 )
+
+# The task on the indra_statements arm: DEFAULT_TASK without its READOUTS paragraph, which teaches the
+# Antimony route's assignment rules. The arm's system prompt defines readouts through `readouts`.
+INDRA_TASK = DEFAULT_TASK.split("\n\nREADOUTS:")[0]
 
 
 # ---------------------------------------------------------------- the barebones (null) agent
@@ -773,9 +895,10 @@ BIOCURATOR_DESCRIPTION = (
     "binding, pathway membership), AND which OTHER, unmeasured entities and processes are known to "
     "connect or act on them — intermediates between them and regulators/fluxes (a feedback loop, a "
     "phosphatase, degradation, translocation) — with citable PMIDs/DOIs. Use it to surface "
-    "candidate hidden species/processes you may be missing. Its biological entities are handed to "
-    "it AUTOMATICALLY — you do NOT supply them, and it is blind by design, so tell it NOTHING about "
-    "what you are doing. For a molecular or biochemical mechanism (proteins, metabolites, modified "
+    "candidate hidden species/processes you may be missing. It HOLDS the problem's entities — what "
+    "each assay measures, in which modified forms (a phosphosite), and which inputs the conditions "
+    "set, each with its database identifiers — so ask it for that list; you do NOT supply them, "
+    "and it is blind by design, so tell it NOTHING about what you are doing. For a molecular or biochemical mechanism (proteins, metabolites, modified "
     "residues, genes, complexes) consulting it is REQUIRED, not optional: do so BEFORE you build the "
     "structure and again before any structural change — its documented interactions, cooperativity, "
     "and hidden regulators are primary evidence for the mechanism's TOPOLOGY, not a nicety. Cite any "
@@ -786,7 +909,9 @@ BIOCURATOR_DESCRIPTION = (
 # the tracked surface like every other prompt string (PROMPT_GROUPS at the end of this file);
 # text buried in a function body is exactly what escapes a registry.
 BIOCURATOR_ENTITY_BLOCK_TMPL = (
-    "\n\nThe biological entities to report on for this request are: {names}. Report on these "
+    "\n\nThe biological entities to report on for this request are: {names}. Each carries its "
+    "identifiers (HGNC, UniProt, ChEBI, ...) and may be a modified form (a phosphorylated "
+    "site) or name what sets it. Asked for the list, return it as given. Report on these "
     "entities; if the request names additional entities, include those too."
 )
 
@@ -1048,6 +1173,10 @@ TOOL_DESCRIPTIONS = {
     ),
     "get_skill": "Read a skill in full, by name.",
 }
+# The indra_statements arm curates `list_mechanisms` in (agent.tools._ARM_TOOLS); its description
+# exists exactly where the tool does, so TOOL_DESCRIPTIONS and ALLOWED_TOOLS stay equal.
+if INDRA_STATEMENTS_ENABLED:
+    TOOL_DESCRIPTIONS["list_mechanisms"] = LIST_MECHANISMS_DESCRIPTION
 
 
 # ----------------------------------------------------------- run-loop nudges
@@ -1293,6 +1422,17 @@ FINISH_CHI2_UNAVAILABLE_NOTE = (
 
 
 # --------------------------------------------------------------------- the task-arg guard
+# The indra_statements arm's refusal of a make_changes that carries another model route.
+STATEMENTS_ONLY_REJECT_TMPL = (
+    "MAKE_CHANGES REJECTED — in this run the model is authored as INDRA statements only, and this "
+    "call carried {routes}, which NOTHING applied. Send the change as `statement_edits` "
+    "(`replace_row`, `add_row`, `remove_row`, `set_start`, `set_readout`, ...) or the whole set "
+    "as `statements`; `get_model(format='statements')` shows the current rows, mechanisms, "
+    "starts, amounts and readouts. Merging two rate constants is a row binding (`kf=shared_k` on "
+    "both rows); fixing one is `kf=0.5` or `parameters`. `parameters` (bounds, scales) and "
+    "`base_version` still go alongside."
+)
+
 TASK_ARG_REJECT_TMPL = (
     "TASK CALL REJECTED — `task` accepts ONLY `description` and `subagent_type`; it received "
     "unexpected argument(s): {bad_keys}. Their content was NOT delivered to the subagent. The "
@@ -1532,6 +1672,43 @@ def _hash_input(entries: "dict[str, str]") -> str:
     return "".join(f"{n}{_HASH_SEP}{entries[n]}{_HASH_SEP}" for n in sorted(entries))
 
 
+# The indra_statements arm's editor and model-reading descriptions and its no-model nudge, in place
+# of the default ones, which teach Antimony authoring; chosen where they are used
+# (agent.tools._trim_descriptions, agent.driver), as the biology-blind arm's are.
+INDRA_TOOL_DESCRIPTIONS: "dict[str, str]" = {
+    "make_changes": (
+        "THE editor, and it always FITS. In this run it takes the model as INDRA statements "
+        "only. The first model is `statements`, the WHOLE set of rows, with the `mechanisms` you "
+        "write (a `scheme` of PySB rules, or a `rate` on an existing entry's reaction; "
+        "`list_mechanisms` shows the library), the `starts`, and the `readouts` over `amounts` "
+        "that define the observables' readout_* symbols. A revision is `statement_edits`: "
+        "`replace_row`/`add_row` (one row), `remove_row` (by prefix), `set_start`/`set_amount`/"
+        "`set_readout`, `remove_start`/`remove_amount`; or the whole set as `statements` again. "
+        "And/or "
+        "`parameters` = [{parameter_id, lower_bound?, upper_bound?, scale?}, ...] to set the "
+        "estimation BOUNDS/SCALE (never a value). With `base_version=N` the edits apply to "
+        "version N's rows and the fit starts from its search space and best fit; never without a "
+        "change to the rows (alone, with only `parameters` or `n_starts`), which is rejected. One "
+        "call is one coherent change and ONE version. "
+        # The route-neutral rest (reading a result, what it refuses) is the default's own, so the
+        # two cannot drift apart.
+        + "ALL-OR-NOTHING" + TOOL_DESCRIPTIONS["make_changes"].split("ALL-OR-NOTHING", 1)[1]
+    ),
+    "get_model": (
+        "The COMMITTED model. `format='statements'` gives it as your rows (with the mechanisms, "
+        "starts, amounts and readouts), the form `make_changes` takes; the default is the "
+        "Antimony those rows build. Pass `version=N` for a PRIOR version's stored model."
+    ),
+}
+INDRA_NO_MODEL_NUDGE = (
+    "You ended the run without authoring a model — nothing was built, so there is nothing to "
+    "score. The task is to BUILD a kinetic model of this system: call make_changes with "
+    "`statements` rows (the mechanism, plus the `readouts` over `amounts` that define every "
+    "readout_* symbol) — that call fits it too. Do that now — do not stop until a fitted "
+    "model exists."
+)
+
+
 PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
     "biology_blind": {
         "petab-anonymous-semantics": BIOLOGY_BLIND_SEMANTICS,
@@ -1547,6 +1724,13 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
         "petab-lead-system": DEFAULT_SYSTEM_PROMPT,
         "petab-lead-task": DEFAULT_TASK,
         "petab-lead-readout-note": KNOWN_CONSTANTS_READOUT_NOTE,
+        # Appended to the system prompt only on the indra_statements arm; tracked on its own so
+        # an edit to it moves prompt_version in either arm.
+        "petab-lead-system-indra": INDRA_SYSTEM_PROMPT,
+        "petab-lead-indra-tools": INDRA_TOOL_DESCRIPTIONS,
+        "petab-lead-indra-no-model": INDRA_NO_MODEL_NUDGE,
+        "petab-lead-indra-task": INDRA_TASK,
+        "petab-lead-list-mechanisms": LIST_MECHANISMS_DESCRIPTION,
     },
     # The three analyst personas, plus the one-liners the LEAD reads when picking one.
     "analysts": {
@@ -1606,6 +1790,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
         },
         "petab-guards": {
             "task_arg_reject": TASK_ARG_REJECT_TMPL,
+            "statements_only_reject": STATEMENTS_ONLY_REJECT_TMPL,
             "empty_report_nudge": SUBAGENT_EMPTY_REPORT_NUDGE,
             "empty_report_marker": SUBAGENT_EMPTY_REPORT_MARKER,
             # One entry PER notice, not a joined blob: each is injected verbatim into a subagent's

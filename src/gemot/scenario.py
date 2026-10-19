@@ -225,6 +225,15 @@ class Scenario:
     # lookupable biology (predator–prey, a toy repressilator, generic enzyme kinetics): the
     # biocurator is then handed no entities (nothing to look up).
     biocurator_entities: list[str] = field(default_factory=list)
+    # The measured entities and the condition table's inputs, each with its database identifiers,
+    # derived from the problem's formulation rather than curated (PEtabAgentBench's `entity_ids`).
+    # Experimental setup, not the author's knowledge of the reference model, so the biocurator is
+    # handed them on every arm, in place of `biocurator_entities` when there are any.
+    entity_ids: list[str] = field(default_factory=list)
+    # The experiment's inputs over time the server holds to their protocol on the indra_statements
+    # arm, as entity-map entries (PEtabAgentBench's `held_inputs`: Fujita's EGF ramp). The arm's
+    # entity map is otherwise empty; other arms ignore it.
+    held_inputs: dict[str, dict] = field(default_factory=dict)
     # Success gate: a repair is accepted iff it can't be rejected against the true model —
     # score(candidate) - score(true) <= bic_threshold, both under the criterion the server ranked
     # by (BIC by default). ~10 = "very strong evidence against" (Kass & Raftery); the verdict is
@@ -297,14 +306,33 @@ class Scenario:
         """The task handed to the deepagents driver: the base task plus any scenario-specific
         ``known_constants`` note (so the agent is told about shipped fixed constants) and, with
         it, the readout-mapping note (a benchmark problem ships blinded ``readout_*``
-        observables; the synthetic demos carry no note)."""
+        observables; the synthetic demos carry no note).
+
+        On the indra_statements arm the task is the arm's own and the readout note is left off:
+        both teach the Antimony route's assignment rules. With the reference_handoff ablation off
+        the note is left off altogether."""
         from . import ablations, prompts
 
         if ablations.enabled("biology_blind"):
             return prompts.BIOLOGY_BLIND_TASK
-        if not self.known_constants:
-            return self.task
-        return f"{self.task}\n\n{self.known_constants}{KNOWN_CONSTANTS_READOUT_NOTE}"
+        indra = ablations.enabled("indra_statements")
+        task = prompts.INDRA_TASK if indra else self.task
+        if not self.known_constants or not ablations.enabled("reference_handoff"):
+            return task
+        return f"{task}\n\n{self.known_constants}{'' if indra else KNOWN_CONSTANTS_READOUT_NOTE}"
+
+    @property
+    def agent_entities(self) -> list[str]:
+        """The entities the biocurator is handed: the derived ``entity_ids`` when the problem has
+        any, on every arm; else the curated names, which the reference_handoff ablation withholds
+        (the biocurator then finds the measured entities through ``list_observables`` itself)."""
+        from . import ablations
+
+        if self.entity_ids:
+            return list(self.entity_ids)
+        if not ablations.enabled("reference_handoff"):
+            return []
+        return list(self.biocurator_entities)
 
     def reference(self) -> dict[str, Any] | None:
         """The true-model fit reference {nll, k, n} from ``problem/reference.json``.

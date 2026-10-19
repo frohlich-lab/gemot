@@ -120,6 +120,48 @@ def _installed_provenance(name: str) -> dict | None:
     return out
 
 
+#: The libraries whose code decides a run's numbers besides gemot and the server: (module, distribution).
+_DEPENDENCIES = (
+    ("petab", "petab"),
+    ("pypesto", "pypesto"),
+    ("amici", "amici"),
+    ("fides", "fides"),
+    ("indra", "indra"),
+    ("pysb", "pysb"),
+)
+
+
+def _imported_provenance(module: str, dist: str) -> dict | None:
+    """Which code of ``module`` a run IMPORTS: the git checkout it is found in (its ``git_sha`` and
+    ``git_diff``, and where it is), else what pip recorded for ``dist``
+    (:func:`_installed_provenance`). An install's metadata is not enough: a source checkout put
+    ahead of it on the path (``PYTHONPATH``) runs while the metadata still names the installed
+    commit, and runs recorded the gemot and server commits they did NOT run that way. Found with
+    ``find_spec``, which does not import the module (AMICI and INDRA are slow to). Best-effort."""
+    import importlib.util
+
+    try:
+        spec = importlib.util.find_spec(module)
+    except (ImportError, ValueError):
+        spec = None
+    if spec is None or not spec.origin:
+        return _installed_provenance(dist)
+    where = Path(spec.origin).resolve().parent
+    try:
+        top = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"], cwd=str(where), stderr=subprocess.DEVNULL
+        ).decode().strip()
+    except (OSError, subprocess.CalledProcessError):
+        top = None
+    if not top:
+        return _installed_provenance(dist)
+    out = {"path": str(where), "git_sha": _git_sha(Path(top)), "git_diff": _git_diff_digest(Path(top))}
+    installed = _installed_provenance(dist)
+    if installed and installed.get("version"):
+        out["version"] = installed["version"]
+    return out
+
+
 def _omnipath_provenance() -> dict | None:
     """Fetch date + row counts of the local OmniPath snapshot, or ``None`` if it was not used.
 
@@ -280,8 +322,11 @@ def _base_meta(
         "judge_mode": _judge_mode(scenario),
         # What `git_sha`'s `+dirty` suffix only hinted at: see `_git_diff_digest`. None when clean.
         "git_diff": _git_diff_digest(scenario.example_dir),
-        "server_code": _installed_provenance("petab-mcp"),
-        "harness_code": _installed_provenance("gemot"),
+        "server_code": _imported_provenance("petab_mcp", "petab-mcp"),
+        "harness_code": _imported_provenance("gemot", "gemot"),
+        # The libraries that compute the numbers (libpetab, pyPESTO, AMICI, Fides) and build the
+        # INDRA route's models (INDRA, PySB): pinned by the server, overridable by a checkout.
+        "dependency_code": {m: _imported_provenance(m, d) for m, d in _DEPENDENCIES},
         "prompt_version": prompt_version(),
         "prompt_group_versions": prompt_group_versions(),
         # the skills are instructions the panel reads (prompts step 0), so they are
