@@ -21,6 +21,8 @@ calls that the **workspace**.
    cores.**
 5. **No `biology_blind`.** The workspace is refused on that arm, permanently.
 6. **A command runs for at most 5 minutes.**
+7. **Four workspace tools,** not deepagents' seven: `workspace_read`, `workspace_write`,
+   `workspace_edit` and `workspace_execute`. Listing and grepping are shell commands.
 
 ## Why
 
@@ -191,9 +193,12 @@ by name, and the analysts keep them over an empty in-state filesystem, because t
 filtered (`subagents.py`). A server tool named `execute` would be stripped from the lead along
 with them. The `workspace_*` prefix keeps the two apart.
 
-**There are four tools, not deepagents' seven.** `ls`, `glob` and `grep` are one
-`workspace_execute` away, and every tool's schema is re-sent on every turn (the cost `tools.py`
-curates against). Open question 2.
+**There are four tools, not deepagents' seven** (decided in review). Barebones holds `ls`,
+`read_file`, `write_file`, `edit_file`, `glob`, `grep` and `execute`. On the panel, listing,
+globbing and grepping are shell commands through `workspace_execute` (`ls`, `find`, `grep`). Every
+tool's schema is re-sent on every turn, the cost `tools.py` curates against, so three fewer tools
+is a smaller prompt for every agent that holds them. The panel matches barebones in what it can do,
+not tool for tool.
 
 **The workspace root has a neutral name.**
 
@@ -538,19 +543,10 @@ motivates it.
 
 1. **HEAD only, or every version** (`/versions/vN/`) and the HEAD fit's simulation table? Proposed:
    HEAD only, since `get_version` and `query_data` already serve the rest.
-2. **How many file tools: four or seven?**
-   - Barebones holds deepagents' seven: `ls`, `read_file`, `write_file`, `edit_file`, `glob`,
-     `grep` and `execute`.
-   - The proposal gives the panel four server tools: `workspace_read`, `workspace_write`,
-     `workspace_edit` and `workspace_execute`. Listing, globbing and grepping are then shell
-     commands through `workspace_execute` (`ls`, `find`, `grep`).
-   - For four: every tool's schema is re-sent on every turn, so three fewer tools is a smaller
-     prompt for every agent that holds them.
-   - For seven: the panel would have the same tools as barebones, not just the same capability.
-3. **Analyst turn limit:** is `ANALYST_MAX_TURNS = 20` still enough at `panel`, once an analyst can
+2. **Analyst turn limit:** is `ANALYST_MAX_TURNS = 20` still enough at `panel`, once an analyst can
    write and run a script?
-4. **Shared scratch:** per-agent directories by convention, as proposed, or a workspace per agent?
-5. **Other clients of the server.** The workspace is now a server feature, so any MCP client could
+3. **Shared scratch:** per-agent directories by convention, as proposed, or a workspace per agent?
+4. **Other clients of the server.** The workspace is now a server feature, so any MCP client could
    start it, petabgpt included. Is "off unless `--workspace`" enough, or should the server also
    refuse the workspace without a confirmed sandbox (it already refuses on a failed preflight)?
 
