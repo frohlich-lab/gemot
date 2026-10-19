@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -105,6 +106,15 @@ sigma_P\t0.0001\t100.0\t0.1\tfalse
 scale_Q\t0.001\t1000.0\t2.0\ttrue
 Q_init\t0.0\t10.0\t0.5\tfalse
 """
+#: An INDRA entity map as PEtabAgentBench ships one beside ``problem/``: a protocol over condition
+#: targets alone (fujita's EGF, here over the toy's ``drug``), an input a target sets directly, an
+#: input with a rate of its own (boehm's decaying Epo), and a readout binding a reference agent.
+_ENTITY_MAP = {
+    "stim": {"name": "EGF", "input": "piecewise(drug_rate*time + drug, time <= drug_end, 0)"},
+    "dosed_drug": {"name": "drug", "input": "drug"},
+    "decaying": {"name": "EPO", "input": "drug*exp(-k_decay*time)"},
+    "readout_P": {"name": "AKT1", "db_refs": {"HGNC": "391"}},
+}
 _V2_YAML = """format_version: 2.0.0
 parameter_files: [parameters.tsv]
 model_files:
@@ -139,12 +149,15 @@ def write_v2_experiments(path: Path, experiments: dict[str, str], basal: str | N
 
 
 def write_v2_problem(
-    directory: Path, *, preequilibration: bool = False, dose: str = "init_E"
+    directory: Path, *, preequilibration: bool = False, dose: str = "init_E", protocol: bool = False
 ) -> Path:
     """The v1 toy written natively in PEtab v2: experiments ``e_lo``/``e_hi`` applying ``c_lo``/
     ``c_hi``, after ``c_basal`` with ``preequilibration``. obs_Q's noise placeholder is ``sd_Q``,
     declared rather than named by v1's convention. ``dose`` is the target that doses ``E``:
-    ``init_E`` as in the v1 toy, or the state ``E`` itself."""
+    ``init_E`` as in the v1 toy, or the state ``E`` itself. With ``protocol``, ``directory`` is an
+    example's ``problem/``: every condition also sets ``drug_rate`` 0 and ``drug_end`` 10, as
+    fujita's step doses set ``EGF_rate`` and ``EGF_end``, and :data:`_ENTITY_MAP` is written to
+    ``indra/`` beside it."""
     directory.mkdir(parents=True, exist_ok=True)
     rows = [line.split("\t") for line in _MEASUREMENTS.splitlines()[1:]]
     (directory / "measurements.tsv").write_text(
@@ -159,6 +172,11 @@ def write_v2_problem(
     if preequilibration:
         conditions["c_basal"] = (0.0, 1.0, 0.0)
     write_v2_conditions(directory / "conditions.tsv", conditions, dose)
+    if protocol:
+        with (directory / "conditions.tsv").open("a") as table:
+            table.write("".join(f"{c}\tdrug_rate\t0.0\n{c}\tdrug_end\t10.0\n" for c in conditions))
+        (directory.parent / "indra").mkdir(exist_ok=True)
+        (directory.parent / "indra" / "entity_map.json").write_text(json.dumps(_ENTITY_MAP))
     write_v2_experiments(
         directory / "experiments.tsv",
         {"e_lo": "c_lo", "e_hi": "c_hi"},
@@ -262,6 +280,33 @@ def test_a_later_period_that_sets_an_input_again_is_followed(tmp_path):
     assert problem.periods["e_hi"] == ((0.0, ()), (1.0, ("c_hi",)))
     assert problem.warnings == () and ("e_hi", "S") not in problem.column_starts
     assert problem.scales["drug"] == pytest.approx(((0.0**2 * 2 + 5.0**2 + 9.0**2) / 4) ** 0.5)
+
+
+def test_an_entity_map_input_over_condition_targets_is_a_protocol(tmp_path):
+    """fujita's EGF is no condition target: its experiments set `EGF_0`, `EGF_rate` and `EGF_end`,
+    and the stimulus is `piecewise(EGF_rate*time + EGF_0, time <= EGF_end, 0)` over them. The bench
+    states that protocol for the INDRA route in the entity map's `input`, and once `inputs.tsv`
+    stopped shipping, the route read the three as constants, so the held-out pulses and ramps
+    reached the field as the same three numbers. The route now takes the protocol from the map,
+    by the rule the bench's `held_inputs` applies: a function of time over condition targets
+    alone. An input a target sets directly, or one with a rate of its own, is passed over without
+    a word; `inputs.tsv`, the route's own table, wins where both declare one."""
+    problem = P.load(write_v2_problem(tmp_path / "toy" / "problem", protocol=True), dosed=("S",))
+    formula = _ENTITY_MAP["stim"]["input"]
+    assert problem.timed_inputs == (
+        P.TimedInput("stim", formula, ("drug_rate", "drug", "drug_end")),
+    )
+    assert problem.inputs == ("drug", "drug_rate", "drug_end")
+    assert problem.field_input_names == ("stim",) and problem.warnings == ()
+
+    (tmp_path / "toy" / "problem" / "inputs.tsv").write_text(
+        "inputId\tformula\tconditionInputs\nstim\tpiecewise(drug, time < 1, 0)\tdrug\n"
+    )
+    declared = P.load(tmp_path / "toy" / "problem", dosed=("S",))
+    assert [(t.target, t.formula) for t in declared.timed_inputs] == [
+        ("stim", "piecewise(drug, time < 1, 0)")
+    ]
+    assert declared.field_input_names == ("drug_rate", "drug_end", "stim")
 
 
 def test_an_offset_does_not_enter_a_states_scale():

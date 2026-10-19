@@ -5,11 +5,12 @@ PEtab v2 tables, a v1 problem upgraded on load by the server's own conversion. T
 upgrade, the server's, so the route and the server name the same experiments and score the same
 likelihood; a v1 reader beside it would be a second conversion that could only drift from it.
 
-Only the data tables are read: measurements, observables, conditions, experiments and parameters
-and, where a problem ships one, an ``inputs.tsv`` protocol table. The model is never opened. A
-neural ODE's whole point here is to ask how much mechanism the DATA carry, so the species,
-reactions and parameters of the shipped model would leak the answer being measured -- the same
-reason the zero-shot examples ship an empty SBML.
+Only the data tables are read: measurements, observables, conditions, experiments and parameters,
+and the protocols the experiments imposed over time, from an ``inputs.tsv`` table or the example's
+INDRA entity map (:func:`_entity_map_inputs`). The model is never opened. A neural ODE's whole
+point here is to ask how much mechanism the DATA carry, so the species, reactions and parameters
+of the shipped model would leak the answer being measured -- the same reason the zero-shot
+examples ship an empty SBML.
 
 The states are the symbols the observable formulas read that are neither parameters nor declared
 placeholders: ``obs_P = P`` names the state ``P``, fujita's ``scaleFactor * (pAkt + pAkt_S6)``
@@ -34,6 +35,7 @@ measured in molecules per cell over weeks as well as one in micromolar over minu
 from __future__ import annotations
 
 import csv
+import json
 import math
 import re
 from dataclasses import dataclass, field
@@ -87,8 +89,8 @@ class TimedInput:
 @dataclass(frozen=True)
 class Problem:
     name: str
-    #: Where an ``inputs.tsv`` protocol is read from: the problem's own directory, or the training
-    #: problem's for a held-out view of it.
+    #: Where the protocols are read from (``inputs.tsv``, and ``indra/`` beside it): the problem's
+    #: own directory, or the training problem's for a held-out view of it.
     directory: Path
     observable_ids: tuple[str, ...]
     #: States the observable formulas read, in order of first appearance.
@@ -239,7 +241,7 @@ def load(problem: Path | str, *, name: str | None = None, dosed: tuple[str, ...]
 def read(tables, *, name: str, directory: Path, dosed: tuple[str, ...] = ()) -> Problem:
     """A :class:`Problem` from tables the server already holds, a
     :class:`petab_mcp.problem.WorkingProblem` such as the held-out view of a training problem;
-    ``directory`` is where ``inputs.tsv`` is."""
+    ``directory`` is where the protocols are read from (:func:`_timed_inputs`)."""
     from petab_mcp.problem import placeholder_ids  # noqa: PLC0415
 
     warnings: list[str] = []
@@ -607,14 +609,15 @@ def _preequilibration(periods, experiment_ids, name) -> dict[str, str]:
 
 
 def _timed_inputs(directory: Path, input_names, warnings) -> tuple[TimedInput, ...]:
-    """``inputs.tsv``: ``inputId``, Antimony ``formula``, ``;``-separated ``conditionInputs``.
+    """``inputs.tsv``: ``inputId``, Antimony ``formula``, ``;``-separated ``conditionInputs``; then
+    the entity map's held inputs (:func:`_entity_map_inputs`) for any target it does not declare.
 
     A formula may name only ``time`` and its own condition columns. Anything else would carry
     model structure in through the protocol, so the row is refused and said so.
     """
     path = directory / "inputs.tsv"
     if not path.is_file():
-        return ()
+        return _entity_map_inputs(directory, input_names, (), warnings)
     out = []
     with path.open(newline="") as handle:
         for row in csv.DictReader(handle, delimiter="\t"):
@@ -634,6 +637,44 @@ def _timed_inputs(directory: Path, input_names, warnings) -> tuple[TimedInput, .
                 )
                 continue
             out.append(TimedInput(target, formula, columns))
+    declared = {item.target for item in out}
+    return (*out, *_entity_map_inputs(directory, input_names, declared, warnings))
+
+
+def _entity_map_inputs(directory: Path, input_names, declared, warnings) -> tuple[TimedInput, ...]:
+    """The held inputs of the example's INDRA entity map, ``indra/entity_map.json`` beside
+    ``problem/``: each entry whose ``input`` is a function of ``time`` over condition targets alone,
+    the rule PEtabAgentBench's ``held_inputs`` applies, so fujita's EGF is
+    ``piecewise(EGF_rate*time + EGF_0, time <= EGF_end, 0)`` over each experiment's condition
+    values here as it is for the INDRA route. An input a target sets directly is the table's
+    already, and one that reads anything else is mechanism (boehm's decaying Epo), so both are
+    passed over. Nothing else in the map is read: it binds the reference model's agents.
+    """
+    example = directory.parent if directory.name == "problem" else directory
+    path = example / "indra" / "entity_map.json"
+    if not path.is_file():
+        return ()
+    try:
+        entries = json.loads(path.read_text())
+    except (OSError, ValueError) as why:
+        warnings.append(f"{path} was not read, so it held no input: {why}")
+        return ()
+    out = []
+    for target, entry in entries.items() if isinstance(entries, dict) else ():
+        formula = str(entry.get("input") or "").strip() if isinstance(entry, dict) else ""
+        symbols = _SYMBOL.findall(formula)
+        columns = tuple(dict.fromkeys(s for s in symbols if s.lower() not in PROTOCOL_ALLOWED))
+        if "time" not in symbols or not columns or not set(columns) <= set(input_names):
+            continue
+        if target in declared:
+            continue
+        if not _SYMBOL.fullmatch(target) or target in input_names:
+            warnings.append(
+                f"entity-map input {target!r} REFUSED: its name is a condition target, or no "
+                "identifier, so it cannot be the protocol's own symbol"
+            )
+            continue
+        out.append(TimedInput(target, formula, columns))
     return tuple(out)
 
 

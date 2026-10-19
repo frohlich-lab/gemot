@@ -54,11 +54,19 @@ def write_held_out(
 
 
 def write_v2_held_out(
-    directory: Path, *, basal: str | None = None, dose: str = "init_E", switch: bool = False
+    directory: Path,
+    *,
+    basal: str | None = None,
+    dose: str = "init_E",
+    switch: bool = False,
+    ramp: bool = False,
 ) -> Path:
     """A native v2 fixed-θ set: experiment ``e_new`` applying ``c_new``, which sets new values of
     the training targets, after ``basal``'s pre-equilibration where one is given; with ``switch``,
-    a later period at t=1 sets ``drug`` again, as a protocol moved into the experiment table does."""
+    a later period at t=1 sets ``drug`` again, as a protocol moved into the experiment table does;
+    with ``ramp``, ``c_new`` also sets ``drug_rate`` 1.5 and ``drug_end`` 1.75, so the entity map's
+    protocol (``write_v2_problem(protocol=True)``) ramps from ``drug`` until t=1.75, as fujita's
+    held-out ramps do."""
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "measurements.tsv").write_text(
         "experimentId\tobservableId\ttime\tmeasurement\tnoiseParameters\n"
@@ -67,6 +75,9 @@ def write_v2_held_out(
     )
     write_v2_conditions(directory / "conditions.tsv", {"c_new": (4.0, 1.0, 2.0)}, dose)
     write_v2_experiments(directory / "experiments.tsv", {"e_new": "c_new"}, basal)
+    if ramp:
+        with (directory / "conditions.tsv").open("a") as table:
+            table.write("c_new\tdrug_rate\t1.5\nc_new\tdrug_end\t1.75\n")
     if switch:
         with (directory / "conditions.tsv").open("a") as table:
             table.write("c_drug\tdrug\t6.0\n")
@@ -228,14 +239,34 @@ def test_a_native_v2_problem_and_set_run_end_to_end(tmp_path):
     assert experiments["experimentId"].tolist() == ["e_new"]
 
 
-def _settling_field(staged: S.Staged) -> list[np.ndarray]:
-    """Weights for a width-``len(states)`` field with one stable steady state that ``drug`` moves:
-    ``f_k = b_k - tanh(x_k / s_k + 0.3 drug / s_drug [k = 0])``. A field drawn at random has no
-    steady state to pre-equilibrate to, so a held-out score under pre-equilibration needs one built."""
+def test_a_held_out_ramp_is_the_entity_maps_protocol_at_the_sets_values(tmp_path):
+    """fujita's held-out pulses and ramps are its training stimulus at new condition values: the
+    protocol is the training problem's, read from the example's entity map, and each held-out
+    experiment sets its `EGF_0`, `EGF_rate` and `EGF_end`. The view evaluates it as the distiller
+    samples it: from 2 at 1.5 per unit, restarted from 6 by the switch at t=1, then 0 after
+    t=1.75."""
+    from petab_mcp.validation_data import read_held_out
+
+    from gemot.neural_ode import distil as D
+
+    problem = P.load(write_v2_problem(tmp_path / "toy" / "problem", protocol=True), dosed=("S",))
+    held_out = read_held_out(write_v2_held_out(tmp_path / "validation", switch=True, ramp=True))
+    view = H._held_out_problem(problem, held_out)
+    assert view.timed_inputs == problem.timed_inputs and view.field_input_names == ("stim",)
+    times = np.array([0.0, 0.5, 1.0, 1.5, 2.0])
+    stim = D._protocol_values(view, "stim", times, np.array(["e_new"] * len(times)))
+    assert list(stim) == [2.0, 2.75, 7.5, 8.25, 0.0]
+
+
+def _settling_field(staged: S.Staged, driver: str = "drug") -> list[np.ndarray]:
+    """Weights for a width-``len(states)`` field with one stable steady state that the input
+    ``driver`` moves: ``f_k = b_k - tanh(x_k / s_k + 0.3 driver / s_driver [k = 0])``. A field drawn
+    at random has no steady state to pre-equilibrate to, so a held-out score under
+    pre-equilibration needs one built."""
     n = len(staged.states)
     first = np.zeros((n, len(staged.field_inputs)))
     first[:, :n] = np.eye(n)
-    first[0, staged.field_inputs.index("drug")] = 0.3
+    first[0, staged.field_inputs.index(driver)] = 0.3
     return [first, np.zeros(n), -np.eye(n), np.array([0.2, -0.1, 0.3, 0.1])]
 
 
@@ -265,11 +296,13 @@ def _twin(staged: S.Staged, weights, starts: dict[str, str]) -> str:
 def test_the_held_out_nll_is_the_servers_at_the_same_point(tmp_path):
     """The field's held-out nll is the one the server's `evaluate_validation_data` computes for the
     same model at the same point -- here the field written out as an SBML twin -- on a native v2
-    set that pre-equilibrates and then switches its input mid-run, the shape the benchmark's
-    protocols take once they live in the experiment table. The two read one held-out view, built by
-    the server's own functions (`as_v2`, `_with_held_out_design`), and differ only in the
-    integrator: AMICI's JAX backend against SUNDIALS, so the tolerance is the server's own for
-    solver error. The field reads `drug`, so a switch either side ignored would show in the nll."""
+    set that pre-equilibrates, switches its input mid-run as a protocol moved into the experiment
+    table does, and drives the field through the entity map's protocol, which ramps and then cuts
+    off at condition values only the held-out experiment sets (fujita's EGF). The two read one
+    held-out view, built by the server's own functions (`as_v2`, `_with_held_out_design`), and
+    differ only in the integrator: AMICI's JAX backend against SUNDIALS, so the tolerance is the
+    server's own for solver error. The field reads the protocol's `stim`, so a ramp, a cut-off or
+    a switch either side ignored would show in the nll."""
     from types import SimpleNamespace
 
     import equinox as eqx
@@ -278,12 +311,17 @@ def test_the_held_out_nll_is_the_servers_at_the_same_point(tmp_path):
     from petab_mcp.problem import WorkingProblem
     from petab_mcp.validation_data import read_held_out, score_problem
 
-    yaml_path = write_v2_problem(tmp_path / "toy", preequilibration=True, dose="E")
+    yaml_path = write_v2_problem(
+        tmp_path / "toy" / "problem", preequilibration=True, dose="E", protocol=True
+    )
     problem = P.load(yaml_path, dosed=("S", "E"))
     config = T.TrainConfig(width=4, depth=1)
     staged = T.stage_only(problem, tmp_path / "field", config)
+    assert staged.field_inputs[-1] == "stim"
     held_out = read_held_out(
-        write_v2_held_out(tmp_path / "validation", basal="c_basal", dose="E", switch=True)
+        write_v2_held_out(
+            tmp_path / "validation", basal="c_basal", dose="E", switch=True, ramp=True
+        )
     )
     prepared = H.prepare(
         SimpleNamespace(staged=staged, config=config),
@@ -297,7 +335,7 @@ def test_the_held_out_nll_is_the_servers_at_the_same_point(tmp_path):
     periods = pd.read_csv(prepared.staged.directory / "experiments.tsv", sep="\t")
     assert periods["conditionId"].tolist() == ["start_c_basal", "c_new", "c_drug"]
 
-    weights = _settling_field(staged)
+    weights = _settling_field(staged, "stim")
     networks = prepared.imported.model.nns
     net = eqx.tree_at(
         lambda n: (
