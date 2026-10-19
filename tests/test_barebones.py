@@ -23,12 +23,22 @@ from gemot.runner import barebones as R  # noqa: E402
 
 TOY = Path(__file__).parent / "data" / "toy_v1"
 
+#: What a problem directory may carry beside the problem, none of which the agent may see: the
+#: reference's score, its held-out score, and a file no rule names.
+_NOT_THE_PROBLEM = ("reference.json", "validation_v1_baseline.json", "run.py")
+
+
+def _add_the_answers(work: Path) -> None:
+    (work / "reference.json").write_text('{"nll": 1.0, "k": 2, "n": 10}')
+    (work / "validation_v1_baseline.json").write_text('{"nll": 3.0, "n": 4}')
+    (work / "run.py").write_text("# the reference model\n")
+
 
 def _workspace(tmp_path: Path) -> Path:
-    """A `work/` as `cleanup()` leaves it: the problem plus the two files the agent must not see."""
+    """A `work/` as `cleanup()` leaves it: the problem plus the files the agent must not see."""
     work = tmp_path / "ex" / "work"
     shutil.copytree(TOY, work)
-    (work / "reference.json").write_text('{"nll": 1.0, "k": 2, "n": 10}')
+    _add_the_answers(work)
     # TOY ships a model.ant; the staging must remove it whatever it holds.
     assert (work / "model.ant").is_file()
     return work
@@ -42,7 +52,7 @@ def test_staging_withholds_the_answer_and_the_seed(tmp_path):
     staged = R.stage_workspace(work)
     agent = staged["agent_dir"]
     assert agent == work / R.AGENT_SUBDIR
-    assert sorted(staged["withheld"]) == ["model.ant", "reference.json"]
+    assert sorted(staged["withheld"]) == sorted(["model.ant", *_NOT_THE_PROBLEM])
     assert not (agent / "reference.json").exists() and not (agent / "model.ant").exists()
     assert not (work / "reference.json").exists()
     # the design tables the YAML lists are fingerprinted, the parameter table is not a design table
@@ -56,6 +66,34 @@ def test_staging_tolerates_an_already_clean_workspace(tmp_path):
     shutil.copytree(TOY, work)
     (work / "model.ant").unlink()
     assert R.stage_workspace(work)["withheld"] == []
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_only_the_problem_reaches_the_agent(tmp_path, version):
+    """An allowlist, not a denylist. The staging used to withhold only `reference.json` and the
+    seed, so the rest of the problem directory reached the agent: `validation_v1_baseline.json`,
+    the reference's held-out score and its parameters by name and fitted value, which
+    PEtabAgentBench tracks for perelson, crauste, fujita, lucarelli and raimundez. The agent gets `problem.yaml`, the files it lists (the model under
+    v1's `sbml_files` or v2's `model_files`) and `inputs.tsv`; nothing else stays in `work/`."""
+    work = (_workspace if version == 1 else _workspace_v2)(tmp_path)
+    (work / "inputs.tsv").write_text("inputId\tformula\tconditionInputs\n")
+    (work / "indra").mkdir()
+    (work / "indra" / "entity_map.json").write_text("{}\n")
+    staged = R.stage_workspace(work)
+    design = {"measurements.tsv", "conditions.tsv", "observables.tsv"}
+    if version == 2:
+        design.add("experiments.tsv")
+    assert {f.name for f in staged["agent_dir"].iterdir()} == {
+        "problem.yaml",
+        "conversion_reaction.xml",
+        "parameters.tsv",
+        "inputs.tsv",
+        *design,
+        R.SANDBOX_HOME_DIR,
+        R.SANDBOX_TMP_DIR,
+    }
+    assert {*_NOT_THE_PROBLEM, "indra"} <= set(staged["withheld"])
+    assert [f.name for f in work.iterdir()] == [R.AGENT_SUBDIR]
 
 
 def test_the_agent_dir_holds_only_the_problem_even_after_the_live_marker(tmp_path):
@@ -230,7 +268,7 @@ def _workspace_v2(tmp_path: Path) -> Path:
     (source / "conditions.tsv").write_text("conditionId\tA\nc0\t1.0\n")
     work = tmp_path / "ex" / "work"
     petab1to2(source / "problem.yaml", work, validate=False)
-    (work / "reference.json").write_text('{"nll": 1.0, "k": 2, "n": 10}')
+    _add_the_answers(work)
     return work
 
 
