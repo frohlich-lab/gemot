@@ -6,15 +6,22 @@ read tools and the same :func:`.judge._judge` score the delivered model at its d
 parameter values. Same ``result.json`` shape and archive (plus a ``delivered/`` copy).
 
 Between the agent and the judge: :func:`sandbox_preflight` (before any LLM call),
-:func:`stage_workspace` (moves the problem files into ``work/agent/`` — the only directory the
-agent sees, so the harness's own ``run_live.json``/logs/result stay outside it — withholding
-``reference.json`` and the ``model.ant`` seed and hashing the design tables),
-:func:`barebones_system_prompt` (the instructions for the problem's PEtab version, naming the
-design tables the check hashes), :func:`barebones_task` (the same known-constants note and entity
-names the panel gets),
+:func:`stage_workspace` (moves the problem into ``work/agent/`` — the only directory the agent
+sees, so the harness's own ``run_live.json``/logs/result stay outside it — and hashes the design
+tables), :func:`barebones_system_prompt` (the instructions for the problem's PEtab version,
+naming the design tables the check hashes), :func:`barebones_task` (the same known-constants note
+and entity names the panel gets),
 and :func:`check_delivery` (design tables untouched, shipped parameter rows intact, petab lint).
 A tampered or unloadable delivery is recorded as a loss (``unscoreable_reason``), not an abort.
 Reasons are in ``docs/RATIONALE.md`` (the ``#203`` entries).
+
+The workspace holds what a modeller is handed and nothing else: ``problem.yaml``, the files it
+lists, and ``inputs.tsv`` when the problem ships one. That is an allowlist, and must stay one. The
+denylist it replaced (``reference.json`` and the ``model.ant`` seed) let everything else in the
+problem directory through, and PEtabAgentBench tracks ``validation_v1_baseline.json``, the
+reference's held-out score, for perelson, crauste, fujita, lucarelli and raimundez. The seed stays
+out because the judge's server would load it instead of the delivered SBML. What was withheld is
+recorded in ``result.json`` as ``workspace_withheld``.
 """
 
 from __future__ import annotations
@@ -50,9 +57,6 @@ from .judge import _judge
 from .main import _petab_server, cleanup
 from .provenance import _base_meta, _now_iso, _write_live_marker
 
-#: Files removed from the workspace before the agent sees it (see the module docstring).
-_WITHHELD = ("reference.json", "model.ant")
-
 #: The agent's workspace is THIS subdirectory of ``work/``, holding only the problem files. The
 #: harness's own files — ``run_live.json`` (which carries the reference score), ``result.json``,
 #: the server logs — are written to ``work/`` itself and so never enter the sandbox mount.
@@ -84,6 +88,9 @@ _SCORE_LISTEN_TIMEOUT_S = 3600.0
 #: has no experiment table.
 _DESIGN_ROLES = ("measurement", "condition", "experiment", "observable")
 
+#: The other tables a ``problem.yaml`` may list: staged with the problem, not held to their bytes.
+_OTHER_ROLES = ("mapping", "visualization")
+
 
 # --------------------------------------------------------------------------- staging
 def _design_files(work: Path) -> dict[str, list[str]]:
@@ -106,28 +113,63 @@ def _design_files(work: Path) -> dict[str, list[str]]:
     }
 
 
+def _staged_files(work: Path) -> set[str]:
+    """What the agent is handed: ``problem.yaml``, every file it lists (the tables
+    :func:`_design_files` reads, the model -- v1's ``sbml_files``, the ``location`` of each of v2's
+    ``model_files`` -- and any mapping or visualization table), and ``inputs.tsv`` (the problem's
+    input protocols) when it ships one.
+
+    Separate from :func:`_design_files`, which also reads the YAML the agent DELIVERS: a model
+    listing the agent wrote malformed must reach the linter, not read as a tampered design."""
+    import yaml
+    from petab.versions import get_major_version
+    from petab_mcp.protocols import FILENAME as INPUTS_FILENAME
+
+    doc = yaml.safe_load((work / "problem.yaml").read_text(encoding="utf-8")) or {}
+    if get_major_version(doc) == 1:
+        listed = (doc.get("problems") or [{}])[0]
+        models = list(listed.get("sbml_files") or [])
+    else:
+        listed = doc
+        models = [spec["location"] for spec in (doc.get("model_files") or {}).values()]
+    staged = {"problem.yaml", *models}
+    for role in _OTHER_ROLES:
+        staged.update(listed.get(f"{role}_files") or [])
+    for names in _design_files(work).values():
+        staged.update(names)
+    if (work / INPUTS_FILENAME).is_file():
+        staged.add(INPUTS_FILENAME)
+    return staged
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def stage_workspace(work: Path) -> dict:
-    """Move the problem files from ``work/`` into ``work/agent/`` (the agent's workspace) and return
-    what the prompt and the delivery check need afterwards: ``agent_dir``, the withheld files, the
-    problem's ``petab_version`` (its YAML's major version), the design-table hashes, and the
-    shipped parameter rows' ``(estimate, nominalValue)``."""
+    """Move the problem from ``work/`` into ``work/agent/`` (the agent's workspace), delete the rest
+    of ``work/``, and return what the prompt and the delivery check need afterwards: ``agent_dir``,
+    the ``withheld`` names, the problem's ``petab_version`` (its YAML's major version), the
+    design-table hashes, and the shipped parameter rows' ``(estimate, nominalValue)``.
+
+    An allowlist (:func:`_staged_files`): whatever else the problem directory holds is withheld."""
     from petab.versions import get_major_version
 
+    handed = _staged_files(work)
     agent_dir = work / AGENT_SUBDIR
     agent_dir.mkdir()
+    for name in sorted(handed):
+        (agent_dir / name).parent.mkdir(parents=True, exist_ok=True)
+        (work / name).rename(agent_dir / name)
     withheld = []
     for f in sorted(work.iterdir()):
         if f == agent_dir:
             continue
-        if f.name in _WITHHELD:
-            f.unlink()
-            withheld.append(f.name)
+        if f.is_dir():
+            shutil.rmtree(f)
         else:
-            f.rename(agent_dir / f.name)
+            f.unlink()
+        withheld.append(f.name)
     for name in (SANDBOX_HOME_DIR, SANDBOX_TMP_DIR):
         (agent_dir / name).mkdir(exist_ok=True)
     files = _design_files(agent_dir)
