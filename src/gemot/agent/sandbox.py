@@ -28,6 +28,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -207,6 +208,11 @@ def new_shell_audit() -> dict[str, Any]:
     return {
         "n_shell_commands": 0,
         "shell_seconds": 0.0,
+        # The wall time with at least one command running: the UNION of their intervals, as
+        # `runner.clock._ToolClock` measures the panel's tool calls. deepagents runs one turn's
+        # tool calls concurrently (`aexecute` is `asyncio.to_thread`), so the sum above can exceed
+        # the wall clock; this is what the null arm's `compute_seconds` counts (#8).
+        "shell_busy_seconds": 0.0,
         "n_nonzero_exits": 0,
         "n_timeouts": 0,
         "commands": [],  # in order, truncated to _COMMAND_RECORD_CHARS
@@ -236,6 +242,10 @@ def sandbox_backend_class():
             self._default_timeout = float(timeout)
             self._audit = audit
             self._id = f"bwrap-{uuid.uuid4().hex[:8]}"
+            # `shell_busy_seconds`: commands run on worker threads, so the counter takes a lock.
+            self._busy_lock = threading.Lock()
+            self._running = 0
+            self._busy_since = 0.0
 
         @property
         def id(self) -> str:
@@ -253,6 +263,10 @@ def sandbox_backend_class():
             audit["n_shell_commands"] += 1
             audit["commands"].append(command[:_COMMAND_RECORD_CHARS])
             t0 = time.monotonic()
+            with self._busy_lock:
+                if self._running == 0:
+                    self._busy_since = t0
+                self._running += 1
             try:
                 proc = _run_sandboxed(
                     self._workspace, self._env_prefix, self._sandbox_env, command, effective
@@ -274,7 +288,12 @@ def sandbox_backend_class():
                     truncated=False,
                 )
             finally:
-                audit["shell_seconds"] += time.monotonic() - t0
+                t1 = time.monotonic()
+                with self._busy_lock:
+                    audit["shell_seconds"] += t1 - t0
+                    self._running -= 1
+                    if self._running == 0:
+                        audit["shell_busy_seconds"] += t1 - self._busy_since
             parts = []
             if proc.stdout:
                 parts.append(proc.stdout)
