@@ -524,6 +524,9 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
                 "phoenix_trace_id": trace_id_hex(span),
             }
             _write_live_marker(work, base_meta, scenario, include_reference=False)
+            # What a degraded result carries: the agent's work too once it has returned, or a late
+            # abort reads as a zero-work infrastructure abort and is dropped.
+            meta = base_meta
             try:
                 # The panel's bio-knowledge servers, opened the same supervised way.
                 async with open_bio_sessions(BIO_MCP_URLS) as bio_sessions:
@@ -582,6 +585,7 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
                     )
                 else:
                     build_root = scenario.example_dir / ".amici_build"
+                    server = None
                     try:
                         async with _petab_server(
                             work,
@@ -597,6 +601,10 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
                                 scenario, server.session, work, args, meta, t0
                             )
                     except (RuntimeError, TimeoutError) as exc:
+                        if server is not None:
+                            # Only the start-up is the delivery's to fail: this came from the
+                            # judge or from closing the server after it (#4).
+                            raise
                         # the server died compiling/scoring the delivery; server.log names why
                         tail = _log_tail(work / "server.log")
                         result = _write_unscoreable_result(
@@ -610,11 +618,16 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
             except BaseException as exc:
                 if _should_reraise(exc):
                     raise
-                server = launched.get("handle")
-                rc = server.proc.poll() if server is not None else None
-                result = _write_degraded_result(
-                    work, base_meta, scenario, _summarize_exc(exc), server_returncode=rc
-                )
+                if result:
+                    # The verdict is on disk; what failed came after it (closing the server). Keep
+                    # it, as `.main` does (#4).
+                    print(f"[null] {_summarize_exc(exc)} after the verdict; result.json kept.")
+                else:
+                    server = launched.get("handle")
+                    rc = server.proc.poll() if server is not None else None
+                    result = _write_degraded_result(
+                        work, meta, scenario, _summarize_exc(exc), server_returncode=rc
+                    )
                 with contextlib.suppress(Exception):
                     record_run_result(span, result)
     finally:

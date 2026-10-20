@@ -276,6 +276,7 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
     # (wiped each run) to avoid recompiling identical models on repeat runs.
     build_root = scenario.example_dir / ".amici_build"
     launched: dict = {}
+    verdict: tuple[int, dict] | None = None
     try:
         async with _petab_server(
             work, build_root, args, scenario=scenario, handle_out=launched
@@ -306,6 +307,7 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
                     server_proc=proc,
                     bio_sessions=bio_sessions,
                 )
+                verdict = exit_code, result
                 # Snapshot the run's on-disk half (result.json + version store) into the runs
                 # archive while work/ still exists — the next run of this example wipes it. The
                 # run explorer (scripts/explore_ui.py) stitches this with the persisted Phoenix
@@ -333,6 +335,13 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
         # `_drive`'s guard exactly; `_should_reraise` still lets a real interrupt through.
         if _should_reraise(exc):
             raise
+        if verdict is not None:
+            # `_drive` returned, so its result.json is on disk and archived; only the teardown
+            # behind it failed. Deliberately NOT degraded: this used to overwrite a judged
+            # result.json with `aborted:` and no token_usage, which the aggregators drop as
+            # infrastructure noise (#4).
+            print(f"[run] teardown failed after the verdict ({_summarize_exc(exc)}); kept it.")
+            return verdict
         server = launched.get("handle")  # absent only if the subprocess never spawned
         rc = server.proc.poll() if server is not None else None
         result = _write_degraded_result(
