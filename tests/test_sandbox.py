@@ -123,6 +123,39 @@ def test_shell_audit_counts_commands_failures_and_timeouts(tmp_path):
     assert (work / "out.txt").read_text().strip() == "delivered"
 
 
+def test_overlapping_commands_count_once_in_the_busy_time(tmp_path, monkeypatch):
+    """deepagents runs one turn's tool calls on threads at once, so two fits launched together
+    summed to more sandbox time than wall time; the null arm's `compute_seconds` counts the busy
+    time, which counts the overlap once (#8). No bwrap needed: the command runner is faked."""
+    pytest.importorskip("deepagents")
+    import subprocess
+    import threading
+    import time
+
+    together = threading.Barrier(2)
+
+    def _run(workspace, env_prefix, sandbox_env, command, timeout):
+        if command == "fit":
+            together.wait(timeout=10)
+        time.sleep(0.2)
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(S, "_run_sandboxed", _run)
+    audit = S.new_shell_audit()
+    backend = S.sandbox_backend_class()(
+        tmp_path, env_prefix=S.default_env_prefix(), n_cpus=1, timeout=60.0, audit=audit
+    )
+    fits = [threading.Thread(target=backend.execute, args=("fit",)) for _ in range(2)]
+    for t in fits:
+        t.start()
+    for t in fits:
+        t.join()
+    overlap = audit["shell_seconds"] - audit["shell_busy_seconds"]
+    assert overlap > 0.19 and audit["shell_busy_seconds"] > 0.19
+    backend.execute("ls")  # alone, so both measures count it in full
+    assert audit["shell_seconds"] - audit["shell_busy_seconds"] == pytest.approx(overlap)
+
+
 def test_file_tools_are_confined_to_the_mounted_workspace(tmp_path):
     """The file tools see the workspace as `/`; `..` and absolute paths outside it are refused by
     deepagents' virtual mode."""

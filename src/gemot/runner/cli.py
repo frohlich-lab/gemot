@@ -123,7 +123,8 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
         "Slurm --time allocation) that would hard-kill the process with no "
         "result at all. Default: unlimited (only the stall watchdog + outer "
         "scheduler limit apply). A sweep should set this comfortably below its "
-        "Slurm --time (see make_sweep.py).",
+        "Slurm --time (see make_sweep.py). The barebones driver stops its agent "
+        "early to compile and score the delivery inside this budget.",
     )
     p.add_argument(
         "--reference-validation",

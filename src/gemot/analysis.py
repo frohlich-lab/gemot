@@ -389,7 +389,10 @@ def timing_split(row: dict) -> dict[str, float | None]:
     ``queue`` the part of ``compute``'s wall time the fit spent waiting for a cluster worker — a
     number that exists only since fits moved to the shared server, and one the client could not
     have measured itself. ``tool_wall`` is the raw client-side busy interval that ``compute``
-    is derived from (``compute = tool_wall - queue``).
+    is derived from (``compute = tool_wall - queue``). On the null arm ``compute`` is the agent's
+    sandboxed commands plus the compile and nominal score of its delivery (``scoring_seconds``) and
+    the judge's reads; null rows without ``scoring_seconds`` predate that and booked all of it as
+    ``llm`` (#8).
     """
 
     def _f(k: str) -> float | None:
