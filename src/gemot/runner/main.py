@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -19,18 +18,13 @@ from .. import ablations, prompts
 from ..paths import validation_measurements_path
 from ..bio_sessions import open_bio_sessions
 from ..explorer.archive import archive_run
-from ..fit_budget import (
-    FIT_BUDGET_CEILING_S,
-    FIT_N_WORKERS,
-    FIT_PER_START_TIMEOUT_S,
-    fit_time_budget_for,
-)
+from ..fit_budget import FIT_BUDGET_CEILING_S, fit_time_budget_for
 from .drive import _drive
 from .endpoints import BIO_MCP_URLS
 from .failure import _should_reraise, _summarize_exc, _write_degraded_result
 from .provenance import _base_meta, _now_iso
 from ..scenario import Scenario
-from .server import _SERVER_BOOTSTRAP, _free_port, _wait_until_listening
+from .server import _SERVER_BOOTSTRAP, _free_port, _server_env, _wait_until_listening
 
 
 # --------------------------------------------------------------------------- steps
@@ -147,29 +141,10 @@ async def _petab_server(
     # Split the streams: fd1 (stdout) carries the C++ build toolchain output that would
     # otherwise corrupt a stdio channel -> amici_build.log; fd2 (stderr) carries uvicorn
     # request logs + Python/AMICI logging -> server.log.
-    # Export the harness's resolved Fides per-start cap + worker count onto the server so its
-    # candidate fits use the SAME cap AND parallelism the harness sized its sse_read_timeout +
-    # stall watchdog to (fit_budget.py) — otherwise the budget would not match the real wall-clock.
-    # PYTHONFAULTHANDLER: on a fatal signal (SIGSEGV/SIGBUS/SIGFPE/SIGABRT) the interpreter dumps
-    # a C-level traceback of EVERY thread to fd2 — which is server.log, already archived per task.
-    # Added after five runs of the 2026-08-14 draft-arm sweep died with the server killed by
-    # signal 11: the logs ended mid-AMICI parameter-mapping with no indication of where, because a
-    # segfaulting process writes nothing on its way out. A core dump would say more, but cores are
-    # disabled by default on the compute nodes (ulimit -c 0) and core_pattern pipes to
-    # systemd-coredump, which stores node-locally and is not readable by the job's user — so the
-    # in-process traceback is the artifact that actually survives. array_task.sh raises the core
-    # limit too, so a core lands as well where the node permits it.
-    # The problem's own AMICI tolerances last, so they win over any inherited from the caller:
-    # they are part of what the example IS, and its reference bar was fitted under them.
-    server_env = {
-        **os.environ,
-        "PYTHONFAULTHANDLER": "1",
-        "PETAB_MCP_FIT_PER_START_TIMEOUT": str(FIT_PER_START_TIMEOUT_S),
-        "PETAB_MCP_FIT_N_WORKERS": str(FIT_N_WORKERS),
-        **scenario.amici_tolerance_env(),
-    }
     try:
-        proc = subprocess.Popen(server_cmd, stdout=amici_log, stderr=server_log, env=server_env)
+        proc = subprocess.Popen(
+            server_cmd, stdout=amici_log, stderr=server_log, env=_server_env(scenario)
+        )
     except Exception:
         for handle in (server_log, amici_log):
             with contextlib.suppress(Exception):

@@ -38,6 +38,10 @@ tests/test_import_lightness.py also pins the two copies together. The reference 
 the fit settings themselves rather than the budget, lives in PEtabAgentBench and takes them from
 the server directly.
 
+The server reads more fit settings from its environment than these two. :func:`server_fit_settings`
+resolves every one of them as the server does, so a run can record what its fits ran under
+(``fit_settings`` in result.json); the same test pins its names and defaults to the server's.
+
 Kept dependency-light (stdlib only).
 """
 
@@ -45,13 +49,16 @@ from __future__ import annotations
 
 import math
 import os
+from collections.abc import Mapping
 
 
-def _env_float(name: str, default: float) -> float:
+def _env_float(
+    name: str, default: float | None, env: Mapping[str, str] | None = None
+) -> float | None:
     """A finite, strictly-positive float from ``name``, or ``default`` if the env var is unset,
     non-numeric, or not a finite positive number — so a bad override can never make a timeout NaN/
-    Inf/<=0 or crash import."""
-    raw = os.environ.get(name)
+    Inf/<=0 or crash import. Read from ``env``, else this process's environment."""
+    raw = (os.environ if env is None else env).get(name)
     if raw is None:
         return default
     try:
@@ -61,9 +68,10 @@ def _env_float(name: str, default: float) -> float:
     return val if math.isfinite(val) and val > 0 else default
 
 
-def _env_int(name: str, default: int) -> int:
-    """A positive int (>=1) from ``name``, or ``default`` for an unset/non-numeric/<1 override."""
-    raw = os.environ.get(name)
+def _env_int(name: str, default: int, env: Mapping[str, str] | None = None) -> int:
+    """A positive int (>=1) from ``name``, or ``default`` for an unset/non-numeric/<1 override.
+    Read from ``env``, else this process's environment."""
+    raw = (os.environ if env is None else env).get(name)
     if raw is None:
         return default
     try:
@@ -73,7 +81,7 @@ def _env_int(name: str, default: int) -> int:
     return val if val >= 1 else default
 
 
-def _default_workers() -> int:
+def _default_workers(env: Mapping[str, str] | None = None) -> int:
     """Default worker count: the CPUs a batch scheduler granted (``SLURM_CPUS_PER_TASK``) when
     set, else the box minus one core (leaving one free for the OS / the server's event loop).
 
@@ -84,7 +92,7 @@ def _default_workers() -> int:
     ``petab_mcp.fitting._default_fit_workers`` so this budget matches the server's actual worker
     count on and off a scheduler.
     """
-    slurm = _env_int("SLURM_CPUS_PER_TASK", 0)
+    slurm = _env_int("SLURM_CPUS_PER_TASK", 0, env)
     if slurm >= 1:
         return slurm
     return max(1, (os.cpu_count() or 1) - 1)
@@ -110,6 +118,35 @@ FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_workers())
 # overhead on top), got misclassified as hung, and cascaded into an unrecovered teardown error.
 # Override with PETAB_MCP_FIT_BUDGET_MARGIN.
 FIT_BUDGET_MARGIN = _env_float("PETAB_MCP_FIT_BUDGET_MARGIN", 1.4)
+
+
+def server_fit_settings(env: Mapping[str, str]) -> dict[str, float | int | None]:
+    """Every fit setting a petab-mcp server launched with ``env`` reads from it, keyed by its
+    environment variable, as the server resolves it: its value, not the string it was handed, with
+    the server's default where ``env`` sets none or an unusable one. ``None`` for an AMICI
+    tolerance leaves AMICI's own default, that of the AMICI the run records in ``dependency_code``.
+
+    The two above size the budget; the rest change what a fit searches without sizing any timeout:
+    AMICI's tolerances what it integrates, the task settings how its starts are batched. Read from
+    ``env`` rather than from ``petab_mcp.fitting``, which resolves once from its own process's
+    environment, while the run launches its server with another (``runner.server``).
+    """
+    return {
+        "PETAB_MCP_FIT_PER_START_TIMEOUT": _env_float(
+            "PETAB_MCP_FIT_PER_START_TIMEOUT", 180.0, env
+        ),
+        "PETAB_MCP_FIT_N_WORKERS": _env_int("PETAB_MCP_FIT_N_WORKERS", _default_workers(env), env),
+        "PETAB_MCP_FIT_STARTS_PER_TASK": _env_int("PETAB_MCP_FIT_STARTS_PER_TASK", 0, env),
+        "PETAB_MCP_FIT_TASK_SECONDS": _env_float("PETAB_MCP_FIT_TASK_SECONDS", 270.0, env),
+        "PETAB_MCP_FIT_AMICI_ATOL": _env_float("PETAB_MCP_FIT_AMICI_ATOL", 1e-10, env),
+        "PETAB_MCP_FIT_AMICI_RTOL": _env_float("PETAB_MCP_FIT_AMICI_RTOL", None, env),
+        "PETAB_MCP_FIT_AMICI_ATOL_STEADY_STATE": _env_float(
+            "PETAB_MCP_FIT_AMICI_ATOL_STEADY_STATE", None, env
+        ),
+        "PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE": _env_float(
+            "PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE", None, env
+        ),
+    }
 
 
 def fit_workers(n_starts: int) -> int:

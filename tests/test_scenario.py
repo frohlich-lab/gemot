@@ -1,4 +1,5 @@
-"""What a Scenario hands the server it launches: its AMICI tolerances, in the server's environment."""
+"""What a Scenario hands the server it launches: its AMICI tolerances, in the server's environment,
+and what the run records of that environment."""
 
 from __future__ import annotations
 
@@ -8,7 +9,9 @@ from pathlib import Path
 
 import pytest
 
+from gemot import fit_budget
 from gemot.runner import main as M
+from gemot.runner import provenance as P
 from gemot.scenario import AMICI_TOLERANCE_ENV, Scenario
 
 
@@ -80,3 +83,33 @@ def test_a_misspelt_tolerance_is_refused_where_it_is_written(tmp_path):
             scripted_fix=_noop,
             amici_tolerances={"relative_tolerance_steadystate": 1e-9},
         )
+
+
+def test_the_run_records_the_fit_settings_its_server_is_launched_with(tmp_path, monkeypatch):
+    """result.json recorded `n_starts` and no other fit setting, so sweeps of one example at two
+    per-start caps pooled in every aggregate (gemot#6). The record is resolved from the very
+    environment the server is launched with, as the server resolves it: the problem's tolerance
+    over an inherited one, an inherited one kept, an unusable override at the server's default,
+    and the criterion, which the judge read only off a fit."""
+    monkeypatch.setenv("PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE", "1e-6")
+    monkeypatch.setenv("PETAB_MCP_FIT_AMICI_RTOL", "1e-7")
+    monkeypatch.delenv("PETAB_MCP_FIT_AMICI_ATOL_STEADY_STATE", raising=False)
+    monkeypatch.setenv("PETAB_MCP_FIT_TASK_SECONDS", "-1")
+    monkeypatch.setenv("PETAB_MCP_CRITERION", "AICc")
+    scenario = Scenario(
+        name="raimundez",
+        problem_dir=tmp_path / "problem",
+        scripted_fix=_noop,
+        amici_tolerances={"relative_tolerance_steady_state": 1e-9},
+    )
+    args = Namespace(driver="scripted", model=None, recursion_limit=1, n_starts=1, temperature=0.0)
+    recorded = P._base_meta(scenario, args)["fit_settings"]
+
+    launched = _launch_env(tmp_path, scenario, monkeypatch)
+    assert recorded == {**fit_budget.server_fit_settings(launched), "PETAB_MCP_CRITERION": "aicc"}
+    assert recorded["PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE"] == 1e-9
+    assert recorded["PETAB_MCP_FIT_AMICI_RTOL"] == 1e-7
+    assert recorded["PETAB_MCP_FIT_AMICI_ATOL_STEADY_STATE"] is None
+    assert recorded["PETAB_MCP_FIT_TASK_SECONDS"] == 270.0
+    assert recorded["PETAB_MCP_FIT_PER_START_TIMEOUT"] == fit_budget.FIT_PER_START_TIMEOUT_S
+    assert recorded["PETAB_MCP_FIT_N_WORKERS"] == fit_budget.FIT_N_WORKERS

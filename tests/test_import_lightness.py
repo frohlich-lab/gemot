@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -225,6 +226,29 @@ def test_fit_budget_matches_the_server():
         harness = fit_budget.fit_workers(n_starts)
         server = max(1, min(fitting.FIT_N_WORKERS, int(n_starts)))
         assert harness == server, f"n_starts={n_starts}: harness={harness} server={server}"
+
+
+def test_the_recorded_fit_settings_are_every_one_the_server_reads():
+    """``fit_settings`` in result.json (gemot#6) comes from ``fit_budget.server_fit_settings``, a
+    restated copy of how ``petab_mcp.fitting`` reads its environment. A setting the server gains
+    would go unrecorded, and a default it moves would be recorded wrong, with nothing failing:
+    the names are read from the server's source, and each value from the constant it sets."""
+    import inspect
+    import re
+
+    from gemot import fit_budget
+
+    from petab_mcp import fitting
+
+    reads = dict(
+        re.findall(
+            r'^(\w+) = _env_(?:float|int)\("(PETAB_MCP_\w+)"', inspect.getsource(fitting), re.M
+        )
+    )
+    assert reads, "the server no longer reads its fit settings the way this test parses"
+    assert fit_budget.server_fit_settings(os.environ) == {
+        name: getattr(fitting, constant) for constant, name in reads.items()
+    }
 
 
 def test_simulate_does_not_need_the_server_package():
