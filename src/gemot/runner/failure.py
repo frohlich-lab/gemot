@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from pathlib import Path
 
 from .provenance import _now_iso
+from ..analysis import store_dir
 from ..scenario import Scenario
 
 
@@ -56,22 +56,23 @@ def _should_reraise(exc: BaseException) -> bool:
     return False
 
 
-def _committed_versions(work: Path) -> "int | None":
-    """The run's HEAD version number from the on-disk store, or ``None`` if it cannot be read.
+def _head_version(work: Path) -> "int | None":
+    """HEAD's version number in the run's version store, or ``None`` if there is no store to read.
 
-    Versions are ``work/prov/versions/v0..vN`` and ``v0`` is the pristine baseline, so the count
-    minus one is how many commits the agent actually made -- the same quantity the judge reports
-    as ``head_version``/``n_ops``.
+    The number the judge would have read off ``describe_problem`` as ``head_version``. The server
+    keeps it in ``.petab_mcp/HEAD`` and writes it only after a version's snapshot is complete, so a
+    server killed mid-snapshot leaves HEAD on the last whole version. Versions exist only for
+    fitted models: ``v0`` is the first fit, and a store with no HEAD (``-1``) has none.
     """
-    try:
-        vs = [
-            d.name
-            for d in (work / "prov" / "versions").iterdir()
-            if d.is_dir() and re.fullmatch(r"v\d+", d.name)
-        ]
-    except Exception:  # pragma: no cover - no store, or an unreadable one
+    store = store_dir(work)
+    if not store.is_dir():  # the abort predates the server, or this arm runs none
         return None
-    return max(int(v[1:]) for v in vs) if vs else None
+    try:
+        return int((store / "HEAD").read_text().strip())
+    except FileNotFoundError:
+        return -1
+    except (OSError, ValueError):  # pragma: no cover - an unreadable HEAD
+        return None
 
 
 def _write_degraded_result(
@@ -128,13 +129,18 @@ def _write_degraded_result(
             if clock
             else {}
         ),
-        # `n_ops` read off the version store rather than the judge, which never ran. Without it
-        # `experiments._did_modeling_work` sees no n_ops and no n_fits, `is_noop_infra_abort`
+        # `head_version` read off the version store rather than the judge, which never ran, and
+        # `n_ops` as the count it implies (what `analysis.stop_class` and the experiment rows
+        # derive). Without them `experiments._did_modeling_work` sees no work, `is_noop_infra_abort`
         # returns True, and the run is DROPPED from the aggregation as pure scoring noise -- which
         # contradicts that function's own rule ("A LATE abort that did work is deliberately NOT
         # one of these"). bachmann 52859568_0 aborted with 14 completed fits and would have been
         # discarded on exactly this.
-        **({"n_ops": n_ops} if (n_ops := _committed_versions(work)) is not None else {}),
+        **(
+            {"head_version": head, "n_ops": head + 1}
+            if (head := _head_version(work)) is not None
+            else {}
+        ),
     }
     (work / "result.json").write_text(json.dumps(result, indent=2))
     return result
