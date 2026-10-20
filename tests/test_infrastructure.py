@@ -245,10 +245,9 @@ def test_the_stop_is_its_own_bucket_and_never_scored():
 # --- the runner ------------------------------------------------------------------------------
 
 
-def test_a_run_whose_build_log_shows_a_full_disk_is_not_judged(monkeypatch, tmp_path):
-    """The driver returned as if nothing happened -- the build only said "ill-posed" -- but
-    amici_build.log names the disk. The run is written unjudged, with the infrastructure label and
-    the count, rather than scored against a server that could not build."""
+def _drive(monkeypatch, tmp_path, run_deepagents):
+    """``runner.drive._drive`` on a zero-shot problem with the server, the clock and the judge
+    stubbed; the judge must never be reached. Returns ``(exit_code, result)``."""
     from argparse import Namespace
     from types import SimpleNamespace
 
@@ -258,16 +257,8 @@ def test_a_run_whose_build_log_shows_a_full_disk_is_not_judged(monkeypatch, tmp_
     async def _call(tool, args=None):
         return {"model_authored": False} if tool == "describe_problem" else {"species": []}
 
-    async def _run_deepagents(session, **kw):
-        (tmp_path / "amici_build.log").write_text(_LINK + "\n")
-        return {
-            "stop_reason": "completed",
-            "infrastructure_tool_calls": 0,
-            "infrastructure_evidence": None,
-        }
-
     async def _judge(*a, **kw):
-        raise AssertionError("a run on a full disk must not be judged")
+        raise AssertionError("a run on a failed infrastructure must not be judged")
 
     clock = SimpleNamespace(calls=0, by_tool={}, reject_summary=lambda: {})
     monkeypatch.setattr(drive, "_wrap_call_timeout", lambda session, n: None)
@@ -276,7 +267,7 @@ def test_a_run_whose_build_log_shows_a_full_disk_is_not_judged(monkeypatch, tmp_
     monkeypatch.setattr(drive, "_base_meta", lambda *a: {"run_started_at": "t0", "git_sha": "s"})
     monkeypatch.setattr(drive, "_write_live_marker", lambda *a: None)
     monkeypatch.setattr(drive, "_judge", _judge)
-    monkeypatch.setattr(gemot.agent, "run_deepagents", _run_deepagents)
+    monkeypatch.setattr(gemot.agent, "run_deepagents", run_deepagents)
 
     scenario = SimpleNamespace(
         name="toy",
@@ -300,8 +291,23 @@ def test_a_run_whose_build_log_shows_a_full_disk_is_not_judged(monkeypatch, tmp_
         max_wall_seconds=None,
     )
     session = SimpleNamespace(call_tool=None)
+    return asyncio.run(drive._drive(scenario, session, tmp_path, args))
 
-    exit_code, result = asyncio.run(drive._drive(scenario, session, tmp_path, args))
+
+def test_a_run_whose_build_log_shows_a_full_disk_is_not_judged(monkeypatch, tmp_path):
+    """The driver returned as if nothing happened -- the build only said "ill-posed" -- but
+    amici_build.log names the disk. The run is written unjudged, with the infrastructure label and
+    the count, rather than scored against a server that could not build."""
+
+    async def _run_deepagents(session, **kw):
+        (tmp_path / "amici_build.log").write_text(_LINK + "\n")
+        return {
+            "stop_reason": "completed",
+            "infrastructure_tool_calls": 0,
+            "infrastructure_evidence": None,
+        }
+
+    exit_code, result = _drive(monkeypatch, tmp_path, _run_deepagents)
 
     assert exit_code == 1
     assert result["stop_reason"] == I.STOP_REASON
@@ -309,3 +315,54 @@ def test_a_run_whose_build_log_shows_a_full_disk_is_not_judged(monkeypatch, tmp_
     assert "amici_build.log" in result["infrastructure_evidence"]
     assert result["success"] is False and result["delta_bic"] is None
     assert json.loads((tmp_path / "result.json").read_text())["stop_reason"] == I.STOP_REASON
+
+
+def test_an_infrastructure_error_escaping_the_driver_keeps_its_label_and_evidence(
+    monkeypatch, tmp_path
+):
+    """The anyio teardown can carry the wrapper's error out of the driver inside a group, past the
+    loop's own handling. The degraded result is written from the run's base meta, and must still
+    say why it stopped, with the evidence and the log count."""
+    evidence = I.Evidence(I.DISK_FULL, "make_changes: " + _REPORT)
+
+    async def _run_deepagents(session, **kw):
+        (tmp_path / "server.log").write_text("OSError: [Errno 122] Disk quota exceeded\n")
+        raise BaseExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [I.InfrastructureError(evidence), asyncio.CancelledError()],
+        )
+
+    exit_code, result = _drive(monkeypatch, tmp_path, _run_deepagents)
+
+    assert exit_code == 1
+    assert result["stop_reason"] == I.STOP_REASON
+    assert result["infrastructure_evidence"] == evidence.text
+    assert result["infrastructure_log_lines"] == 1
+
+
+def test_the_runners_own_calls_raise_on_the_servers_report():
+    """The judge and preflight read through `_make_call`, which unwraps an `isError` result to its
+    text. The server's report must end the run there, not reach the judge as a string."""
+    from types import SimpleNamespace
+
+    from gemot.runner.clock import _make_call
+
+    def _result(text):
+        return SimpleNamespace(
+            isError=True, structuredContent=None, content=[SimpleNamespace(text=text)]
+        )
+
+    class _Session:
+        def __init__(self, text):
+            self.text = text
+
+        async def call_tool(self, tool, args):
+            return _result(self.text)
+
+    with pytest.raises(I.InfrastructureError) as raised:
+        asyncio.run(_make_call(_Session(_REPORT))("get_fit_summary"))
+    assert raised.value.evidence.text.startswith("get_fit_summary: infrastructure_error: ")
+
+    # Any other error result is returned as before, for the caller to handle.
+    other = "unknown version 7"
+    assert asyncio.run(_make_call(_Session(other))("get_model", version=7)) == other

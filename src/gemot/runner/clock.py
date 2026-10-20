@@ -14,6 +14,7 @@ from datetime import timedelta
 
 from mcp import ClientSession
 
+from .. import infrastructure
 from ..fit_budget import fit_time_budget_for
 
 
@@ -59,11 +60,25 @@ def _make_call(session: ClientSession):
     Carries no timeout of its own: `_wrap_call_timeout` sizes every call, and a read gets
     `NON_FIT_CALL_TIMEOUT_S` plus whatever is queued ahead of it. An explicit budget here would
     suppress that queue term -- see the constant.
+
+    An error result that reports an infrastructure failure (PEtab-MCP#95, or a raw full disk)
+    raises :class:`~gemot.infrastructure.InfrastructureError` instead of being returned: unwrapped,
+    it is a string where the judge expects a dict, and the run would end as a crash or a verdict
+    on a broken server rather than as the infrastructure stop the sweep resubmits (gemot#39).
     """
 
     async def call(tool: str, /, **args):
         result = await session.call_tool(tool, args or {})
-        return _unwrap(result)
+        value = _unwrap(result)
+        if (
+            getattr(result, "isError", False)
+            and isinstance(value, str)
+            and (hit := infrastructure.find(value)) is not None
+        ):
+            raise infrastructure.InfrastructureError(
+                infrastructure.Evidence(hit.cause, f"{tool}: {hit.text}")
+            )
+        return value
 
     return call
 

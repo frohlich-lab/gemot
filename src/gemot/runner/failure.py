@@ -83,6 +83,7 @@ def _write_degraded_result(
     server_returncode: int | None = None,
     clock=None,
     stop_reason: str | None = None,
+    extra: dict | None = None,
 ) -> dict:
     """Persist (and return) the degraded ``result.json`` written when a run aborts before a
     verdict, so the batch and the cross-run aggregator find a well-formed row instead of a
@@ -101,7 +102,8 @@ def _write_degraded_result(
     ``stop_reason`` replaces the ``aborted: <reason>`` label. An infrastructure stop
     (:func:`gemot.infrastructure.stop_reason`) keeps its own bare label, which the analysis files
     in a bucket of its own for the sweep to resubmit, rather than as an abort that may have left a
-    partial result."""
+    partial result. ``extra`` adds fields beside ``base_meta`` (the infrastructure count and
+    evidence an abort found, ``runner.drive._infrastructure_abort``)."""
     server_note = ""
     if server_returncode is not None:
         if server_returncode < 0:
@@ -116,6 +118,7 @@ def _write_degraded_result(
     )
     result = {
         **base_meta,
+        **(extra or {}),
         "scenario": scenario.name,
         "stop_reason": stop_reason or f"aborted: {reason}",
         "success": False,

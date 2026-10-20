@@ -33,11 +33,19 @@ def _reasoning_effort(args) -> str | None:
     return None if effort == "default" else effort
 
 
-def _infrastructure_stop(exc: BaseException, logs: infrastructure.LogWatch) -> str | None:
-    """``infrastructure_error: <cause>`` if an abort met an infrastructure failure, in its own
-    text or the server's logs; else ``None``."""
-    hit = infrastructure.find_in_error(exc) or logs(final=True) or logs.evidence
-    return infrastructure.stop_reason(hit.cause) if hit is not None else None
+def _infrastructure_abort(exc: BaseException, logs: infrastructure.LogWatch) -> dict:
+    """:func:`_write_degraded_result`'s keywords for an abort: the stop reason
+    ``infrastructure_error: <cause>`` if it met an infrastructure failure, in its own text or the
+    server's logs, and the log count and evidence that every deepagents result records."""
+    new = logs(final=True)  # read to the end first, so the count is whole
+    hit = infrastructure.find_in_error(exc) or new or logs.evidence
+    return {
+        "stop_reason": infrastructure.stop_reason(hit.cause) if hit is not None else None,
+        "extra": {
+            "infrastructure_log_lines": logs.lines,
+            "infrastructure_evidence": hit.text if hit is not None else None,
+        },
+    }
 
 
 async def _drive(
@@ -329,7 +337,7 @@ async def _drive(
                     _summarize_exc(exc),
                     server_returncode=rc,
                     clock=clock,
-                    stop_reason=_infrastructure_stop(exc, server_logs),
+                    **_infrastructure_abort(exc, server_logs),
                 )
                 exit_code = 1
                 with contextlib.suppress(Exception):
@@ -349,7 +357,7 @@ async def _drive(
             scenario,
             _summarize_exc(exc),
             server_returncode=rc,
-            stop_reason=_infrastructure_stop(exc, server_logs),
+            **_infrastructure_abort(exc, server_logs),
         )
     finally:
         if tracing is not None:

@@ -168,7 +168,10 @@ class LogWatch:
                 continue
             end = len(chunk) if final else chunk.rfind(b"\n") + 1
             self._offsets[path] += end
-            for line in chunk[:end].decode("utf-8", "replace").splitlines():
+            text = chunk[:end].decode("utf-8", "replace")
+            if find(text) is None:  # one scan for the usual clean chunk of compiler output
+                continue
+            for line in text.splitlines():
                 if (hit := find(line)) is not None:
                     self.lines += 1
                     new = new or Evidence(hit.cause, f"{path.name}: {hit.text}")
