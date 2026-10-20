@@ -118,6 +118,19 @@ def test_two_models_each_on_its_own_provider_are_not_drift():
     assert row["served_provider"] == "OpenAI/default+Z.AI/default"
 
 
+def test_two_models_on_one_provider_are_one_distinct_endpoint():
+    """`n_distinct` counts the (provider, tier) pairs `served_provider` joins, as it did before
+    rows carried a model; counting model rows instead read 2 here beside a single provider name,
+    and changed the history column's meaning for every two-model run."""
+    acc = _feed_models(
+        ("openai/gpt-5.6-luna-pro", "OpenAI"),
+        ("openai/gpt-5.6-mini", "OpenAI"),
+    )
+    row = _flatten_served_endpoints({"openrouter_endpoints": acc.endpoints()})
+    assert row["served_provider"] == "OpenAI/default"
+    assert row["served_n_distinct"] == 1 and row["served_drifted"] is False
+
+
 def test_one_model_on_two_providers_is_drift_beside_a_pinned_one():
     """Judging drift per model must not hide it: the lead split across OpenAI and Azure is two
     measurements whatever the biocurator's model did."""

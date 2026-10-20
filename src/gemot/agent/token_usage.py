@@ -84,8 +84,9 @@ def _token_accountant():
         ):
             # The model this call ASKED for, which is what a `provider.only` pin is set on: the
             # biocurator may run its own model pinned to its own provider (`biocurator_model`).
-            # LangChain's standard `ls_model_name`, the id the pin is keyed on, rather than the
-            # response's `model_name`, which is whatever the provider writes back.
+            # LangChain's standard `ls_model_name`: the id the pin is keyed on, there at the start of
+            # every chat-model call. A message's `response_metadata["model_name"]` is whatever the
+            # provider writes back.
             self._run_models[run_id] = (
                 metadata.get("ls_model_name") if isinstance(metadata, dict) else None
             )
@@ -255,10 +256,10 @@ def _token_accountant():
             not one measurement. Recorded for EVERY run, not only drifted ones — "absent" would
             otherwise have to be read as "probably fine", which is how provenance rots.
 
-            An endpoint is a model on a provider, so each ``served`` row names the ``model`` it
-            served and drift is judged per model: a biocurator on its own model, pinned to its own
-            provider (``biocurator_model``), is two endpoints and no drift. ``n_distinct`` counts
-            endpoints over all models.
+            Each ``served`` row names the ``model`` it served, and drift is judged per model: a
+            biocurator on its own model, pinned to its own provider (``biocurator_model``), is no
+            drift (#9). ``n_distinct`` counts (provider, tier) pairs over the whole run, the names
+            ``served_provider`` joins, as it did before rows carried a model.
             """
             served = sorted(
                 (
@@ -276,7 +277,7 @@ def _token_accountant():
             per_model = Counter(s["model"] for s in attributed)
             return {
                 "served": served,
-                "n_distinct": len(attributed),
+                "n_distinct": len({(s["provider"], s["service_tier"]) for s in attributed}),
                 "n_unattributed_calls": sum(s["n_calls"] for s in served if s["provider"] is None),
                 # One endpoint per model = no drift. Zero happens when nothing reported a provider
                 # (a non-OpenRouter base_url), which is not drift either.
