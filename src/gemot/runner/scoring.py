@@ -274,7 +274,8 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
     (``df`` is ``None`` where the count was unknown), so a pass on a tiny group is auditable.
 
     Returns ``{inflated, collapsed, max_ratio, min_ratio, alpha, per_sigma}`` where the ratios are
-    ``fitted / reference`` per sigma and ``per_sigma`` carries each one's ratio, df and band.
+    ``fitted / reference`` per sigma and ``per_sigma`` carries each one's ratio, df, band and
+    whether it compared effective or raw sigmas.
     """
     if not isinstance(report, dict) or not report:
         return None
@@ -309,21 +310,30 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
     # Prefer the EFFECTIVE sd on BOTH sides: for a composite/proportional noiseFormula the raw
     # parameter is not comparable across models (fiedler's sd is per-gel scale * sigma, so a
     # candidate at a different amplitude trades scale against sigma and reaches an IDENTICAL sd
-    # with a raw sigma several-fold off — judged raw, it fails for matching the truth). Fall back
-    # to raw-vs-raw for a reference written before noise_sigma_effective existed.
+    # with a raw sigma several-fold off — judged raw, it fails for matching the truth).
+    #
+    # The side is chosen PER SIGMA, raw-vs-raw wherever either side has no effective value. Not
+    # once for the whole reference: one sigma without an effective value then left its pair
+    # mixed or missing, and the unpairable-sigma guard below switched the WHOLE basis off. That
+    # was bachmann (#3): `sd_STAT5_au` is shared by observables whose noiseFormulas evaluate to
+    # different sds, so `sigma_effective_value` is None for it on both sides, and every bachmann
+    # run was silently judged on the data-std band. A reference written before
+    # noise_sigma_effective existed lands on raw-vs-raw throughout, as it always did.
     reference = reference if isinstance(reference, dict) else {}
+    raw_ref = reference.get("noise_sigma")
+    raw_ref = raw_ref if isinstance(raw_ref, dict) else {}
     effective_ref = reference.get("noise_sigma_effective")
-    use_effective = isinstance(effective_ref, dict) and bool(effective_ref)
-    ref_sigmas = effective_ref if use_effective else reference.get("noise_sigma")
-    if not isinstance(ref_sigmas, dict) or not ref_sigmas:
+    effective_ref = effective_ref if isinstance(effective_ref, dict) else {}
+    ref_ids = set(raw_ref) | set(effective_ref)
+    if not ref_ids:
         return None
     # The reference is fit on the PRISTINE collection problem, whose parameter ids can differ from
     # the materialized ones an agent sees (perelson ships `sd_viral_load` but the collection calls
     # it `sd_task0_model0_perelson1_V`). When BOTH sides have exactly one sigma there is no
     # ambiguity about the pairing, so match them positionally rather than losing the comparison —
     # anything more than one-to-one stays id-matched, since a wrong pairing is worse than none.
-    solo_pairing = len(report) == 1 and len(ref_sigmas) == 1
-    solo_ref_value = next(iter(ref_sigmas.values())) if solo_pairing else None
+    solo_pairing = len(report) == 1 and len(ref_ids) == 1
+    solo_ref_id = next(iter(ref_ids)) if solo_pairing else None
     # Bonferroni: the verdict fires if ANY sigma is outside its band, so testing g of them at alpha
     # each would fail an honest run g times as often as the alpha claims. Counts the entries the
     # loop below actually TESTS — a non-dict entry it skips is not a comparison, and counting it
@@ -335,13 +345,17 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
     for pid, entry in report.items():
         if not isinstance(entry, dict):
             continue
-        # Match the side chosen above: effective vs effective, or raw vs raw.
-        fitted = (
-            entry.get("effective_sigma")
-            if use_effective and "effective_sigma" in entry
-            else entry.get("fitted")
+        ref_pid = solo_ref_id if solo_pairing else pid
+        # Effective vs effective where BOTH sides carry one, else raw vs raw — never one of each.
+        compared_on = (
+            "effective"
+            if entry.get("effective_sigma") is not None and effective_ref.get(ref_pid) is not None
+            else "raw"
         )
-        ref_value = ref_sigmas.get(pid, solo_ref_value) if solo_pairing else ref_sigmas.get(pid)
+        if compared_on == "effective":
+            fitted, ref_value = entry.get("effective_sigma"), effective_ref.get(ref_pid)
+        else:
+            fitted, ref_value = entry.get("fitted"), raw_ref.get(ref_pid)
         try:
             fitted, ref_value = float(fitted), float(ref_value)
         except (TypeError, ValueError):
@@ -361,6 +375,8 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
         )
         detail = {
             "ratio": ratio,
+            # Which pair the ratio is of, so a raw-vs-raw fallback is visible in result.json.
+            "compared_on": compared_on,
             "n_points": entry.get("n_points"),
             "band_low": floor,
             "band_high": ceiling,

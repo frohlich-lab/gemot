@@ -367,6 +367,53 @@ def test_reference_gate_judges_effective_sigma_when_available():
     assert raw_only is not None and raw_only["inflated"]
 
 
+# bachmann's reference (#3): `sd_STAT5_au` is shared by observables whose noiseFormulas evaluate to
+# different sds, so it has no effective value on either side and is missing from
+# noise_sigma_effective; `sd_pSTAT5_socs3oe` has one (its formula adds `sd_STAT5_au`).
+_BACHMANN_REF = {
+    "noise_sigma": {"sd_STAT5_au": 0.12351890921758901, "sd_pSTAT5_socs3oe": 0.573852497761907},
+    "noise_sigma_effective": {"sd_pSTAT5_socs3oe": 0.6973714069794961},
+    "k": 115,
+    "n": 541,
+}
+
+
+def test_a_sigma_without_an_effective_value_is_judged_raw_not_dropped():
+    """One sigma with no effective value switched the WHOLE reference basis off: every bachmann
+    run fell through to the data-std band and the reference gate never ran there. That sigma is
+    judged raw-vs-raw now, the rest stay effective, and per_sigma says which is which."""
+    report = {
+        "sd_STAT5_au": {"fitted": 0.125, "effective_sigma": None, "n_points": 60},
+        "sd_pSTAT5_socs3oe": {"fitted": 0.57, "effective_sigma": 0.695, "n_points": 60},
+    }
+    flag = _reference_sigma_flag(report, _BACHMANN_REF, k=115, n=541)
+    assert flag is not None and not flag["inflated"] and not flag["collapsed"]
+    assert flag["per_sigma"]["sd_STAT5_au"]["compared_on"] == "raw"
+    assert flag["per_sigma"]["sd_pSTAT5_socs3oe"]["compared_on"] == "effective"
+
+    # ...and the raw comparison has teeth: inflating that sigma is caught, not waved through.
+    gamed = {**report, "sd_STAT5_au": {**report["sd_STAT5_au"], "fitted": 2.0}}
+    assert _reference_sigma_flag(gamed, _BACHMANN_REF, k=115, n=541)["inflated"]
+
+
+def test_a_sigma_is_never_compared_effective_against_raw():
+    """Effective is used only where BOTH sides carry it. A candidate effective (an sd) divided by a
+    reference raw parameter, or the reverse, is the dimensionally mixed ratio the effective basis
+    exists to avoid; the old whole-reference switch made exactly that pair for an old persisted
+    report (no `effective_sigma` key) judged against a reference with noise_sigma_effective."""
+    # truth: raw 0.25, effective 1.0 (scale 4). Candidate's raw matches; its effective is absent.
+    reference = {"noise_sigma": {"sd_o": 0.25}, "noise_sigma_effective": {"sd_o": 1.0}}
+    old_report = _reference_sigma_flag({"sd_o": {"fitted": 0.25}}, reference)
+    assert old_report["max_ratio"] == pytest.approx(1.0)
+    assert old_report["per_sigma"]["sd_o"]["compared_on"] == "raw"
+    # Candidate carries an effective value the reference lacks: raw-vs-raw again.
+    no_ref_effective = _reference_sigma_flag(
+        {"sd_o": {"fitted": 0.25, "effective_sigma": 1.0}}, {"noise_sigma": {"sd_o": 0.25}}
+    )
+    assert no_ref_effective["max_ratio"] == pytest.approx(1.0)
+    assert no_ref_effective["per_sigma"]["sd_o"]["compared_on"] == "raw"
+
+
 def test_every_sigma_gets_a_verdict_whatever_its_degrees_of_freedom():
     """There is no unjudged sigma. An early draft returned "no verdict" below the df floor, which
     would have let an agent collapse a sigma on a three-point group untouched; the fixed factor
