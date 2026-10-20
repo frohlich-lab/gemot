@@ -524,9 +524,10 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
                 "phoenix_trace_id": trace_id_hex(span),
             }
             _write_live_marker(work, base_meta, scenario, include_reference=False)
-            # What a degraded result carries: the agent's work too once it has returned, or a late
-            # abort reads as a zero-work infrastructure abort and is dropped.
-            meta = base_meta
+            # What a degraded result carries: `meta`, and the agent's output from the moment it
+            # returns (`meta` only takes it in after the delivery check). Without it a late abort
+            # reads as a zero-work infrastructure abort and is dropped.
+            meta, agent_out = base_meta, {}
             try:
                 # The panel's bio-knowledge servers, opened the same supervised way.
                 async with open_bio_sessions(BIO_MCP_URLS) as bio_sessions:
@@ -626,7 +627,11 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
                     server = launched.get("handle")
                     rc = server.proc.poll() if server is not None else None
                     result = _write_degraded_result(
-                        work, meta, scenario, _summarize_exc(exc), server_returncode=rc
+                        work,
+                        {**meta, **agent_out},
+                        scenario,
+                        _summarize_exc(exc),
+                        server_returncode=rc,
                     )
                 with contextlib.suppress(Exception):
                     record_run_result(span, result)

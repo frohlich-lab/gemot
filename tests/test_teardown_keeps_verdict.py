@@ -44,11 +44,18 @@ _CLEAN_DELIVERY = {
     "petab_lint": {"ok": True, "messages": []},
 }
 
-#: Raised while closing the server. The RuntimeError is the 2026-09-17 reproduction; the group is
-#: what anyio raises unwinding a task group, and is a BaseException but not an Exception.
+#: Raised while closing the server, built afresh per test so no traceback carries over. The
+#: RuntimeError is the 2026-09-17 reproduction; the group is what anyio raises unwinding a task
+#: group, and is a BaseException but not an Exception.
 _TEARDOWN_FAILURES = [
-    RuntimeError("Attempted to exit cancel scope in a different task than it was entered in"),
-    BaseExceptionGroup("unhandled errors in a TaskGroup", [asyncio.CancelledError()]),
+    pytest.param(
+        lambda: RuntimeError("Attempted to exit cancel scope in a different task"),
+        id="RuntimeError",
+    ),
+    pytest.param(
+        lambda: BaseExceptionGroup("unhandled errors in a TaskGroup", [asyncio.CancelledError()]),
+        id="group",
+    ),
 ]
 
 
@@ -99,9 +106,9 @@ def _run_main(tmp_path, monkeypatch, server) -> tuple[int, dict, dict]:
     return code, result, _on_disk(scenario)
 
 
-@pytest.mark.parametrize("failure", _TEARDOWN_FAILURES, ids=["RuntimeError", "group"])
+@pytest.mark.parametrize("failure", _TEARDOWN_FAILURES)
 def test_main_keeps_the_judged_result_when_teardown_fails(tmp_path, monkeypatch, failure):
-    code, result, on_disk = _run_main(tmp_path, monkeypatch, _server(on_exit=failure))
+    code, result, on_disk = _run_main(tmp_path, monkeypatch, _server(on_exit=failure()))
     assert (code, result) == (0, _JUDGED)
     assert on_disk == _JUDGED
 
@@ -116,7 +123,9 @@ def test_main_still_degrades_a_failure_before_the_verdict(tmp_path, monkeypatch)
 
 
 # --------------------------------------------------------------------------- barebones
-def _run_barebones(tmp_path, monkeypatch, server, judge) -> tuple[int, dict, dict]:
+def _run_barebones(
+    tmp_path, monkeypatch, server, judge, check=lambda *args: _CLEAN_DELIVERY
+) -> tuple[int, dict, dict]:
     scenario = _scenario(tmp_path)
 
     async def run_barebones(agent_dir, **kwargs):
@@ -133,11 +142,14 @@ def _run_barebones(tmp_path, monkeypatch, server, judge) -> tuple[int, dict, dic
     sandbox = {"bwrap": "-", "env_prefix": "-"}
     monkeypatch.setattr(B, "sandbox_preflight", lambda *args, **kwargs: sandbox)
     monkeypatch.setattr(B, "open_bio_sessions", no_bio_sessions)
-    monkeypatch.setattr(B, "check_delivery", lambda *args: _CLEAN_DELIVERY)
+    monkeypatch.setattr(B, "check_delivery", check)
     monkeypatch.setattr(B, "_petab_server", server)
     monkeypatch.setattr(B, "_judge_delivered", judge)
     monkeypatch.setattr(B, "archive_run", lambda *args: None)
     args = build_parser(scenario).parse_args(["--driver", "barebones"])
+    # Tracing has no off switch on the command line; set up for real it registers a global tracer
+    # and can launch a local Phoenix app, both of which outlive the test.
+    args.phoenix = False
     code, result = asyncio.run(B._main_async_barebones(scenario, args))
     return code, result, _on_disk(scenario)
 
@@ -146,11 +158,11 @@ async def _judges(scenario, session, work, args, meta, t0):
     return _judge(work)
 
 
-@pytest.mark.parametrize("failure", _TEARDOWN_FAILURES, ids=["RuntimeError", "group"])
+@pytest.mark.parametrize("failure", _TEARDOWN_FAILURES)
 def test_barebones_keeps_the_judged_result_when_teardown_fails(tmp_path, monkeypatch, failure):
     """The RuntimeError used to come back as ``delivered_model_unscoreable``, the group as an
     ``aborted:`` result."""
-    server = _server(on_exit=failure)
+    server = _server(on_exit=failure())
     code, result, on_disk = _run_barebones(tmp_path, monkeypatch, server, _judges)
     assert (code, result) == (0, _JUDGED)
     assert on_disk == _JUDGED
@@ -167,16 +179,29 @@ def test_barebones_blames_the_delivery_only_for_a_failed_start_up(tmp_path, monk
     assert on_disk == result
 
 
-def test_a_judge_failure_is_an_abort_that_keeps_the_agents_work(tmp_path, monkeypatch):
-    """Not the delivery's fault, so not ``unscoreable``; and the degraded result carries what the
-    agent returned, or the aggregation reads the run as zero-work noise and drops it."""
+async def _judge_fails(*args):
+    raise RuntimeError("it broke")
 
-    async def judge_fails(*args):
-        raise RuntimeError("the judge broke")
 
-    code, result, on_disk = _run_barebones(tmp_path, monkeypatch, _server(), judge_fails)
+def _check_fails(*args):
+    raise RuntimeError("it broke")
+
+
+@pytest.mark.parametrize(
+    "fails",
+    [
+        pytest.param({"judge": _judge_fails}, id="judge"),
+        pytest.param({"check": _check_fails}, id="delivery check"),
+    ],
+)
+def test_a_late_failure_is_an_abort_that_keeps_the_agents_work(tmp_path, monkeypatch, fails):
+    """A failure in the judge is not the delivery's, so not ``unscoreable``. Either way the
+    degraded result carries what the agent returned, or the aggregation reads the run as zero-work
+    noise and drops it; the delivery check runs before ``meta`` takes the agent's output in."""
+    stages = {"judge": _judges, **fails}
+    code, result, on_disk = _run_barebones(tmp_path, monkeypatch, _server(), **stages)
     assert code == 1
-    assert result["stop_reason"] == "aborted: RuntimeError: the judge broke"
+    assert result["stop_reason"] == "aborted: RuntimeError: it broke"
     assert "unscoreable_reason" not in result
     assert result["token_usage"] == _AGENT_OUT["token_usage"]
     assert on_disk == result
