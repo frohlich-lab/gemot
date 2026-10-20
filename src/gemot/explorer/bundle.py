@@ -13,9 +13,8 @@
 
 The conversation (turns/tokens/analyst sub-agents) comes from Phoenix — queried by the indexed
 ``trace_id`` (fast; unfiltered pulls time out). The model-variant + score trajectory comes from the
-run's ``.petab_mcp/`` version store. BIC-per-variant is recomputed (``2·nll + k·ln(n)``) since only
-the final BIC is persisted. The two are stitched by aligning each fitting tool span (see
-``_FITTING_TOOLS``) with the version it produced.
+run's ``.petab_mcp/`` version store, each version's BIC as its ``meta.json`` stored it. The two are
+stitched by aligning each fitting tool span (see ``_FITTING_TOOLS``) with the version it produced.
 """
 
 from __future__ import annotations
@@ -24,6 +23,8 @@ import json
 import math
 from pathlib import Path
 from typing import Any
+
+from ..analysis import bic_of
 
 # ---------------------------------------------------------------- Phoenix message parsing
 
@@ -470,6 +471,19 @@ def _k_from_params(rows: list[dict]) -> int:
     return n
 
 
+def _charged_k(bic: float | None, nll, n: int | None) -> int | None:
+    """The ``k`` a stored BIC charged, recovered from ``bic = 2·nll + k·ln(n)``.
+
+    A version's ``meta.json`` records the server's BIC but not the ``k`` behind it, and the
+    estimated rows of ``parameters.tsv`` are only part of that ``k``: the model's hardcoded
+    constants are charged too. ``None`` when an input is missing, or when ``n`` is not the count
+    the BIC was formed with (the quotient is not a whole number)."""
+    if bic is None or nll is None or not n or n < 2:
+        return None
+    k = (bic - 2.0 * float(nll)) / math.log(n)
+    return round(k) if math.isfinite(k) and abs(k - round(k)) < 1e-6 * max(1.0, abs(k)) else None
+
+
 def load_variants(run_dir: Path, n_data_points: int | None) -> list[dict]:
     """Build the ordered model-variant trajectory from ``<run_dir>/.petab_mcp``."""
     store = run_dir / ".petab_mcp"
@@ -495,12 +509,13 @@ def load_variants(run_dir: Path, n_data_points: int | None) -> list[dict]:
         sim = _safe_json(d / "simulations.json") or {}
         n = sim.get("n_data_points") or n_data_points
         nll = meta.get("neg_log_likelihood")
-        k = _k_from_params(params) if params else (len(meta.get("fitted_parameters") or {}) or None)
-        # ONE BIC definition, in `petab_mcp.criteria`. It returns None for any missing or
-        # impossible input, so no separate guard is needed here.
-        from petab_mcp.criteria import CANONICAL
-
-        bic = CANONICAL["bic"].value(nll, k, n)
+        # The BIC the server stored, as the span path (`load_variants_from_spans`) reads it.
+        # Recomputing it from the estimated rows dropped the hardcoded constants, so a model with
+        # a literal scored better here than in its own fit result (#10).
+        bic = bic_of(meta)
+        k = _charged_k(bic, nll, n)
+        if k is None:
+            k = _k_from_params(params) if params else None
         variants.append(
             {
                 "index": len(variants),
