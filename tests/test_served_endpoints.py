@@ -3,12 +3,13 @@
 `provider.only` bounds routing to a SET of endpoints, not to one, so honouring the pin and being
 served by a single machine are different claims. These tests pin the second one: that OpenRouter's
 top-level `provider` survives langchain (which drops it), that it is tallied per run, and that a
-run split across two endpoints is flagged rather than pooled.
+model split across two endpoints is flagged rather than pooled.
 """
 
 from __future__ import annotations
 
 import asyncio
+from uuid import uuid4
 
 from gemot.agent.token_usage import _token_accountant
 from gemot.metrics import _flatten_served_endpoints
@@ -43,10 +44,28 @@ def _feed(*responses):
     return acc
 
 
+def _feed_models(*calls):
+    """Each call as LangChain makes it: started with the model it asked for, then ended."""
+    acc = _token_accountant()
+
+    async def go():
+        for model, provider in calls:
+            run_id = uuid4()
+            await acc.on_chat_model_start({}, [], run_id=run_id, metadata={"ls_model_name": model})
+            await acc.on_llm_end(
+                _Resp({"openrouter_provider": provider, "service_tier": "default"}), run_id=run_id
+            )
+
+    asyncio.run(go())
+    return acc
+
+
 def test_provider_read_from_llm_output():
     acc = _feed(_Resp({"openrouter_provider": "OpenAI", "service_tier": "default"}))
     ep = acc.endpoints()
-    assert ep["served"] == [{"provider": "OpenAI", "service_tier": "default", "n_calls": 1}]
+    assert ep["served"] == [
+        {"model": None, "provider": "OpenAI", "service_tier": "default", "n_calls": 1}
+    ]
     assert ep["n_distinct"] == 1 and ep["drifted"] is False
 
 
@@ -78,6 +97,80 @@ def test_same_provider_different_tier_is_drift():
         _Resp({"openrouter_provider": "OpenAI", "service_tier": "flex"}),
     )
     assert acc.endpoints()["drifted"] is True
+
+
+def test_two_models_each_on_its_own_provider_are_not_drift():
+    """#9: a biocurator on its own model, pinned to its own provider, read as drift and dropped
+    the run from every `served_drifted` filter, because endpoints were tallied without the model."""
+    acc = _feed_models(
+        ("openai/gpt-5.6-luna-pro", "OpenAI"),
+        ("openai/gpt-5.6-luna-pro", "OpenAI"),
+        ("z-ai/glm-5.3-flash", "Z.AI"),
+    )
+    ep = acc.endpoints()
+    assert ep["drifted"] is False and ep["n_distinct"] == 2
+    assert [(s["model"], s["provider"], s["n_calls"]) for s in ep["served"]] == [
+        ("openai/gpt-5.6-luna-pro", "OpenAI", 2),
+        ("z-ai/glm-5.3-flash", "Z.AI", 1),
+    ]
+    row = _flatten_served_endpoints({"openrouter_endpoints": ep})
+    assert row["served_drifted"] is False
+    assert row["served_provider"] == "OpenAI/default+Z.AI/default"
+
+
+def test_two_models_on_one_provider_are_one_distinct_endpoint():
+    """`n_distinct` counts the (provider, tier) pairs `served_provider` joins, as it did before
+    rows carried a model; counting model rows instead read 2 here beside a single provider name,
+    and changed the history column's meaning for every two-model run."""
+    acc = _feed_models(
+        ("openai/gpt-5.6-luna-pro", "OpenAI"),
+        ("openai/gpt-5.6-mini", "OpenAI"),
+    )
+    row = _flatten_served_endpoints({"openrouter_endpoints": acc.endpoints()})
+    assert row["served_provider"] == "OpenAI/default"
+    assert row["served_n_distinct"] == 1 and row["served_drifted"] is False
+
+
+def test_one_model_on_two_providers_is_drift_beside_a_pinned_one():
+    """Judging drift per model must not hide it: the lead split across OpenAI and Azure is two
+    measurements whatever the biocurator's model did."""
+    acc = _feed_models(
+        ("openai/gpt-5.6-luna-pro", "OpenAI"),
+        ("openai/gpt-5.6-luna-pro", "Azure"),
+        ("z-ai/glm-5.3-flash", "Z.AI"),
+    )
+    ep = acc.endpoints()
+    assert ep["drifted"] is True and ep["n_distinct"] == 3
+
+
+def test_the_model_is_the_one_langchain_says_the_call_asked_for():
+    """The per-model judgement rests on LangChain handing `ls_model_name` to
+    `on_chat_model_start`. Without it every row's model is None, and a lead and a biocurator on
+    different providers fold back into one bucket that reads as drift."""
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    class _Pinned(FakeMessagesListChatModel):
+        model: str
+
+    acc = _token_accountant()
+
+    async def go():
+        for model, provider in (
+            ("openai/gpt-5.6-luna-pro", "OpenAI"),
+            ("z-ai/glm-5.3-flash", "Z.AI"),
+        ):
+            meta = {"openrouter_provider": provider, "service_tier": "default"}
+            llm = _Pinned(model=model, responses=[AIMessage(content="ok", response_metadata=meta)])
+            await llm.ainvoke([HumanMessage(content="hi")], config={"callbacks": [acc]})
+
+    asyncio.run(go())
+    ep = acc.endpoints()
+    assert {(s["model"], s["provider"]) for s in ep["served"]} == {
+        ("openai/gpt-5.6-luna-pro", "OpenAI"),
+        ("z-ai/glm-5.3-flash", "Z.AI"),
+    }
+    assert ep["drifted"] is False
 
 
 def test_unattributed_calls_are_counted_not_dropped():

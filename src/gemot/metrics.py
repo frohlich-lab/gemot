@@ -383,7 +383,9 @@ def _flatten_served_endpoints(row: dict) -> dict:
 
     ``served_provider`` names the endpoint when exactly one served the run and is left as a
     ``"a+b"`` join when several did — so the column reads as a group key either way, with
-    ``served_drifted`` as the boolean to filter on. A row without the block (every run recorded
+    ``served_drifted`` as the boolean to filter on. The join is over every model in the run, so a
+    biocurator pinned to its own provider also reads ``"a+b"``; ``served_drifted`` is judged per
+    model and stays false there (#9). A row without the block (every run recorded
     before this existed) passes through untouched rather than gaining empty columns that would
     read as "not drifted"."""
     ep = row.get("openrouter_endpoints")
