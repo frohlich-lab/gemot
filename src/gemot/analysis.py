@@ -235,7 +235,7 @@ def load_archive_results(archive_root: str | Path | None = None) -> list[dict]:
 STOP_CLASSES = (
     "completed",  # the agent finished through the gate
     "early_stop",  # the server's plateau / streak stop fired
-    "budget",  # wall-time, token, or recursion budget — a genuine outcome, counted
+    "budget",  # wall-time, token, context-window or recursion budget — a genuine outcome, counted
     "no_model",  # never committed a fittable model
     "content_filter",  # the provider refused the prompt — deterministic, not retried
     "reconstructed",  # rebuilt from a killed run's version store (slurm/recover_run.py)
@@ -267,6 +267,10 @@ def stop_class(row: dict) -> str:
         return "reconstructed"
     if low in ("", "completed"):
         return "completed"
+    # Before gemot#7 the drivers recorded the context-window stop as "early_stop:
+    # context_window_approached: …", so it is matched ahead of the early stop it is not.
+    if "context_budget" in low or "context_window_approached" in low:
+        return "budget"
     if low.startswith("early_stop"):
         return "early_stop"
     if "wall_time_budget" in low or "token_budget" in low or "recursion" in low:
