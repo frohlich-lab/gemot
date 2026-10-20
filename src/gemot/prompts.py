@@ -609,8 +609,8 @@ BAREBONES_SYSTEM_PROMPT_TMPL = (
     "math ("
     + _FREE_LITERALS
     + " are free), each parameter it declares with no row or with an {fixed} row the problem does "
-    "not ship, each local parameter of a rate law, and each species initial value written as a "
-    "number. An initial value of 0 or 1 costs nothing however it is written, and neither does a "
+    "not ship, and each species initial value written as a number. An initial value of 0 or 1 "
+    "costs nothing however it is written, and neither does a "
     "row the problem ships fixed; freezing a value you fitted costs what estimating it costs. "
     "Lower is better, and the score is compared against a reference mechanism you cannot "
     "see. So fit your parameters well before you finish, write the fitted values back into "

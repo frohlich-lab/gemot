@@ -1,9 +1,9 @@
 """The judge's two guards for a delivery it did not watch being built (issue #1).
 
-The null arm's model is scored as shipped, so the judge must charge it the k the panel's server
-would have (``uncharged``, derived by ``runner.barebones._uncharged_numbers``) and must not grade a
-candidate scored on other data than the reference: before, a delivery listing extra measurements
-its model reproduced lowered its ΔBIC without bound. Driven through the whole ``_judge`` with
+The null arm's model is scored as shipped, so the judge must count the parameters the panel's
+server would estimate for it (``estimated``, from ``runner.barebones._reconciled``) and must not
+grade a candidate scored on other data than the reference: before, a delivery listing extra
+measurements its model reproduced lowered its ΔBIC without bound. Driven through the whole ``_judge`` with
 fakes, as in test_judge_sigma_gate.
 """
 
@@ -42,7 +42,7 @@ class _Baseline:
     species: set = set()
 
 
-def _run_judge(work: Path, *, n: int, uncharged=None) -> dict:
+def _run_judge(work: Path, *, n: int, estimated=None) -> dict:
     summary = {
         "neg_log_likelihood": 100.0,
         "n_data_points": n,
@@ -69,7 +69,7 @@ def _run_judge(work: Path, *, n: int, uncharged=None) -> dict:
             {},
             _ToolClock(),
             time.monotonic(),
-            uncharged=uncharged,
+            estimated=estimated,
         )
     )
     assert json.loads((work / "result.json").read_text())["success"] == result["success"]
@@ -91,9 +91,9 @@ def test_a_candidate_scored_on_other_data_has_no_delta(tmp_path):
     assert all(row["delta"] is None for row in result["criteria"].values())
 
 
-def test_the_numbers_a_delivery_leaves_unestimated_are_charged(tmp_path):
-    """Two numbers outside the estimated rows cost 2·ln(50) ≈ 7.8, as they would the panel."""
-    uncharged = ["kx = 0.37: no parameter-table row", "C = 3.7: a numeric initial value"]
-    result = _run_judge(tmp_path, n=50, uncharged=uncharged)
-    assert result["k"] == 4 and result["k_estimated"] == 2
+def test_the_reconciled_estimates_are_the_nulls_k(tmp_path):
+    """Two parameters the reconcile estimates beyond the delivered rows cost 2·ln(50) ≈ 7.8, as
+    they would the panel."""
+    result = _run_judge(tmp_path, n=50, estimated=["a", "b", "kx", "C_init"])
+    assert result["k"] == 4 and result["k_estimated"] == 4
     assert abs(result["delta_bic"] - 2 * math.log(50)) < 1e-9

@@ -12,7 +12,7 @@ tables), :func:`barebones_system_prompt` (the instructions for the problem's PEt
 naming the design tables the check hashes), :func:`barebones_task` (the same known-constants note
 and entity names the panel gets),
 and :func:`check_delivery` (design tables untouched, shipped parameter rows intact, petab lint,
-and the numbers the judge must charge that no estimated row counts).
+and the parameters the server's reconcile would estimate, which the judge counts).
 A tampered or unloadable delivery is recorded as a loss (``unscoreable_reason``), not an abort.
 Reasons are in ``docs/RATIONALE.md`` (the ``#203`` entries).
 
@@ -152,10 +152,12 @@ def stage_workspace(work: Path) -> dict:
     """Move the problem from ``work/`` into ``work/agent/`` (the agent's workspace), delete the rest
     of ``work/``, and return what the prompt and the delivery check need afterwards: ``agent_dir``,
     the ``withheld`` names, the problem's ``petab_version`` (its YAML's major version), the
-    design-table hashes, and the shipped parameter rows' ``(estimate, nominalValue)``.
+    design-table hashes, the shipped parameter rows' ``(estimate, nominalValue)``, and the shipped
+    parameter table as the server reads it (``shipped_parameter_df``, for :func:`_reconciled`).
 
     An allowlist (:func:`_staged_files`): whatever else the problem directory holds is withheld."""
     from petab.versions import get_major_version
+    from petab_mcp.problem import WorkingProblem
 
     handed = _staged_files(work)
     agent_dir = work / AGENT_SUBDIR
@@ -189,6 +191,10 @@ def stage_workspace(work: Path) -> dict:
         "files": files,
         "design_hashes": hashes,
         "shipped_rows": shipped_rows,
+        # Taken as the session takes its `shipped_parameter_df`, before the agent can touch it.
+        "shipped_parameter_df": WorkingProblem.from_yaml(
+            agent_dir / "problem.yaml"
+        ).parameter_df.copy(deep=True),
     }
 
 
@@ -232,13 +238,14 @@ def check_delivery(work: Path, staged: dict) -> dict:
     tables whose bytes changed or left the YAML, and any the YAML lists beside them),
     ``shipped_rows_violated`` (shipped parameter rows removed, re-flagged, or — fixed ones —
     re-valued), ``model_ant_set_aside``, ``petab_lint`` (``{ok, messages}``), ``model_authored``,
-    and ``uncharged`` (:func:`_uncharged_numbers`, for a delivery that lints)."""
+    and, for a delivery that lints, ``estimated`` and ``uncharged`` (:func:`_reconciled`)."""
     out: dict = {
         "design_modified": [],
         "shipped_rows_violated": [],
         "model_ant_set_aside": False,
         "petab_lint": {"ok": False, "messages": []},
         "model_authored": None,
+        "estimated": None,
         "uncharged": [],
     }
     # a model.ant beside the YAML would be loaded instead of the SBML (session.py prefers it)
@@ -274,136 +281,72 @@ def check_delivery(work: Path, staged: dict) -> dict:
             out["shipped_rows_violated"].append(f"{pid}: fixed value {nominal} -> {got[1]}")
     out["petab_lint"], out["model_authored"] = _lint(work / "problem.yaml")
     if out["petab_lint"]["ok"] and out["model_authored"]:
-        out["uncharged"] = _uncharged_numbers(work / "problem.yaml", staged["shipped_rows"])
+        try:
+            out["estimated"], out["uncharged"] = _reconciled(
+                work / "problem.yaml", staged["shipped_parameter_df"]
+            )
+        except Exception as exc:  # noqa: BLE001 - a model the server cannot reconcile is unscoreable
+            out["petab_lint"] = {
+                "ok": False,
+                "messages": [f"the server's reconcile refuses the delivered model: {exc}"[:500]],
+            }
     return out
 
 
-def _math_names(math) -> set[str]:
-    """The identifiers an SBML math AST reads (``time`` and the other csymbols are not names)."""
-    import libsbml
-
-    names: set[str] = set()
-    stack = [math] if math is not None else []
-    while stack:
-        node = stack.pop()
-        if node.getType() == libsbml.AST_NAME:
-            names.add(node.getName())
-        stack.extend(node.getChild(i) for i in range(node.getNumChildren()))
-    return names
-
-
-def _uncharged_numbers(yaml_path: Path, shipped_rows: dict) -> list[str]:
-    """The numbers the delivered model carries that no estimated row counts, one entry each: what
-    the panel would have been charged for the same model, and the delivery as shipped is not.
+def _reconciled(yaml_path: Path, shipped) -> "tuple[list[str], list[str]]":
+    """``(estimated, uncharged)`` for the delivered problem as the panel's server accounts for a
+    model: the ids its reconcile estimates, which is what the judge counts as the null's estimated
+    parameters, and how that differs from the delivered table, one entry per row.
 
     The panel never has a model scored as written. The server's reconcile runs on every edit and
-    gives each parameter the model declares an ESTIMATED row (``sync_parameter_table``) and each
-    species' nonzero, non-unit initial value an estimated ``<sid>_init``
-    (``ensure_parametric_initial_conditions``), and no tool of the lead's can fix a parameter. A
-    delivery is scored as shipped, so before this the same numbers cost the null nothing written as
-    a fixed row the problem does not ship, as an SBML parameter value with no row, or as a numeric
-    initial value (#1). The judge charges each one here by the reconcile's own conventions: a
-    parameter a species' initial assignment reads (``A = A0``, ``B = B_tot*B_fold``) is free at 0
-    or 1, as the reconcile's add-loop fixes it there, and so are condition targets, values a rule or
-    initial assignment computes, and whatever neither the model nor the fixed tables read (the
-    reconcile prunes it). A rate law's local parameter is charged too, a named number no table can
-    see.
+    gives each parameter the model declares an ESTIMATED row and each species' nonzero, non-unit
+    initial value an estimated ``<sid>_init``, and no tool of the lead's can fix a parameter. A
+    delivery is scored as shipped, so the same numbers cost the null nothing written as a fixed row
+    the problem does not ship, as an SBML parameter value with no row, or as a numeric initial
+    value (#1).
+
+    So the server's own :func:`petab_mcp.reconcile.reconcile` runs here, on a copy of the delivered
+    problem read as the server reads it (:class:`petab_mcp.problem.WorkingProblem`), with the
+    parameter table the problem SHIPPED in place of the delivered one and ``shipped`` passed as
+    the session passes its own. Shipped rows come back as the problem defined them and every other
+    parameter as the reconcile defines it, so a row the agent added fixed comes back estimated.
+    The delivered table's values are written into the copy's SBML first: they are the values the
+    score reads, and the reconcile's 0/1 conventions for initial conditions are decided on them.
+    The scored files are not touched.
 
     Charged, deliberately not refused: refusing would make the plain Antimony start ``A = 3.7`` a
-    lost run for the null where the panel pays one parameter for it. And not by running the
-    server's reconcile on the delivery: that cannot tell the rows the problem shipped from the
-    ones the agent added, which only the staging recorded.
-
-    Literals in the model's math are not listed: the server's ``hardcoded_constants`` prices them
-    for both arms.
+    lost run for the null where the panel pays one parameter for it. Literals in the math are the
+    server's ``hardcoded_constants``, for both arms. A rate law's local parameter is charged by
+    neither: the reconcile reads global parameters only, and Antimony, which the null is told to
+    write, emits none.
     """
-    import libsbml
-    from petab.versions import get_major_version
-    from petab_mcp.literals import model_math
+    from petab_mcp import reconcile as R
+    from petab_mcp.problem import WorkingProblem
 
-    if get_major_version(str(yaml_path)) == 1:
-        import petab.v1 as petab
-
-        problem = petab.Problem.from_yaml(str(yaml_path))
-    else:
-        from petab import v2
-
-        problem = v2.Problem.from_yaml(str(yaml_path))
-    sm = problem.model.sbml_model
-    # What the fixed tables read, which the reconcile never prunes: the observable and noise
-    # formulas, the measurements' overrides, and the condition table's values.
-    cdf, odf, mdf = problem.condition_df, problem.observable_df, problem.measurement_df
-    cells = []
-    for df, cols in (
-        (odf, ("observableFormula", "noiseFormula")),
-        (mdf, ("observableParameters", "noiseParameters")),
-    ):
-        cells += [cell for col in cols if df is not None and col in df.columns for cell in df[col]]
-    if cdf is None:
-        targets: set[str] = set()
-    elif "targetId" in cdf.columns:  # v2: a target per row
-        targets = {str(t) for t in cdf["targetId"].dropna()}
-        cells += list(cdf["targetValue"]) if "targetValue" in cdf.columns else []
-    else:  # v1: a target per column
-        targets = {str(c) for c in cdf.columns} - {"conditionName"}
-        cells += [cell for col in targets for cell in cdf[col]]
-    rules = list(sm.getListOfRules())
-    computed = {r.getVariable() for r in rules if r.isSetVariable()}
-    assigned = {r.getVariable() for r in rules if r.isAssignment()}
-    initial = {ia.getSymbol(): ia.getMath() for ia in sm.getListOfInitialAssignments()}
-    ic_params = set()
-    for sid, math in initial.items():
-        if sm.getSpecies(sid) is not None:
-            ic_params |= _math_names(math)
-
-    read = set(computed)
-    for rxn in sm.getListOfReactions():
-        for refs in (rxn.getListOfReactants(), rxn.getListOfProducts(), rxn.getListOfModifiers()):
-            read |= {ref.getSpecies() for ref in refs}
-    tables = (libsbml.parseL3Formula(part) for cell in cells for part in str(cell).split(";"))
-    for math in [*model_math(sm), *tables]:
-        read |= _math_names(math)
-
-    rows = problem.parameter_df.index if problem.parameter_df is not None else ()
-    uncharged = []
-    for p in sm.getListOfParameters():
-        pid = p.getId()
-        if pid in shipped_rows or pid in targets or pid in computed or pid in initial:
-            continue
-        if pid not in read:
-            continue
-        if pid in rows:
-            row = problem.parameter_df.loc[pid]
-            if _estimate_flag(str(row["estimate"])) == 1:
-                continue  # an estimated row: the judge counts it already
-            value, how = float(row["nominalValue"]), "a fixed row the problem does not ship"
-        else:
-            value, how = p.getValue(), "no parameter-table row"
-        if pid in ic_params and value in (0.0, 1.0):
-            continue
-        uncharged.append(f"{pid} = {value:g}: {how}")
-    for sp in sm.getListOfSpecies():
-        sid = sp.getId()
-        if sid in targets or sid in assigned or sid in initial or sid not in read:
-            continue
-        if sp.isSetInitialConcentration():
-            value = sp.getInitialConcentration()
-        else:
-            value = sp.getInitialAmount() if sp.isSetInitialAmount() else 0.0
-        if value not in (0.0, 1.0):
-            uncharged.append(f"{sid} = {value:g}: a numeric initial value")
-    for rxn in sm.getListOfReactions():
-        law = rxn.getKineticLaw()
-        if law is None:
-            continue
-        reads = _math_names(law.getMath())
-        for i in range(law.getNumParameters()):
-            local = law.getParameter(i)
-            if local.getId() in reads:
-                uncharged.append(
-                    f"{rxn.getId()}.{local.getId()} = {local.getValue():g}: a local parameter"
-                )
-    return uncharged
+    delivered = WorkingProblem.from_yaml(yaml_path)
+    table = delivered.parameter_df
+    sm = delivered.model.sbml_model
+    for pid, nominal in table["nominalValue"].items():
+        if sm.getParameter(str(pid)) is not None and nominal == nominal:  # NaN: keep the SBML's
+            sm.getParameter(str(pid)).setValue(float(nominal))
+    declared = {p.getId() for p in sm.getListOfParameters()}
+    problem = delivered.replace(parameter_df=shipped.copy(deep=True))
+    R.reconcile(problem, shipped=shipped.copy(deep=True))
+    estimated, was = set(problem.x_free_ids), set(delivered.x_free_ids)
+    reconciled = problem.parameter_df
+    uncharged = [
+        f"{pid} = {reconciled.loc[pid, 'nominalValue']:g}: "
+        + ("estimate false -> true" if pid in table.index else "no parameter-table row")
+        for pid in sorted(estimated - was)
+    ]
+    # Rows the reconcile no longer estimates, of the parameters the model declares: a shipped row
+    # for one it never declared was never counted (`in_model: false`) and is not news.
+    uncharged += [
+        f"{pid}: "
+        + ("estimate true -> false" if pid in reconciled.index else "pruned, nothing reads it")
+        for pid in sorted((was - estimated) & declared)
+    ]
+    return sorted(estimated), uncharged
 
 
 def _lint(yaml_path: Path) -> "tuple[dict, bool | None]":
@@ -585,12 +528,14 @@ async def _judge_delivered(
     )
     if not desc.get("model_authored", False):
         meta = {**meta, "stop_reason": "no_model_built"}
-    uncharged = meta["delivery"]["uncharged"]
-    if uncharged:
-        print(f"[judge] charging {len(uncharged)} number(s) no estimated row counts: {uncharged}")
+    delivery = meta["delivery"]
+    if delivery["uncharged"]:
+        print(f"[judge] the reconcile changes the delivered estimates: {delivery['uncharged']}")
     # No baseline, as for a zero-shot build; every species the agent declared is "new".
     baseline = Baseline(nll=None, species=set(), structure={})
-    return await _judge(scenario, call, baseline, work, meta, clock, t0, uncharged=uncharged)
+    return await _judge(
+        scenario, call, baseline, work, meta, clock, t0, estimated=delivery["estimated"]
+    )
 
 
 async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) -> "tuple[int, dict]":

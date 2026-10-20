@@ -148,7 +148,7 @@ def _implausible_sigma_text(flag: dict) -> str:
     )
 
 
-def _candidate_k(params, final, uncharged=()) -> "tuple[int, int, list[str]]":
+def _candidate_k(params, final, estimated=None) -> "tuple[int, int, list[str]]":
     """``(k, k_estimated, hardcoded_constants)`` for the model being scored.
 
     ``k_estimated`` counts ``get_parameters`` rows with ``estimate`` truthy — NOT
@@ -166,10 +166,10 @@ def _candidate_k(params, final, uncharged=()) -> "tuple[int, int, list[str]]":
     reads rather than copied off the server's ``k``, so the two stay independently derived yet
     equal. A summary that lacks the list (a server predating it) charges none.
 
-    ``uncharged`` is the null arm's third addend, one per number its delivery carries outside the
-    estimated rows that the panel's reconcile would have made one
-    (:func:`.barebones._uncharged_numbers`, issue #1). The panel passes none: its server reconciles
-    every model before it is fitted.
+    ``estimated`` replaces the rows for the null arm: the ids the server's reconcile estimates for
+    its delivery (:func:`.barebones._reconciled`, issue #1); the server that scores the delivery
+    serves it as shipped, unreconciled. The panel passes none: its server reconciles every model
+    before it is fitted.
     """
     k_estimated = (
         sum(
@@ -182,7 +182,9 @@ def _candidate_k(params, final, uncharged=()) -> "tuple[int, int, list[str]]":
     )
     hardcoded = final.get("hardcoded_constants") if isinstance(final, dict) else None
     hardcoded = [str(c) for c in hardcoded] if isinstance(hardcoded, list) else []
-    return k_estimated + len(hardcoded) + len(uncharged), k_estimated, hardcoded
+    if estimated is not None:
+        k_estimated = len(estimated)
+    return k_estimated + len(hardcoded), k_estimated, hardcoded
 
 
 def _fitted_parameters(params) -> "dict[str, float] | None":
@@ -356,7 +358,7 @@ async def _judge(
     meta: dict,
     clock: "_ToolClock",
     t0: float,
-    uncharged: "list[str] | None" = None,
+    estimated: "list[str] | None" = None,
 ) -> "tuple[int, dict]":
     """Judge the repaired model against the true model by the run's criterion (structure-agnostic).
 
@@ -378,7 +380,7 @@ async def _judge(
     declared adequacy test PASSES — one it could not assess is not a pass.
 
     A candidate scored on a different number of data points than the reference has no Δ against
-    it: the deltas are withheld (``n_mismatch``) and the run fails. ``uncharged`` adds to k (see
+    it: the deltas are withheld (``n_mismatch``) and the run fails. ``estimated`` is the null's (see
     :func:`_candidate_k`).
 
     Returns ``(exit_code, result)``: the process exit code (0 on success, 1 otherwise) and
@@ -420,10 +422,10 @@ async def _judge(
     # constants (petab_mcp.literals): a fitted value frozen into a rate law is priced as the
     # parameter it is, exactly as the server's own bic prices it — otherwise the headline ΔBIC
     # would reward replacing the parameter vector with numerals (issue #180). The reference has
-    # none by construction: its published constants are fixed rows or the author's literals. PLUS,
-    # for a null delivery, the numbers the panel's reconcile would have made estimated rows (#1).
+    # none by construction: its published constants are fixed rows or the author's literals. For
+    # a null delivery the rows are those the server's reconcile estimates for it (#1).
     params = await call("get_parameters")
-    k, k_estimated, hardcoded = _candidate_k(params, final, uncharged or ())
+    k, k_estimated, hardcoded = _candidate_k(params, final, estimated)
     chi2 = final.get("chi2") if isinstance(final, dict) else None
     chi2 = float(chi2) if chi2 is not None else None
     # Residual-structure tests (sign, runs, replicate lack-of-fit) of the SCORED model — the checkpoint was already
@@ -826,8 +828,8 @@ async def _judge(
         "delta": delta,
         "chi2": chi2,
         "k": k,
-        # k's addends, so a k above the estimated-row count is auditable after the fact: these
-        # two, and on a null delivery its `delivery.uncharged`.
+        # k's two addends, so a k above the estimated-row count is auditable after the fact. On a
+        # null delivery the first is the reconcile's count; `delivery.uncharged` says how it differs.
         "k_estimated": k_estimated,
         "hardcoded_constants": hardcoded,
         # The scored model's parameter VECTOR, not just its count. Every criterion here prices k

@@ -140,6 +140,8 @@ def test_an_untouched_delivery_is_clean(tmp_path):
     assert out["petab_lint"]["ok"], out["petab_lint"]
     assert out["model_authored"] is True  # the toy ships a real model
     assert out["model_ant_set_aside"] is False
+    # reconciled, the toy estimates what it ships estimated, and nothing else
+    assert out["estimated"] == ["k1", "k2"] and out["uncharged"] == []
 
 
 def test_a_rewritten_design_table_is_reported(tmp_path):
@@ -233,8 +235,9 @@ def test_numbers_outside_the_estimated_rows_are_charged(tmp_path):
     """#1: the panel's server gives every parameter a model declares an ESTIMATED row and every
     nonzero, non-unit initial value an estimated `<sid>_init`. Scored as shipped, the same numbers
     were free to the null written as an SBML value with no row, as a fixed row the problem does not
-    ship, or as a numeric initial value. Each is charged; an estimated row is the judge's own count,
-    and a parameter nothing reads is pruned by the panel, so neither is listed."""
+    ship, or as a numeric initial value. Run through the server's reconcile against the shipped
+    table, each comes back estimated; a parameter nothing reads is pruned, as for the panel, so an
+    estimated row for it no longer counts."""
     work = _workspace(tmp_path)
     staged = R.stage_workspace(work)
     work = staged["agent_dir"]
@@ -246,13 +249,23 @@ def test_numbers_outside_the_estimated_rows_are_charged(tmp_path):
         _add_decay(m, "r3", ["C"], "kd * kx * kf * C")
 
     _edit_model(work, edit)
-    _add_rows(work, "kd\tlog10\t0.0001\t100.0\t0.05\t1", "kf\tlin\t0.0\t1.0\t0.2\t0")
+    _add_rows(
+        work,
+        "kd\tlog10\t0.0001\t100.0\t0.05\t1",
+        "kf\tlin\t0.0\t1.0\t0.2\t0",
+        "unused\tlog10\t0.0001\t100.0\t5.0\t1",
+    )
+    delivered = {f.name: f.read_bytes() for f in work.iterdir() if f.is_file()}
     out = R.check_delivery(work, staged)
     assert out["petab_lint"]["ok"], out["petab_lint"]
+    # the reconcile runs on a copy: the server still scores the files as delivered
+    assert {f.name: f.read_bytes() for f in work.iterdir() if f.is_file()} == delivered
+    assert out["estimated"] == sorted(["k1", "k2", "kd", "kx", "kf", "C_init"])
     assert out["uncharged"] == [
+        "C_init = 3.7: no parameter-table row",
+        "kf = 0.2: estimate false -> true",
         "kx = 0.37: no parameter-table row",
-        "kf = 0.2: a fixed row the problem does not ship",
-        "C = 3.7: a numeric initial value",
+        "unused: pruned, nothing reads it",
     ]
 
 
@@ -287,7 +300,31 @@ def test_the_panels_free_numbers_stay_free(tmp_path):
     _add_rows(work, "D20\tlin\t0.0\t1.0\t0.0\t0")
     out = R.check_delivery(work, staged)
     assert out["petab_lint"]["ok"], out["petab_lint"]
-    assert out["uncharged"] == []
+    assert out["estimated"] == ["k1", "k2"] and out["uncharged"] == []
+
+
+def test_the_delivered_value_decides_the_unit_start(tmp_path):
+    """The score reads the table, not the SBML: `D = D0` declared at 1 but delivered estimated at
+    3.2 is a fitted start, and stays charged, where the SBML's 1 alone would read as a unit pool."""
+    import libsbml
+
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+
+    def edit(m):
+        _add(m, "species", "D")
+        _add(m, "parameter", "D0", 1.0)
+        ia = m.createInitialAssignment()
+        ia.setSymbol("D")
+        ia.setMath(libsbml.parseL3Formula("D0"))
+        _add_decay(m, "r3", ["D"], "k1 * D")
+
+    _edit_model(work, edit)
+    _add_rows(work, "D0\tlog10\t0.0001\t100.0\t3.2\t1")
+    out = R.check_delivery(work, staged)
+    assert out["petab_lint"]["ok"], out["petab_lint"]
+    assert out["estimated"] == ["D0", "k1", "k2"] and out["uncharged"] == []
 
 
 def test_a_parameter_only_the_condition_table_reads_is_charged(tmp_path):
@@ -301,27 +338,6 @@ def test_a_parameter_only_the_condition_table_reads_is_charged(tmp_path):
     out = R.check_delivery(work, staged)
     assert out["petab_lint"]["ok"], out["petab_lint"]
     assert out["uncharged"] == ["A_dose = 2.5: no parameter-table row"]
-
-
-def test_a_local_parameter_is_charged(tmp_path):
-    """A rate law's local parameter is a named number no parameter table can see."""
-    work = _workspace(tmp_path)
-    staged = R.stage_workspace(work)
-    work = staged["agent_dir"]
-
-    def edit(m):
-        import libsbml
-
-        law = m.getReaction("r1").getKineticLaw()
-        local = law.createLocalParameter()
-        local.setId("k_local")
-        local.setValue(0.3)
-        law.setMath(libsbml.parseL3Formula("k1 * k_local * A"))
-
-    _edit_model(work, edit)
-    out = R.check_delivery(work, staged)
-    assert out["petab_lint"]["ok"], out["petab_lint"]
-    assert out["uncharged"] == ["r1.k_local = 0.3: a local parameter"]
 
 
 def test_shipped_rows_are_protected(tmp_path):
@@ -502,8 +518,8 @@ def test_a_v2_delivery_is_charged_but_not_for_a_condition_target(tmp_path):
     out = R.check_delivery(work, staged)
     assert out["petab_lint"]["ok"], out["petab_lint"]
     assert out["uncharged"] == [
+        "kf = 0.2: estimate false -> true",
         "kx = 0.37: no parameter-table row",
-        "kf = 0.2: a fixed row the problem does not ship",
     ]
 
 
@@ -535,25 +551,26 @@ def test_unscoreable_result_is_a_loss_not_an_abort(tmp_path):
     assert (tmp_path / "result.json").is_file()
 
 
-def test_the_judge_is_handed_the_deliverys_uncharged_numbers(monkeypatch, tmp_path):
-    """#1: the delivery check's list reaches k only through this hand-off; dropped, the judge would
-    price the null at its estimated rows again while every judge test still passed."""
+def test_the_judge_is_handed_the_reconciled_estimates(monkeypatch, tmp_path):
+    """#1: the reconcile's estimates reach k only through this hand-off; dropped, the judge would
+    price the null at its delivered rows again while every judge test still passed."""
     seen = {}
 
     async def call(name, **_):
         return {"model_id": "m", "model_authored": True}
 
-    async def judge(*_, uncharged=None):
-        seen["uncharged"] = uncharged
+    async def judge(*_, estimated=None):
+        seen["estimated"] = estimated
         return 0, {}
 
     monkeypatch.setattr(R, "_wrap_call_timeout", lambda *_: None)
     monkeypatch.setattr(R, "_wrap_tool_clock", lambda *_: None)
     monkeypatch.setattr(R, "_make_call", lambda *_: call)
     monkeypatch.setattr(R, "_judge", judge)
-    meta = {"delivery": {"uncharged": ["kx = 0.37: no parameter-table row"]}}
+    delivery = {"estimated": ["k1", "kx"], "uncharged": ["kx = 0.37: no parameter-table row"]}
+    meta = {"delivery": delivery}
     asyncio.run(R._judge_delivered(None, None, tmp_path, SimpleNamespace(n_starts=1), meta, 0.0))
-    assert seen["uncharged"] == ["kx = 0.37: no parameter-table row"]
+    assert seen["estimated"] == ["k1", "kx"]
 
 
 # --------------------------------------------------------------------------- wiring
