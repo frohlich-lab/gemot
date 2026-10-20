@@ -1073,8 +1073,8 @@ async def run_deepagents(
     # Self-imposed total-runtime budget (see the docstring): checked between super-steps, never
     # mid-step, so we always stop at a clean boundary rather than interrupting a live commit/fit.
     deadline = (time.monotonic() + max_wall_seconds) if max_wall_seconds is not None else None
-    # The finish gate holds a confirm on flagged residual structure while most of this budget is
-    # left (finish_gate._FLAGGED_CONFIRM_BUDGET_FRACTION), so it reads the same clock.
+    # The finish gate refuses a finish on flagged residual structure while most of this budget is
+    # left (finish_gate._FLAGGED_FINISH_BUDGET_FRACTION), so it reads the same clock.
     finish_state.update(deadline=deadline, max_wall_seconds=max_wall_seconds)
     # RESERVE ONE STEP. The budget is checked at step boundaries, but a super-step that commits a
     # model runs a full multistart, so "am I past the deadline?" asked AFTER the step is asked too

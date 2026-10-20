@@ -229,9 +229,9 @@ def test_confirmed_finish_is_not_bounced(monkeypatch):
 
 @requires_harness
 def test_the_finish_gate_reads_the_runs_wall_budget(monkeypatch):
-    """The gate holds a confirm on flagged structure while most of the wall budget is left
+    """The gate refuses a finish on flagged structure while most of the wall budget is left
     (gemot#40), which it can only do if the driver hands it the run's deadline on the clock the
-    loop itself stops on. Without the handoff the hold silently fails open on every run."""
+    loop itself stops on. Without the handoff the gate silently fails open on every run."""
     import time
 
     mod = _load_agent_module()

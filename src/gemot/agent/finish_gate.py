@@ -61,42 +61,58 @@ _MAX_PARSIMONY_FINISH_REFUSALS = 3
 #
 # The replicate arm ONLY. The sign/runs tests share `flagged_observables` with it but are advisory by
 # design (residual_tests: low power at these sample sizes, so a flag is weak evidence), and refusing
-# on them would refuse far beyond what this replaces; what they hold instead is the CONFIRM, and only
-# while most of the budget is left (_FLAGGED_CONFIRM_BUDGET_FRACTION). What this gate reads is the
-# arm's FLAG, which is the part with power at any lack-of-fit df: Holm-adjusted at REPLICATE_LOF_ALPHA
-# against each point's own replicate scatter, and reported as NO EVIDENCE (available False) rather
-# than as a flag wherever the floor is thin, the family too small, or the pooled df <= 0 — so it
-# FAILS OPEN on its own. Its PASS is the qualified half (`weak`, `lof_df`:
-# constants.REPLICATE_LOF_MIN_LOF_DF), and nothing here reads that — a weak pass clears this gate
-# exactly as a powered one does, deliberately; it reaches the lead as prose, in the armed message's
-# `residual_structure.summary`. Bounded and reset exactly like the two gates above.
+# on them for good would refuse far beyond what this replaces; they refuse a finish only while most of
+# the budget is left (_FLAGGED_FINISH_BUDGET_FRACTION). What this gate reads is the arm's FLAG, which
+# is the part with power at any lack-of-fit df: Holm-adjusted at REPLICATE_LOF_ALPHA against each
+# point's own replicate scatter, and reported as NO EVIDENCE (available False) rather than as a flag
+# wherever the floor is thin, the family too small, or the pooled df <= 0 — so it FAILS OPEN on its
+# own. Its PASS is the qualified half (`weak`, `lof_df`: constants.REPLICATE_LOF_MIN_LOF_DF), and
+# nothing here reads that — a weak pass clears this gate exactly as a powered one does, deliberately;
+# it reaches the lead as prose, in the armed message's `residual_structure.summary`. Bounded and reset
+# exactly like the two gates above — but its flag is in `flagged_observables` too, so on a budgeted
+# run the relent lets a finish through only once the flagged-structure gate below has lifted.
 _MAX_STRUCTURE_FINISH_REFUSALS = 3
 
-# A CONFIRM on a fit whose residual verdict FLAGS structure is HELD while more than this fraction of
+# A finish on a fit whose residual verdict FLAGS structure is REFUSED while more than this fraction of
 # the run's wall-time budget is left (prompts._FLAGGED_IS_NOT_BOTTOMED_OUT says "half"). The flag is
 # `flagged_observables`, the union of all three tests and the list the server's own plateau stop
-# already refuses to call adequate. Its sign/runs half is weak evidence (above), which is why this
-# holds a confirm rather than refusing a model: the run is scored on its best bic wherever it ends,
-# so a false flag costs wall time and never score, and the server's non-improving-streak cap still
-# ends a run that cannot improve. gemot#40: on sneyd every failing lead confirmed on a sign-test
-# p = 0.0 with 3-4.6 h of a 6 h budget left, ~130 bic short of the structure the passing runs found,
-# arguing bic had bottomed out from three failed tweaks of one family. It relents on TIME, never on a
-# count of attempts: a gate that relents after N calls teaches the lead to call N times (the indra
-# arm's note in prompts.py). Deliberately NOT a rule on what the failed calls changed, the issue's
-# other option: nothing this gate reads says whether a call re-parameterised a structure or replaced
-# it. FAILS OPEN without a budget (a run with no max_wall_seconds) and without a verdict.
-_FLAGGED_CONFIRM_BUDGET_FRACTION = 0.5
+# already refuses to call adequate. Its sign/runs half is weak evidence (above) — p < 0.05 per
+# observable, uncorrected, so a problem with many observables flags a correct model often — which is
+# why this lifts on the clock instead of standing: the run is scored on its best bic wherever it
+# ends, so a false flag costs wall time and never score, and the server's non-improving-streak cap
+# still ends a run that cannot improve. gemot#40: on sneyd every failing lead confirmed on a
+# sign-test p = 0.0 with 3-4.6 h of a 6 h budget left, ~130 bic short of the structure the passing
+# runs found, arguing bic had bottomed out from three failed tweaks of one family. It relents on
+# TIME, never on a count of attempts: a gate that relents after N calls teaches the lead to call N
+# times (the indra arm's note in prompts.py). It refuses the FIRST call rather than the confirm, so
+# the ARM text never invites a confirm that would be refused, and the second call on an armed fit
+# still always confirms: time only runs down, so a fit armed once this lifted is never refused
+# again. Deliberately NOT a rule on what the failed calls changed, the issue's other option:
+# nothing this gate reads says whether a call re-parameterised a structure or replaced it. FAILS
+# OPEN without a budget (a run with no max_wall_seconds) and without a verdict.
+_FLAGGED_FINISH_BUDGET_FRACTION = 0.5
 
 
-def _wall_budget_left(finish_state) -> tuple[float, float] | None:
-    """``(seconds left, budget seconds)`` of the run's wall-time budget, or ``None`` when the run
-    has none. The driver records ``deadline`` (on the ``time.monotonic`` clock) and
-    ``max_wall_seconds`` in the shared ``finish_state`` once its clock starts."""
+def _flagged_refusal(fit, finish_state) -> dict[str, object] | None:
+    """The slots of ``FINISH_REFUSED_FLAGGED_TMPL`` when a finish on ``fit`` is refused — its
+    residual verdict flags structure and more than ``_FLAGGED_FINISH_BUDGET_FRACTION`` of the run's
+    wall-time budget is left — else ``None``. The driver records ``deadline`` (on the
+    ``time.monotonic`` clock) and ``max_wall_seconds`` in the shared ``finish_state`` once its clock
+    starts; a run without them is never refused here."""
+    flagged = (fit.get("residual_structure") or {}).get("flagged_observables")
     deadline = finish_state.get("deadline")
     budget = finish_state.get("max_wall_seconds")
-    if deadline is None or not budget:
+    if not flagged or not isinstance(flagged, (list, tuple)) or deadline is None or not budget:
         return None
-    return deadline - time.monotonic(), budget
+    left = deadline - time.monotonic()
+    if left <= _FLAGGED_FINISH_BUDGET_FRACTION * budget:
+        return None
+    names = [str(o) for o in flagged]
+    return {
+        "observables": ", ".join(names[:4]) + (", …" if len(names) > 4 else ""),
+        "minutes_left": round(left / 60),
+        "budget_minutes": round(budget / 60),
+    }
 
 
 def _render_lof_points(points, *, max_points: int = 4) -> str:
@@ -208,8 +224,8 @@ def _finish_tool(session, finish_state=None, probe=None):
     CONFIRMS — so a diagnosis is always shown before a run is allowed to end. ``finish_state``
     (a shared dict) records ``confirmed`` for the driver, so a properly-confirmed finish is not
     bounced; the driver records the run's ``deadline`` and ``max_wall_seconds`` there in turn, which
-    is how the gate HOLDS a confirm on flagged residual structure while most of the budget is left
-    (see ``_FLAGGED_CONFIRM_BUDGET_FRACTION``).
+    is how the gate REFUSES a finish on flagged residual structure while most of the budget is left
+    (see ``_FLAGGED_FINISH_BUDGET_FRACTION``).
 
     It deliberately does NOT gate on the χ² goodness-of-fit (chi2_gof_pvalue / reduced_chi2).
     Whenever the observable noise sigmas are estimated (as in the issue-#54 benchmarks — though
@@ -357,6 +373,19 @@ def _finish_tool(session, finish_state=None, probe=None):
             )
         else:
             state["structure_refusals"] = 0
+        # REFUSED on FLAGGED residual structure while most of the wall budget is left (see
+        # _FLAGGED_FINISH_BUDGET_FRACTION). Ahead of the diagnosis read: it needs only the fit and
+        # the clock, and it never relents on a count, so a fit refused here must not cost a FIM
+        # per attempt.
+        refusal = _flagged_refusal(fit, finish_state)
+        if refusal is not None:
+            state["armed_token"] = None
+            print(
+                f"[finish BLOCKED] residual structure flagged at {refusal['observables']} with "
+                f"{refusal['minutes_left']} of {refusal['budget_minutes']} min left — refusing "
+                "finish until less than half the budget is left"
+            )
+            return prompts.FINISH_REFUSED_FLAGGED_TMPL.format(**refusal)
         # HARD STOP on an OVER-parameterised model: a finish whose good-looking bic rests on
         # parameters the data cannot constrain — a RANK-DEFICIENT Fisher-information matrix (a
         # non-identifiable parameter COMBINATION the diagnosis surfaces as a near-flat
@@ -477,30 +506,8 @@ def _finish_tool(session, finish_state=None, probe=None):
                 merge_line=merge_line,
                 invalid_line=invalid_line,
             )
-        # Second finish on the same fit. HELD while the residual verdict flags structure and more
-        # than _FLAGGED_CONFIRM_BUDGET_FRACTION of the wall budget is left; the arm stands, so the
-        # first finish on this fit once that much is spent confirms.
-        flagged = (fit.get("residual_structure") or {}).get("flagged_observables")
-        flagged = [str(o) for o in flagged] if isinstance(flagged, (list, tuple)) else []
-        budget_left = _wall_budget_left(finish_state)
-        if (
-            flagged
-            and budget_left is not None
-            and budget_left[0] > _FLAGGED_CONFIRM_BUDGET_FRACTION * budget_left[1]
-        ):
-            seconds_left, budget = budget_left
-            observables = ", ".join(flagged[:4]) + (", …" if len(flagged) > 4 else "")
-            print(
-                f"[finish HELD v={version}] residual structure flagged at {observables} with "
-                f"{seconds_left:.0f}s of {budget:.0f}s left — not confirming"
-            )
-            return prompts.FINISH_HELD_FLAGGED_TMPL.format(
-                observables=observables,
-                minutes_left=round(seconds_left / 60),
-                budget_minutes=round(budget / 60),
-            )
-        # Confirmed. Record it so the driver does not bounce a legitimately-finished run back
-        # into the gate.
+        # Second finish on the same fit -> confirmed. Record it so the driver does not bounce
+        # a legitimately-finished run back into the gate.
         state["armed_token"] = None
         finish_state["confirmed"] = True
         chi2_note = ""

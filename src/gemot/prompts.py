@@ -122,15 +122,16 @@ _MERGE_TAKE_RULE = (
 )
 
 #: What the finish gate does with a fit whose residual tests FLAG structure
-#: (finish_gate._FLAGGED_CONFIRM_BUDGET_FRACTION, whose 0.5 this states as "half"): there, failed
+#: (finish_gate._FLAGGED_FINISH_BUDGET_FRACTION, whose 0.5 this states as "half"): there, failed
 #: calls are no argument that bic has bottomed out. Composed into _ADEQUATE_IS_NOT_DONE, which
-#: states the bottomed-out rule this qualifies, and into the gate's hold message.
+#: states the bottomed-out rule this qualifies, and into the gate's refusal.
 _FLAGGED_IS_NOT_BOTTOMED_OUT = (
     "While the fit's residual_structure verdict FLAGS an observable, bic has NOT bottomed out "
     "however many calls failed to lower it: the form is visibly wrong, and tweaks of one "
-    "structure do not show that another cannot do better. `finish` does not confirm such a fit "
-    "until less than HALF of the run's wall-time budget is left; spend that time on structurally "
-    "different models (a new species, reaction or mechanism), not on re-parameterising this one."
+    "structure do not show that another cannot do better. `finish` is refused on such a fit while "
+    "more than HALF of the run's wall-time budget, where it has one, is left; spend that time on "
+    "structurally different models (a new species, reaction or mechanism), not on "
+    "re-parameterising this one."
 )
 
 #: Clean residual tests are a weak stopping rule, and the actionable consequence in ops rather
@@ -1367,10 +1368,10 @@ FINISH_REFUSED_PARSIMONY_TMPL = (
     "the full flat_directions and ranked candidates; the tool's default section does NOT.)"
 )
 
-# The flagged-structure HOLD on a confirm (finish_gate._FLAGGED_CONFIRM_BUDGET_FRACTION): the second
-# `finish` on an armed fit whose verdict flags structure, while more than half the wall budget is
-# left. The arm stands, so the same fit confirms once that much is spent.
-FINISH_HELD_FLAGGED_TMPL = (
+# The FLAGGED-STRUCTURE gate (finish_gate._FLAGGED_FINISH_BUDGET_FRACTION): a finish on a fit whose
+# verdict flags structure while more than half the wall budget is left. It lifts on the clock alone,
+# so the refusal says how much is left rather than how many attempts remain.
+FINISH_REFUSED_FLAGGED_TMPL = (
     "FINISH REFUSED — the residual tests flag systematic structure at {observables}, with "
     "{minutes_left} of this run's {budget_minutes} minutes left. " + _FLAGGED_IS_NOT_BOTTOMED_OUT
 )
@@ -1794,7 +1795,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "sigma_fallback_advice": FINISH_SIGMA_FALLBACK_ADVICE,
             "refused_replicate_lof": FINISH_REFUSED_REPLICATE_LOF_TMPL,
             "refused_parsimony": FINISH_REFUSED_PARSIMONY_TMPL,
-            "held_flagged": FINISH_HELD_FLAGGED_TMPL,
+            "refused_flagged": FINISH_REFUSED_FLAGGED_TMPL,
             "armed": FINISH_ARMED_TMPL,
             "armed_worst": FINISH_ARMED_WORST_TMPL,
             "armed_merge": FINISH_ARMED_MERGE_TMPL,
