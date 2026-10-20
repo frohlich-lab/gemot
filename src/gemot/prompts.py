@@ -398,14 +398,6 @@ DEFAULT_SYSTEM_PROMPT = (
     "final bic/neg_log_likelihood and the model you built."
 )
 
-# The indra_statements arm's description of `list_mechanisms` (TOOL_DESCRIPTIONS holds it only on
-# that arm, where the tool is curated in).
-LIST_MECHANISMS_DESCRIPTION = (
-    "Every mechanism a `statements` row can use, as the PySB rules it builds, for one "
-    "`statement_type` or all: the library's own and those you wrote. Read it before choosing a "
-    "row's policy, and to write a new one as a `scheme`: copy the nearest entry and edit it."
-)
-
 # The indra_statements arm's lead prompt, written for that route rather than patched from the
 # Antimony one: the default prompt teaches Antimony authoring throughout, and with that left
 # standing Claude Haiku kept authoring Antimony against the guard. Shorter on purpose; the three
@@ -931,254 +923,6 @@ def _biocurator_entity_block(names: "list[str]") -> str:
     return BIOCURATOR_ENTITY_BLOCK_TMPL.format(names=", ".join(str(n) for n in names))
 
 
-# -------------------------------------------- panel-facing tool descriptions
-# What the PANEL reads for each tool. The server's own docstring is the tool's CONTRACT — its
-# arguments, its result shape, what it rejects — and doubles as the reference for any other
-# client; this is the same tool described for the job the lead is doing, and it REPLACES that
-# docstring for the panel (agent/tools._trim_descriptions), because the full text is re-sent to
-# the model on every turn and is the single largest fixed slice of the input-token cost.
-#
-# EVERY tool in agent.tools.ALLOWED_TOOLS needs an entry here, and no entry may name a tool that
-# is not in it (tests/test_prompt_tracking.py asserts the two sets are equal): an undescribed tool
-# falls back to a truncated server docstring, putting its panel-facing text outside the tracked
-# prompt surface, and an entry for a tool that no longer exists is simply never applied.
-#
-# THREE RULES, all of them about not writing a fact down twice:
-#   * No ARGUMENT LISTS. The JSON schema is the signature and is sent alongside this text, so an
-#     `Args: a, b, c` clause is a hand-maintained copy of it. Say what an argument MEANS where
-#     that is not obvious from its name; never enumerate them.
-#   * A rule the lead also reads elsewhere — in its system prompt, or from the finish gate — is
-#     one of the constants at the top of this file, interpolated. Not re-worded here.
-#   * A rule that spans tools is stated in ONE entry and pointed at from the others.
-TOOL_DESCRIPTIONS = {
-    "make_changes": (
-        "THE editor, and it always FITS. Pass `antimony` to author the WHOLE model "
-        "(builds the first one when model_authored: false"
-        "; on a LATER model it is the start-over route, and EVERY reaction "
-        "must be named — an unnamed one cannot be changed afterwards). OR "
-        "`model_edits`: a BATCH of structured operations, each written as "
-        "Antimony and addressed by ID — " + _MODEL_EDIT_OPS + ". "
-        "The DEFAULT route for every change after the first: nothing to quote, "
-        "in order, all-or-nothing, a bad id rejected with the valid ids listed. "
-        "Put the WHOLE change in ONE call — one call is one fit and one "
-        "version. With `base_version=N` the operations apply to that version's "
-        "stored model AND its search space and starting point are restored "
-        "with it: fork and change in one call. It is a MODIFIER of "
-        "`model_edits`, never an action on its own — sent alone it is "
-        "rejected, since re-committing a version unchanged re-fits it to "
-        "the result it already has. "
-        "And/or "
-        "`parameters` = [{parameter_id, lower_bound?, "
-        "upper_bound?, scale?}, ...] to set the estimation BOUNDS/SCALE (never a "
-        "value). At least ONE is required. "
-        "Give both a model route and `parameters` when a structural change needs "
-        "bounds — they apply atomically, after the reconcile, so an entry may target "
-        "a parameter this call introduces. One call is one coherent change and ONE "
-        "version. ALL-OR-NOTHING: a change that cannot be scored is REVERTED, so the "
-        "working model is always a scored one. The result IS the fit, flat: read "
-        "`applied` (is the change in place?) then `committed` -> `bic`. "
-        "`applied: false` -> nothing moved: either rejected outright or reverted "
-        "because the fit failed; `error`/`issues` says which, act on THAT. "
-        "`committed: false` with `no_change` -> the change applied but this structure "
-        "already IS a version, so make a genuinely different change (a version you "
-        "already have is kept and stays scorable — no need to return to it). "
-        "REJECTS dropping (or re-estimating) a shipped-fixed "
-        "constant, an unused condition target, and an observation-model symbol used "
-        "in a rate law; rejects a 3rd widening of a still-pinned parameter (that is "
-        "unidentifiability — see "
-        + _PARAMETER_HALF
-        + ", not a bounds problem). "
-        + _SIGMA_CAP_ADVISORY
-        + " `n_starts` REPLACES the server default (describe_problem's "
-        "fit_n_starts_default) rather than adding to it, so omit it unless you want "
-        "MORE; below it fits LESS hard, and the minimum is 1."
-    ),
-    "list_conditions": (
-        "The fixed conditions, one row per change a condition makes: it sets "
-        "`targetId` (a model parameter, species or compartment) to `targetValue` "
-        "— a dose, an input level, a switch. Your model must define every target "
-        "BY NAME, and a condition-set initial is an experimental input to "
-        "reproduce, not a value to fit. WHEN a condition applies is "
-        "`list_experiments`."
-    ),
-    "list_experiments": (
-        "The fixed experiments, one row per period: from `time` on, experiment "
-        "`experimentId` applies condition `conditionId` (none: the model as is). "
-        "`time` -inf is a pre-equilibration to steady state before the experiment "
-        "starts. Every measurement names the experiment it was taken in; an empty "
-        "`experimentId` simulates the model as is."
-    ),
-    "describe_problem": "Orientation: whether a mechanism has been authored (model_authored), table/entity counts, current version, the multistart count a fit uses by default (fit_n_starts_default), and the inputs the experiments impose (inputs), each to define in the model by its rule exactly as given (one without a rule the experiments set themselves). Cheap.",
-    "get_model_structure": "Structured model view: species, parameters, and reactions (id, reversibility, rate law) — empty until a model is built.",
-    "get_parameters": (
-        "Parameter table — pass `parameter_ids` and/or `role` to FILTER: on "
-        "large problems the full table is 100+ rows re-sent in your history "
-        "every later turn, so ask for the rows you need (e.g. the ids a fit "
-        "just changed). One row per parameter: id, bounds, scale, nominalValue "
-        "(the fitted value), estimate flag, plus `role` (kinetic / noise_sigma / "
-        "observable_scaling / initial_condition / exponent / constant) and `status` "
-        "(estimated / fixed). Read `role` to keep roles straight: a noise_sigma or "
-        "observable_scaling parameter belongs to the OBSERVATION model, not the "
-        "kinetics, and must never appear in a rate law — whether or not it is "
-        "estimated. Read `status` before adding parameters: every ESTIMATED one "
-        "counts toward k and inflates bic however tight its bounds, and a symbol "
-        "you introduce is added estimated. The rows whose `status` is `fixed` are "
-        "the COMPLETE set of constants you may treat as known. Do NOT assume "
-        "sigma_* or *_init are "
-        "fixed — noise sigmas are often estimated, and initial conditions are "
-        "estimated by DEFAULT (an IC of exactly 1 stays fixed; an IC of exactly 0 "
-        "gets no row here at all). "
-        "`in_model: false` marks a parameter the PROBLEM ships that your model "
-        "does not declare yet — before you author anything that is every shipped "
-        "kinetic / initial-condition parameter. Those are yours to build on: use "
-        "the name in your Antimony and the row comes back exactly as shown "
-        "(bounds, scale, fixed/estimated, any prior), so a shipped constant costs "
-        "you nothing to adopt and a shipped-FIXED one must stay declared."
-    ),
-    "get_model": (
-        "The COMMITTED model as raw Antimony text. With `model_edits` you address "
-        "reactions by ID and never quote text, so reach for `get_model_structure` "
-        "first — this is for reading the model as written. Pass `version=N` for a PRIOR version's stored text — use THAT "
-        "before `base_version=N`, not `get_version`, which also returns that "
-        "version's per-point simulation and optimizer trace. The trailing "
-        "`const ...;` line is DERIVED (regenerated every render; a parameter is "
-        "constant unless declared `var`) — read past it; no operation addresses "
-        "it."
-    ),
-    "get_fit_summary": (
-        "Current fit metrics only (neg_log_likelihood, chi2, n_data_points) — a "
-        "cheap score check. Carries `merge_hints` when the fit has parameter pairs "
-        "the data cannot separate whose merges the criterion would pay for."
-    ),
-    "get_fit_diagnosis": (
-        "The DETAIL behind the verdicts fit already gave you, in TWO sections — "
-        "`sections`: 'residuals' (the DEFAULT), 'parameters', or 'all' (one call, "
-        "both). RESIDUALS is the DEFAULT (~2-7 kB, 0.01-0.12 s, no new "
-        "simulation); PARAMETERS is ~2-8 kB and at most one FIM evaluation at the "
-        "fitted optimum (0.004-0.16 s across the reference problems) — neither "
-        "compiles anything, so the SIZE is the cost: ask for it when bic has "
-        "STALLED and you need to know which parameters to cut, not by reflex, "
-        "since every payload you request is re-sent in your history on every "
-        "later turn. "
-        "RESIDUALS: per-observable weighted chi2 + mean_weighted_residual (bias) "
-        "+ sign/runs test p-values + worst-N points (measurement vs simulation). "
-        "Read it for WHERE/HOW the fit is off — not to ask WHETHER it is: the "
-        "rolled-up residual_structure verdict (replicate_lack_of_fit included) "
-        "rides on the fit result and is not repeated here. "
-        "PARAMETERS (`identifiability`, bounded): per-parameter standard "
-        "error + fold_uncertainty, marginal & partial correlations, near-flat "
-        "FIM eigen-directions (non-identifiable parameter COMBINATIONS), and "
-        "multistart spread — with a ranked `candidates` list. Tells you WHICH "
-        "estimated parameters are superfluous when the model is too complex "
-        "(high bic / many params), and the remedies IN ORDER: (1) drop the term; "
-        "(2) take its limiting form (irreversible / quasi-steady-state); "
-        "(3) MERGE a collinear pair — into the combination the data do "
-        "constrain (ka*kb -> one kab), or by giving both ONE SHARED "
-        "value (one symbol replaces two); either way the survivor is "
-        "interpretable. `merge_candidates` prices the SHARED-VALUE tie and only "
-        "that one: dnll cheapest first, merge_improves_score for a tie cheaper "
-        "than the parameter it drops, and move_scaled for how far the tie has to "
-        "move a parameter (cheap but many decades is not an edit that survives "
-        "a refit). READ IT rather than guessing a tie from a flat direction's "
-        "member list, which names members, not which tie is cheap; the fit "
-        "result's `merge_hints` are the cheapest few of these rows worth taking — "
-        "each with its "
-        "parameters, dnll, move_scaled, and dscore (" + _DSCORE_SIGN + ") — so a "
-        "hint on your last fit means a free parameter is sitting there. "
-        "Merges are the ENDGAME, not the fix for an underfit: while the residuals "
-        "are still systematically structured, spend the call on the mechanism and "
-        "leave these — a tie is a parameter the data cannot separate, never a "
-        "missing rate law. Once the residuals are clean they are how you "
-        "finish. " + _MERGE_TAKE_RULE + " It lists "
-        "top_n, and prices only same-role, same-scale pairs with neither member "
-        "at a bound (n_ties_skipped counts the rest), so an absent pair — or an "
-        "absent hint — may be one it refused rather than a dear one. "
-        "A LOCAL screen: it separates "
-        "cheap ties from expensive ones, but one price can be off either way — "
-        "REFIT and let bic adjudicate each merge; "
-        "(4) LAST RESORT, for a pure scale degeneracy where "
-        "every value fits equally well, pin one member to 1.0 by "
-        "re-authoring the literal into the rate law — NOT via bounds (see "
-        "PARAMETER MACHINERY) — then REFIT: unchanged nll with bic better by one "
-        "parameter confirms it, a WORSE fit means revert. If none applies, "
-        "leave it. Use BEFORE adding parameters. For a full custom breakdown or "
-        "the optimizer log, delegate to an analyst."
-    ),
-    "list_versions": (
-        "Every model version (each a fit snapshot) with its kind, label, and fit "
-        "metrics (neg_log_likelihood, bic, is_new_best) — how you track which "
-        "structures you have tried and their scores. Your best-bic version is kept "
-        "and is what the run is scored on, so you never need to return to it."
-    ),
-    "get_version": "Read a prior version's Antimony model + parameter table, to INSPECT it.",
-    "get_fitting_log": "Tail of the pyPESTO/Fides multistart optimizer log (convergence, bound-pinning, ill-conditioning).",
-    "list_observables": (
-        "The observables being fitted: id, formula, noise model, and "
-        "`observableName` — WHAT each one measures. A formula naming a "
-        "`readout_*` symbol is a measurement mapping YOUR model must define "
-        "(`readout_x := <expression of your states>`, or set_assignment); "
-        "several observables may share one readout (one row per dataset/gel, "
-        "differing only in shipped scalings), and one rule covers them all."
-    ),
-    "get_measurements": (
-        "Measurement data. Default returns a COMPACT SUMMARY (per observable×"
-        "experiment: n, time span, value min/max/mean, preview points) — prefer "
-        "it, and prefer experiment_id/observable_id filters or query_data for a "
-        "targeted slice. summarize=False returns raw points PAGED "
-        "{rows, row_count, total_rows, offset, truncated, next_offset?}, "
-        "max_rows=200 per page: an unpaged dump is 70-80k tokens on the large "
-        "problems and re-enters your context every later turn, which has ended "
-        "runs on 'prompt exceeds max length'."
-    ),
-    "list_data_tables": "List the SQL tables query_data exposes and their columns.",
-    # The column names are spelled out because guessing them was the single largest non-editing
-    # error class measured (15 of 22 query_data failures in the 2026-08-17 sweep, then under
-    # PEtab v1). The schema sentence is the server's own query_data docstring, copied rather than
-    # paraphrased: under v2 the PEtab tables are camelCase and the derived ones snake_case, so
-    # `experimentId` and `experiment_id` are both real, on different tables, and only the schema
-    # tells the caller which. tests/test_prompt_schema.py holds the copy to the server's text.
-    "query_data": (
-        "Run a read-only DuckDB SQL query over the data. "
-        "TWO NAMING CONVENTIONS, and they do not mix. The PEtab tables keep PEtab's camelCase: "
-        "`measurements(observableId, experimentId, time, measurement, observableParameters, "
-        "noiseParameters)`, `conditions(conditionId, targetId, targetValue)`, "
-        "`experiments(experimentId, time, conditionId)`, `observables(observableId, ...)`, "
-        "`parameters(parameterId, ...)`. The DERIVED tables use snake_case: "
-        "`simulations(observable_id, experiment_id, time, ...)`, `simulations_history` (the same "
-        "plus `version`), and `optimization_starts` / `optimization_trace`. The measurement "
-        "table's key column is `experimentId` — NOT `experiment_id` (that is `simulations`); an "
-        "empty `experimentId` ('') is a measurement of the model simulated as is. Do not carry a "
-        "column list from a `simulations` query onto `measurements`, or the reverse. "
-        "`simulations` has one row per point: measurement, simulation, residual, "
-        "residual_weighted, noise — `residual` lives there, not on measurements. "
-        "`simulations_history` is the ONLY way to compare model versions point-by-point, e.g. "
-        "`SELECT observable_id, experiment_id, time, "
-        "max(CASE WHEN version=3 THEN residual_weighted END) AS v3, "
-        "max(CASE WHEN version=4 THEN residual_weighted END) AS v4 "
-        "FROM simulations_history WHERE version IN (3,4) GROUP BY 1,2,3 "
-        "ORDER BY abs(v4)-abs(v3) DESC`. A measurement reaches the inputs it was taken under "
-        "through its experiment: `measurements.experimentId = experiments.experimentId`, then "
-        "`experiments.conditionId = conditions.conditionId`. Call `list_data_tables` for the "
-        "exact per-problem columns. Two things that bite: aggregate only NUMERIC columns "
-        "(`avg(measurement)`, not `avg(observableId)` — a text column raises a "
-        "Conversion Error), and DuckDB is not SQLite/pandas, so check a function "
-        "exists before leaning on it. A worked shape: "
-        "`SELECT observable_id, experiment_id, count(*) n, avg(residual_weighted) bias "
-        "FROM simulations WHERE residual_weighted IS NOT NULL GROUP BY 1, 2 "
-        "ORDER BY abs(bias) DESC LIMIT 20`. "
-        "Prefer aggregations; rows capped at max_rows (default 50). When `truncated` "
-        "is true the result carries `next_offset` — page with it rather than raising "
-        "max_rows, since a big page re-enters your context every later turn. Add an "
-        "explicit ORDER BY when paging or pages can overlap/skip."
-    ),
-    "get_skill": "Read a skill in full, by name.",
-}
-# The indra_statements arm curates `list_mechanisms` in (agent.tools._ARM_TOOLS); its description
-# exists exactly where the tool does, so TOOL_DESCRIPTIONS and ALLOWED_TOOLS stay equal.
-if INDRA_STATEMENTS_ENABLED:
-    TOOL_DESCRIPTIONS["list_mechanisms"] = LIST_MECHANISMS_DESCRIPTION
-
-
 # ----------------------------------------------------------- run-loop nudges
 # Injected as a fresh user turn when a run ended cleanly having authored NO model (see
 # _model_committed). It restates the task so the resumed graph builds something rather than
@@ -1672,34 +1416,8 @@ def _hash_input(entries: "dict[str, str]") -> str:
     return "".join(f"{n}{_HASH_SEP}{entries[n]}{_HASH_SEP}" for n in sorted(entries))
 
 
-# The indra_statements arm's editor and model-reading descriptions and its no-model nudge, in place
-# of the default ones, which teach Antimony authoring; chosen where they are used
-# (agent.tools._trim_descriptions, agent.driver), as the biology-blind arm's are.
-INDRA_TOOL_DESCRIPTIONS: "dict[str, str]" = {
-    "make_changes": (
-        "THE editor, and it always FITS. In this run it takes the model as INDRA statements "
-        "only. The first model is `statements`, the WHOLE set of rows, with the `mechanisms` you "
-        "write (a `scheme` of PySB rules, or a `rate` on an existing entry's reaction; "
-        "`list_mechanisms` shows the library), the `starts`, and the `readouts` over `amounts` "
-        "that define the observables' readout_* symbols. A revision is `statement_edits`: "
-        "`replace_row`/`add_row` (one row), `remove_row` (by prefix), `set_start`/`set_amount`/"
-        "`set_readout`, `remove_start`/`remove_amount`; or the whole set as `statements` again. "
-        "And/or "
-        "`parameters` = [{parameter_id, lower_bound?, upper_bound?, scale?}, ...] to set the "
-        "estimation BOUNDS/SCALE (never a value). With `base_version=N` the edits apply to "
-        "version N's rows and the fit starts from its search space and best fit; never without a "
-        "change to the rows (alone, with only `parameters` or `n_starts`), which is rejected. One "
-        "call is one coherent change and ONE version. "
-        # The route-neutral rest (reading a result, what it refuses) is the default's own, so the
-        # two cannot drift apart.
-        + "ALL-OR-NOTHING" + TOOL_DESCRIPTIONS["make_changes"].split("ALL-OR-NOTHING", 1)[1]
-    ),
-    "get_model": (
-        "The COMMITTED model. `format='statements'` gives it as your rows (with the mechanisms, "
-        "starts, amounts and readouts), the form `make_changes` takes; the default is the "
-        "Antimony those rows build. Pass `version=N` for a PRIOR version's stored model."
-    ),
-}
+# The indra_statements arm's no-model nudge, in place of the default one, which teaches Antimony
+# authoring; chosen in agent.driver.
 INDRA_NO_MODEL_NUDGE = (
     "You ended the run without authoring a model — nothing was built, so there is nothing to "
     "score. The task is to BUILD a kinetic model of this system: call make_changes with "
@@ -1727,10 +1445,8 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
         # Appended to the system prompt only on the indra_statements arm; tracked on its own so
         # an edit to it moves prompt_version in either arm.
         "petab-lead-system-indra": INDRA_SYSTEM_PROMPT,
-        "petab-lead-indra-tools": INDRA_TOOL_DESCRIPTIONS,
         "petab-lead-indra-no-model": INDRA_NO_MODEL_NUDGE,
         "petab-lead-indra-task": INDRA_TASK,
-        "petab-lead-list-mechanisms": LIST_MECHANISMS_DESCRIPTION,
     },
     # The three analyst personas, plus the one-liners the LEAD reads when picking one.
     "analysts": {
@@ -1757,11 +1473,6 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
         "petab-biocurator-system": BIOCURATOR_PROMPT,
         "petab-biocurator-description": BIOCURATOR_DESCRIPTION,
         "petab-biocurator-entity-block": BIOCURATOR_ENTITY_BLOCK_TMPL,
-    },
-    # The panel-facing tool descriptions, which REPLACE the server docstrings — the largest
-    # block of model-facing text outside the lead prompt, and previously untracked entirely.
-    "tools": {
-        "petab-tool-descriptions": TOOL_DESCRIPTIONS,
     },
     # Everything the harness itself says back to the model: the finish gate, the run-loop
     # nudges, the circuit breaker, the task-arg guard.

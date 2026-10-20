@@ -238,7 +238,7 @@ def _general_purpose_enabled(llm) -> "bool | None":
 # edit_file/grep/execute/write_todos) into every agent, on top of the `tools` we pass. This
 # task has no filesystem — the real tools are the MCP tools — so those built-ins are pure
 # overhead: their JSON schemas are re-sent on every turn (the input-token cost this module
-# works hard to keep lean, see _trim_descriptions/TOOL_DESCRIPTIONS), and each call the model
+# works hard to keep lean, see agent/tools.py), and each call the model
 # wastes on them also burns a recursion step. `task` (subagent delegation) is NEVER excluded —
 # the panel depends on it. We attach this filter to the LEAD only: neither the per-model
 # `HarnessProfile.excluded_tools` route nor a per-subagent `middleware` list reliably reaches

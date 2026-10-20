@@ -28,8 +28,11 @@ dependencies = [
     # so `read_held_out` refuses a v1 set and `validation_data.as_v2` is gone. PEtabAgentBench
     # converts each problem's training and held-out sets together and ships both as v2. #81: AMICI
     # at AMICI-dev/AMICI#3408, whose JAX code compiles for `And`/`Or` (the `neural` extra below).
-    # #73: the server reads the AMICI tolerances `Scenario.amici_tolerances` exports.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@40243583ae778e73bf7a7e1ced13b8e2cd2ec335",
+    # #73: the server reads the AMICI tolerances `Scenario.amici_tolerances` exports. #82: AMICI at
+    # #3408's merge commit. frohlich-lab/PEtab-MCP#97 (INTERIM, its head): the panel reads the
+    # server's own tool descriptions, and `statements_only` for the indra_statements arm; move to
+    # its merge commit before this merges.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@73923ba527e48e6c68dc41a1c5cc89b818d7d335",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
     # deleted, and mcp 2.0 reworks the client API used here (streamablehttp_client ->
@@ -91,7 +94,7 @@ neural = [
     # beside the direct reference petab-mcp brings (ResolutionImpossible), so the extra has to
     # name the identical one. Move it with petab-mcp's pin; back to `amici[jax]>=...` once that
     # pin is a release.
-    "amici[jax] @ git+https://github.com/AMICI-dev/AMICI.git@0b161860f1b45102cf727a99d9982fdc534b86f6#subdirectory=python/sdist",
+    "amici[jax] @ git+https://github.com/AMICI-dev/AMICI.git@a4dbb08da4d3c782ba3a2bab47c92586467ea5bc#subdirectory=python/sdist",
     "optax>=0.2",
     # The curriculum multiple shooting rewrite (`petab_sciml.training`) is unreleased,
     # PEtab-dev/petab_sciml#92. Pinned to GitHub's test-merge commit of that PR, because the

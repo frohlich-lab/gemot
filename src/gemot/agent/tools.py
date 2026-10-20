@@ -7,20 +7,18 @@ residuals, not equations; the systems scientist about mechanism, not optimizer i
 one rationale governs every list below and is not repeated at each of them.
 
 ``ALLOWED_TOOLS`` (the union) is all the panel ever sees; ``_select_tools`` resolves it against
-what the server actually offers, and ``_trim_descriptions`` swaps each tool's verbose server
-docstring for the panel-facing one-liner in :mod:`gemot.prompts` — which is therefore
-the text the panel actually reads, and the reason every tool here needs an entry there.
+what the server actually offers. The panel reads each tool's description as the server states it
+(frohlich-lab/PEtab-MCP#40), recorded through the server's commit; only the biology-blind arm
+replaces them, with its anonymised texts (``_blind_descriptions``).
 """
 
 from __future__ import annotations
 
 from ..prompts import (
-    INDRA_TOOL_DESCRIPTIONS,
     BIOLOGY_BLIND_ENABLED,
     INDRA_STATEMENTS_ENABLED,
     BIOLOGY_BLIND_TOOL_DESCRIPTIONS,
     LEAD_SELF_READ_TOOLS,
-    TOOL_DESCRIPTIONS,
 )
 
 # ---------------------------------------------------------------- tool exposure
@@ -167,72 +165,17 @@ for _on, _names in _ARM_TOOLS:
 ALLOWED_TOOLS = set().union(*_TOOLSETS)
 
 
-def _trim_descriptions(tools: list) -> list:
-    """Shorten each panel tool's description (in place) to cut per-turn input tokens.
-
-    Uses the curated one-liner from TOOL_DESCRIPTIONS; for anything unlisted, truncates the
-    server description to its first line. The anonymous arm requires an explicit description
-    for every tool and refuses a tool whose description cannot be replaced.
-    """
+def _blind_descriptions(tools: list) -> list:
+    """On the biology-blind arm, replace each panel tool's description (in place) with its
+    anonymised text, refusing a tool that has none; off the arm, leave the server's."""
+    if not BIOLOGY_BLIND_ENABLED:
+        return tools
     for t in tools:
         name = getattr(t, "name", None)
-        descriptions = (
-            BIOLOGY_BLIND_TOOL_DESCRIPTIONS if BIOLOGY_BLIND_ENABLED else TOOL_DESCRIPTIONS
-        )
-        short = descriptions.get(name)
-        if INDRA_STATEMENTS_ENABLED and name in INDRA_TOOL_DESCRIPTIONS:
-            short = INDRA_TOOL_DESCRIPTIONS[name]
-        if BIOLOGY_BLIND_ENABLED and short is None:
+        if name not in BIOLOGY_BLIND_TOOL_DESCRIPTIONS:
             raise ValueError(f"No anonymous description registered for tool {name!r}")
-        if short is None:
-            desc = getattr(t, "description", None)
-            if isinstance(desc, str):
-                short = desc.strip().split("\n", 1)[0]
-        if short and name == "make_changes" and INDRA_STATEMENTS_ENABLED:
-            short = f"{short}\n\n{_statements_route(t)}"
-            _drop_args(t, ("antimony", "model_edits"))
-        if short:
-            try:
-                t.description = short
-            except Exception:  # pragma: no cover - frozen/rejected attribute
-                if BIOLOGY_BLIND_ENABLED:
-                    raise
-                pass
+        t.description = BIOLOGY_BLIND_TOOL_DESCRIPTIONS[name]
     return tools
-
-
-def _statements_route(tool) -> str:
-    """The server's own paragraph on `make_changes`' `statements` route: the row notation and the
-    mechanisms its library holds. The curated description replaces the server's, so on the
-    indra_statements arm this is kept beside it; it is the server's text (versioned with the
-    server), because the library it lists is the server's."""
-    desc = getattr(tool, "description", "") or ""
-    i = desc.find("`statements` is a third model route")
-    if i < 0:
-        raise RuntimeError(
-            "indra_statements is on, but the server's make_changes offers no `statements` route "
-            "(was it started without an entity map?)"
-        )
-    # The route's paragraphs, `statements` and then `statement_edits`, up to the contract.
-    paragraphs = []
-    for paragraph in desc[i:].split("\n\n"):
-        if not paragraph.startswith("`statement"):
-            break
-        paragraphs.append(paragraph)
-    return "\n\n".join(paragraphs)
-
-
-def _drop_args(tool, names: tuple[str, ...]) -> None:
-    """Remove arguments from a tool's schema, so the model is not offered them at all (the
-    indra_statements arm's other model routes; its guard still bounces a call that sends one)."""
-    schema = getattr(tool, "args_schema", None)
-    if not isinstance(schema, dict):
-        raise RuntimeError(f"cannot drop {names} from {tool.name}: its schema is no dict")
-    props = schema.get("properties") or {}
-    for name in names:
-        props.pop(name, None)
-    if "required" in schema:
-        schema["required"] = [r for r in schema["required"] if r not in names]
 
 
 def _select_tools(tools: list) -> list:

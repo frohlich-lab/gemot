@@ -15,13 +15,15 @@ from pathlib import Path
 # --------------------------------------------------------------------------- server
 # Launched with:
 #   python -c <bootstrap> <yaml> <build_root> <ref_mode> <host> <port> <n_starts> <validation_tsv>
-#             <score_shipped>
+#             <score_shipped> <entity_map>
 # <validation_tsv> is "" for an example with no held-out data, <score_shipped> is "1" to compile
 # and score a problem's SHIPPED model at its nominal values before listening
 # (create_server(score_shipped_model=True)) and "0" for a zero-shot run, which has nothing to
 # score yet. Every argument is always passed — positional and fixed-arity, so a missing one is a
 # hard ValueError ("not enough values to unpack") at startup rather than a server that silently
-# comes up without the judge's held-out read registered.
+# comes up without the judge's held-out read registered. <entity_map> is "" off the
+# indra_statements arm; on it, the server offers make_changes the `statements` route alone
+# (create_server(statements_only=True)), documented in the server's own description.
 _SERVER_BOOTSTRAP = (
     "import sys, os, threading, time\n"
     # Parent-death watchdog: if run.py dies (incl. SIGKILL by the batch watchdog, which skips
@@ -50,7 +52,8 @@ _SERVER_BOOTSTRAP = (
     "                    auto_fit_starts=int(n_starts),\n"
     "                    validation_measurements=validation_tsv or None,\n"
     "                    score_shipped_model=(score_shipped == '1'),\n"
-    "                    entity_map=entity_map or None)\n"
+    "                    entity_map=entity_map or None,\n"
+    "                    statements_only=bool(entity_map))\n"
     # fastmcp >=3.4 dropped `srv.settings`; host/port are passed to run() (forwarded to the
     # streamable-http transport's run_http_async(host=, port=)).
     "srv.run(transport='streamable-http', host=host, port=int(port))\n"

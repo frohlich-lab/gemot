@@ -114,7 +114,6 @@ from ..prompts import (
     BIOCURATOR_PROMPT,
     SUBAGENT_EMPTY_REPORT_MARKER,
     SUBAGENT_EMPTY_REPORT_NUDGE,
-    TOOL_DESCRIPTIONS,
     _biocurator_entity_block,
     _NO_MODEL_NUDGE,
     _SILENT_FINISH_NUDGE,

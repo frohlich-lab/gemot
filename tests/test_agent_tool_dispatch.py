@@ -245,8 +245,6 @@ def test_lead_does_not_carry_get_fit_summary_but_the_analysts_do():
     assert "get_fit_summary" in mod.MATHEMATICIAN_TOOLS
     assert "get_fit_summary" in mod.SIGNAL_ENGINEER_TOOLS
     assert "get_fit_summary" in mod.ALLOWED_TOOLS
-    # and the panel still has a description for it (ALLOWED_TOOLS is what the panel ever sees)
-    assert "get_fit_summary" in mod.TOOL_DESCRIPTIONS
 
 
 def test_the_lead_is_never_told_to_call_a_tool_it_does_not_have():
@@ -265,26 +263,3 @@ def test_the_lead_is_never_told_to_call_a_tool_it_does_not_have():
     assert not_the_leads, "sanity: some tools are analyst-only"
     named = [t for t in not_the_leads if t in lead_prompt]
     assert named == [], f"lead prompt names tools it cannot call: {named}"
-
-    # the panel-facing override for the editor is lead-facing too
-    assert "get_fit_summary" not in mod.TOOL_DESCRIPTIONS["make_changes"]
-    # (the harness's OWN internal polls still call get_fit_summary — see _current_fit — which is
-    # why this checks the lead-facing text rather than the module source.)
-
-
-def test_get_parameters_description_does_not_contradict_the_parameter_table():
-    """The lead-facing description REPLACES the server docstring, so a wrong claim there is what
-    the model believes. It used to state that sigma_* and *_init rows are fixed (estimate=0):
-    initial conditions have been estimated by DEFAULT since #90 (only an IC of exactly 0 or 1
-    stays fixed), and an estimated noise sigma is the whole premise of the noise-sigma verdict.
-    """
-    mod = agent
-    desc = mod.TOOL_DESCRIPTIONS["get_parameters"]
-
-    # it must not assert the fixed-ness that reconcile contradicts
-    assert "estimate=0" not in desc
-    assert "estimated by DEFAULT" in desc or "estimated by default" in desc
-    # and it must name the two annotations the tool exists to surface
-    assert "role" in desc and "status" in desc
-    for role in ("kinetic", "noise_sigma", "observable_scaling", "initial_condition"):
-        assert role in desc, role
