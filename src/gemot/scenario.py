@@ -21,6 +21,7 @@ effective exponent in the denominator is ≥ 2).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -52,6 +53,15 @@ AMICI_TOLERANCE_ENV = {
     "absolute_tolerance_steady_state": "PETAB_MCP_FIT_AMICI_ATOL_STEADY_STATE",
     "relative_tolerance_steady_state": "PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE",
 }
+
+
+def _positive_finite(value: Any) -> bool:
+    """Whether ``value`` reads as a finite positive float, as the server's tolerance reader needs."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number) and number > 0
 
 
 # --------------------------------------------------------------------------- data classes
@@ -290,6 +300,15 @@ class Scenario:
             raise ValueError(
                 f"{self.name}: amici_tolerances sets {unknown}, which the server does not read; "
                 f"it reads {sorted(AMICI_TOLERANCE_ENV)}"
+            )
+        # ...and so would a value: the server keeps its default for anything but a finite positive
+        # number. One `float()` refuses would also raise from `_base_meta`, which records the
+        # launch environment, inside the handler that writes a failed run's result.json (gemot#6).
+        unreadable = sorted(k for k, v in self.amici_tolerances.items() if not _positive_finite(v))
+        if unreadable:
+            raise ValueError(
+                f"{self.name}: amici_tolerances sets {unreadable} to a value the server does not "
+                "read; each must be a finite positive number"
             )
 
     @property

@@ -1,4 +1,5 @@
-"""What a Scenario hands the server it launches: its AMICI tolerances, in the server's environment."""
+"""What a Scenario hands the server it launches: its AMICI tolerances, in the server's environment,
+and what the run records of that environment."""
 
 from __future__ import annotations
 
@@ -8,7 +9,9 @@ from pathlib import Path
 
 import pytest
 
+from gemot import fit_budget
 from gemot.runner import main as M
+from gemot.runner import provenance as P
 from gemot.scenario import AMICI_TOLERANCE_ENV, Scenario
 
 
@@ -79,4 +82,59 @@ def test_a_misspelt_tolerance_is_refused_where_it_is_written(tmp_path):
             problem_dir=tmp_path / "problem",
             scripted_fix=_noop,
             amici_tolerances={"relative_tolerance_steadystate": 1e-9},
+        )
+
+
+def test_the_run_records_the_fit_settings_its_server_is_launched_with(tmp_path, monkeypatch):
+    """result.json recorded `n_starts` and no other fit setting, so sweeps of one example at two
+    per-start caps pooled in every aggregate (gemot#6). The record is resolved from the very
+    environment the server is launched with, as the server resolves it: the problem's tolerance
+    over an inherited one, an inherited one kept, an unusable override at the server's default,
+    and the criterion, which the judge read only off a fit."""
+    # Imported before the environment is patched: `fitting` resolves its constants once, at import,
+    # and test_import_lightness pins the record to them.
+    import petab_mcp.fitting  # noqa: F401
+
+    monkeypatch.setenv("PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE", "1e-6")
+    monkeypatch.setenv("PETAB_MCP_FIT_AMICI_RTOL", "1e-7")
+    for unset in ("AMICI_ATOL", "AMICI_ATOL_STEADY_STATE", "STARTS_PER_TASK"):
+        monkeypatch.delenv(f"PETAB_MCP_FIT_{unset}", raising=False)
+    monkeypatch.setenv("PETAB_MCP_FIT_TASK_SECONDS", "-1")
+    monkeypatch.setenv("PETAB_MCP_CRITERION", "AICc")
+    scenario = Scenario(
+        name="raimundez",
+        problem_dir=tmp_path / "problem",
+        scripted_fix=_noop,
+        amici_tolerances={"relative_tolerance_steady_state": 1e-9},
+    )
+    args = Namespace(driver="scripted", model=None, recursion_limit=1, n_starts=1, temperature=0.0)
+    recorded = P._base_meta(scenario, args)["fit_settings"]
+
+    assert recorded == {
+        "PETAB_MCP_FIT_PER_START_TIMEOUT": fit_budget.FIT_PER_START_TIMEOUT_S,
+        "PETAB_MCP_FIT_N_WORKERS": fit_budget.FIT_N_WORKERS,
+        "PETAB_MCP_FIT_STARTS_PER_TASK": 0,
+        "PETAB_MCP_FIT_TASK_SECONDS": 270.0,
+        "PETAB_MCP_FIT_AMICI_ATOL": 1e-10,
+        "PETAB_MCP_FIT_AMICI_RTOL": 1e-7,
+        "PETAB_MCP_FIT_AMICI_ATOL_STEADY_STATE": None,
+        "PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE": 1e-9,
+        "PETAB_MCP_CRITERION": "aicc",
+    }
+    # ...and read off the environment the server is actually launched with.
+    launched = _launch_env(tmp_path, scenario, monkeypatch)
+    assert recorded == {**fit_budget.server_fit_settings(launched), "PETAB_MCP_CRITERION": "aicc"}
+
+
+@pytest.mark.parametrize("value", [None, "tight", 0, -1e-9, float("nan"), float("inf")])
+def test_an_unreadable_tolerance_is_refused_where_it_is_written(tmp_path, value):
+    """The server keeps its default for a tolerance it cannot read, without a word, like a
+    misspelt key. One `float()` refuses also raised from `_base_meta` inside the handler that
+    writes a failed run's result.json, so the run left none."""
+    with pytest.raises(ValueError, match="relative_tolerance_steady_state"):
+        Scenario(
+            name="raimundez",
+            problem_dir=tmp_path / "problem",
+            scripted_fix=_noop,
+            amici_tolerances={"relative_tolerance_steady_state": value},
         )

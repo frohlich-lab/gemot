@@ -261,7 +261,7 @@ def test_base_meta_stamps_the_prompt_version(tmp_path):
     used to record git_sha but nothing about the prompts."""
     from gemot.runner.provenance import _base_meta
 
-    scenario = types.SimpleNamespace(example_dir=tmp_path, version=1)
+    scenario = types.SimpleNamespace(example_dir=tmp_path, version=1, amici_tolerance_env=dict)
     args = argparse.Namespace(
         driver="deepagents", model="m", recursion_limit=10, n_starts=5, temperature=0.0
     )
@@ -313,7 +313,7 @@ def test_skills_are_tracked_like_prompts(tmp_path):
 
     assert "skills_version" in metrics.HISTORY_FIELDS
     assert "skills_version" in wandb_logging._CONFIG_KEYS
-    scenario = types.SimpleNamespace(example_dir=tmp_path, version=1)
+    scenario = types.SimpleNamespace(example_dir=tmp_path, version=1, amici_tolerance_env=dict)
     args = argparse.Namespace(
         driver="deepagents", model="m", recursion_limit=10, n_starts=5, temperature=0.0
     )

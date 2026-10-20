@@ -276,6 +276,29 @@ def _write_live_marker(
         pass
 
 
+def _fit_settings(scenario: Scenario) -> dict:
+    """The settings besides ``n_starts`` that change what this run's fits search, keyed by the
+    server's environment variable and resolved as the server will: every fit setting it reads from
+    its environment (``fit_budget.server_fit_settings``) and the complexity criterion it ranks by.
+    Read off the environment the server is launched with (``server._server_env``), so a problem's
+    own AMICI tolerances and anything inherited from the caller are recorded as the server sees
+    them.
+
+    ``n_starts`` was the only one recorded, so sweeps of one example at two per-start caps shared
+    every recorded field and pooled in every aggregate, though at the old cap isensee's ΔBIC
+    measured the cap rather than the model (gemot#6). The keys are the ones the sweep's
+    ``combo.env`` records. The criterion is resolved as ``petab_mcp.criteria.from_env`` does: the
+    judge reads one only off a fit, so a run that stopped before fitting recorded none."""
+    from petab_mcp.criteria import Criterion
+
+    from ..fit_budget import server_fit_settings
+    from .server import _server_env
+
+    env = _server_env(scenario)
+    criterion = Criterion.from_name(env.get("PETAB_MCP_CRITERION")) or Criterion()
+    return {**server_fit_settings(env), "PETAB_MCP_CRITERION": criterion.name}
+
+
 def _base_meta(
     scenario: Scenario, args: argparse.Namespace, run_started_at: str | None = None
 ) -> dict:
@@ -358,6 +381,8 @@ def _base_meta(
         ),
         "recursion_limit": None if scripted else args.recursion_limit,
         "n_starts": args.n_starts,
+        # ...and every other setting that changes what a fit searches; see `_fit_settings`.
+        "fit_settings": _fit_settings(scenario),
         "temperature": None if scripted else args.temperature,
         "run_started_at": run_started_at or _now_iso(),
         "phoenix_project": None,

@@ -7,10 +7,14 @@ SIGKILLed run.py cannot leak a uvicorn server.
 
 from __future__ import annotations
 
+import os
 import socket
 import subprocess
 import time
 from pathlib import Path
+
+from ..fit_budget import FIT_N_WORKERS, FIT_PER_START_TIMEOUT_S
+from ..scenario import Scenario
 
 # --------------------------------------------------------------------------- server
 # Launched with:
@@ -55,6 +59,35 @@ _SERVER_BOOTSTRAP = (
     # streamable-http transport's run_http_async(host=, port=)).
     "srv.run(transport='streamable-http', host=host, port=int(port))\n"
 )
+
+
+def _server_env(scenario: Scenario) -> dict[str, str]:
+    """The environment the server is launched with, and so the one its fit settings are read
+    from: the run records them by resolving this same dict (``provenance._fit_settings``).
+
+    It exports the harness's resolved Fides per-start cap + worker count, so the server's candidate
+    fits use the SAME cap AND parallelism the harness sized its sse_read_timeout + stall watchdog
+    to (fit_budget.py); otherwise the budget would not match the real wall-clock. The problem's own
+    AMICI tolerances go last, so they win over any inherited from the caller: they are part of what
+    the example IS, and its reference bar was fitted under them.
+
+    PYTHONFAULTHANDLER: on a fatal signal (SIGSEGV/SIGBUS/SIGFPE/SIGABRT) the interpreter dumps a
+    C-level traceback of EVERY thread to fd2, which is server.log, already archived per task. Added
+    after five runs of the 2026-08-14 draft-arm sweep died with the server killed by signal 11: the
+    logs ended mid-AMICI parameter-mapping with no indication of where, because a segfaulting
+    process writes nothing on its way out. A core dump would say more, but cores are disabled by
+    default on the compute nodes (ulimit -c 0) and core_pattern pipes to systemd-coredump, which
+    stores node-locally and is not readable by the job's user, so the in-process traceback is the
+    artifact that actually survives. array_task.sh raises the core limit too, so a core lands as
+    well where the node permits it.
+    """
+    return {
+        **os.environ,
+        "PYTHONFAULTHANDLER": "1",
+        "PETAB_MCP_FIT_PER_START_TIMEOUT": str(FIT_PER_START_TIMEOUT_S),
+        "PETAB_MCP_FIT_N_WORKERS": str(FIT_N_WORKERS),
+        **scenario.amici_tolerance_env(),
+    }
 
 
 def _free_port() -> int:
