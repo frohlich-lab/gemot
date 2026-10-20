@@ -286,8 +286,54 @@ def test_summarize_by_model_scores_only_the_scoreable_runs(results_root):
         "server_unreachable": 1,
     }
     assert luna["total_cost"] is not None and luna["mean_cost"] is not None
+    # The `no_model_built` run is a loss with no Δ: it counts against the rate, not in the median.
     new = by["someone/new-model"]
-    assert new["total_cost"] is None and new["n_scoreable"] == 1 and new["success_rate"] == 1.0
+    assert new["total_cost"] is None and new["n_scoreable"] == 2 and new["n_success"] == 1
+    assert new["success_rate"] == pytest.approx(0.5)
+    assert new["median_delta"] == pytest.approx(0.5) and new["best_delta"] == pytest.approx(0.5)
+
+
+def test_a_loss_without_a_delta_stays_in_the_denominator():
+    """#2: requiring a finite Δ dropped every loss that never reached a scored fit.
+
+    One pass, one `no_model_built` and one barebones delivery the judge could not score read as
+    `n_scoreable=1, success_rate=1.0` where 1/3 is the rate — the null arm, whose losses mostly
+    carry no Δ, flattered most.
+    """
+    rows = [
+        {"model": "m", "success": True, "delta_bic": -2.0, "stop_reason": "completed"},
+        {"model": "m", "success": False, "delta_bic": None, "stop_reason": "no_model_built"},
+        {
+            "model": "m",
+            "success": False,
+            "delta_bic": None,
+            "final_nll": None,
+            "unscoreable_reason": "petab_invalid: ...",
+        },
+    ]
+    assert all(A.is_scoreable(r) for r in rows)
+    got = A.summarize_by(rows, "model")[0]
+    assert got["n"] == 3 and got["n_scoreable"] == 3 and got["n_success"] == 1
+    assert got["success_rate"] == pytest.approx(1 / 3)
+    assert got["median_delta"] == pytest.approx(-2.0) and got["best_delta"] == pytest.approx(-2.0)
+
+
+def test_a_reference_free_run_is_not_pooled_into_a_delta_success_rate():
+    """Its pass is an absolute adequacy verdict; it used to be excluded only by having no Δ."""
+    rows = [
+        {
+            "model": "m",
+            "judge_mode": "reference_free",
+            "success": verdict,
+            "delta_bic": None,
+            "stop_reason": "completed",
+        }
+        for verdict in (True, False)
+    ]
+    assert not any(A.is_scoreable(r) for r in rows)
+    got = A.summarize_by(rows, "model")[0]
+    assert got["n"] == 2 and got["n_scoreable"] == 0 and got["success_rate"] is None
+    assert A.is_scoreable({**rows[0], "judge_mode": "reference"})
 
 
 @pytest.mark.parametrize(

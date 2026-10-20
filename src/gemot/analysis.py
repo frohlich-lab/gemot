@@ -303,12 +303,18 @@ def score_delta(row: dict) -> float | None:
 
 
 def is_scoreable(row: dict) -> bool:
-    """Should this run count toward success rate and Δ? A scored verdict exists and the run was
-    not pure infrastructure noise.
+    """Should this run count toward the success rate? A verdict exists and the run was not pure
+    infrastructure noise.
 
-    A reference-free run (``judge_mode``) never is: it has no Δ, and its pass is an absolute
-    adequacy verdict that must not be pooled into a Δcriterion success rate."""
-    if score_delta(row) is None:
+    A Δ is deliberately NOT required: ``no_model_built``, a fit that came back non-finite and a
+    barebones delivery the judge could not score (``unscoreable_reason``) are losses with no Δ.
+    Requiring one dropped them from the denominator and inflated the success rate, the null arm's
+    most, whose losses mostly carry none (#2). :func:`summarize_by` takes the Δ statistics over
+    the scoreable runs that have one.
+
+    A reference-free run (``judge_mode``) never is: its pass is an absolute adequacy verdict that
+    must not be pooled into a Δcriterion success rate."""
+    if row.get("judge_mode") == "reference_free":
         return False
     # A DECLINED verdict, not a failed one: `slurm/recover_run.py` writes `success: null` for a
     # run graded under a criterion it cannot reproduce.
@@ -329,9 +335,11 @@ def _median(values: list[float]) -> float | None:
 def summarize_by(rows: Iterable[dict], key: str = "model") -> list[dict]:
     """One summary row per distinct ``row[key]``: counts, success, ΔBIC, cost, and stop buckets.
 
-    ``success_rate`` and ``median_delta`` are over the SCOREABLE runs (:func:`is_scoreable`) so an
-    out-of-credits abort at n_ops=0 does not read as a modeling failure; ``n`` and ``stops`` cover
-    every row, so the noise is still visible. Costs are summed over runs that recorded usage.
+    ``success_rate`` is over the SCOREABLE runs (:func:`is_scoreable`) so an out-of-credits abort
+    at n_ops=0 does not read as a modeling failure; ``median_delta`` and ``best_delta`` are over
+    the scoreable runs that have a Δ, so a loss without one counts against the rate but not in the
+    medians. ``n`` and ``stops`` cover every row, so the noise is still visible. Costs are summed
+    over runs that recorded usage.
 
     The Δs are each run's DECIDING one (:func:`score_delta`), so a group whose runs were graded
     under different criteria has a median across scales — group by the arm before reading it.
