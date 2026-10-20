@@ -229,6 +229,17 @@ def test_load_archive_results_reads_every_run_newest_first(tmp_path):
         ({"stop_reason": "early_stop: plateau"}, "early_stop"),
         ({"stop_reason": "wall_time_budget_exceeded"}, "budget"),
         ({"stop_reason": "token_budget_exceeded"}, "budget"),
+        ({"stop_reason": "context_budget_exceeded"}, "budget"),
+        # the context-window stop's label before gemot#7 is a budget stop, not the server's
+        (
+            {
+                "stop_reason": "early_stop: context_window_approached: largest prompt "
+                "1,000,402 tokens >= 90% of the 1,048,576-token window",
+                "head_version": -1,
+                "n_fits": 0,
+            },
+            "budget",
+        ),
         ({"stop_reason": "GraphRecursionError: ..."}, "budget"),
         ({"stop_reason": "no_model_built"}, "no_model"),
         ({"stop_reason": "content_filter: flagged for biological risk"}, "content_filter"),

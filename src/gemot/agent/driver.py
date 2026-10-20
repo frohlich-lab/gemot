@@ -1173,6 +1173,7 @@ async def run_deepagents(
         agen = None
         wall_budget_exceeded = False
         token_budget_exceeded = False
+        context_budget_exceeded = False
         early_stopped: str | None = None
         # Bound BEFORE the try: the `except asyncio.TimeoutError` handler reports it, and on
         # 3.11+ `asyncio.TimeoutError is TimeoutError`, so a TimeoutError raised anywhere in the
@@ -1310,12 +1311,11 @@ async def run_deepagents(
                 # margin the old 0.8 line cost -- that line ended 3 of 9 lucarelli runs and
                 # raimundez t4 at dBIC +39.6, still improving. Size it from the largest observed
                 # single-step prompt growth once that is measured.
+                #
+                # A BUDGET stop, not an early stop: the run is cut by the window, often while still
+                # improving, so it must not be counted with the server's plateau / streak stop.
                 if token_accountant.max_prompt >= 0.90 * max_input_tokens:
-                    early_stopped = (
-                        "context_window_approached: largest prompt "
-                        f"{token_accountant.max_prompt:,} tokens >= 90% of the "
-                        f"{max_input_tokens:,}-token window"
-                    )
+                    context_budget_exceeded = True
                     break
                 # The gate gave up (too many no-fit finish attempts) — end promptly at this
                 # boundary rather than letting the model spam finish to the recursion limit.
@@ -1337,6 +1337,10 @@ async def run_deepagents(
                 # entirely. The counts belong in the print below and in `token_usage`.
                 else "token_budget_exceeded"
                 if token_budget_exceeded
+                # Bare for the same reason. The largest prompt is `token_usage.max_prompt_tokens`
+                # and the window is `max_input_tokens`, both in the return below.
+                else "context_budget_exceeded"
+                if context_budget_exceeded
                 else "no_model_built"
                 if finish_state["gave_up"]
                 else f"early_stop: {early_stopped}"
@@ -1414,6 +1418,14 @@ async def run_deepagents(
                 "step boundary; the judge scores whatever is currently committed."
             )
             break
+        if context_budget_exceeded:
+            print(
+                f"[agent] context window approached: largest prompt "
+                f"{token_accountant.max_prompt:,} tokens >= 90% of the {max_input_tokens:,}-token "
+                "window — stopping at this step boundary; the judge restores + scores the "
+                "best-scoring checkpoint."
+            )
+            break
         if early_stopped is not None:
             print(
                 f"[agent] early-stop: {early_stopped} — stopping at this step boundary; "
@@ -1485,6 +1497,17 @@ async def run_deepagents(
                 f"[agent] token budget ({max_run_tokens:,}) already exceeded at "
                 f"{token_accountant.prompt + token_accountant.completion:,} while handling "
                 f"'{retriable}' — stopping instead of resuming."
+            )
+            break
+        # And for the context window. A step whose LLM call crossed the 0.90 line and then stalled
+        # never reached the boundary check, so it would resume, re-send that history once per
+        # attempt, and end out of resumes as the retriable text rather than as a budget stop.
+        if token_accountant.max_prompt >= 0.90 * max_input_tokens:
+            stop_reason = "context_budget_exceeded"
+            print(
+                f"[agent] context window approached: largest prompt "
+                f"{token_accountant.max_prompt:,} tokens >= 90% of the {max_input_tokens:,}-token "
+                f"window while handling '{retriable}' — stopping instead of resuming."
             )
             break
         # Is there still a server to resume against? Ask BEFORE spending a resume attempt: each
@@ -1593,6 +1616,8 @@ async def run_deepagents(
         # alongside openrouter_extra_body and for the same reason: what a run RAN WITH must be
         # readable from its own artifact, not inferred from when it was submitted.
         "max_output_tokens": max_output_tokens,
+        # The context window the run assumed, which the 0.90 stop above is measured against.
+        "max_input_tokens": max_input_tokens,
         "prompt_cache_key": prompt_cache_key,
         **guard_stats,
     }

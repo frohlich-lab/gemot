@@ -225,8 +225,7 @@ async def run_barebones(
     while True:
         retriable: str | None = None
         agen = None
-        wall_budget_exceeded = token_budget_exceeded = False
-        early_stopped: str | None = None
+        wall_budget_exceeded = token_budget_exceeded = context_budget_exceeded = False
         step_wait = step_limit_base * stall_backoff
         replay_pending = stream_input is None
         try:
@@ -260,19 +259,16 @@ async def run_barebones(
                     token_budget_exceeded = True
                     break
                 if token_accountant.max_prompt >= 0.90 * max_input_tokens:
-                    early_stopped = (
-                        "context_window_approached: largest prompt "
-                        f"{token_accountant.max_prompt:,} tokens >= 90% of the "
-                        f"{max_input_tokens:,}-token window"
-                    )
+                    context_budget_exceeded = True
                     break
             stop_reason = (
                 "wall_time_budget_exceeded"
                 if wall_budget_exceeded
                 else "token_budget_exceeded"
                 if token_budget_exceeded
-                else f"early_stop: {early_stopped}"
-                if early_stopped
+                # A budget stop with a bare label, as in the panel's driver.
+                else "context_budget_exceeded"
+                if context_budget_exceeded
                 else "completed"
             )
         except asyncio.TimeoutError:
@@ -310,8 +306,12 @@ async def run_barebones(
                 f"{max_run_tokens:,} in {token_accountant.n_calls} LLM calls — stopping."
             )
             break
-        if early_stopped is not None:
-            print(f"[null] early-stop: {early_stopped}")
+        if context_budget_exceeded:
+            print(
+                f"[null] context window approached: largest prompt "
+                f"{token_accountant.max_prompt:,} tokens >= 90% of the {max_input_tokens:,}-token "
+                "window — stopping."
+            )
             break
         if retriable is None:
             break
@@ -323,6 +323,10 @@ async def run_barebones(
             and token_accountant.prompt + token_accountant.completion >= max_run_tokens
         ):
             stop_reason = "token_budget_exceeded"
+            break
+        # A stall after the largest prompt crossed the line skipped the boundary check above.
+        if token_accountant.max_prompt >= 0.90 * max_input_tokens:
+            stop_reason = "context_budget_exceeded"
             break
         if resume_left <= 0:
             stop_reason = retriable
@@ -356,6 +360,7 @@ async def run_barebones(
         "openrouter_endpoints": token_accountant.endpoints(),
         "token_usage": token_usage,
         "max_output_tokens": max_output_tokens,
+        "max_input_tokens": max_input_tokens,
         "execute_timeout_s": execute_timeout_s,
         "prompt_cache_key": prompt_cache_key,
         # Same keys the panel records for its biocurator, so one query reads both arms.

@@ -522,6 +522,10 @@ def _is_infra_abort(stop_reason: Any) -> bool:
     # limit because of what it DID, so it counts as a failure rather than being dropped as noise.
     if "wall_time_budget" in s or "token_budget" in s or "recursion" in s:
         return False
+    # The context-window stop is one of those budgets. Its label before gemot#7, "early_stop:
+    # context_window_approached: largest prompt 1,000,402 tokens …", carries counts matching "402".
+    if "context_budget" in s or "context_window_approached" in s:
+        return False
     if s.startswith("aborted:"):  # pre-verdict transport abort (runner._write_degraded_result)
         return True
     return any(m in s for m in _INFRA_ABORT_MARKERS)

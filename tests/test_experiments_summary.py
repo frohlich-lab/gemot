@@ -47,6 +47,13 @@ def _row(**over):
         (None, False),
         ("", False),
         ("wall_time_budget_exceeded", False),  # self-imposed budget = genuine stop
+        ("context_budget_exceeded", False),  # the context-window stop is a budget too
+        # its label before gemot#7: the counts contain the "402" out-of-credits marker
+        (
+            "early_stop: context_window_approached: largest prompt 1,000,402 tokens >= 90% of "
+            "the 1,048,576-token window",
+            False,
+        ),
         ("GraphRecursionError: recursion limit", False),  # ran out of steps = modeling outcome
         ("APIStatusError: Error code: 402 - insufficient credits", True),
         ("aborted: ReadTimeout: provider stalled", True),
@@ -130,6 +137,20 @@ def test_late_402_abort_with_work_is_kept():
         n_fits=25,
         stop_reason="APIStatusError: Error code: 402",
     )
+    assert experiments.is_noop_infra_abort(row) is False
+
+
+@pytest.mark.parametrize(
+    "stop_reason",
+    [
+        "context_budget_exceeded",
+        "early_stop: context_window_approached: largest prompt 1,000,402 tokens >= 90% of the "
+        "1,048,576-token window",
+    ],
+)
+def test_context_window_stop_at_zero_work_is_kept(stop_reason):
+    # A budget stop is an outcome even when nothing was committed, whatever numbers its label has.
+    row = _row(success=False, delta_bic=None, n_ops=0, n_fits=0, stop_reason=stop_reason)
     assert experiments.is_noop_infra_abort(row) is False
 
 
