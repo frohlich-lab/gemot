@@ -1,9 +1,10 @@
 """Every agent-facing string the harness sends to a model, in one file.
 
 This is the harness's *prompt surface*: the modeling lead's system prompt and task, the three
-analyst personas, the blinded biocurator's persona, the panel-facing tool descriptions, and the
-standing messages the guards and the finish gate return to the model (nudges, refusals, disabled-
-tool notices). It is prose, not logic — the code that decides *when* to send any of it lives with
+analyst personas, the blinded biocurator's persona, the biology-blind arm's tool descriptions (the
+other arms read the server's own, frohlich-lab/PEtab-MCP#40), and the standing messages the guards
+and the finish gate return to the model (nudges, refusals, disabled-tool notices). It is prose,
+not logic — the code that decides *when* to send any of it lives with
 the mechanism (``agent/``), not here.
 
 Why one file: the text used to be split across ``agent.py`` and ``scenario.py``, so auditing what

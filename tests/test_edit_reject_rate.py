@@ -305,6 +305,26 @@ def test_the_history_csv_carries_the_working_tree_digest(tmp_path):
     assert rows[1]["git_diff_sha256"] == ""  # clean tree -> empty, i.e. attributable
 
 
+def test_the_history_csv_carries_the_server_commit(tmp_path):
+    """The panel reads the server's own tool descriptions (frohlich-lab/PEtab-MCP#40), which
+    `prompt_version` no longer covers: a sweep spanning a server bump splits on this column."""
+    import csv as _csv
+
+    from gemot import metrics
+
+    out = tmp_path / "history.csv"
+    metrics.append_history(
+        [
+            {"scenario": "checkout", "server_code": {"path": "/x", "git_sha": "abc1234+dirty"}},
+            {"scenario": "pip", "server_code": {"version": "0.1", "commit": "def5678"}},
+            {"scenario": "older"},
+        ],
+        history_path=out,
+    )
+    shas = [r["server_sha"] for r in _csv.DictReader(out.open())]
+    assert shas == ["abc1234+dirty", "def5678", ""]
+
+
 # -- which tools were called, not just how many ------------------------------------------------
 def test_the_clock_records_per_tool_call_counts():
     """`tool_calls` was a bare total, so "did the agent ever call X?" was answerable only from the

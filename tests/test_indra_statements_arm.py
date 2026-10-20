@@ -20,7 +20,7 @@ import types
 import pytest
 
 from gemot import ablations, prompts
-from gemot.agent import guards
+from gemot.agent import guards, tools
 from gemot.runner import main as runner_main
 from gemot.runner.server import _SERVER_BOOTSTRAP
 
@@ -58,9 +58,42 @@ def test_the_server_gets_an_empty_entity_map(tmp_path):
     assert path.parent == tmp_path / "build"  # beside the build, not in the agent's work/
 
 
-def test_the_server_offers_the_route_alone_where_it_has_a_map():
-    """The map is given only on the arm, so it is what switches the text routes off."""
-    assert "statements_only=bool(entity_map)" in _SERVER_BOOTSTRAP
+def test_the_server_offers_the_route_alone_where_it_has_a_map(monkeypatch):
+    """The map is given only on the arm, so it is what switches the text routes off. The bootstrap
+    runs here with the server and uvicorn stubbed."""
+    import sys
+
+    seen: dict = {}
+    server = types.ModuleType("petab_mcp.server")
+    server.create_server = lambda *a, **kw: (
+        seen.update(kw) or types.SimpleNamespace(run=lambda **_: None)
+    )
+    uvicorn = types.ModuleType("uvicorn")
+    uvicorn.Config = object
+    monkeypatch.setitem(sys.modules, "petab_mcp.server", server)
+    monkeypatch.setitem(sys.modules, "uvicorn", uvicorn)
+    for entity_map, only in (("build/entity_map.json", True), ("", False)):
+        argv = ["-c", "p.yaml", "build", "off", "127.0.0.1", "0", "5", "", "0", entity_map]
+        monkeypatch.setattr(sys, "argv", argv)
+        exec(_SERVER_BOOTSTRAP, {})
+        assert seen["statements_only"] is only and seen["entity_map"] == (entity_map or None)
+
+
+def _make_changes_tool(*args):
+    schema = {"properties": dict.fromkeys(args, {}), "required": ["justification"]}
+    return types.SimpleNamespace(name="make_changes", args_schema=schema)
+
+
+def test_on_the_arm_only_the_statements_editor_is_accepted(monkeypatch):
+    """`_statements_route` refused a server without the route; its successor must still fail at
+    startup, not bounce every call of a run against the wrong server."""
+    monkeypatch.setattr(tools, "INDRA_STATEMENTS_ENABLED", True)
+    tools._check_statements_editor([_make_changes_tool("statements", "statement_edits")])
+    for wrong in (("antimony", "model_edits"), ("statements", "antimony")):
+        with pytest.raises(RuntimeError, match="statements-only"):
+            tools._check_statements_editor([_make_changes_tool(*wrong)])
+    monkeypatch.setattr(tools, "INDRA_STATEMENTS_ENABLED", False)
+    tools._check_statements_editor([_make_changes_tool("antimony")])
 
 
 # ------------------------------------------------------------------ the statements-only guard

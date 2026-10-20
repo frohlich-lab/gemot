@@ -178,6 +178,23 @@ def _blind_descriptions(tools: list) -> list:
     return tools
 
 
+def _check_statements_editor(tools: list) -> None:
+    """On the indra_statements arm, refuse a server whose ``make_changes`` is not the
+    statements-only editor. The lead is prompted for statements alone and the statements-only
+    guard bounces every other route, so a run against the wrong server would spend its budget
+    unscored."""
+    if not INDRA_STATEMENTS_ENABLED:
+        return
+    editor = next((t for t in tools if getattr(t, "name", None) == "make_changes"), None)
+    schema = getattr(editor, "args_schema", None)
+    args = set(schema.get("properties") or {}) if isinstance(schema, dict) else set()
+    if "statements" not in args or args & {"antimony", "model_edits"}:
+        raise RuntimeError(
+            "indra_statements is on, but the server's make_changes is not the statements-only "
+            f"editor (its arguments: {sorted(args)}); was it started without an entity map?"
+        )
+
+
 def _select_tools(tools: list) -> list:
     """Curate to ALLOWED_TOOLS. Warn (don't fail open) if expected tools are missing.
 
