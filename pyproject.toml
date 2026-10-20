@@ -32,7 +32,7 @@ dependencies = [
     # #3408's merge commit. frohlich-lab/PEtab-MCP#97 (INTERIM, its head): the panel reads the
     # server's own tool descriptions, and `statements_only` for the indra_statements arm; move to
     # its merge commit before this merges.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@699df7774b2da38ace9c9a76ed2721cfedf8113d",
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@1ddea6564ffe187697c9071b5cf6f5d5bc68b972",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
     # deleted, and mcp 2.0 reworks the client API used here (streamablehttp_client ->
