@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from uuid import UUID
 
 #: Explicit graph name used by the driver and reported in LangChain callback metadata.
@@ -73,12 +74,21 @@ def _token_accountant():
             self.max_lead_prompt: int | None = None
             self._lead_runs: set[UUID] = set()
             self._last_lead_run: UUID | None = None
-            # (upstream provider, service tier) -> calls served by it. See `endpoints()`.
+            # (model asked for, upstream provider, service tier) -> calls served by it. See
+            # `endpoints()`. The model is read at the call's start and held until its end.
             self.served: dict[tuple, int] = {}
+            self._run_models: dict[UUID, str | None] = {}
 
         async def on_chat_model_start(
             self, serialized, messages, *, run_id, metadata=None, **kwargs
         ):
+            # The model this call ASKED for, which is what a `provider.only` pin is set on: the
+            # biocurator may run its own model pinned to its own provider (`biocurator_model`).
+            # LangChain's standard `ls_model_name`, the id the pin is keyed on, rather than the
+            # response's `model_name`, which is whatever the provider writes back.
+            self._run_models[run_id] = (
+                metadata.get("ls_model_name") if isinstance(metadata, dict) else None
+            )
             # Subagent graphs replace lc_agent_name with their own name even when they share
             # the lead's model. before_model helpers inherit the name but have another node.
             if (
@@ -92,8 +102,9 @@ def _token_accountant():
 
         async def on_llm_error(self, error, *, run_id, **kwargs):
             self._lead_runs.discard(run_id)
+            self._run_models.pop(run_id, None)
 
-        def _record_endpoint(self, response):
+        def _record_endpoint(self, response, model):
             """Tally which upstream endpoint served this call, from whichever place carries it.
 
             ``openrouter_provider`` is put there by the ChatOpenAI subclass in ``agent.driver``;
@@ -117,7 +128,7 @@ def _token_accountant():
                             break
                     if provider is not None:
                         break
-            key = (provider, tier)
+            key = (model, provider, tier)
             self.served[key] = self.served.get(key, 0) + 1
 
         def _response_cost(self, response) -> float | None:
@@ -139,9 +150,10 @@ def _token_accountant():
         async def on_llm_end(self, response, *, run_id=None, **kwargs):  # noqa: D401 - LangChain hook
             is_lead = run_id in self._lead_runs
             self._lead_runs.discard(run_id)
+            model = self._run_models.pop(run_id, None)
             lead_prompt = None
             try:
-                self._record_endpoint(response)
+                self._record_endpoint(response, model)
             except Exception:  # pragma: no cover - accounting must never break a run
                 pass
             try:
@@ -242,13 +254,18 @@ def _token_accountant():
             and every member of that set is a different machine, so a run served by two of them is
             not one measurement. Recorded for EVERY run, not only drifted ones — "absent" would
             otherwise have to be read as "probably fine", which is how provenance rots.
+
+            An endpoint is a model on a provider, so each ``served`` row names the ``model`` it
+            served and drift is judged per model: a biocurator on its own model, pinned to its own
+            provider (``biocurator_model``), is two endpoints and no drift. ``n_distinct`` counts
+            endpoints over all models.
             """
             served = sorted(
                 (
-                    {"provider": p, "service_tier": t, "n_calls": n}
-                    for (p, t), n in self.served.items()
+                    {"model": m, "provider": p, "service_tier": t, "n_calls": n}
+                    for (m, p, t), n in self.served.items()
                 ),
-                key=lambda r: (-r["n_calls"], str(r["provider"])),
+                key=lambda r: (-r["n_calls"], str(r["model"]), str(r["provider"])),
             )
             # Drift is judged over ATTRIBUTED endpoints only. The unattributed bucket is a gap in
             # our own recording, not a second machine, and counting it would flag an ordinary
@@ -256,13 +273,14 @@ def _token_accountant():
             # excluding a healthy run from the very A/B this field exists to filter. It stays in
             # `served` (so the counts still sum to the calls made) and is surfaced separately.
             attributed = [s for s in served if s["provider"] is not None]
+            per_model = Counter(s["model"] for s in attributed)
             return {
                 "served": served,
                 "n_distinct": len(attributed),
                 "n_unattributed_calls": sum(s["n_calls"] for s in served if s["provider"] is None),
-                # One endpoint = no drift. Zero happens when nothing reported a provider (a
-                # non-OpenRouter base_url), which is not drift either.
-                "drifted": len(attributed) > 1,
+                # One endpoint per model = no drift. Zero happens when nothing reported a provider
+                # (a non-OpenRouter base_url), which is not drift either.
+                "drifted": any(n > 1 for n in per_model.values()),
             }
 
     return _Accountant()
