@@ -91,8 +91,15 @@ def log_result(
         config.update(extra)
 
     metrics: dict[str, Any] = {k: result.get(k) for k in _METRIC_KEYS}
-    # 0/1 so W&B averages give a success RATE when grouped; reduced χ² is derived.
-    metrics["passed"] = 1.0 if result.get("success") else 0.0
+    # 0/1 so W&B averages give a success RATE when grouped; reduced χ² is derived. A run with no
+    # verdict logs neither: the degraded `aborted:` result (`runner.failure`) carries
+    # `success: False` although the judge never ran, and logged as a failure it pulled every
+    # group's rate down by that group's infrastructure aborts (#10). A declined verdict
+    # (`success: null`) is no verdict either.
+    aborted = str(result.get("stop_reason") or "").startswith("aborted:")
+    success = None if aborted else result.get("success")
+    metrics["success"] = success
+    metrics["passed"] = None if success is None else (1.0 if success else 0.0)
     # Reuse the one reduced-χ² definition (χ² / dof) instead of re-deriving it here.
     from .experiments import reduced_chi2
 
