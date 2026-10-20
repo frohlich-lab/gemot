@@ -163,6 +163,149 @@ def test_a_design_table_dropped_from_the_yaml_is_reported(tmp_path):
     assert "observables.tsv" in out["design_modified"]
 
 
+def test_a_design_table_listed_beside_the_staged_ones_is_reported(tmp_path):
+    """#1: an extra measurement file beside the untouched original leaves every staged hash intact,
+    and the rows it adds would lower the score of a model that reproduces them."""
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+    yaml_text = (work / "problem.yaml").read_text()
+    yaml_text = yaml_text.replace("  - measurements.tsv", "  - measurements.tsv\n  - more.tsv")
+    (work / "problem.yaml").write_text(yaml_text)
+    shutil.copy(work / "measurements.tsv", work / "more.tsv")
+    out = R.check_delivery(work, staged)
+    assert out["design_modified"] == ["more.tsv"]
+
+
+def _edit_model(work: Path, edit) -> None:
+    """Apply ``edit(model)`` to the delivered toy SBML and write it back."""
+    import libsbml
+
+    path = work / "conversion_reaction.xml"
+    doc = libsbml.readSBMLFromFile(str(path))
+    edit(doc.getModel())
+    libsbml.writeSBMLToFile(doc, str(path))
+
+
+def _add(model, kind: str, sid: str, value: float | None = None):
+    """A parameter (``value``) or a species (initial concentration ``value``, unset if None)."""
+    if kind == "parameter":
+        p = model.createParameter()
+        p.setId(sid)
+        p.setConstant(True)
+        p.setValue(value)
+        return p
+    sp = model.createSpecies()
+    sp.setId(sid)
+    sp.setCompartment("compartment_")
+    sp.setHasOnlySubstanceUnits(False)
+    sp.setBoundaryCondition(False)
+    sp.setConstant(False)
+    if value is not None:
+        sp.setInitialConcentration(value)
+    return sp
+
+
+def _add_decay(model, rid: str, species: list[str], rate: str):
+    """``species -> ;`` at ``rate``, so every name in it is read by the model."""
+    import libsbml
+
+    rxn = model.createReaction()
+    rxn.setId(rid)
+    rxn.setReversible(False)
+    for sid in species:
+        ref = rxn.createReactant()
+        ref.setSpecies(sid)
+        ref.setStoichiometry(1)
+        ref.setConstant(True)
+    rxn.createKineticLaw().setMath(libsbml.parseL3Formula(rate))
+    return rxn
+
+
+def _add_rows(work: Path, *rows: str) -> None:
+    with (work / "parameters.tsv").open("a") as fh:
+        fh.writelines(row + "\n" for row in rows)
+
+
+def test_numbers_outside_the_estimated_rows_are_charged(tmp_path):
+    """#1: the panel's server gives every parameter a model declares an ESTIMATED row and every
+    nonzero, non-unit initial value an estimated `<sid>_init`. Scored as shipped, the same numbers
+    were free to the null written as an SBML value with no row, as a fixed row the problem does not
+    ship, or as a numeric initial value. Each is charged; an estimated row is the judge's own count,
+    and a parameter nothing reads is pruned by the panel, so neither is listed."""
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+
+    def edit(m):
+        for pid, value in (("kx", 0.37), ("kf", 0.2), ("kd", 0.05), ("unused", 5.0)):
+            _add(m, "parameter", pid, value)
+        _add(m, "species", "C", 3.7)
+        _add_decay(m, "r3", ["C"], "kd * kx * kf * C")
+
+    _edit_model(work, edit)
+    _add_rows(work, "kd\tlog10\t0.0001\t100.0\t0.05\t1", "kf\tlin\t0.0\t1.0\t0.2\t0")
+    out = R.check_delivery(work, staged)
+    assert out["petab_lint"]["ok"], out["petab_lint"]
+    assert out["uncharged"] == [
+        "kx = 0.37: no parameter-table row",
+        "kf = 0.2: a fixed row the problem does not ship",
+        "C = 3.7: a numeric initial value",
+    ]
+
+
+def test_the_panels_free_numbers_stay_free(tmp_path):
+    """What the reconcile leaves fixed costs the null nothing either: a start at 0, unset, or 1 —
+    written as a number or as a direct `D = D0` with D0 at 1, with or without a fixed row — and a
+    value a rule computes (it cannot have a row at all)."""
+    import libsbml
+
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+
+    def edit(m):
+        for sid, value in (("D", None), ("D2", None), ("E", 1.0), ("F", 0.0), ("G", None)):
+            _add(m, "species", sid, value)
+        for pid, value in (("D0", 1.0), ("D20", 0.0), ("p_rule", 0.0)):
+            _add(m, "parameter", pid, value).setConstant(pid != "p_rule")
+        for sid, math in (("D", "D0"), ("D2", "D20")):
+            ia = m.createInitialAssignment()
+            ia.setSymbol(sid)
+            ia.setMath(libsbml.parseL3Formula(math))
+        rule = m.createAssignmentRule()
+        rule.setVariable("p_rule")
+        rule.setMath(libsbml.parseL3Formula("2 * k2"))
+        _add_decay(m, "r3", ["D", "D2", "E", "F", "G"], "k1 * p_rule * D * D2 * E * F * G")
+
+    _edit_model(work, edit)
+    _add_rows(work, "D20\tlin\t0.0\t1.0\t0.0\t0")
+    out = R.check_delivery(work, staged)
+    assert out["petab_lint"]["ok"], out["petab_lint"]
+    assert out["uncharged"] == []
+
+
+def test_a_local_parameter_is_charged(tmp_path):
+    """A rate law's local parameter is a named number no parameter table can see."""
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+
+    def edit(m):
+        import libsbml
+
+        law = m.getReaction("r1").getKineticLaw()
+        local = law.createLocalParameter()
+        local.setId("k_local")
+        local.setValue(0.3)
+        law.setMath(libsbml.parseL3Formula("k1 * k_local * A"))
+
+    _edit_model(work, edit)
+    out = R.check_delivery(work, staged)
+    assert out["petab_lint"]["ok"], out["petab_lint"]
+    assert out["uncharged"] == ["r1.k_local = 0.3: a local parameter"]
+
+
 def test_shipped_rows_are_protected(tmp_path):
     """A fixed shipped constant re-valued or freed, or a shipped row removed, is a violation; the
     agent's OWN new rows are not checked (it may add whatever it estimates)."""
@@ -314,6 +457,27 @@ def test_a_v2_delivery_that_rewrites_the_design_or_a_shipped_row_is_reported(tmp
     assert sorted(out["shipped_rows_violated"]) == sorted(
         ["sigma_B: fixed value 0.1 -> 0.5", "A_init: estimate 0 -> 1"]
     )
+
+
+def test_a_v2_delivery_is_charged_but_not_for_a_condition_target(tmp_path):
+    """v2 names its condition targets in `targetId` rows: a species the condition table sets
+    starts where the condition says, so its declared value is no number of the model's."""
+    work = _workspace_v2(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+
+    def edit(m):
+        import libsbml
+
+        m.removeInitialAssignment("A")
+        m.getSpecies("A").setInitialConcentration(3.7)
+        _add(m, "parameter", "kx", 0.37)
+        m.getReaction("r2").getKineticLaw().setMath(libsbml.parseL3Formula("k2 * kx * B"))
+
+    _edit_model(work, edit)
+    out = R.check_delivery(work, staged)
+    assert out["petab_lint"]["ok"], out["petab_lint"]
+    assert out["uncharged"] == ["kx = 0.37: no parameter-table row"]
 
 
 def test_a_v2_lint_error_is_named(tmp_path):

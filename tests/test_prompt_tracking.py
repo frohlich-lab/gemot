@@ -49,6 +49,8 @@ _FRAGMENTS = {
     "_MERGE_TAKE_RULE",
     "_ADEQUATE_IS_NOT_DONE",
     "_MODEL_EDIT_OPS",
+    # Read by the statements lead and the null arm (the barebones template).
+    "_FREE_LITERALS",
 }
 
 

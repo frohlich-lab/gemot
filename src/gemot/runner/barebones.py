@@ -11,7 +11,8 @@ sees, so the harness's own ``run_live.json``/logs/result stay outside it — and
 tables), :func:`barebones_system_prompt` (the instructions for the problem's PEtab version,
 naming the design tables the check hashes), :func:`barebones_task` (the same known-constants note
 and entity names the panel gets),
-and :func:`check_delivery` (design tables untouched, shipped parameter rows intact, petab lint).
+and :func:`check_delivery` (design tables untouched, shipped parameter rows intact, petab lint,
+and the numbers the judge must charge that no estimated row counts).
 A tampered or unloadable delivery is recorded as a loss (``unscoreable_reason``), not an abort.
 Reasons are in ``docs/RATIONALE.md`` (the ``#203`` entries).
 
@@ -228,15 +229,17 @@ def _parameter_rows(path: Path) -> dict[str, tuple[int | None, float | None]]:
 # --------------------------------------------------------------------------- delivery checks
 def check_delivery(work: Path, staged: dict) -> dict:
     """What the agent left behind, against the rules it was given: ``design_modified`` (design
-    tables whose bytes changed or left the YAML), ``shipped_rows_violated`` (shipped parameter
-    rows removed, re-flagged, or — fixed ones — re-valued), ``model_ant_set_aside``,
-    ``petab_lint`` (``{ok, messages}``) and ``model_authored``."""
+    tables whose bytes changed or left the YAML, and any the YAML lists beside them),
+    ``shipped_rows_violated`` (shipped parameter rows removed, re-flagged, or — fixed ones —
+    re-valued), ``model_ant_set_aside``, ``petab_lint`` (``{ok, messages}``), ``model_authored``,
+    and ``uncharged`` (:func:`_uncharged_numbers`, for a delivery that lints)."""
     out: dict = {
         "design_modified": [],
         "shipped_rows_violated": [],
         "model_ant_set_aside": False,
         "petab_lint": {"ok": False, "messages": []},
         "model_authored": None,
+        "uncharged": [],
     }
     # a model.ant beside the YAML would be loaded instead of the SBML (session.py prefers it)
     ant = work / "model.ant"
@@ -254,6 +257,10 @@ def check_delivery(work: Path, staged: dict) -> dict:
         f = work / name
         if name not in listed or not f.is_file() or _sha256(f) != digest:
             out["design_modified"].append(name)
+    # An extra measurement file beside the untouched originals is a changed design too: the judge
+    # takes n from the delivered problem, so rows the model reproduces would lower its score (#1).
+    for role in _DESIGN_ROLES:
+        out["design_modified"].extend(sorted(set(files[role]) - set(staged["files"][role])))
     delivered_rows: dict = {}
     for name in files["parameter"]:
         delivered_rows.update(_parameter_rows(work / name))
@@ -266,7 +273,134 @@ def check_delivery(work: Path, staged: dict) -> dict:
         elif est == 0 and got[1] != nominal:
             out["shipped_rows_violated"].append(f"{pid}: fixed value {nominal} -> {got[1]}")
     out["petab_lint"], out["model_authored"] = _lint(work / "problem.yaml")
+    if out["petab_lint"]["ok"] and out["model_authored"]:
+        out["uncharged"] = _uncharged_numbers(work / "problem.yaml", staged["shipped_rows"])
     return out
+
+
+def _math_names(math) -> set[str]:
+    """The identifiers an SBML math AST reads (``time`` and the other csymbols are not names)."""
+    import libsbml
+
+    names: set[str] = set()
+    stack = [math] if math is not None else []
+    while stack:
+        node = stack.pop()
+        if node.getType() == libsbml.AST_NAME:
+            names.add(node.getName())
+        stack.extend(node.getChild(i) for i in range(node.getNumChildren()))
+    return names
+
+
+def _uncharged_numbers(yaml_path: Path, shipped_rows: dict) -> list[str]:
+    """The numbers the delivered model carries that no estimated row counts, one entry each: what
+    the panel would have been charged for the same model, and the delivery as shipped is not.
+
+    The panel never has a model scored as written. The server's reconcile runs on every edit and
+    gives each parameter the model declares an ESTIMATED row (``sync_parameter_table``) and each
+    species' nonzero, non-unit initial value an estimated ``<sid>_init``
+    (``ensure_parametric_initial_conditions``), and no tool of the lead's can fix a parameter. A
+    delivery is scored as shipped, so before this the same numbers cost the null nothing written as
+    a fixed row the problem does not ship, as an SBML parameter value with no row, or as a numeric
+    initial value (#1). The judge charges each one here by the reconcile's own conventions: a
+    direct initial condition (``A = A0``) at 0 or 1 is free, and so are condition targets, values
+    a rule or initial assignment computes, and whatever the model never reads (the reconcile prunes
+    it). A rate law's local parameter is charged too, a named number no table can see.
+
+    Charged, deliberately not refused: refusing would make the plain Antimony start ``A = 3.7`` a
+    lost run for the null where the panel pays one parameter for it. And not by running the
+    server's reconcile on the delivery: that cannot tell the rows the problem shipped from the
+    ones the agent added, which only the staging recorded.
+
+    Literals in the model's math are not listed: the server's ``hardcoded_constants`` prices them
+    for both arms.
+    """
+    import libsbml
+    from petab.versions import get_major_version
+
+    if get_major_version(str(yaml_path)) == 1:
+        import petab.v1 as petab
+
+        problem = petab.Problem.from_yaml(str(yaml_path))
+    else:
+        from petab import v2
+
+        problem = v2.Problem.from_yaml(str(yaml_path))
+    sm = problem.model.sbml_model
+    cdf = problem.condition_df
+    if cdf is None:
+        targets: set[str] = set()
+    elif "targetId" in cdf.columns:  # v2: a target per row
+        targets = {str(t) for t in cdf["targetId"].dropna()}
+    else:  # v1: a target per column
+        targets = {str(c) for c in cdf.columns} - {"conditionName"}
+    rules = list(sm.getListOfRules())
+    computed = {r.getVariable() for r in rules if r.isSetVariable()}
+    assigned = {r.getVariable() for r in rules if r.isAssignment()}
+    initial = {ia.getSymbol(): ia.getMath() for ia in sm.getListOfInitialAssignments()}
+    direct_ic = set()
+    for sid, math in initial.items():
+        names = _math_names(math)
+        if sm.getSpecies(sid) is not None and len(names) == 1:
+            direct_ic |= names
+
+    maths = [*initial.values(), *(r.getMath() for r in rules)]
+    read = set(computed)
+    for rxn in sm.getListOfReactions():
+        read |= {ref.getSpecies() for ref in rxn.getListOfReactants()}
+        read |= {ref.getSpecies() for ref in rxn.getListOfProducts()}
+        read |= {ref.getSpecies() for ref in rxn.getListOfModifiers()}
+        if rxn.getKineticLaw() is not None:
+            maths.append(rxn.getKineticLaw().getMath())
+    for event in sm.getListOfEvents():
+        maths += [part.getMath() for part in (event.getTrigger(), event.getDelay()) if part]
+        maths += [ea.getMath() for ea in event.getListOfEventAssignments()]
+    for col in ("observableFormula", "noiseFormula"):
+        if problem.observable_df is not None and col in problem.observable_df.columns:
+            maths += [libsbml.parseL3Formula(str(f)) for f in problem.observable_df[col]]
+    for math in maths:
+        read |= _math_names(math)
+
+    pdf = problem.parameter_df
+    uncharged = []
+    for p in sm.getListOfParameters():
+        pid = p.getId()
+        if pid in shipped_rows or pid in targets or pid in computed or pid in initial:
+            continue
+        if pid not in read:
+            continue
+        if pid in pdf.index:
+            if _estimate_flag(str(pdf.loc[pid, "estimate"])) == 1:
+                continue  # an estimated row: the judge counts it already
+            value = float(pdf.loc[pid, "nominalValue"])
+            how = "a fixed row the problem does not ship"
+        else:
+            value, how = p.getValue(), "no parameter-table row"
+        if pid in direct_ic and value in (0.0, 1.0):
+            continue
+        uncharged.append(f"{pid} = {value:g}: {how}")
+    for sp in sm.getListOfSpecies():
+        sid = sp.getId()
+        if sid in targets or sid in assigned or sid in initial or sid not in read:
+            continue
+        if sp.isSetInitialConcentration():
+            value = sp.getInitialConcentration()
+        else:
+            value = sp.getInitialAmount() if sp.isSetInitialAmount() else 0.0
+        if value not in (0.0, 1.0):
+            uncharged.append(f"{sid} = {value:g}: a numeric initial value")
+    for rxn in sm.getListOfReactions():
+        law = rxn.getKineticLaw()
+        if law is None:
+            continue
+        reads = _math_names(law.getMath())
+        for i in range(law.getNumParameters()):
+            local = law.getParameter(i)
+            if local.getId() in reads:
+                uncharged.append(
+                    f"{rxn.getId()}.{local.getId()} = {local.getValue():g}: a local parameter"
+                )
+    return uncharged
 
 
 def _lint(yaml_path: Path) -> "tuple[dict, bool | None]":
@@ -448,9 +582,12 @@ async def _judge_delivered(
     )
     if not desc.get("model_authored", False):
         meta = {**meta, "stop_reason": "no_model_built"}
+    uncharged = meta["delivery"]["uncharged"]
+    if uncharged:
+        print(f"[judge] charging {len(uncharged)} number(s) no estimated row counts: {uncharged}")
     # No baseline, as for a zero-shot build; every species the agent declared is "new".
     baseline = Baseline(nll=None, species=set(), structure={})
-    return await _judge(scenario, call, baseline, work, meta, clock, t0)
+    return await _judge(scenario, call, baseline, work, meta, clock, t0, uncharged=uncharged)
 
 
 async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) -> "tuple[int, dict]":

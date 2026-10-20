@@ -148,7 +148,7 @@ def _implausible_sigma_text(flag: dict) -> str:
     )
 
 
-def _candidate_k(params, final) -> "tuple[int, int, list[str]]":
+def _candidate_k(params, final, uncharged=()) -> "tuple[int, int, list[str]]":
     """``(k, k_estimated, hardcoded_constants)`` for the model being scored.
 
     ``k_estimated`` counts ``get_parameters`` rows with ``estimate`` truthy — NOT
@@ -165,6 +165,11 @@ def _candidate_k(params, final) -> "tuple[int, int, list[str]]":
     reward replacing the parameter vector with numerals (issue #180). Re-derived here from the two
     reads rather than copied off the server's ``k``, so the two stay independently derived yet
     equal. A summary that lacks the list (a server predating it) charges none.
+
+    ``uncharged`` is the null arm's third addend, one per number its delivery carries outside the
+    estimated rows that the panel's reconcile would have made one
+    (:func:`.barebones._uncharged_numbers`, issue #1). The panel passes none: its server reconciles
+    every model before it is fitted.
     """
     k_estimated = (
         sum(
@@ -177,7 +182,7 @@ def _candidate_k(params, final) -> "tuple[int, int, list[str]]":
     )
     hardcoded = final.get("hardcoded_constants") if isinstance(final, dict) else None
     hardcoded = [str(c) for c in hardcoded] if isinstance(hardcoded, list) else []
-    return k_estimated + len(hardcoded), k_estimated, hardcoded
+    return k_estimated + len(hardcoded) + len(uncharged), k_estimated, hardcoded
 
 
 def _fitted_parameters(params) -> "dict[str, float] | None":
@@ -351,6 +356,7 @@ async def _judge(
     meta: dict,
     clock: "_ToolClock",
     t0: float,
+    uncharged: "list[str] | None" = None,
 ) -> "tuple[int, dict]":
     """Judge the repaired model against the true model by the run's criterion (structure-agnostic).
 
@@ -370,6 +376,10 @@ async def _judge(
     For a ``reference_free`` scenario the criterion gate is replaced, not relaxed: success ⇔ a valid
     fit AND a plausible sigma (the data-std band, there being no reference sigma) AND the scenario's
     declared adequacy test PASSES — one it could not assess is not a pass.
+
+    A candidate scored on a different number of data points than the reference has no Δ against
+    it: the deltas are withheld (``n_mismatch``) and the run fails. ``uncharged`` adds to k (see
+    :func:`_candidate_k`).
 
     Returns ``(exit_code, result)``: the process exit code (0 on success, 1 otherwise) and
     the machine-readable result dict (also written to ``work/result.json``), so the caller
@@ -410,9 +420,10 @@ async def _judge(
     # constants (petab_mcp.literals): a fitted value frozen into a rate law is priced as the
     # parameter it is, exactly as the server's own bic prices it — otherwise the headline ΔBIC
     # would reward replacing the parameter vector with numerals (issue #180). The reference has
-    # none by construction: its published constants are fixed rows or the author's literals.
+    # none by construction: its published constants are fixed rows or the author's literals. PLUS,
+    # for a null delivery, the numbers the panel's reconcile would have made estimated rows (#1).
     params = await call("get_parameters")
-    k, k_estimated, hardcoded = _candidate_k(params, final)
+    k, k_estimated, hardcoded = _candidate_k(params, final, uncharged or ())
     chi2 = final.get("chi2") if isinstance(final, dict) else None
     chi2 = float(chi2) if chi2 is not None else None
     # Residual-structure tests (sign, runs, replicate lack-of-fit) of the SCORED model — the checkpoint was already
@@ -559,6 +570,16 @@ async def _judge(
     delta_score = (
         (score_cand - score_ref) if (score_cand is not None and score_ref is not None) else None
     )
+    # The reference is scored on the problem's measurement table, one point per row, and so is a
+    # candidate on the same table. A different n means the candidate was scored on other data, and
+    # no Δ between the two means anything: withheld, as for the held-out set's own n_mismatch, so
+    # the run fails. A null delivery could list extra measurements its model reproduces (#1).
+    ref_n = ref.get("n") if isinstance(ref, dict) else None
+    n_mismatch = bool(n) and isinstance(ref_n, (int, float)) and n != ref_n and not reference_free
+    if n_mismatch:
+        delta_bic = delta_score = None
+        for row in criteria_scores.values():
+            row["delta"] = None
     # One threshold for both: every criterion here is on the same deviance scale (2·Δnll), which
     # is what lets the benchmark's evidence bar carry over unchanged when the penalty is swapped.
     score_pass = delta_score is not None and delta_score <= scenario.bic_threshold
@@ -646,6 +667,8 @@ async def _judge(
         # truthy dict — report that as "malformed", not "ok", so the real cause of the missing gate
         # shows.
         ref_state = "missing" if not ref else ("ok" if score_ref is not None else "malformed")
+        if n_mismatch:
+            ref_state = f"scored on n={ref_n}"
         print(f"  {_col}unavailable (reference {ref_state}, n={n})")
     # Canonical BIC alongside whenever it is NOT the gate — recorded for every run
     # (docs/RATIONALE.md), and worth seeing next to the score that actually decided.
@@ -771,6 +794,11 @@ async def _judge(
         )
     elif final_nll is None:
         verdict = "no valid fit (the model was never built or produced a non-finite objective)."
+    elif n_mismatch:
+        verdict = (
+            f"scored on n={n} data points, the true model on n={ref_n}: the two scores are not "
+            f"comparable, so there is no Δ{criterion_label}."
+        )
     elif delta_score is None:
         verdict = (
             f"could not evaluate {criterion_label} (missing reference.json or no data points)."
@@ -798,7 +826,8 @@ async def _judge(
         "delta": delta,
         "chi2": chi2,
         "k": k,
-        # k's two addends, so a k above the estimated-row count is auditable after the fact.
+        # k's addends, so a k above the estimated-row count is auditable after the fact: these
+        # two, and on a null delivery its `delivery.uncharged`.
         "k_estimated": k_estimated,
         "hardcoded_constants": hardcoded,
         # The scored model's parameter VECTOR, not just its count. Every criterion here prices k
@@ -807,6 +836,8 @@ async def _judge(
         # what a distilled rate law actually claims -- meant re-fitting it.
         "fitted_parameters": _fitted_parameters(params),
         "n": n,
+        # n differs from the reference's: every Δ below is withheld and the run fails.
+        "n_mismatch": n_mismatch,
         "k_eff": k_eff,
         "bic": bic_cand,
         "bic_reference": bic_ref,
