@@ -56,16 +56,22 @@ def _should_reraise(exc: BaseException) -> bool:
     return False
 
 
-def _head_version(work: Path) -> "int | None":
+def _store_head(work: Path) -> "int | None":
     """HEAD's version number in the run's version store, or ``None`` if there is no store to read.
 
-    The number the judge would have read off ``describe_problem`` as ``head_version``. The server
-    keeps it in ``.petab_mcp/HEAD`` and writes it only after a version's snapshot is complete, so a
-    server killed mid-snapshot leaves HEAD on the last whole version. Versions exist only for
-    fitted models: ``v0`` is the first fit, and a store with no HEAD (``-1``) has none.
+    What ``describe_problem`` reports as ``current_version`` at the moment of the abort: the
+    agent's last HEAD, or the version the judge restored if it got that far. (A judged result's
+    ``head_version`` is read after that restore, so it is always the version the judge scored.)
+    The server keeps it in ``.petab_mcp/HEAD`` and writes it only after a version's snapshot is
+    complete, so a server killed mid-snapshot leaves HEAD on the last whole version. Versions exist
+    only for fitted models: ``v0`` is the first fit, and a store with no HEAD (``-1``) has none.
+
+    Not :func:`gemot.runner.judge._head_version`, which asks a live server for the same number.
     """
     store = store_dir(work)
-    if not store.is_dir():  # the abort predates the server, or this arm runs none
+    # No store: the abort predates the server. The null arm's scoring server is launched on
+    # `work/agent/problem.yaml`, so its store is never this one.
+    if not store.is_dir():
         return None
     try:
         return int((store / "HEAD").read_text().strip())
@@ -138,7 +144,7 @@ def _write_degraded_result(
         # discarded on exactly this.
         **(
             {"head_version": head, "n_ops": head + 1}
-            if (head := _head_version(work)) is not None
+            if (head := _store_head(work)) is not None
             else {}
         ),
     }

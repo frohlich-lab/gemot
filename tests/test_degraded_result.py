@@ -18,7 +18,7 @@ import pytest
 
 from gemot import analysis as A
 from gemot import experiments as E
-from gemot.runner.failure import _write_degraded_result
+from gemot.runner import failure as F
 
 _ABORT = "ReadTimeout: provider stalled"
 
@@ -34,7 +34,7 @@ def _store(work, versions: int, head: int | None) -> None:
 
 
 def _degraded(work) -> dict:
-    _write_degraded_result(work, {"driver": "deepagents"}, SimpleNamespace(name="toy"), _ABORT)
+    F._write_degraded_result(work, {"driver": "deepagents"}, SimpleNamespace(name="toy"), _ABORT)
     return json.loads((work / "result.json").read_text())
 
 
