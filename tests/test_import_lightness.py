@@ -231,24 +231,42 @@ def test_fit_budget_matches_the_server():
 def test_the_recorded_fit_settings_are_every_one_the_server_reads():
     """``fit_settings`` in result.json (gemot#6) comes from ``fit_budget.server_fit_settings``, a
     restated copy of how ``petab_mcp.fitting`` reads its environment. A setting the server gains
-    would go unrecorded, and a default it moves would be recorded wrong, with nothing failing:
-    the names are read from the server's source, and each value from the constant it sets."""
-    import inspect
+    would go unrecorded, and a default it moves would be recorded wrong, with nothing failing.
+
+    The names are every ``"PETAB_MCP_FIT_…"`` literal in the server package, so a knob read outside
+    ``fitting``, or from ``os.environ`` directly, counts too. Each value is the ``fitting`` constant
+    that reads it, matched across an annotation or a wrapped call; the first version matched
+    one-line assignments only, which a reformatted or annotated new knob would have slipped past."""
     import re
 
     from gemot import fit_budget
+    from gemot.scenario import AMICI_TOLERANCE_ENV
 
+    import petab_mcp
     from petab_mcp import fitting
 
-    reads = dict(
-        re.findall(
-            r'^(\w+) = _env_(?:float|int)\("(PETAB_MCP_\w+)"', inspect.getsource(fitting), re.M
-        )
-    )
-    assert reads, "the server no longer reads its fit settings the way this test parses"
-    assert fit_budget.server_fit_settings(os.environ) == {
-        name: getattr(fitting, constant) for constant, name in reads.items()
+    package = Path(petab_mcp.__file__).parent
+    names = {
+        name
+        for source in package.rglob("*.py")
+        for name in re.findall(r'"(PETAB_MCP_FIT_\w+)"', source.read_text(encoding="utf-8"))
     }
+    constants = {
+        name: constant
+        for constant, name in re.findall(
+            r'^(\w+)\s*(?::[^=\n]*)?=\s*_env_(?:float|int)\(\s*"(PETAB_MCP_FIT_\w+)"',
+            (package / "fitting.py").read_text(encoding="utf-8"),
+            re.M,
+        )
+    }
+    assert names, "the server no longer names its fit settings the way this test reads them"
+    assert set(constants) == names, f"read but not as a fitting constant: {names - set(constants)}"
+    assert fit_budget.server_fit_settings(os.environ) == {
+        name: getattr(fitting, constant) for name, constant in constants.items()
+    }
+    # A problem's own tolerances are exported under these names, and one the server did not read
+    # would leave it on its default while the example's run.py believes it set.
+    assert set(AMICI_TOLERANCE_ENV.values()) <= names
 
 
 def test_simulate_does_not_need_the_server_package():
