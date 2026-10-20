@@ -493,7 +493,7 @@ _INFRA_ABORT_MARKERS = (
     # httpx.ReadTimeout when the timeout moved from the session to
     # the individual call, and it must keep scoring as infra.
     "typeerror",  # e.g. a scoring float() crash before a verdict was reached
-    infrastructure.STOP_PREFIX,  # the server's disk filled under the run (gemot#39)
+    infrastructure.STOP_PREFIX,  # the server's infrastructure failed, e.g. a full disk (gemot#39)
 )
 
 # Each marker as a whole token, never inside a longer word or number. A substring test read the
@@ -545,9 +545,9 @@ def is_noop_infra_abort(row: dict[str, Any]) -> bool:
     (:func:`_is_infra_abort`) with no modeling work done (:func:`_did_modeling_work` is False).
     A LATE abort that did work is deliberately NOT one of these — its partial result is kept.
 
-    A run stopped by a full disk (:data:`gemot.infrastructure.STOP_REASON`) is one of these
-    whatever it did first: the server reported the disk to the agent as ill-posed models, so its
-    work answered a broken server, and it is resubmitted rather than scored.
+    A run its infrastructure stopped (``infrastructure_error: <cause>``, a full disk) is one of
+    these whatever it did first: its work answered a broken server, which before PEtab-MCP#95
+    reported the disk to the agent as ill-posed models, so it is resubmitted rather than scored.
     """
     if infrastructure.is_stop(row.get("stop_reason")):
         return True

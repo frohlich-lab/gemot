@@ -624,7 +624,7 @@ async def run_deepagents(
     max_run_tokens: int | None = _MAX_RUN_TOKENS,
     progress_probe: Any | None = None,
     server_poll: Any | None = None,
-    disk_full_probe: Any | None = None,
+    infrastructure_probe: Any | None = None,
     bio_sessions: Any | None = None,
     bio_literature: bool = False,
     curated_entities: "list[str] | None" = None,
@@ -668,11 +668,12 @@ async def run_deepagents(
     means "no way to tell", and is NOT treated as death: omitting it silently leaves the run with
     the old behaviour rather than ending it early.
 
-    ``disk_full_probe`` (optional) is a zero-argument callable returning evidence that the server's
-    disk has filled since it was last asked, else ``None`` -- the runner wires an
-    :class:`gemot.infrastructure.LogWatch` over the server's logs. It is asked at every step
-    boundary and before any resume. Evidence from it, or from the tool wrapper, ends the run at
-    once with ``infrastructure.STOP_REASON``: no resume, no bounce, nothing the agent can do.
+    ``infrastructure_probe`` (optional) is a zero-argument callable returning the
+    :class:`gemot.infrastructure.Evidence` of an infrastructure failure (a full disk) since it was
+    last asked, else ``None`` -- the runner wires a :class:`gemot.infrastructure.LogWatch` over
+    the server's logs. It is asked at every step boundary and before any resume. Evidence from it,
+    or from the tool wrapper, ends the run at once with ``infrastructure_error: <cause>``: no
+    resume, no bounce, nothing the agent can do.
 
     The model is served by OpenRouter via its OpenAI-compatible API (``base_url`` +
     ``api_key``). Returns ``{"stop_reason": ..., "n_tool_errors": ..., "disabled_tools": ...,
@@ -1128,21 +1129,23 @@ async def run_deepagents(
             pass
         return None
 
-    # The first evidence that the server's disk is full, from either witness: the tool wrapper
-    # (a core tool's result or error) or `disk_full_probe` (the server's logs). See
+    # The first evidence of an infrastructure failure, from either witness: the tool wrapper (a
+    # core tool's result or error) or `infrastructure_probe` (the server's logs). See
     # gemot.infrastructure. Once set, the run ends at the next check.
-    disk_full: dict[str, str | None] = {"evidence": None}
+    infra: dict[str, Any] = {"evidence": None}
 
-    def _disk_full_stop() -> str | None:
-        """``infrastructure.STOP_REASON`` once the server's disk has filled, else ``None``."""
-        if disk_full["evidence"] is None:
-            disk_full["evidence"] = breaker_state["disk_full"]["evidence"]
-        if disk_full["evidence"] is None and disk_full_probe is not None:
+    def _infrastructure_stop() -> str | None:
+        """``infrastructure_error: <cause>`` once the infrastructure has failed, else ``None``."""
+        if infra["evidence"] is None:
+            infra["evidence"] = breaker_state["infrastructure"]["evidence"]
+        if infra["evidence"] is None and infrastructure_probe is not None:
             try:
-                disk_full["evidence"] = disk_full_probe()
+                infra["evidence"] = infrastructure_probe()
             except Exception:  # pragma: no cover - never let the probe end a run by accident
                 pass
-        return infrastructure.STOP_REASON if disk_full["evidence"] is not None else None
+        if infra["evidence"] is None:
+            return None
+        return infrastructure.stop_reason(infra["evidence"].cause)
 
     stream_input: Any = {"messages": [{"role": "user", "content": task}]}
     resume_left = _RUN_RESUME_ATTEMPTS if checkpointer is not None else 0
@@ -1297,9 +1300,9 @@ async def run_deepagents(
                 # the await and before every break below: a step that ends the loop does not need
                 # a window, and a resume re-enters with whatever was last observed.
                 pending_fit = _pending_fit_starts(state, n_starts, guard_stats)
-                # A full disk first: every later step would meet it again (see the check after
-                # this try).
-                if _disk_full_stop() is not None:
+                # A failed infrastructure first: every later step would meet it again (see the
+                # check after this try).
+                if _infrastructure_stop() is not None:
                     break
                 if soft_deadline is not None and time.monotonic() >= soft_deadline:
                     wall_budget_exceeded = True
@@ -1403,11 +1406,11 @@ async def run_deepagents(
             # gpt-5.6-luna-pro on a PEtab immunology model -> 400 "This content was flagged for
             # possible biological risk." Nothing here can fix that; the point is to record it.
             # Order matters: a content refusal is checked FIRST and is terminal, so it can never
-            # be routed to the retry path by a later branch. A full disk before it: the tool
-            # wrapper's InfrastructureError, or a write of the harness's own on the same full
-            # filesystem. The check after this try ends the run on it.
-            if (hit := infrastructure.disk_full_error(exc)) is not None:
-                disk_full["evidence"] = disk_full["evidence"] or hit
+            # be routed to the retry path by a later branch. An infrastructure failure before it:
+            # the tool wrapper's InfrastructureError, or a write of the harness's own on the same
+            # full filesystem. The check after this try ends the run on it.
+            if (hit := infrastructure.find_in_error(exc)) is not None:
+                infra["evidence"] = infra["evidence"] or hit
             elif (filtered := _content_filter_stop_reason(exc)) is not None:
                 stop_reason = filtered
             elif _is_call_timeout(exc):
@@ -1427,15 +1430,15 @@ async def run_deepagents(
             if agen is not None:
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(agen.aclose(), timeout=10)
-        # A full disk outranks every other way this iteration ended, and is checked before any
-        # resume or bounce. The agent cannot free disk space: in the INDRA sweep (gemot#39) runs
-        # kept going on a full quota, leads re-authored models that were fine against builds
-        # reported as "ill-posed", and a resume would only meet the same disk again.
-        if _disk_full_stop() is not None:
-            stop_reason = infrastructure.STOP_REASON
+        # A failed infrastructure outranks every other way this iteration ended, and is checked
+        # before any resume or bounce. The agent cannot free disk space: in the INDRA sweep
+        # (gemot#39) runs kept going on a full quota, leads re-authored models that were fine
+        # against builds reported as "ill-posed", and a resume would only meet the same disk.
+        if (infra_stop := _infrastructure_stop()) is not None:
+            stop_reason = infra_stop
             print(
-                f"[agent] the server's disk is full ({disk_full['evidence']}) — stopping the run "
-                "here, with no resume; the runner skips the judge."
+                f"[agent] {infra_stop} ({infra['evidence'].text}) — stopping the run here, with "
+                "no resume; the runner skips the judge."
             )
             break
         if wall_budget_exceeded:
@@ -1620,10 +1623,14 @@ async def run_deepagents(
         # the server -- the case that mattered: a run making 134 failing make_changes calls
         # recorded `edit_rejects.attempted: 0`, so nothing in result.json showed the failure.
         "make_changes_calls": call_outcomes(breaker_state, "make_changes"),
-        # gemot#39: core-tool calls that met a full disk, and the first evidence of one from
-        # either witness. The runner adds the log count (`disk_full_log_lines`).
-        "disk_full_tool_calls": breaker_state["disk_full"]["tool_calls"],
-        "disk_full_evidence": disk_full["evidence"] or breaker_state["disk_full"]["evidence"],
+        # gemot#39: core-tool calls that met an infrastructure failure, and the first evidence of
+        # one from either witness. The runner adds the log count (`infrastructure_log_lines`).
+        "infrastructure_tool_calls": breaker_state["infrastructure"]["tool_calls"],
+        "infrastructure_evidence": (
+            evidence.text
+            if (evidence := infra["evidence"] or breaker_state["infrastructure"]["evidence"])
+            else None
+        ),
         "openrouter_extra_body": _extra_body(model, reasoning_effort),
         "request_headers": models.request_headers(model),
         # What the request ASKED for is `openrouter_extra_body`; this is what it GOT. The two are

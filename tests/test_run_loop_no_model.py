@@ -315,7 +315,13 @@ def test_result_json_carries_every_key_the_driver_returns(monkeypatch, tmp_path)
 # their leads re-authored models that were fine. Whichever witness sees the disk, nothing the
 # loop normally does to keep a run alive may happen.
 
-_EVIDENCE = "amici_build.log: /usr/bin/ld: final link failed: Disk quota exceeded"
+
+def _evidence():
+    from gemot.infrastructure import Evidence
+
+    return Evidence(
+        "disk_full", "amici_build.log: /usr/bin/ld: final link failed: Disk quota exceeded"
+    )
 
 
 class _DiskFullAgent(_TimeoutAgent):
@@ -325,9 +331,11 @@ class _DiskFullAgent(_TimeoutAgent):
         self.inputs.append(stream_input)
 
         async def _gen():
-            from gemot.infrastructure import InfrastructureError
+            from gemot.infrastructure import Evidence, InfrastructureError
 
-            raise InfrastructureError("make_changes: [Errno 122] Disk quota exceeded")
+            raise InfrastructureError(
+                Evidence("disk_full", "make_changes: infrastructure_error: disk_full: [Errno 122]")
+            )
             yield  # pragma: no cover - unreachable, present to make this an async generator
 
         return _gen()
@@ -341,7 +349,7 @@ def test_the_tool_wrappers_stop_ends_the_run_without_a_resume(monkeypatch):
     )
 
     assert result["stop_reason"] == "infrastructure_error: disk_full"
-    assert "Disk quota exceeded" in result["disk_full_evidence"]
+    assert result["infrastructure_evidence"].startswith("make_changes: infrastructure_error")
     assert len(agent.inputs) == 1  # where an unknown error would have ended it too, unlabelled
 
 
@@ -361,12 +369,12 @@ def test_the_logs_end_the_run_where_the_tools_saw_nothing(monkeypatch, agent_cla
         monkeypatch,
         _Probe(model_authored=True),
         agent=agent_class(),
-        driver_options={"disk_full_probe": lambda: _EVIDENCE},
+        driver_options={"infrastructure_probe": _evidence},
     )
 
     assert result["stop_reason"] == "infrastructure_error: disk_full"
-    assert result["disk_full_evidence"] == _EVIDENCE
-    assert result["disk_full_tool_calls"] == 0
+    assert result["infrastructure_evidence"] == _evidence().text
+    assert result["infrastructure_tool_calls"] == 0
     assert len(agent.inputs) == 1
 
 
@@ -377,7 +385,7 @@ def test_a_clean_run_reports_no_full_disk(monkeypatch):
         mod,
         monkeypatch,
         _Probe(model_authored=True),
-        driver_options={"disk_full_probe": lambda: None},
+        driver_options={"infrastructure_probe": lambda: None},
     )
     assert result["stop_reason"] == "silent_stop"
-    assert result["disk_full_tool_calls"] == 0 and result["disk_full_evidence"] is None
+    assert result["infrastructure_tool_calls"] == 0 and result["infrastructure_evidence"] is None

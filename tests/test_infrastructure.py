@@ -1,9 +1,10 @@
-"""A full disk under the server ends the run, unjudged, with a label the sweep can resubmit.
+"""A failure of the server's infrastructure ends the run, unjudged, with a label to resubmit.
 
 gemot#39 / PEtab-MCP#83: in the INDRA-arm sweep the lab quota filled for a few hours and the server
 reported it to the agent as ill-posed models. Runs kept going, leads re-authored models that were
 fine, and 30 runs that completed carried the damage with no mark in result.json. These pin the
-signature, the log watch, the tool wrapper's stop, the judge skip, and how the analysis files it.
+evidence (the server's own report since PEtab-MCP#95, and the raw disk-full text), the log watch,
+the tool wrapper's stop, the judge skip, and how the analysis files it.
 
 The driver loop's half is in tests/test_run_loop_no_model.py, next to the other loop exits.
 """
@@ -24,6 +25,8 @@ from gemot.agent import circuit_breaker as B
 _FIT_CRASH = "the edit applied but the fit crashed unexpectedly: [Errno 122] Disk quota exceeded"
 _TOOL_ERROR = "Error calling tool 'make_changes': [Errno 122] Disk quota exceeded"
 _LINK = "/usr/bin/ld: final link failed: Disk quota exceeded"
+# The server's report since PEtab-MCP#95: a tool error whose text starts with the prefix.
+_REPORT = "infrastructure_error: disk_full: [Errno 122] Disk quota exceeded: 'x.h5'"
 
 
 @pytest.mark.parametrize(
@@ -37,8 +40,29 @@ _LINK = "/usr/bin/ld: final link failed: Disk quota exceeded"
         "write failed: ENOSPC",
     ],
 )
-def test_the_signature_is_found_wherever_it_is_printed(text):
-    assert I.disk_full(text) is not None
+def test_a_full_disk_is_found_wherever_it_is_printed(text):
+    assert I.find(text).cause == I.DISK_FULL
+
+
+@pytest.mark.parametrize(
+    "text, cause",
+    [
+        (_REPORT, "disk_full"),
+        # The failed-install case: the detail need not carry the errno text.
+        (
+            "infrastructure_error: disk_full: Module file not found after the install step",
+            "disk_full",
+        ),
+        # Behind the exception's own name, as the adapter's error reads.
+        ("_MCPToolExecutionError: " + _REPORT, "disk_full"),
+        # A cause the server may add later is read, not assumed.
+        ("infrastructure_error: out_of_memory: the worker was killed", "out_of_memory"),
+    ],
+)
+def test_the_servers_report_names_its_cause(text, cause):
+    hit = I.find(text)
+    assert hit.cause == cause and hit.text.startswith("infrastructure_error: ")
+    assert I.stop_reason(hit.cause) == f"infrastructure_error: {cause}"
 
 
 @pytest.mark.parametrize(
@@ -51,15 +75,17 @@ def test_the_signature_is_found_wherever_it_is_printed(text):
         "This usually means it is ill-posed for estimation",
         "best nll 1,000,122.5 after 28 starts",
         "errno = 1228",
+        # The run's own stop reason is a label, not a report (no detail after the cause).
+        I.STOP_REASON,
     ],
 )
 def test_nothing_else_is(text):
-    assert I.disk_full(text) is None
+    assert I.find(text) is None
 
 
 def test_the_evidence_is_one_short_line_around_the_match():
-    hit = I.disk_full("x" * 5000 + "\n" + _LINK + "\n" + "y" * 5000)
-    assert "Disk quota exceeded" in hit and "\n" not in hit and len(hit) < 400
+    hit = I.find("x" * 5000 + "\n" + _LINK + "\n" + "y" * 5000)
+    assert "Disk quota exceeded" in hit.text and "\n" not in hit.text and len(hit.text) < 400
 
 
 def test_an_error_is_read_through_its_group_and_its_cause():
@@ -73,8 +99,8 @@ def test_an_error_is_read_through_its_group_and_its_cause():
         wrapped = BaseExceptionGroup(
             "unhandled errors in a TaskGroup", [exc, asyncio.CancelledError()]
         )
-    assert I.disk_full_error(wrapped) is not None
-    assert I.disk_full_error(RuntimeError("could not store the result")) is None
+    assert I.find_in_error(wrapped).cause == I.DISK_FULL
+    assert I.find_in_error(RuntimeError("could not store the result")) is None
 
 
 def test_the_log_watch_reads_each_whole_line_once(tmp_path):
@@ -86,7 +112,8 @@ def test_the_log_watch_reads_each_whole_line_once(tmp_path):
     with log.open("a") as fh:
         fh.write(_LINK + "\ncollect2: error: ld returned 1 exit status\n/usr/bin/ld: final link")
     first = watch()
-    assert first.startswith("amici_build.log: ") and "Disk quota exceeded" in first
+    assert first.cause == I.DISK_FULL
+    assert first.text.startswith("amici_build.log: ") and "Disk quota exceeded" in first.text
     assert watch() is None and watch.lines == 1  # read once
 
     # The last line has no newline yet: it is read once complete, or when the server is gone.
@@ -132,9 +159,9 @@ def test_a_result_on_a_full_disk_stops_the_run_and_nothing_more_reaches_the_serv
         asyncio.run(tools[1].coroutine(runtime=None))
 
     assert calls == ["make_changes"]
-    assert state["disk_full"]["tool_calls"] == 1
-    assert state["disk_full"]["evidence"].startswith("make_changes: ")
-    assert B.call_outcomes(state, "make_changes")["by_outcome"] == {"disk_full": 1}
+    assert state["infrastructure"]["tool_calls"] == 1
+    assert state["infrastructure"]["evidence"].text.startswith("make_changes: ")
+    assert B.call_outcomes(state, "make_changes")["by_outcome"] == {"infrastructure_error": 1}
 
 
 def test_a_raised_error_on_a_full_disk_stops_the_run_too():
@@ -152,7 +179,31 @@ def test_a_raised_error_on_a_full_disk_stops_the_run_too():
     with pytest.raises(I.InfrastructureError) as raised:
         asyncio.run(tool.coroutine(runtime=None))
     assert raised.value.__cause__ is original
-    assert state["disk_full"]["tool_calls"] == 1
+    assert state["infrastructure"]["tool_calls"] == 1
+
+
+def test_the_servers_report_stops_the_run_instead_of_reaching_the_model():
+    """PEtab-MCP#95 ends the call as an `isError` result. The adapter raises it as a
+    ToolException, and its `handle_tool_error` would hand the model that text as the tool's
+    result; the wrapper sees it first. Built through the adapter's own conversion, so the
+    exception is the one a real call raises."""
+    pytest.importorskip("langchain_mcp_adapters")
+    from langchain_mcp_adapters.tools import _convert_call_tool_result
+    from mcp.types import CallToolResult, TextContent
+
+    async def _make_changes(runtime=None, **kw):
+        return _convert_call_tool_result(
+            CallToolResult(content=[TextContent(type="text", text=_REPORT)], isError=True)
+        )
+
+    state = B._new_breaker_state()
+    tool = _Tool("make_changes", _make_changes)
+    B._wrap_tools_with_circuit_breaker([tool], state)
+
+    with pytest.raises(I.InfrastructureError) as raised:
+        asyncio.run(tool.coroutine(runtime=None))
+    assert raised.value.evidence.cause == I.DISK_FULL
+    assert raised.value.evidence.text.startswith("make_changes: infrastructure_error: disk_full: ")
 
 
 def test_an_external_tools_full_disk_is_not_this_runs():
@@ -166,7 +217,7 @@ def test_an_external_tools_full_disk_is_not_this_runs():
     )
 
     asyncio.run(tool.coroutine(runtime=None))
-    assert state["disk_full"]["tool_calls"] == 0
+    assert state["infrastructure"]["tool_calls"] == 0
 
 
 # --- the analysis ----------------------------------------------------------------------------
@@ -209,7 +260,11 @@ def test_a_run_whose_build_log_shows_a_full_disk_is_not_judged(monkeypatch, tmp_
 
     async def _run_deepagents(session, **kw):
         (tmp_path / "amici_build.log").write_text(_LINK + "\n")
-        return {"stop_reason": "completed", "disk_full_tool_calls": 0, "disk_full_evidence": None}
+        return {
+            "stop_reason": "completed",
+            "infrastructure_tool_calls": 0,
+            "infrastructure_evidence": None,
+        }
 
     async def _judge(*a, **kw):
         raise AssertionError("a run on a full disk must not be judged")
@@ -250,7 +305,7 @@ def test_a_run_whose_build_log_shows_a_full_disk_is_not_judged(monkeypatch, tmp_
 
     assert exit_code == 1
     assert result["stop_reason"] == I.STOP_REASON
-    assert result["disk_full_log_lines"] == 1
-    assert "amici_build.log" in result["disk_full_evidence"]
+    assert result["infrastructure_log_lines"] == 1
+    assert "amici_build.log" in result["infrastructure_evidence"]
     assert result["success"] is False and result["delta_bic"] is None
     assert json.loads((tmp_path / "result.json").read_text())["stop_reason"] == I.STOP_REASON

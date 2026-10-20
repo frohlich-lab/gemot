@@ -241,7 +241,7 @@ STOP_CLASSES = (
     "reconstructed",  # rebuilt from a killed run's version store (slurm/recover_run.py)
     "server_unreachable",  # the task never reached the petab-mcp server (exit 97, shared-server sweeps)
     "no_result",  # the task left a combo.env but no result.json: killed before its verdict
-    "infrastructure_error",  # the server's disk filled: not judged, excluded, to be resubmitted
+    "infrastructure_error",  # e.g. the server's disk filled: not judged, excluded, resubmitted
     "infra_partial",  # infrastructure abort AFTER real modeling work — a valid partial result
     "infra_noop",  # infrastructure abort before any work — scoring noise, excluded
     "other",

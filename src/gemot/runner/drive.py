@@ -33,10 +33,11 @@ def _reasoning_effort(args) -> str | None:
     return None if effort == "default" else effort
 
 
-def _disk_full_stop(exc: BaseException, logs: infrastructure.LogWatch) -> str | None:
-    """``infrastructure.STOP_REASON`` if an abort met a full disk, in its own text or the logs."""
-    hit = infrastructure.disk_full_error(exc) or logs(final=True) or logs.evidence
-    return infrastructure.STOP_REASON if hit is not None else None
+def _infrastructure_stop(exc: BaseException, logs: infrastructure.LogWatch) -> str | None:
+    """``infrastructure_error: <cause>`` if an abort met an infrastructure failure, in its own
+    text or the server's logs; else ``None``."""
+    hit = infrastructure.find_in_error(exc) or logs(final=True) or logs.evidence
+    return infrastructure.stop_reason(hit.cause) if hit is not None else None
 
 
 async def _drive(
@@ -91,7 +92,7 @@ async def _drive(
 
     # The two logs `runner.main` gives the server: a full disk shows there when nothing else says
     # so (gemot#39) -- an "ill-posed" build's real cause, a segfaulted server's last words.
-    disk_full_logs = infrastructure.LogWatch(work / "server.log", work / "amici_build.log")
+    server_logs = infrastructure.LogWatch(work / "server.log", work / "amici_build.log")
 
     tracing = None
     try:
@@ -227,7 +228,7 @@ async def _drive(
                     # The EXACT liveness signal, not a probe: Popen.poll() cannot confuse a
                     # server that is busy fitting with one that is gone (see _server_is_alive).
                     server_poll=(server_proc.poll if server_proc is not None else None),
-                    disk_full_probe=disk_full_logs,
+                    infrastructure_probe=server_logs,
                     bio_sessions=bio_sessions,
                     bio_literature=ablations.enabled("bio_literature"),
                     # Hand-curated biological entities for the blinded biocurator (issue #91);
@@ -241,8 +242,10 @@ async def _drive(
                 stop_reason = agent_out.get("stop_reason", "completed")
                 # The logs once more, to their end: the driver stops reading them at its first
                 # evidence, and a full disk can show in the run's last step.
-                if disk_full_logs(final=True) is not None:
-                    stop_reason = infrastructure.STOP_REASON
+                if (hit := server_logs(final=True)) is not None and not infrastructure.is_stop(
+                    stop_reason
+                ):
+                    stop_reason = infrastructure.stop_reason(hit.cause)
                 if stop_reason != "completed":
                     print(
                         f"[agent] stopped early: {stop_reason} "
@@ -253,9 +256,9 @@ async def _drive(
                 # stopped it.
                 meta = {
                     **_agent_meta(base_meta, agent_out, stop_reason),
-                    "disk_full_log_lines": disk_full_logs.lines,
-                    "disk_full_evidence": agent_out.get("disk_full_evidence")
-                    or disk_full_logs.evidence,
+                    "infrastructure_log_lines": server_logs.lines,
+                    "infrastructure_evidence": agent_out.get("infrastructure_evidence")
+                    or (server_logs.evidence.text if server_logs.evidence else None),
                 }
                 # Is there a server left to judge against? Keyed on the PROCESS, not on
                 # `stop_reason`: the driver only consults liveness on its retriable branch, so a
@@ -270,13 +273,14 @@ async def _drive(
                     # the disk, and the judge's own compiles would meet it too. Its own label,
                     # so the sweep can tell it apart and resubmit it.
                     print(
-                        f"[run] {stop_reason} ({meta['disk_full_evidence']}); skipping the judge."
+                        f"[run] {stop_reason} ({meta['infrastructure_evidence']}); "
+                        "skipping the judge."
                     )
                     result = _write_degraded_result(
                         work,
                         meta,
                         scenario,
-                        str(meta["disk_full_evidence"]),
+                        str(meta["infrastructure_evidence"]),
                         server_returncode=rc,
                         clock=clock,
                         stop_reason=stop_reason,
@@ -325,7 +329,7 @@ async def _drive(
                     _summarize_exc(exc),
                     server_returncode=rc,
                     clock=clock,
-                    stop_reason=_disk_full_stop(exc, disk_full_logs),
+                    stop_reason=_infrastructure_stop(exc, server_logs),
                 )
                 exit_code = 1
                 with contextlib.suppress(Exception):
@@ -345,7 +349,7 @@ async def _drive(
             scenario,
             _summarize_exc(exc),
             server_returncode=rc,
-            stop_reason=_disk_full_stop(exc, disk_full_logs),
+            stop_reason=_infrastructure_stop(exc, server_logs),
         )
     finally:
         if tracing is not None:

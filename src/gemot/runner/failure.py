@@ -99,7 +99,7 @@ def _write_degraded_result(
     network blip (server still alive, ``None``).
 
     ``stop_reason`` replaces the ``aborted: <reason>`` label. An infrastructure stop
-    (:data:`gemot.infrastructure.STOP_REASON`) keeps its own bare label, which the analysis files
+    (:func:`gemot.infrastructure.stop_reason`) keeps its own bare label, which the analysis files
     in a bucket of its own for the sweep to resubmit, rather than as an abort that may have left a
     partial result."""
     server_note = ""
@@ -123,7 +123,7 @@ def _write_degraded_result(
         "run_ended_at": _now_iso(),
         "server_returncode": server_returncode,
         "error": (
-            "run stopped before a verdict: the server's disk is full"
+            "run stopped before a verdict: the server's infrastructure failed"
             if infrastructure.is_stop(stop_reason)
             else "run aborted before a verdict (provider/connection failure)"
         ),
