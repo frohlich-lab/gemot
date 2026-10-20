@@ -324,6 +324,10 @@ async def run_barebones(
         ):
             stop_reason = "token_budget_exceeded"
             break
+        # A stall after the largest prompt crossed the line skipped the boundary check above.
+        if token_accountant.max_prompt >= 0.90 * max_input_tokens:
+            stop_reason = "context_budget_exceeded"
+            break
         if resume_left <= 0:
             stop_reason = retriable
             break

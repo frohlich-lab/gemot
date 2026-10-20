@@ -1422,8 +1422,8 @@ async def run_deepagents(
             print(
                 f"[agent] context window approached: largest prompt "
                 f"{token_accountant.max_prompt:,} tokens >= 90% of the {max_input_tokens:,}-token "
-                "window — stopping at this step boundary; the judge scores whatever is currently "
-                "committed."
+                "window — stopping at this step boundary; the judge restores + scores the "
+                "best-scoring checkpoint."
             )
             break
         if early_stopped is not None:
@@ -1497,6 +1497,17 @@ async def run_deepagents(
                 f"[agent] token budget ({max_run_tokens:,}) already exceeded at "
                 f"{token_accountant.prompt + token_accountant.completion:,} while handling "
                 f"'{retriable}' — stopping instead of resuming."
+            )
+            break
+        # And for the context window. A step whose LLM call crossed the 0.90 line and then stalled
+        # never reached the boundary check, so it would resume, re-send that history once per
+        # attempt, and end out of resumes as the retriable text rather than as a budget stop.
+        if token_accountant.max_prompt >= 0.90 * max_input_tokens:
+            stop_reason = "context_budget_exceeded"
+            print(
+                f"[agent] context window approached: largest prompt "
+                f"{token_accountant.max_prompt:,} tokens >= 90% of the {max_input_tokens:,}-token "
+                f"window while handling '{retriable}' — stopping instead of resuming."
             )
             break
         # Is there still a server to resume against? Ask BEFORE spending a resume attempt: each

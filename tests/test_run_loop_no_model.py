@@ -281,6 +281,19 @@ def test_no_liveness_signal_does_not_end_the_run(monkeypatch):
 # --- the context-window stop ------------------------------------------------------------------
 
 
+def _past_the_window(mod, monkeypatch):
+    """Make the run's accountant report a largest prompt over 0.90 x the default window."""
+    monkeypatch.delenv("PETAB_MCP_MAX_INPUT_TOKENS", raising=False)
+    real_accountant = mod.driver._token_accountant
+
+    def _accountant():
+        accountant = real_accountant()
+        accountant.max_prompt = 1_000_402  # > 0.90 x the 1,048,576-token default window
+        return accountant
+
+    monkeypatch.setattr(mod.driver, "_token_accountant", _accountant)
+
+
 @requires_harness
 def test_the_context_window_stop_is_a_budget_stop(monkeypatch):
     """gemot#7: the 0.90 x window stop used to be recorded as "early_stop: context_window_
@@ -290,15 +303,7 @@ def test_the_context_window_stop_is_a_budget_stop(monkeypatch):
     from gemot import analysis, experiments
 
     mod = _load_agent_module()
-    monkeypatch.delenv("PETAB_MCP_MAX_INPUT_TOKENS", raising=False)
-    real_accountant = mod.driver._token_accountant
-
-    def _accountant_past_the_window():
-        accountant = real_accountant()
-        accountant.max_prompt = 1_000_402  # > 0.90 x the 1,048,576-token default window
-        return accountant
-
-    monkeypatch.setattr(mod.driver, "_token_accountant", _accountant_past_the_window)
+    _past_the_window(mod, monkeypatch)
     result, agent = _run(mod, monkeypatch, _Probe(model_authored=True))
 
     assert result["stop_reason"] == "context_budget_exceeded"
@@ -307,6 +312,21 @@ def test_the_context_window_stop_is_a_budget_stop(monkeypatch):
     assert not experiments.is_noop_infra_abort({**result, "n_ops": 0, "n_fits": 0})
     assert result["token_usage"]["max_prompt_tokens"] == 1_000_402
     assert result["max_input_tokens"] == 1_048_576
+
+
+@requires_harness
+def test_a_stall_past_the_window_stops_instead_of_resuming(monkeypatch):
+    """A step that crossed the line and then timed out never reaches the boundary check. Without
+    the retry-path guard it resumed every attempt, re-sending ~1M tokens each time, and ended as
+    "fit call timed out: ..." -- an infrastructure stop, not the budget stop it was."""
+    mod = _load_agent_module()
+    _past_the_window(mod, monkeypatch)
+    result, agent = _run(
+        mod, monkeypatch, _Probe(model_authored=True), agent=_TimeoutAgent(), server_poll=None
+    )
+
+    assert result["stop_reason"] == "context_budget_exceeded"
+    assert len(agent.inputs) == 1  # no resume attempted
 
 
 # --- the artifact contract -------------------------------------------------------------------
