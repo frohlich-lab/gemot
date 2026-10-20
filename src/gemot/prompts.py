@@ -121,6 +121,18 @@ _MERGE_TAKE_RULE = (
     "unmerged model instead of re-arguing it."
 )
 
+#: What the finish gate does with a fit whose residual tests FLAG structure
+#: (finish_gate._FLAGGED_CONFIRM_BUDGET_FRACTION, whose 0.5 this states as "half"): there, failed
+#: calls are no argument that bic has bottomed out. Composed into _ADEQUATE_IS_NOT_DONE, which
+#: states the bottomed-out rule this qualifies, and into the gate's hold message.
+_FLAGGED_IS_NOT_BOTTOMED_OUT = (
+    "While the fit's residual_structure verdict FLAGS an observable, bic has NOT bottomed out "
+    "however many calls failed to lower it: the form is visibly wrong, and tweaks of one "
+    "structure do not show that another cannot do better. `finish` does not confirm such a fit "
+    "until less than HALF of the run's wall-time budget is left; spend that time on structurally "
+    "different models (a new species, reaction or mechanism), not on re-parameterising this one."
+)
+
 #: Clean residual tests are a weak stopping rule, and the actionable consequence in ops rather
 #: than in evidence a run does not have.
 _ADEQUATE_IS_NOT_DONE = (
@@ -135,7 +147,7 @@ _ADEQUATE_IS_NOT_DONE = (
     "the priced merges. This costs you nothing to be wrong about — every fitted version is kept "
     "and you are scored on your BEST bic wherever you end — while finishing on the first "
     "adequate model forfeits every bic you had budget left to find. An unspent step budget is "
-    "not thrift."
+    "not thrift. " + _FLAGGED_IS_NOT_BOTTOMED_OUT
 )
 
 #: The `model_edits` operation vocabulary, with one example each. The lead reads it in its own
@@ -1355,6 +1367,14 @@ FINISH_REFUSED_PARSIMONY_TMPL = (
     "the full flat_directions and ranked candidates; the tool's default section does NOT.)"
 )
 
+# The flagged-structure HOLD on a confirm (finish_gate._FLAGGED_CONFIRM_BUDGET_FRACTION): the second
+# `finish` on an armed fit whose verdict flags structure, while more than half the wall budget is
+# left. The arm stands, so the same fit confirms once that much is spent.
+FINISH_HELD_FLAGGED_TMPL = (
+    "FINISH REFUSED — the residual tests flag systematic structure at {observables}, with "
+    "{minutes_left} of this run's {budget_minutes} minutes left. " + _FLAGGED_IS_NOT_BOTTOMED_OUT
+)
+
 FINISH_ARMED_TMPL = (
     "FINISH ARMED — review before confirming. Current fit: bic={bic:.6g}, "
     "neg_log_likelihood={nll:.6g}. Residual structure: {struct}{worst_line}"
@@ -1774,6 +1794,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "sigma_fallback_advice": FINISH_SIGMA_FALLBACK_ADVICE,
             "refused_replicate_lof": FINISH_REFUSED_REPLICATE_LOF_TMPL,
             "refused_parsimony": FINISH_REFUSED_PARSIMONY_TMPL,
+            "held_flagged": FINISH_HELD_FLAGGED_TMPL,
             "armed": FINISH_ARMED_TMPL,
             "armed_worst": FINISH_ARMED_WORST_TMPL,
             "armed_merge": FINISH_ARMED_MERGE_TMPL,

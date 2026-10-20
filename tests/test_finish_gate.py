@@ -10,6 +10,8 @@ langchain_core is a harness dep, so skip where it is absent.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 pytest.importorskip("langchain_core", reason="harness-only dependency")
@@ -406,6 +408,65 @@ async def test_sign_runs_flags_alone_do_not_refuse():
         }
     }
     assert "FINISH ARMED" in await _finish(_tool_for(mod, _fit(**sign_runs_only)))
+
+
+# --- the flagged-structure HOLD on a confirm -------------------------------------------------
+# sneyd's failing leads (gemot#40): the arm flagged a sign-test p = 0.0 on open_probability, and each
+# confirmed anyway with 3-4.6 h of a 6 h budget left.
+_SNEYD_FLAGGED = {
+    "residual_structure": {
+        "summary": "systematic residual structure in open_probability",
+        "flagged_observables": ["open_probability"],
+        "low_power": False,
+    }
+}
+
+
+def _budget(*, left_h, budget_h=6.0):
+    """A finish_state as the driver hands it over: the run's deadline on the monotonic clock."""
+    return {"deadline": time.monotonic() + left_h * 3600, "max_wall_seconds": budget_h * 3600}
+
+
+@pytest.mark.asyncio
+async def test_a_flagged_confirm_is_held_while_most_of_the_budget_is_left():
+    """The sneyd case: the second finish on a flagged fit with 4.6 h of 6 h left is REFUSED and not
+    recorded, naming the observable and the time left. The arm stands, so once less than half the
+    budget is left the next finish on the same fit confirms — the hold relents on time, not on a
+    count of attempts."""
+    mod = _agent
+    fs = _budget(left_h=4.6)
+    tool = _tool_for(mod, _fit(**_SNEYD_FLAGGED), finish_state=fs)
+    assert "FINISH ARMED" in await _finish(tool)
+    for _ in range(mod._MAX_STRUCTURE_FINISH_REFUSALS + 1):  # never relents on a count
+        held = await _finish(tool)
+        assert held.startswith("FINISH REFUSED") and "open_probability" in held
+        assert "276 of this run's 360 minutes" in held
+        assert fs["confirmed"] is False
+    fs.update(_budget(left_h=2.9))
+    assert (await _finish(tool)).startswith("Recorded: finish")
+    assert fs["confirmed"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_clean_fit_confirms_with_most_of_the_budget_left():
+    """The hold is on FLAGGED structure only: a clean verdict confirms as before, however early."""
+    mod = _agent
+    fs = _budget(left_h=5.9)
+    clean = {"residual_structure": {"summary": "no structure", "flagged_observables": []}}
+    tool = _tool_for(mod, _fit(**clean), finish_state=fs)
+    assert "FINISH ARMED" in await _finish(tool)
+    assert (await _finish(tool)).startswith("Recorded: finish")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish_state", [{}, {"deadline": None, "max_wall_seconds": None}])
+async def test_the_hold_fails_open_without_a_budget(finish_state):
+    """A run with no wall-time budget (max_wall_seconds None) has no half to hold until, so a
+    flagged confirm goes through exactly as before."""
+    mod = _agent
+    tool = _tool_for(mod, _fit(**_SNEYD_FLAGGED), finish_state=finish_state)
+    assert "FINISH ARMED" in await _finish(tool)
+    assert (await _finish(tool)).startswith("Recorded: finish")
 
 
 # --- the PARSIMONY / identifiability gate ----------------------------------------------------

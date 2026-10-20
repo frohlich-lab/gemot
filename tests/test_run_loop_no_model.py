@@ -227,6 +227,27 @@ def test_confirmed_finish_is_not_bounced(monkeypatch):
     assert len(fake_agent.inputs) == 2  # initial + 1 bounce, then confirmed
 
 
+@requires_harness
+def test_the_finish_gate_reads_the_runs_wall_budget(monkeypatch):
+    """The gate holds a confirm on flagged structure while most of the wall budget is left
+    (gemot#40), which it can only do if the driver hands it the run's deadline on the clock the
+    loop itself stops on. Without the handoff the hold silently fails open on every run."""
+    import time
+
+    mod = _load_agent_module()
+    before = time.monotonic()
+    _, fake_agent = _run(
+        mod,
+        monkeypatch,
+        _Probe(model_authored=True),
+        confirm_after=1,
+        driver_options={"max_wall_seconds": 21600.0},
+    )
+    fs = fake_agent.captured["fs"]
+    assert fs["max_wall_seconds"] == 21600.0
+    assert before + 21600.0 <= fs["deadline"] <= time.monotonic() + 21600.0
+
+
 # --- liveness at the CALL SITE ---------------------------------------------------------------
 # `_server_is_alive` is unit-tested in tests/test_judge_call_timeout.py; these drive the branch
 # in run_deepagents that consumes it, which is where the three-state handling actually matters.
