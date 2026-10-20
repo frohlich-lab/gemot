@@ -53,6 +53,12 @@ def _row(**over):
         ("APIConnectionError: connection reset", True),
         ("stalled: no step completed in 900s", True),
         ("TypeError: float() argument must be a string or a real number", True),
+        ("aborted: httpx.ReadError: connection closed", True),  # a dotted name still matches
+        # gemot#44: a marker is a whole token, never part of a longer number or word
+        ("early_stop: no improvement in 5 fits (best BIC 1,402.7)", False),
+        ("token_usage 20,402,551 then completed early", False),
+        ("early_stop: plateau on the server at 4024358", False),
+        ("infrastructure_error: disk_full", True),  # gemot#39
     ],
 )
 def test_is_infra_abort(stop_reason, expected):

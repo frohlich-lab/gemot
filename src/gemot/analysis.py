@@ -241,6 +241,7 @@ STOP_CLASSES = (
     "reconstructed",  # rebuilt from a killed run's version store (slurm/recover_run.py)
     "server_unreachable",  # the task never reached the petab-mcp server (exit 97, shared-server sweeps)
     "no_result",  # the task left a combo.env but no result.json: killed before its verdict
+    "infrastructure_error",  # the server's disk filled: not judged, excluded, to be resubmitted
     "infra_partial",  # infrastructure abort AFTER real modeling work — a valid partial result
     "infra_noop",  # infrastructure abort before any work — scoring noise, excluded
     "other",
@@ -256,6 +257,7 @@ def stop_class(row: dict) -> str:
     result and stays in; only an abort before any work is dropped (:func:`is_scoreable`).
     """
     from .experiments import _did_modeling_work, _is_infra_abort
+    from .infrastructure import is_stop
 
     reason = str(row.get("stop_reason") or "").strip()
     low = reason.lower()
@@ -275,6 +277,9 @@ def stop_class(row: dict) -> str:
         return "no_model"
     if "content" in low and ("filter" in low or "flagged" in low or "refus" in low):
         return "content_filter"
+    # Before the abort buckets: work done against a full disk is not a partial result (gemot#39).
+    if is_stop(reason):
+        return "infrastructure_error"
     if _is_infra_abort(reason):
         # `_did_modeling_work` reads `n_ops`, which the Phoenix experiment rows carry; a judged
         # result.json records the same fact as `head_version` (-1 = nothing committed).
@@ -314,7 +319,12 @@ def is_scoreable(row: dict) -> bool:
     # run graded under a criterion it cannot reproduce.
     if row.get("success") is None:
         return False
-    return stop_class(row) not in ("infra_noop", "server_unreachable", "no_result")
+    return stop_class(row) not in (
+        "infra_noop",
+        "server_unreachable",
+        "no_result",
+        "infrastructure_error",
+    )
 
 
 # ---------------------------------------------------------------------------------------------

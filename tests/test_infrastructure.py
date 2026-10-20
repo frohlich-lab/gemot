@@ -1,0 +1,256 @@
+"""A full disk under the server ends the run, unjudged, with a label the sweep can resubmit.
+
+gemot#39 / PEtab-MCP#83: in the INDRA-arm sweep the lab quota filled for a few hours and the server
+reported it to the agent as ill-posed models. Runs kept going, leads re-authored models that were
+fine, and 30 runs that completed carried the damage with no mark in result.json. These pin the
+signature, the log watch, the tool wrapper's stop, the judge skip, and how the analysis files it.
+
+The driver loop's half is in tests/test_run_loop_no_model.py, next to the other loop exits.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+import pytest
+
+from gemot import analysis as A
+from gemot import experiments
+from gemot import infrastructure as I
+from gemot.agent import circuit_breaker as B
+
+# The shapes the sweep recorded (PEtab-MCP#83), with the paths cut.
+_FIT_CRASH = "the edit applied but the fit crashed unexpectedly: [Errno 122] Disk quota exceeded"
+_TOOL_ERROR = "Error calling tool 'make_changes': [Errno 122] Disk quota exceeded"
+_LINK = "/usr/bin/ld: final link failed: Disk quota exceeded"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _FIT_CRASH,
+        _TOOL_ERROR,
+        _LINK,
+        "OSError: [Errno 28] No space left on device: 'result.h5'",
+        "HDF5-DIAG: ... errno = 122, error message = 'Disk quota exceeded'",
+        "write failed: ENOSPC",
+    ],
+)
+def test_the_signature_is_found_wherever_it_is_printed(text):
+    assert I.disk_full(text) is not None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[Errno 2] No such file or directory: 'model.xml'",
+        # The disguise without its cause: what the 241 rejections said. Only the build log names
+        # the disk, which is why LogWatch exists.
+        "the model passed validation but could not be compiled/fit: Module file not found. "
+        "This usually means it is ill-posed for estimation",
+        "best nll 1,000,122.5 after 28 starts",
+        "errno = 1228",
+    ],
+)
+def test_nothing_else_is(text):
+    assert I.disk_full(text) is None
+
+
+def test_the_evidence_is_one_short_line_around_the_match():
+    hit = I.disk_full("x" * 5000 + "\n" + _LINK + "\n" + "y" * 5000)
+    assert "Disk quota exceeded" in hit and "\n" not in hit and len(hit) < 400
+
+
+def test_an_error_is_read_through_its_group_and_its_cause():
+    # The anyio task group around the MCP session wraps the real error beside a cancellation.
+    try:
+        try:
+            raise OSError(122, "Disk quota exceeded")
+        except OSError as exc:
+            raise RuntimeError("could not store the result") from exc
+    except RuntimeError as exc:
+        wrapped = BaseExceptionGroup(
+            "unhandled errors in a TaskGroup", [exc, asyncio.CancelledError()]
+        )
+    assert I.disk_full_error(wrapped) is not None
+    assert I.disk_full_error(RuntimeError("could not store the result")) is None
+
+
+def test_the_log_watch_reads_each_whole_line_once(tmp_path):
+    log = tmp_path / "amici_build.log"
+    log.write_text("[ 50%] Building CXX object\n")
+    watch = I.LogWatch(log, tmp_path / "server.log")  # no server.log yet: reads as nothing
+    assert watch() is None
+
+    with log.open("a") as fh:
+        fh.write(_LINK + "\ncollect2: error: ld returned 1 exit status\n/usr/bin/ld: final link")
+    first = watch()
+    assert first.startswith("amici_build.log: ") and "Disk quota exceeded" in first
+    assert watch() is None and watch.lines == 1  # read once
+
+    # The last line has no newline yet: it is read once complete, or when the server is gone.
+    with log.open("a") as fh:
+        fh.write(" failed: Disk quota exceeded")
+    assert watch() is None
+    assert watch(final=True) is not None
+    assert watch.lines == 2 and watch.evidence == first
+
+
+# --- the tool wrapper ------------------------------------------------------------------------
+
+
+class _Tool:
+    def __init__(self, name, coro):
+        self.name, self.coroutine = name, coro
+
+
+def _text(text):
+    return [{"type": "text", "text": text}]
+
+
+def test_a_result_on_a_full_disk_stops_the_run_and_nothing_more_reaches_the_server():
+    """The 40 raw-errno results came back as REJECTIONS, which the wrapper never treats as
+    errors; the model then re-sent them until the dedup guard refused."""
+    calls = []
+
+    async def _make_changes(runtime=None, **kw):
+        calls.append("make_changes")
+        return (_text(json.dumps({"applied": False, "error": _FIT_CRASH})), None)
+
+    async def _get_model(runtime=None, **kw):
+        calls.append("get_model")
+        return (_text('{"ok": true}'), None)
+
+    state = B._new_breaker_state()
+    tools = [_Tool("make_changes", _make_changes), _Tool("get_model", _get_model)]
+    B._wrap_tools_with_circuit_breaker(tools, state)
+
+    with pytest.raises(I.InfrastructureError, match="Disk quota exceeded"):
+        asyncio.run(tools[0].coroutine(runtime=None))
+    with pytest.raises(I.InfrastructureError):  # refused before the server, not forwarded
+        asyncio.run(tools[1].coroutine(runtime=None))
+
+    assert calls == ["make_changes"]
+    assert state["disk_full"]["tool_calls"] == 1
+    assert state["disk_full"]["evidence"].startswith("make_changes: ")
+    assert B.call_outcomes(state, "make_changes")["by_outcome"] == {"disk_full": 1}
+
+
+def test_a_raised_error_on_a_full_disk_stops_the_run_too():
+    """`make_changes` is never disabled and its errors are RETURNED to the model; a full disk
+    must not take that path, which hands the model something it cannot fix."""
+    original = RuntimeError(_TOOL_ERROR)
+
+    async def _make_changes(runtime=None, **kw):
+        raise original
+
+    state = B._new_breaker_state()
+    tool = _Tool("make_changes", _make_changes)
+    B._wrap_tools_with_circuit_breaker([tool], state)
+
+    with pytest.raises(I.InfrastructureError) as raised:
+        asyncio.run(tool.coroutine(runtime=None))
+    assert raised.value.__cause__ is original
+    assert state["disk_full"]["tool_calls"] == 1
+
+
+def test_an_external_tools_full_disk_is_not_this_runs():
+    async def _lookup(runtime=None, **kw):
+        return (_text("upstream cache: No space left on device"), None)
+
+    state = B._new_breaker_state()
+    tool = _Tool("get_reactome_info_by_identifier", _lookup)
+    B._wrap_tools_with_circuit_breaker(
+        [tool], state, transport_disable_names={"get_reactome_info_by_identifier"}
+    )
+
+    asyncio.run(tool.coroutine(runtime=None))
+    assert state["disk_full"]["tool_calls"] == 0
+
+
+# --- the analysis ----------------------------------------------------------------------------
+
+
+def test_the_stop_is_its_own_bucket_and_never_scored():
+    # Work done against a full disk is not a partial result, so it is not `infra_partial`; and
+    # not scoreable even with a Δ and a verdict, so a rule that keeps losses without a Δ in the
+    # denominator (gemot#41) cannot count it either.
+    row = {
+        "stop_reason": I.STOP_REASON,
+        "success": False,
+        "delta_bic": 12.0,
+        "head_version": 6,
+        "n_fits": 7,
+    }
+    assert A.stop_class(row) == "infrastructure_error"
+    assert "infrastructure_error" in A.STOP_CLASSES
+    assert not A.is_scoreable(row)
+    # The Phoenix experiment summary agrees: dropped, whatever it did first.
+    assert experiments._is_infra_abort(I.STOP_REASON)
+    assert experiments.is_noop_infra_abort({**row, "n_ops": 7})
+
+
+# --- the runner ------------------------------------------------------------------------------
+
+
+def test_a_run_whose_build_log_shows_a_full_disk_is_not_judged(monkeypatch, tmp_path):
+    """The driver returned as if nothing happened -- the build only said "ill-posed" -- but
+    amici_build.log names the disk. The run is written unjudged, with the infrastructure label and
+    the count, rather than scored against a server that could not build."""
+    from argparse import Namespace
+    from types import SimpleNamespace
+
+    import gemot.agent
+    from gemot.runner import drive
+
+    async def _call(tool, args=None):
+        return {"model_authored": False} if tool == "describe_problem" else {"species": []}
+
+    async def _run_deepagents(session, **kw):
+        (tmp_path / "amici_build.log").write_text(_LINK + "\n")
+        return {"stop_reason": "completed", "disk_full_tool_calls": 0, "disk_full_evidence": None}
+
+    async def _judge(*a, **kw):
+        raise AssertionError("a run on a full disk must not be judged")
+
+    clock = SimpleNamespace(calls=0, by_tool={}, reject_summary=lambda: {})
+    monkeypatch.setattr(drive, "_wrap_call_timeout", lambda session, n: None)
+    monkeypatch.setattr(drive, "_wrap_tool_clock", lambda session: clock)
+    monkeypatch.setattr(drive, "_make_call", lambda session: _call)
+    monkeypatch.setattr(drive, "_base_meta", lambda *a: {"run_started_at": "t0", "git_sha": "s"})
+    monkeypatch.setattr(drive, "_write_live_marker", lambda *a: None)
+    monkeypatch.setattr(drive, "_judge", _judge)
+    monkeypatch.setattr(gemot.agent, "run_deepagents", _run_deepagents)
+
+    scenario = SimpleNamespace(
+        name="toy",
+        version="v1",
+        system_prompt="sp",
+        agent_task="t",
+        agent_entities=[],
+        example_dir=tmp_path,
+    )
+    args = Namespace(
+        driver="deepagents",
+        phoenix=False,
+        phoenix_keep_alive=False,
+        api_key="sk-test",
+        model="m",
+        base_url="http://x",
+        recursion_limit=10,
+        temperature=1.0,
+        reasoning_effort="default",
+        n_starts=1,
+        max_wall_seconds=None,
+    )
+    session = SimpleNamespace(call_tool=None)
+
+    exit_code, result = asyncio.run(drive._drive(scenario, session, tmp_path, args))
+
+    assert exit_code == 1
+    assert result["stop_reason"] == I.STOP_REASON
+    assert result["disk_full_log_lines"] == 1
+    assert "amici_build.log" in result["disk_full_evidence"]
+    assert result["success"] is False and result["delta_bic"] is None
+    assert json.loads((tmp_path / "result.json").read_text())["stop_reason"] == I.STOP_REASON

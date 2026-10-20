@@ -18,7 +18,7 @@ from pathlib import Path
 
 from mcp import ClientSession
 
-from .. import ablations
+from .. import ablations, infrastructure
 from .failure import _should_reraise, _summarize_exc, _write_degraded_result
 from .judge import _judge
 from .clock import _make_call, _wrap_call_timeout, _wrap_tool_clock
@@ -31,6 +31,12 @@ def _reasoning_effort(args) -> str | None:
     keeping its own setting (:mod:`gemot.models`)."""
     effort = getattr(args, "reasoning_effort", None)
     return None if effort == "default" else effort
+
+
+def _disk_full_stop(exc: BaseException, logs: infrastructure.LogWatch) -> str | None:
+    """``infrastructure.STOP_REASON`` if an abort met a full disk, in its own text or the logs."""
+    hit = infrastructure.disk_full_error(exc) or logs(final=True) or logs.evidence
+    return infrastructure.STOP_REASON if hit is not None else None
 
 
 async def _drive(
@@ -82,6 +88,10 @@ async def _drive(
     base_meta = _base_meta(scenario, args, run_started_at)
     run_started_at = base_meta["run_started_at"]
     git_sha = base_meta["git_sha"]
+
+    # The two logs `runner.main` gives the server: a full disk shows there when nothing else says
+    # so (gemot#39) -- an "ill-posed" build's real cause, a segfaulted server's last words.
+    disk_full_logs = infrastructure.LogWatch(work / "server.log", work / "amici_build.log")
 
     tracing = None
     try:
@@ -217,6 +227,7 @@ async def _drive(
                     # The EXACT liveness signal, not a probe: Popen.poll() cannot confuse a
                     # server that is busy fitting with one that is gone (see _server_is_alive).
                     server_poll=(server_proc.poll if server_proc is not None else None),
+                    disk_full_probe=disk_full_logs,
                     bio_sessions=bio_sessions,
                     bio_literature=ablations.enabled("bio_literature"),
                     # Hand-curated biological entities for the blinded biocurator (issue #91);
@@ -228,13 +239,24 @@ async def _drive(
                     input_protocols=blind_names.protocols if blind_names is not None else None,
                 )
                 stop_reason = agent_out.get("stop_reason", "completed")
+                # The logs once more, to their end: the driver stops reading them at its first
+                # evidence, and a full disk can show in the run's last step.
+                if disk_full_logs(final=True) is not None:
+                    stop_reason = infrastructure.STOP_REASON
                 if stop_reason != "completed":
                     print(
                         f"[agent] stopped early: {stop_reason} "
                         f"(raise --recursion-limit if it ran out of steps)"
                     )
-                # The driver's whole return, wholesale (see provenance._agent_meta).
-                meta = _agent_meta(base_meta, agent_out, stop_reason)
+                # The driver's whole return, wholesale (see provenance._agent_meta), and the log
+                # count for every run, so a contaminated one is visible even where nothing
+                # stopped it.
+                meta = {
+                    **_agent_meta(base_meta, agent_out, stop_reason),
+                    "disk_full_log_lines": disk_full_logs.lines,
+                    "disk_full_evidence": agent_out.get("disk_full_evidence")
+                    or disk_full_logs.evidence,
+                }
                 # Is there a server left to judge against? Keyed on the PROCESS, not on
                 # `stop_reason`: the driver only consults liveness on its retriable branch, so a
                 # run whose server was OOM-killed can still arrive here labelled
@@ -243,7 +265,24 @@ async def _drive(
                 # and in the wall-budget case that overspend is taken from the margin reserved
                 # for scoring, which is how a task gets hard-killed with no result.json at all.
                 rc = server_proc.poll() if server_proc is not None else None
-                if rc is not None:
+                if infrastructure.is_stop(stop_reason):
+                    # Not judged: a verdict on a run whose builds failed on a full disk scores
+                    # the disk, and the judge's own compiles would meet it too. Its own label,
+                    # so the sweep can tell it apart and resubmit it.
+                    print(
+                        f"[run] {stop_reason} ({meta['disk_full_evidence']}); skipping the judge."
+                    )
+                    result = _write_degraded_result(
+                        work,
+                        meta,
+                        scenario,
+                        str(meta["disk_full_evidence"]),
+                        server_returncode=rc,
+                        clock=clock,
+                        stop_reason=stop_reason,
+                    )
+                    exit_code = 1
+                elif rc is not None:
                     print(
                         f"[run] the MCP server process has exited ({rc}); skipping the judge "
                         "and writing what the run already produced."
@@ -286,6 +325,7 @@ async def _drive(
                     _summarize_exc(exc),
                     server_returncode=rc,
                     clock=clock,
+                    stop_reason=_disk_full_stop(exc, disk_full_logs),
                 )
                 exit_code = 1
                 with contextlib.suppress(Exception):
@@ -300,7 +340,12 @@ async def _drive(
             raise
         rc = server_proc.poll() if server_proc is not None else None
         return 1, _write_degraded_result(
-            work, base_meta, scenario, _summarize_exc(exc), server_returncode=rc
+            work,
+            base_meta,
+            scenario,
+            _summarize_exc(exc),
+            server_returncode=rc,
+            stop_reason=_disk_full_stop(exc, disk_full_logs),
         )
     finally:
         if tracing is not None:

@@ -75,6 +75,7 @@ def _assert_light(importline: str) -> None:
         "from gemot import experiments",
         "from gemot import analysis",
         "from gemot import fit_budget",
+        "from gemot import infrastructure",
         "from gemot.explorer import bundle",
         "from gemot.runner import endpoints",
         "from gemot import neural_ode",
