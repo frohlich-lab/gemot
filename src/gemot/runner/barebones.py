@@ -303,9 +303,11 @@ def _uncharged_numbers(yaml_path: Path, shipped_rows: dict) -> list[str]:
     delivery is scored as shipped, so before this the same numbers cost the null nothing written as
     a fixed row the problem does not ship, as an SBML parameter value with no row, or as a numeric
     initial value (#1). The judge charges each one here by the reconcile's own conventions: a
-    direct initial condition (``A = A0``) at 0 or 1 is free, and so are condition targets, values
-    a rule or initial assignment computes, and whatever the model never reads (the reconcile prunes
-    it). A rate law's local parameter is charged too, a named number no table can see.
+    parameter a species' initial assignment reads (``A = A0``, ``B = B_tot*B_fold``) is free at 0
+    or 1, as the reconcile's add-loop fixes it there, and so are condition targets, values a rule or
+    initial assignment computes, and whatever neither the model nor the fixed tables read (the
+    reconcile prunes it). A rate law's local parameter is charged too, a named number no table can
+    see.
 
     Charged, deliberately not refused: refusing would make the plain Antimony start ``A = 3.7`` a
     lost run for the null where the panel pays one parameter for it. And not by running the
@@ -317,6 +319,7 @@ def _uncharged_numbers(yaml_path: Path, shipped_rows: dict) -> list[str]:
     """
     import libsbml
     from petab.versions import get_major_version
+    from petab_mcp.literals import model_math
 
     if get_major_version(str(yaml_path)) == 1:
         import petab.v1 as petab
@@ -327,41 +330,41 @@ def _uncharged_numbers(yaml_path: Path, shipped_rows: dict) -> list[str]:
 
         problem = v2.Problem.from_yaml(str(yaml_path))
     sm = problem.model.sbml_model
-    cdf = problem.condition_df
+    # What the fixed tables read, which the reconcile never prunes: the observable and noise
+    # formulas, the measurements' overrides, and the condition table's values.
+    cdf, odf, mdf = problem.condition_df, problem.observable_df, problem.measurement_df
+    cells = []
+    for df, cols in (
+        (odf, ("observableFormula", "noiseFormula")),
+        (mdf, ("observableParameters", "noiseParameters")),
+    ):
+        cells += [cell for col in cols if df is not None and col in df.columns for cell in df[col]]
     if cdf is None:
         targets: set[str] = set()
     elif "targetId" in cdf.columns:  # v2: a target per row
         targets = {str(t) for t in cdf["targetId"].dropna()}
+        cells += list(cdf["targetValue"]) if "targetValue" in cdf.columns else []
     else:  # v1: a target per column
         targets = {str(c) for c in cdf.columns} - {"conditionName"}
+        cells += [cell for col in targets for cell in cdf[col]]
     rules = list(sm.getListOfRules())
     computed = {r.getVariable() for r in rules if r.isSetVariable()}
     assigned = {r.getVariable() for r in rules if r.isAssignment()}
     initial = {ia.getSymbol(): ia.getMath() for ia in sm.getListOfInitialAssignments()}
-    direct_ic = set()
+    ic_params = set()
     for sid, math in initial.items():
-        names = _math_names(math)
-        if sm.getSpecies(sid) is not None and len(names) == 1:
-            direct_ic |= names
+        if sm.getSpecies(sid) is not None:
+            ic_params |= _math_names(math)
 
-    maths = [*initial.values(), *(r.getMath() for r in rules)]
     read = set(computed)
     for rxn in sm.getListOfReactions():
-        read |= {ref.getSpecies() for ref in rxn.getListOfReactants()}
-        read |= {ref.getSpecies() for ref in rxn.getListOfProducts()}
-        read |= {ref.getSpecies() for ref in rxn.getListOfModifiers()}
-        if rxn.getKineticLaw() is not None:
-            maths.append(rxn.getKineticLaw().getMath())
-    for event in sm.getListOfEvents():
-        maths += [part.getMath() for part in (event.getTrigger(), event.getDelay()) if part]
-        maths += [ea.getMath() for ea in event.getListOfEventAssignments()]
-    for col in ("observableFormula", "noiseFormula"):
-        if problem.observable_df is not None and col in problem.observable_df.columns:
-            maths += [libsbml.parseL3Formula(str(f)) for f in problem.observable_df[col]]
-    for math in maths:
+        for refs in (rxn.getListOfReactants(), rxn.getListOfProducts(), rxn.getListOfModifiers()):
+            read |= {ref.getSpecies() for ref in refs}
+    tables = (libsbml.parseL3Formula(part) for cell in cells for part in str(cell).split(";"))
+    for math in [*model_math(sm), *tables]:
         read |= _math_names(math)
 
-    pdf = problem.parameter_df
+    rows = problem.parameter_df.index if problem.parameter_df is not None else ()
     uncharged = []
     for p in sm.getListOfParameters():
         pid = p.getId()
@@ -369,14 +372,14 @@ def _uncharged_numbers(yaml_path: Path, shipped_rows: dict) -> list[str]:
             continue
         if pid not in read:
             continue
-        if pid in pdf.index:
-            if _estimate_flag(str(pdf.loc[pid, "estimate"])) == 1:
+        if pid in rows:
+            row = problem.parameter_df.loc[pid]
+            if _estimate_flag(str(row["estimate"])) == 1:
                 continue  # an estimated row: the judge counts it already
-            value = float(pdf.loc[pid, "nominalValue"])
-            how = "a fixed row the problem does not ship"
+            value, how = float(row["nominalValue"]), "a fixed row the problem does not ship"
         else:
             value, how = p.getValue(), "no parameter-table row"
-        if pid in direct_ic and value in (0.0, 1.0):
+        if pid in ic_params and value in (0.0, 1.0):
             continue
         uncharged.append(f"{pid} = {value:g}: {how}")
     for sp in sm.getListOfSpecies():

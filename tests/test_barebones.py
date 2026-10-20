@@ -10,10 +10,12 @@ in the same array as a `deepagents` sweep.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -256,8 +258,9 @@ def test_numbers_outside_the_estimated_rows_are_charged(tmp_path):
 
 def test_the_panels_free_numbers_stay_free(tmp_path):
     """What the reconcile leaves fixed costs the null nothing either: a start at 0, unset, or 1 —
-    written as a number or as a direct `D = D0` with D0 at 1, with or without a fixed row — and a
-    value a rule computes (it cannot have a row at all)."""
+    written as a number or through the parameters of its initial assignment (`D = D0` with D0 at 1,
+    `H = H_tot*H_fold` with both at 0 or 1), with or without a fixed row — and a value a rule
+    computes (it cannot have a row at all)."""
     import libsbml
 
     work = _workspace(tmp_path)
@@ -267,22 +270,37 @@ def test_the_panels_free_numbers_stay_free(tmp_path):
     def edit(m):
         for sid, value in (("D", None), ("D2", None), ("E", 1.0), ("F", 0.0), ("G", None)):
             _add(m, "species", sid, value)
-        for pid, value in (("D0", 1.0), ("D20", 0.0), ("p_rule", 0.0)):
-            _add(m, "parameter", pid, value).setConstant(pid != "p_rule")
-        for sid, math in (("D", "D0"), ("D2", "D20")):
+        _add(m, "species", "H")
+        for pid, value in (("D0", 1.0), ("D20", 0.0), ("H_tot", 0.0), ("H_fold", 1.0)):
+            _add(m, "parameter", pid, value)
+        _add(m, "parameter", "p_rule", 0.0).setConstant(False)
+        for sid, math in (("D", "D0"), ("D2", "D20"), ("H", "H_tot * H_fold")):
             ia = m.createInitialAssignment()
             ia.setSymbol(sid)
             ia.setMath(libsbml.parseL3Formula(math))
         rule = m.createAssignmentRule()
         rule.setVariable("p_rule")
         rule.setMath(libsbml.parseL3Formula("2 * k2"))
-        _add_decay(m, "r3", ["D", "D2", "E", "F", "G"], "k1 * p_rule * D * D2 * E * F * G")
+        _add_decay(m, "r3", ["D", "D2", "E", "F", "G", "H"], "k1 * p_rule * D * D2 * E * F * G * H")
 
     _edit_model(work, edit)
     _add_rows(work, "D20\tlin\t0.0\t1.0\t0.0\t0")
     out = R.check_delivery(work, staged)
     assert out["petab_lint"]["ok"], out["petab_lint"]
     assert out["uncharged"] == []
+
+
+def test_a_parameter_only_the_condition_table_reads_is_charged(tmp_path):
+    """The fixed tables read model symbols too, and the reconcile never prunes what they read: a
+    condition that sets `A` to `A_dose` makes the model's `A_dose` a number of the fit."""
+    work = _workspace(tmp_path)
+    (work / "conditions.tsv").write_text("conditionId\tA\nc0\tA_dose\n")
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+    _edit_model(work, lambda m: _add(m, "parameter", "A_dose", 2.5))
+    out = R.check_delivery(work, staged)
+    assert out["petab_lint"]["ok"], out["petab_lint"]
+    assert out["uncharged"] == ["A_dose = 2.5: no parameter-table row"]
 
 
 def test_a_local_parameter_is_charged(tmp_path):
@@ -461,7 +479,8 @@ def test_a_v2_delivery_that_rewrites_the_design_or_a_shipped_row_is_reported(tmp
 
 def test_a_v2_delivery_is_charged_but_not_for_a_condition_target(tmp_path):
     """v2 names its condition targets in `targetId` rows: a species the condition table sets
-    starts where the condition says, so its declared value is no number of the model's."""
+    starts where the condition says, so its declared value is no number of the model's. Its
+    `estimate` column reads `false`, which must still read as a fixed row."""
     work = _workspace_v2(tmp_path)
     staged = R.stage_workspace(work)
     work = staged["agent_dir"]
@@ -472,12 +491,20 @@ def test_a_v2_delivery_is_charged_but_not_for_a_condition_target(tmp_path):
         m.removeInitialAssignment("A")
         m.getSpecies("A").setInitialConcentration(3.7)
         _add(m, "parameter", "kx", 0.37)
-        m.getReaction("r2").getKineticLaw().setMath(libsbml.parseL3Formula("k2 * kx * B"))
+        _add(m, "parameter", "kf", 0.2)
+        m.getReaction("r2").getKineticLaw().setMath(libsbml.parseL3Formula("k2 * kx * kf * B"))
 
     _edit_model(work, edit)
+    header = (work / "parameters.tsv").read_text().splitlines()[0].split("\t")
+    row = {"parameterId": "kf", "parameterScale": "lin", "lowerBound": "0", "upperBound": "1"}
+    row |= {"nominalValue": "0.2", "estimate": "false"}
+    _add_rows(work, "\t".join(row.get(c, "") for c in header))
     out = R.check_delivery(work, staged)
     assert out["petab_lint"]["ok"], out["petab_lint"]
-    assert out["uncharged"] == ["kx = 0.37: no parameter-table row"]
+    assert out["uncharged"] == [
+        "kx = 0.37: no parameter-table row",
+        "kf = 0.2: a fixed row the problem does not ship",
+    ]
 
 
 def test_a_v2_lint_error_is_named(tmp_path):
@@ -506,6 +533,27 @@ def test_unscoreable_result_is_a_loss_not_an_abort(tmp_path):
     assert res["stop_reason"] == "completed"
     assert res["unscoreable_reason"].startswith("petab_invalid")
     assert (tmp_path / "result.json").is_file()
+
+
+def test_the_judge_is_handed_the_deliverys_uncharged_numbers(monkeypatch, tmp_path):
+    """#1: the delivery check's list reaches k only through this hand-off; dropped, the judge would
+    price the null at its estimated rows again while every judge test still passed."""
+    seen = {}
+
+    async def call(name, **_):
+        return {"model_id": "m", "model_authored": True}
+
+    async def judge(*_, uncharged=None):
+        seen["uncharged"] = uncharged
+        return 0, {}
+
+    monkeypatch.setattr(R, "_wrap_call_timeout", lambda *_: None)
+    monkeypatch.setattr(R, "_wrap_tool_clock", lambda *_: None)
+    monkeypatch.setattr(R, "_make_call", lambda *_: call)
+    monkeypatch.setattr(R, "_judge", judge)
+    meta = {"delivery": {"uncharged": ["kx = 0.37: no parameter-table row"]}}
+    asyncio.run(R._judge_delivered(None, None, tmp_path, SimpleNamespace(n_starts=1), meta, 0.0))
+    assert seen["uncharged"] == ["kx = 0.37: no parameter-table row"]
 
 
 # --------------------------------------------------------------------------- wiring
