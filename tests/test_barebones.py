@@ -564,13 +564,74 @@ def test_the_judge_is_handed_the_reconciled_estimates(monkeypatch, tmp_path):
         return 0, {}
 
     monkeypatch.setattr(R, "_wrap_call_timeout", lambda *_: None)
-    monkeypatch.setattr(R, "_wrap_tool_clock", lambda *_: None)
+    monkeypatch.setattr(R, "_wrap_tool_clock", lambda *_: SimpleNamespace(seconds=0.0))
     monkeypatch.setattr(R, "_make_call", lambda *_: call)
     monkeypatch.setattr(R, "_judge", judge)
     delivery = {"estimated": ["k1", "kx"], "uncharged": ["kx = 0.37: no parameter-table row"]}
-    meta = {"delivery": delivery}
-    asyncio.run(R._judge_delivered(None, None, tmp_path, SimpleNamespace(n_starts=1), meta, 0.0))
+    meta = {"delivery": delivery, "workspace_audit": {"shell_busy_seconds": 0.0}}
+    args = SimpleNamespace(n_starts=1)
+    asyncio.run(R._judge_delivered(None, None, tmp_path, args, meta, 0.0, 0.0))
     assert seen["estimated"] == ["k1", "kx"]
+
+
+# --------------------------------------------------------------------------- timing
+def test_the_scoring_reserve_comes_out_of_the_agents_wall_budget():
+    """The agent got the whole `--max-wall-seconds` and the delivery was compiled and scored
+    after it, in the sweep's margin below Slurm's `--time`: a slow compile was killed with no
+    result.json and the run dropped, on this arm only (#8)."""
+    budget = 4 * 3600 - 1200.0
+    assert R._split_wall_budget(budget) == (budget - R._SCORE_RESERVE_S, R._SCORE_RESERVE_S)
+    assert R._split_wall_budget(600.0) == (300.0, 300.0)  # a smoke-test budget keeps half
+    assert R._split_wall_budget(None) == (None, R._SCORE_UNBUDGETED_S)  # nothing to finish inside
+
+
+def test_the_null_arms_sandbox_and_scoring_time_is_compute_not_llm(tmp_path):
+    """The judge's clock used to start once the server had compiled and scored the delivery, and
+    never saw the agent's sandboxed fits, so `llm_seconds` (wall - compute) carried both and the
+    null arm read as near-zero compute (#8). Here the run is 1000 s old, the agent's commands kept
+    the sandbox busy for 500 s, and it stopped 300 s ago."""
+    import argparse
+    import asyncio
+    import time
+    from types import SimpleNamespace
+
+    from gemot import scenario as S
+
+    canned = {
+        "describe_problem": {"current_version": 1, "model_authored": True},
+        "get_progress": {"best_version": 1},
+        "get_model_structure": {"reactions": [{"id": "r1"}], "species": ["A"]},
+        "get_fit_summary": {"neg_log_likelihood": 100.0, "n_data_points": 50, "chi2": 47.0},
+        "get_parameters": [{"estimate": 1}] * 3,
+        "get_errors": [],
+    }
+
+    class _Session:
+        async def call_tool(self, name, arguments=None, read_timeout_seconds=None, **_):
+            return SimpleNamespace(structuredContent=canned.get(name, {}))
+
+    async def _no_fix(call, n_starts):  # pragma: no cover - never driven here
+        return None
+
+    scenario = S.Scenario(
+        name="pkg",
+        problem_dir=tmp_path / "ex" / "problem",
+        scripted_fix=_no_fix,
+        diagnostics=None,
+        reference_free=True,
+        adequacy=S.ADEQUACY_CHI2,
+    )
+    meta = {
+        "workspace_audit": {"shell_busy_seconds": 500.0},
+        "delivery": {"estimated": None, "uncharged": []},
+    }
+    args = argparse.Namespace(n_starts=10)
+    now = time.monotonic()
+    judged = R._judge_delivered(scenario, _Session(), tmp_path, args, meta, now - 1000, now - 300)
+    _, result = asyncio.run(judged)
+    assert result["scoring_seconds"] == pytest.approx(300, abs=5)
+    assert result["compute_seconds"] == pytest.approx(800, abs=5)
+    assert result["llm_seconds"] == pytest.approx(200, abs=5)
 
 
 # --------------------------------------------------------------------------- wiring

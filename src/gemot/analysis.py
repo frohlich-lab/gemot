@@ -17,14 +17,15 @@ everything here runs on a login node with nothing but the harness installed.
     python -m gemot.analysis live    [<job>] [--work-root D]
 
 * ``summary`` — how the sweep did and what it cost. One line per model (per example with
-  ``--by scenario``): runs, how many are scoreable, how many passed, success rate, median and best
-  Δ against the true model, mean and total $ as billed (:func:`run_cost`; ``-`` until the harness
-  records it, #178), cache-read fraction, LLM calls. Below it, each line's stop buckets
-  (:data:`STOP_CLASSES`) and the median wall-clock split — wall, llm, compute, queue, compile, fit —
-  with how many runs waited on a fit queue. Success rate and Δ
-  are over **scoreable** runs only (:func:`is_scoreable`): an infrastructure abort before any
-  work, an unreachable server, or a task that left no ``result.json`` is counted in its bucket,
-  never averaged in as a failure. The Δ is the criterion each run was GRADED on
+  ``--by scenario``): runs, how many are scoreable, how many passed, success rate, how many have a
+  Δ, median and best Δ against the true model, mean and total $ as billed (:func:`run_cost`; ``-``
+  until the harness records it, #178), cache-read fraction, LLM calls. Below it, each line's stop
+  buckets (:data:`STOP_CLASSES`) and the median wall-clock split — wall, llm, compute, queue,
+  compile, fit — with how many runs waited on a fit queue. Success rate and Δ are over
+  **scoreable** runs only (:func:`is_scoreable`): an infrastructure abort before any work, an
+  unreachable server, or a task that left no ``result.json`` is counted in its bucket, never
+  averaged in as a failure. A loss with no Δ (no model built, an unscoreable delivery) is a failure
+  in the rate and absent from the Δ columns. The Δ is the criterion each run was GRADED on
   (:func:`score_delta`), which is ΔBIC unless the sweep set another. Several job ids merge into one
   table.
 * ``rows`` — one CSV row per task, tasks that left only a ``combo.env`` included, for a spreadsheet
@@ -303,12 +304,18 @@ def score_delta(row: dict) -> float | None:
 
 
 def is_scoreable(row: dict) -> bool:
-    """Should this run count toward success rate and Δ? A scored verdict exists and the run was
-    not pure infrastructure noise.
+    """Should this run count toward the success rate? A verdict exists and the run was not pure
+    infrastructure noise.
 
-    A reference-free run (``judge_mode``) never is: it has no Δ, and its pass is an absolute
-    adequacy verdict that must not be pooled into a Δcriterion success rate."""
-    if score_delta(row) is None:
+    A Δ is deliberately NOT required: ``no_model_built``, a fit that came back non-finite and a
+    barebones delivery the judge could not score (``unscoreable_reason``) are losses with no Δ.
+    Requiring one dropped them from the denominator and inflated the success rate, the null arm's
+    most, whose losses mostly carry none (#2). :func:`summarize_by` takes the Δ statistics over
+    the scoreable runs that have one.
+
+    A reference-free run (``judge_mode``) never is: its pass is an absolute adequacy verdict that
+    must not be pooled into a Δcriterion success rate."""
+    if row.get("judge_mode") == "reference_free":
         return False
     # A DECLINED verdict, not a failed one: `slurm/recover_run.py` writes `success: null` for a
     # run graded under a criterion it cannot reproduce.
@@ -329,9 +336,11 @@ def _median(values: list[float]) -> float | None:
 def summarize_by(rows: Iterable[dict], key: str = "model") -> list[dict]:
     """One summary row per distinct ``row[key]``: counts, success, ΔBIC, cost, and stop buckets.
 
-    ``success_rate`` and ``median_delta`` are over the SCOREABLE runs (:func:`is_scoreable`) so an
-    out-of-credits abort at n_ops=0 does not read as a modeling failure; ``n`` and ``stops`` cover
-    every row, so the noise is still visible. Costs are summed over runs that recorded usage.
+    ``success_rate`` is over the SCOREABLE runs (:func:`is_scoreable`) so an out-of-credits abort
+    at n_ops=0 does not read as a modeling failure; ``median_delta`` and ``best_delta`` are over
+    the ``n_delta`` scoreable runs that have a Δ, so a loss without one counts against the rate but
+    not in the medians. ``n`` and ``stops`` cover every row, so the noise is still visible. Costs
+    are summed over runs that recorded usage.
 
     The Δs are each run's DECIDING one (:func:`score_delta`), so a group whose runs were graded
     under different criteria has a median across scales — group by the arm before reading it.
@@ -358,6 +367,7 @@ def summarize_by(rows: Iterable[dict], key: str = "model") -> list[dict]:
                     if scoreable
                     else None
                 ),
+                "n_delta": len(deltas),
                 "median_delta": _median(deltas),
                 "best_delta": min(deltas) if deltas else None,
                 "total_cost": sum(costs) if costs else None,
@@ -379,7 +389,10 @@ def timing_split(row: dict) -> dict[str, float | None]:
     ``queue`` the part of ``compute``'s wall time the fit spent waiting for a cluster worker — a
     number that exists only since fits moved to the shared server, and one the client could not
     have measured itself. ``tool_wall`` is the raw client-side busy interval that ``compute``
-    is derived from (``compute = tool_wall - queue``).
+    is derived from (``compute = tool_wall - queue``). On the null arm ``compute`` is the agent's
+    sandboxed commands plus the compile and nominal score of its delivery (``scoring_seconds``) and
+    the judge's reads; null rows without ``scoring_seconds`` predate that and booked all of it as
+    ``llm`` (#8).
     """
 
     def _f(k: str) -> float | None:
@@ -946,6 +959,7 @@ _SUMMARY_COLUMNS = [
     ("n_scoreable", "scored", "d"),
     ("n_success", "ok", "d"),
     ("success_rate", "rate", ".2f"),
+    ("n_delta", "n d", "d"),
     ("median_delta", "med d", ".1f"),
     ("best_delta", "best d", ".1f"),
     ("mean_cost", "$/run", ".3f"),

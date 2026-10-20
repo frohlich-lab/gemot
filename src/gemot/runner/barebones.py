@@ -82,8 +82,16 @@ _ARCHIVE_SUFFIXES = (
     ".csv",
 )
 
-#: How long the server may take to compile + score the delivered model before it listens.
-_SCORE_LISTEN_TIMEOUT_S = 3600.0
+#: Kept back from the END of the wall budget for compiling and scoring the delivery: the agent stops
+#: this much early, and the server gets exactly this long to compile + score before it listens. So
+#: the scoring ends inside ``--max-wall-seconds`` or is recorded as ``delivered_model_unscoreable``,
+#: and the margin a sweep keeps below Slurm's ``--time`` stays the judge's. When the scoring ran in
+#: that margin, a slow compile was killed with no ``result.json`` and the run dropped (#8).
+_SCORE_RESERVE_S = 1200.0
+
+#: The scoring's limit for a run with no wall budget, which has no outer limit to finish inside:
+#: this only cuts a hung compile.
+_SCORE_UNBUDGETED_S = 3600.0
 
 
 #: The tables that make up the experimental design, which the agent may not touch. A v1 problem
@@ -513,13 +521,37 @@ def barebones_task(scenario: Scenario) -> str:
 
 
 # --------------------------------------------------------------------------- pipeline
+def _split_wall_budget(max_wall_seconds: float | None) -> "tuple[float | None, float]":
+    """``--max-wall-seconds`` as ``(the agent's budget, the scoring's limit after it)``: the limit
+    is :data:`_SCORE_RESERVE_S` taken from the budget, or half of a budget too short for it. Without
+    a budget the agent is unbounded and the scoring gets :data:`_SCORE_UNBUDGETED_S`."""
+    if max_wall_seconds is None:
+        return None, _SCORE_UNBUDGETED_S
+    reserve = min(_SCORE_RESERVE_S, 0.5 * max_wall_seconds)
+    return max_wall_seconds - reserve, reserve
+
+
 async def _judge_delivered(
-    scenario: Scenario, session, work: Path, args: argparse.Namespace, meta: dict, t0: float
+    scenario: Scenario,
+    session,
+    work: Path,
+    args: argparse.Namespace,
+    meta: dict,
+    t0: float,
+    agent_done: float,
 ) -> "tuple[int, dict]":
     """The judge over a server that holds the DELIVERED problem — the tail of :func:`.drive._drive`
-    without the driver in the middle."""
+    without the driver in the middle.
+
+    Its clock starts with the compute no tool call saw: the agent's sandboxed commands, and
+    everything since the agent stopped at ``agent_done`` (the delivery check, the server's compile
+    and nominal score), recorded as ``scoring_seconds``. Without it ``llm_seconds``, which is wall
+    minus ``compute_seconds``, booked all of that as LLM time (#8)."""
+    scoring_s = time.monotonic() - agent_done
+    meta = {**meta, "scoring_seconds": round(scoring_s, 1)}
     _wrap_call_timeout(session, args.n_starts)
     clock = _wrap_tool_clock(session)
+    clock.seconds += meta["workspace_audit"]["shell_busy_seconds"] + scoring_s
     call = _make_call(session)
     desc = await call("describe_problem")
     print(
@@ -570,6 +602,7 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
 
     # One shell command may run as long as one server fit would.
     execute_timeout_s = fit_time_budget(args.n_starts)
+    agent_wall_s, score_limit_s = _split_wall_budget(args.max_wall_seconds)
     system_prompt = barebones_system_prompt(
         staged, execute_timeout=execute_timeout_s, n_cpus=FIT_N_WORKERS, n_starts=args.n_starts
     )
@@ -580,7 +613,8 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
     tracing = setup_phoenix_tracing(project_name=args.phoenix_project) if args.phoenix else None
     print(
         f"[null] driving {args.model} via OpenRouter + a barebones deepagent "
-        f"(recursion_limit={args.recursion_limit}, execute timeout {execute_timeout_s:.0f}s)"
+        f"(recursion_limit={args.recursion_limit}, execute timeout {execute_timeout_s:.0f}s, "
+        f"scoring limit {score_limit_s:.0f}s)"
     )
     from ..agent.barebones import run_barebones
 
@@ -623,16 +657,18 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
                         temperature=args.temperature,
                         execute_timeout_s=execute_timeout_s,
                         n_cpus=FIT_N_WORKERS,
-                        max_wall_seconds=args.max_wall_seconds,
+                        max_wall_seconds=agent_wall_s,
                         bio_sessions=bio_sessions,
                         bio_literature=ablations.enabled("bio_literature"),
                     )
+                agent_done = time.monotonic()
                 delivery = check_delivery(agent_dir, staged)
                 meta = {
                     **base_meta,
                     **agent_out,
                     "delivery": delivery,
                     "scoring_mode": "delivered_nominal",
+                    "score_limit_seconds": score_limit_s,
                     "sandbox": sandbox,
                     "workspace_withheld": staged["withheld"],
                 }
@@ -675,11 +711,11 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
                             scenario=scenario,
                             score_shipped_model=True,
                             handle_out=launched,
-                            listen_timeout=_SCORE_LISTEN_TIMEOUT_S,
+                            listen_timeout=score_limit_s,
                             yaml_path=agent_dir / "problem.yaml",
                         ) as server:
                             exit_code, result = await _judge_delivered(
-                                scenario, server.session, work, args, meta, t0
+                                scenario, server.session, work, args, meta, t0, agent_done
                             )
                     except (RuntimeError, TimeoutError) as exc:
                         # the server died compiling/scoring the delivery; server.log names why
