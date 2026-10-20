@@ -521,8 +521,21 @@ if _unknown_flatteners:  # pragma: no cover - import-time wiring check
 del _unknown_flatteners
 
 
+def _run_key(row: dict[str, Any]) -> tuple[str, str] | None:
+    """What identifies a run in the history: its scenario and the instant it started
+    (``run_started_at``, stamped on every result to the microsecond). ``None`` for a row without a
+    start time, which nothing can match against."""
+    started = row.get("run_started_at")
+    return (str(row.get("scenario") or ""), str(started)) if started else None
+
+
 def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HISTORY) -> Path:
-    """Append rows to the append-only history CSV (writing the header if it is new)."""
+    """Append rows to the append-only history CSV (writing the header if it is new).
+
+    A run already in the file is skipped (see :func:`_run_key`). ``collect_metrics.py`` re-reads
+    each example's latest ``result.json``, so a second collection with no new run in between
+    appended every run again, and each one then counted twice in every rate read off the file
+    (#10). A row with no start time is always appended."""
     history_path = Path(history_path)
     is_new = not history_path.exists()
     # Append against the EXISTING header, not HISTORY_FIELDS. The history is append-only and
@@ -564,17 +577,30 @@ def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HIST
                         w.writerow({k: r.get(k, "") for k in HISTORY_FIELDS})
                 os.replace(tmp, history_path)
                 fields = HISTORY_FIELDS
+    seen: set[tuple[str, str]] = set()
+    if not is_new:
+        with history_path.open(newline="") as fh:
+            seen = {key for r in csv.DictReader(fh) if (key := _run_key(r)) is not None}
+    skipped = 0
     with history_path.open("a", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         if is_new:
             writer.writeheader()
         for row in rows:
+            key = _run_key(row)
+            if key is not None:
+                if key in seen:
+                    skipped += 1
+                    continue
+                seen.add(key)
             row = _flatten_served_endpoints(
                 _flatten_git_diff(_flatten_replicate_lof(_flatten_edit_rejects(row)))
             )
             for name in _KEY_FLATTENERS:
                 row = {**row, **globals()[name](row)}
             writer.writerow({k: row.get(k) for k in fields})
+    if skipped:
+        print(f"[metrics] {skipped} run(s) already in {history_path}; not appended again")
     return history_path
 
 
