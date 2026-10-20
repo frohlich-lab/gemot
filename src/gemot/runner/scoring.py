@@ -347,15 +347,11 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
             continue
         ref_pid = solo_ref_id if solo_pairing else pid
         # Effective vs effective where BOTH sides carry one, else raw vs raw — never one of each.
-        compared_on = (
-            "effective"
-            if entry.get("effective_sigma") is not None and effective_ref.get(ref_pid) is not None
-            else "raw"
-        )
-        if compared_on == "effective":
-            fitted, ref_value = entry.get("effective_sigma"), effective_ref.get(ref_pid)
-        else:
+        fitted, ref_value = entry.get("effective_sigma"), effective_ref.get(ref_pid)
+        compared_on = "effective"
+        if fitted is None or ref_value is None:
             fitted, ref_value = entry.get("fitted"), raw_ref.get(ref_pid)
+            compared_on = "raw"
         try:
             fitted, ref_value = float(fitted), float(ref_value)
         except (TypeError, ValueError):

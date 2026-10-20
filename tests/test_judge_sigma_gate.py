@@ -406,12 +406,32 @@ def test_a_sigma_is_never_compared_effective_against_raw():
     old_report = _reference_sigma_flag({"sd_o": {"fitted": 0.25}}, reference)
     assert old_report["max_ratio"] == pytest.approx(1.0)
     assert old_report["per_sigma"]["sd_o"]["compared_on"] == "raw"
+    # A FRESH entry whose formula would not evaluate (key present, None) is judged raw too. This
+    # is the pair that used to return None and switch the basis off: bachmann's shape wherever the
+    # reference recorded an effective value the server cannot compute for the candidate.
+    fresh = _reference_sigma_flag({"sd_o": {"fitted": 0.25, "effective_sigma": None}}, reference)
+    assert fresh["max_ratio"] == pytest.approx(1.0)
+    assert fresh["per_sigma"]["sd_o"]["compared_on"] == "raw"
     # Candidate carries an effective value the reference lacks: raw-vs-raw again.
     no_ref_effective = _reference_sigma_flag(
         {"sd_o": {"fitted": 0.25, "effective_sigma": 1.0}}, {"noise_sigma": {"sd_o": 0.25}}
     )
     assert no_ref_effective["max_ratio"] == pytest.approx(1.0)
     assert no_ref_effective["per_sigma"]["sd_o"]["compared_on"] == "raw"
+
+
+def test_a_lone_sigma_pairs_across_an_id_mismatch_on_the_effective_basis_too():
+    """The positional pairing counts the reference's ids across BOTH maps, so perelson's lone
+    sigma still pairs when the reference also records an effective value — and on that basis."""
+    flag = _reference_sigma_flag(
+        {"sd_viral_load": {"fitted": 0.5, "effective_sigma": 0.12}},
+        {
+            "noise_sigma": {"sd_task0_model0_perelson1_V": 0.03},
+            "noise_sigma_effective": {"sd_task0_model0_perelson1_V": 0.1228},
+        },
+    )
+    assert flag is not None and not flag["inflated"] and not flag["collapsed"]
+    assert flag["per_sigma"]["sd_viral_load"]["compared_on"] == "effective"
 
 
 def test_every_sigma_gets_a_verdict_whatever_its_degrees_of_freedom():
