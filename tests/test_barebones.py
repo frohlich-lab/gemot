@@ -352,7 +352,7 @@ def test_the_scoring_reserve_comes_out_of_the_agents_wall_budget():
     budget = 4 * 3600 - 1200.0
     assert R._split_wall_budget(budget) == (budget - R._SCORE_RESERVE_S, R._SCORE_RESERVE_S)
     assert R._split_wall_budget(600.0) == (300.0, 300.0)  # a smoke-test budget keeps half
-    assert R._split_wall_budget(None) == (None, R._SCORE_RESERVE_S)  # scoring is still bounded
+    assert R._split_wall_budget(None) == (None, R._SCORE_UNBUDGETED_S)  # nothing to finish inside
 
 
 def test_the_null_arms_sandbox_and_scoring_time_is_compute_not_llm(tmp_path):

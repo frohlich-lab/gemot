@@ -88,6 +88,10 @@ _ARCHIVE_SUFFIXES = (
 #: that margin, a slow compile was killed with no ``result.json`` and the run dropped (#8).
 _SCORE_RESERVE_S = 1200.0
 
+#: The scoring's limit for a run with no wall budget, which has no outer limit to finish inside:
+#: this only cuts a hung compile.
+_SCORE_UNBUDGETED_S = 3600.0
+
 
 #: The tables that make up the experimental design, which the agent may not touch. A v1 problem
 #: has no experiment table.
@@ -438,11 +442,11 @@ def barebones_task(scenario: Scenario) -> str:
 
 # --------------------------------------------------------------------------- pipeline
 def _split_wall_budget(max_wall_seconds: float | None) -> "tuple[float | None, float]":
-    """``--max-wall-seconds`` as ``(the agent's budget, the scoring reserve after it)``: the reserve
-    is :data:`_SCORE_RESERVE_S`, or half of a budget too short for it. Without a budget the agent
-    is unbounded and the scoring is still bounded by the reserve."""
+    """``--max-wall-seconds`` as ``(the agent's budget, the scoring's limit after it)``: the limit
+    is :data:`_SCORE_RESERVE_S` taken from the budget, or half of a budget too short for it. Without
+    a budget the agent is unbounded and the scoring gets :data:`_SCORE_UNBUDGETED_S`."""
     if max_wall_seconds is None:
-        return None, _SCORE_RESERVE_S
+        return None, _SCORE_UNBUDGETED_S
     reserve = min(_SCORE_RESERVE_S, 0.5 * max_wall_seconds)
     return max_wall_seconds - reserve, reserve
 
@@ -513,7 +517,7 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
 
     # One shell command may run as long as one server fit would.
     execute_timeout_s = fit_time_budget(args.n_starts)
-    agent_wall_s, score_reserve_s = _split_wall_budget(args.max_wall_seconds)
+    agent_wall_s, score_limit_s = _split_wall_budget(args.max_wall_seconds)
     system_prompt = barebones_system_prompt(
         staged, execute_timeout=execute_timeout_s, n_cpus=FIT_N_WORKERS, n_starts=args.n_starts
     )
@@ -525,7 +529,7 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
     print(
         f"[null] driving {args.model} via OpenRouter + a barebones deepagent "
         f"(recursion_limit={args.recursion_limit}, execute timeout {execute_timeout_s:.0f}s, "
-        f"{score_reserve_s:.0f}s kept back to score the delivery)"
+        f"scoring limit {score_limit_s:.0f}s)"
     )
     from ..agent.barebones import run_barebones
 
@@ -579,7 +583,7 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
                     **agent_out,
                     "delivery": delivery,
                     "scoring_mode": "delivered_nominal",
-                    "score_reserve_seconds": score_reserve_s,
+                    "score_limit_seconds": score_limit_s,
                     "sandbox": sandbox,
                     "workspace_withheld": staged["withheld"],
                 }
@@ -622,7 +626,7 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
                             scenario=scenario,
                             score_shipped_model=True,
                             handle_out=launched,
-                            listen_timeout=score_reserve_s,
+                            listen_timeout=score_limit_s,
                             yaml_path=agent_dir / "problem.yaml",
                         ) as server:
                             exit_code, result = await _judge_delivered(

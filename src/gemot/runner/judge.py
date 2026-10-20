@@ -734,8 +734,8 @@ async def _judge(
                 f" + other {max(0.0, compute_s - compile_s - fit_s):.0f}s]"
             )
         print(
-            f"  time:                 total {wall:.0f}s | tool calls {compute_s:.0f}s "
-            f"({clock.calls} calls){breakdown} | LLM+overhead {llm_s:.0f}s"
+            f"  time:                 total {wall:.0f}s | compute {compute_s:.0f}s "
+            f"({clock.calls} tool calls){breakdown} | LLM+overhead {llm_s:.0f}s"
         )
     if errors:
         print(f"  rejected tool calls:  {len(errors)} (see get_errors)")

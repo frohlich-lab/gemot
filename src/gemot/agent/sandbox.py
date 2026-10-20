@@ -242,8 +242,8 @@ def sandbox_backend_class():
             self._default_timeout = float(timeout)
             self._audit = audit
             self._id = f"bwrap-{uuid.uuid4().hex[:8]}"
-            # `shell_busy_seconds`: commands run on worker threads, so the counter takes a lock.
-            self._busy_lock = threading.Lock()
+            # Commands run on worker threads at once, so every audit update takes this lock.
+            self._audit_lock = threading.Lock()
             self._running = 0
             self._busy_since = 0.0
 
@@ -260,10 +260,10 @@ def sandbox_backend_class():
                 )
             effective = float(timeout) if timeout else self._default_timeout
             audit = self._audit
-            audit["n_shell_commands"] += 1
-            audit["commands"].append(command[:_COMMAND_RECORD_CHARS])
             t0 = time.monotonic()
-            with self._busy_lock:
+            with self._audit_lock:
+                audit["n_shell_commands"] += 1
+                audit["commands"].append(command[:_COMMAND_RECORD_CHARS])
                 if self._running == 0:
                     self._busy_since = t0
                 self._running += 1
@@ -272,8 +272,9 @@ def sandbox_backend_class():
                     self._workspace, self._env_prefix, self._sandbox_env, command, effective
                 )
             except subprocess.TimeoutExpired as exc:
-                audit["n_timeouts"] += 1
-                audit["n_nonzero_exits"] += 1
+                with self._audit_lock:
+                    audit["n_timeouts"] += 1
+                    audit["n_nonzero_exits"] += 1
                 partial = getattr(exc, "output", None) or getattr(exc, "stdout", None) or ""
                 partial = (
                     partial.decode(errors="replace") if isinstance(partial, bytes) else partial
@@ -289,7 +290,7 @@ def sandbox_backend_class():
                 )
             finally:
                 t1 = time.monotonic()
-                with self._busy_lock:
+                with self._audit_lock:
                     audit["shell_seconds"] += t1 - t0
                     self._running -= 1
                     if self._running == 0:
@@ -308,7 +309,8 @@ def sandbox_backend_class():
                 )
                 truncated = True
             if proc.returncode != 0:
-                audit["n_nonzero_exits"] += 1
+                with self._audit_lock:
+                    audit["n_nonzero_exits"] += 1
                 output = f"{output.rstrip()}\n\nExit code: {proc.returncode}"
             return ExecuteResponse(output=output, exit_code=proc.returncode, truncated=truncated)
 
