@@ -277,7 +277,7 @@ def test_summarize_by_model_scores_only_the_scoreable_runs(results_root):
     assert luna["n"] == 5 and luna["n_scoreable"] == 3 and luna["n_success"] == 1
     assert luna["success_rate"] == pytest.approx(1 / 3)
     assert luna["median_delta"] == pytest.approx(16.0)  # of {-3.2, 44.0, 16.0}; 1.5e7 excluded
-    assert luna["best_delta"] == pytest.approx(-3.2)
+    assert luna["best_delta"] == pytest.approx(-3.2) and luna["n_delta"] == 3
     assert luna["stops"] == {
         "budget": 1,
         "completed": 1,
@@ -289,7 +289,7 @@ def test_summarize_by_model_scores_only_the_scoreable_runs(results_root):
     # The `no_model_built` run is a loss with no Δ: it counts against the rate, not in the median.
     new = by["someone/new-model"]
     assert new["total_cost"] is None and new["n_scoreable"] == 2 and new["n_success"] == 1
-    assert new["success_rate"] == pytest.approx(0.5)
+    assert new["success_rate"] == pytest.approx(0.5) and new["n_delta"] == 1
     assert new["median_delta"] == pytest.approx(0.5) and new["best_delta"] == pytest.approx(0.5)
 
 
@@ -315,7 +315,24 @@ def test_a_loss_without_a_delta_stays_in_the_denominator():
     got = A.summarize_by(rows, "model")[0]
     assert got["n"] == 3 and got["n_scoreable"] == 3 and got["n_success"] == 1
     assert got["success_rate"] == pytest.approx(1 / 3)
+    assert got["n_delta"] == 1, "the median's own count, now that it is not `n_scoreable`"
     assert got["median_delta"] == pytest.approx(-2.0) and got["best_delta"] == pytest.approx(-2.0)
+
+
+@pytest.mark.parametrize(
+    "row,scoreable",
+    [
+        ({"stop_reason": "wall_time_budget_exceeded"}, True),
+        ({"stop_reason": "content_filtered: possible biological risk"}, True),
+        ({"stop_reason": "SomethingElseError: odd"}, True),
+        # A degraded abort after real work (head_version from the store, #5) is a partial: in.
+        ({"stop_reason": "aborted: ReadError", "head_version": 4}, True),
+        ({"stop_reason": "aborted: ReadError", "head_version": -1, "n_fits": 0}, False),
+    ],
+)
+def test_only_the_noise_buckets_drop_a_run_without_a_delta(row, scoreable):
+    """The Δ rule (#2) dropped all of these; only `infra_noop` is noise (ANALYSIS.md §2.4)."""
+    assert A.is_scoreable({**row, "success": False, "delta_bic": None}) is scoreable
 
 
 def test_a_reference_free_run_is_not_pooled_into_a_delta_success_rate():
