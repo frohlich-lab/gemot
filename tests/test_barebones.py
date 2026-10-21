@@ -808,3 +808,50 @@ def test_biology_blind_is_rejected_before_workspace_cleanup(monkeypatch):
     monkeypatch.setattr(R, "cleanup", _unexpected_cleanup)
     with pytest.raises(SystemExit, match=r"PETAB_BIOLOGY_BLIND=1.*--driver barebones"):
         asyncio.run(R._main_async_barebones(SimpleNamespace(), SimpleNamespace()))
+
+
+def test_the_null_arm_waits_out_a_provider_outage_without_spending_a_resume(monkeypatch, tmp_path):
+    """gemot#55 in the barebones loop, which copies the panel's watchdog: four chunk timeouts, one
+    more than there are resumes, used to end the run as a stall; they are an outage now."""
+    pytest.importorskip("deepagents")
+    import deepagents
+    from langchain_openai import StreamChunkTimeoutError
+
+    from gemot.agent import barebones as B
+
+    script = ["chunk"] * (B._RUN_RESUME_ATTEMPTS + 1)
+    inputs = []
+
+    class _Agent:
+        def astream(self, stream_input, config=None, stream_mode=None):
+            inputs.append(stream_input)
+            chunk = bool(script) and script.pop(0) == "chunk"
+
+            async def _gen():
+                if chunk:
+                    raise StreamChunkTimeoutError(120.0, model_name="z-ai/glm-5.3-flash")
+                yield {"messages": [{"role": "assistant", "content": "done"}]}
+
+            return _gen()
+
+    async def _no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(deepagents, "create_deep_agent", lambda **kw: _Agent())
+    monkeypatch.setattr(B.asyncio, "sleep", _no_wait)
+    out = asyncio.run(
+        B.run_barebones(
+            tmp_path,
+            model="fake/model",
+            base_url="http://x",
+            api_key="sk-test",
+            system_prompt="sp",
+            task="t",
+            recursion_limit=10,
+            execute_timeout_s=60.0,
+        )
+    )
+
+    assert out["stop_reason"] == "completed"
+    assert out["provider_outage_retries"] == B._RUN_RESUME_ATTEMPTS + 1
+    assert len(inputs) == B._RUN_RESUME_ATTEMPTS + 2
