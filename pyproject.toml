@@ -29,10 +29,15 @@ dependencies = [
     # converts each problem's training and held-out sets together and ships both as v2. #81: AMICI
     # at AMICI-dev/AMICI#3408, whose JAX code compiles for `And`/`Or` (the `neural` extra below).
     # #73: the server reads the AMICI tolerances `Scenario.amici_tolerances` exports. #82: AMICI at
-    # #3408's merge commit. frohlich-lab/PEtab-MCP#97 (INTERIM, its head): the panel reads the
-    # server's own tool descriptions, and `statements_only` for the indra_statements arm; move to
-    # its merge commit before this merges.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@1ddea6564ffe187697c9071b5cf6f5d5bc68b972",
+    # #3408's merge commit. Now main at 73c4858. #97: the panel reads the server's own tool
+    # descriptions, and `statements_only` for the indra_statements arm. #88: a pass with no fit
+    # scores the table's sigmas and scalings, so the null is scored as delivered. #95: a full disk
+    # ends the call as `infrastructure_error: disk_full`, which the runner stops on. #104: a rate
+    # law's local parameters become global ones with a row, so the null's reconcile charges them.
+    # #100: under tic, k_eff charges hardcoded constants. #101: replicate lack-of-fit judged against
+    # the scatter pooled over each noise sigma. #107: each AMICI's modules build in a folder of their
+    # own. #106: `piecewise` in a written rate. Also #89–#94.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@73c4858966783fcaa063f408e07c9be506004e06",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
     # deleted, and mcp 2.0 reworks the client API used here (streamablehttp_client ->
