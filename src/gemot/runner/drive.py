@@ -196,6 +196,9 @@ async def _drive(
             # Publish the live marker now that the trace id is known, so the explorer can
             # watch this run's turns + model variants stream in before it finishes.
             _write_live_marker(work, base_meta, scenario)
+            # What the guard below writes: `base_meta` until the driver returns, the driver's
+            # whole report after.
+            meta = base_meta
             try:
                 # The default lead prompt and run_deepagents share prompts.BIOCURATOR_ENABLED,
                 # so the prompt cannot promise a curator that the selected arm omits. Its tools are the
@@ -279,9 +282,12 @@ async def _drive(
                 if _should_reraise(exc):
                     raise
                 rc = server_proc.poll() if server_proc is not None else None
+                # `meta`, for the reason the server-died branch above gives: a judge that fails
+                # after the driver returned must not cost the run its token_usage,
+                # make_changes_calls and guard counters.
                 result = _write_degraded_result(
                     work,
-                    base_meta,
+                    meta,
                     scenario,
                     _summarize_exc(exc),
                     server_returncode=rc,
