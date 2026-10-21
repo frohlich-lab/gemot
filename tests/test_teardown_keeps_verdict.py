@@ -154,7 +154,7 @@ def _run_barebones(
     return code, result, _on_disk(scenario)
 
 
-async def _judges(scenario, session, work, args, meta, t0):
+async def _judges(scenario, session, work, args, meta, t0, agent_done):
     return _judge(work)
 
 
