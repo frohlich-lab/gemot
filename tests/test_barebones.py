@@ -10,10 +10,12 @@ in the same array as a `deepagents` sweep.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -138,6 +140,8 @@ def test_an_untouched_delivery_is_clean(tmp_path):
     assert out["petab_lint"]["ok"], out["petab_lint"]
     assert out["model_authored"] is True  # the toy ships a real model
     assert out["model_ant_set_aside"] is False
+    # reconciled, the toy estimates what it ships estimated, and nothing else
+    assert out["estimated"] == ["k1", "k2"] and out["uncharged"] == []
 
 
 def test_a_rewritten_design_table_is_reported(tmp_path):
@@ -161,6 +165,179 @@ def test_a_design_table_dropped_from_the_yaml_is_reported(tmp_path):
     (work / "problem.yaml").write_text(yaml_text)
     out = R.check_delivery(work, staged)
     assert "observables.tsv" in out["design_modified"]
+
+
+def test_a_design_table_listed_beside_the_staged_ones_is_reported(tmp_path):
+    """#1: an extra measurement file beside the untouched original leaves every staged hash intact,
+    and the rows it adds would lower the score of a model that reproduces them."""
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+    yaml_text = (work / "problem.yaml").read_text()
+    yaml_text = yaml_text.replace("  - measurements.tsv", "  - measurements.tsv\n  - more.tsv")
+    (work / "problem.yaml").write_text(yaml_text)
+    shutil.copy(work / "measurements.tsv", work / "more.tsv")
+    out = R.check_delivery(work, staged)
+    assert out["design_modified"] == ["more.tsv"]
+
+
+def _edit_model(work: Path, edit) -> None:
+    """Apply ``edit(model)`` to the delivered toy SBML and write it back."""
+    import libsbml
+
+    path = work / "conversion_reaction.xml"
+    doc = libsbml.readSBMLFromFile(str(path))
+    edit(doc.getModel())
+    libsbml.writeSBMLToFile(doc, str(path))
+
+
+def _add(model, kind: str, sid: str, value: float | None = None):
+    """A parameter (``value``) or a species (initial concentration ``value``, unset if None)."""
+    if kind == "parameter":
+        p = model.createParameter()
+        p.setId(sid)
+        p.setConstant(True)
+        p.setValue(value)
+        return p
+    sp = model.createSpecies()
+    sp.setId(sid)
+    sp.setCompartment("compartment_")
+    sp.setHasOnlySubstanceUnits(False)
+    sp.setBoundaryCondition(False)
+    sp.setConstant(False)
+    if value is not None:
+        sp.setInitialConcentration(value)
+    return sp
+
+
+def _add_decay(model, rid: str, species: list[str], rate: str):
+    """``species -> ;`` at ``rate``, so every name in it is read by the model."""
+    import libsbml
+
+    rxn = model.createReaction()
+    rxn.setId(rid)
+    rxn.setReversible(False)
+    for sid in species:
+        ref = rxn.createReactant()
+        ref.setSpecies(sid)
+        ref.setStoichiometry(1)
+        ref.setConstant(True)
+    rxn.createKineticLaw().setMath(libsbml.parseL3Formula(rate))
+    return rxn
+
+
+def _add_rows(work: Path, *rows: str) -> None:
+    with (work / "parameters.tsv").open("a") as fh:
+        fh.writelines(row + "\n" for row in rows)
+
+
+def test_numbers_outside_the_estimated_rows_are_charged(tmp_path):
+    """#1: the panel's server gives every parameter a model declares an ESTIMATED row and every
+    nonzero, non-unit initial value an estimated `<sid>_init`. Scored as shipped, the same numbers
+    were free to the null written as an SBML value with no row, as a fixed row the problem does not
+    ship, or as a numeric initial value. Run through the server's reconcile against the shipped
+    table, each comes back estimated; a parameter nothing reads is pruned, as for the panel, so an
+    estimated row for it no longer counts."""
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+
+    def edit(m):
+        for pid, value in (("kx", 0.37), ("kf", 0.2), ("kd", 0.05), ("unused", 5.0)):
+            _add(m, "parameter", pid, value)
+        _add(m, "species", "C", 3.7)
+        _add_decay(m, "r3", ["C"], "kd * kx * kf * C")
+
+    _edit_model(work, edit)
+    _add_rows(
+        work,
+        "kd\tlog10\t0.0001\t100.0\t0.05\t1",
+        "kf\tlin\t0.0\t1.0\t0.2\t0",
+        "unused\tlog10\t0.0001\t100.0\t5.0\t1",
+    )
+    delivered = {f.name: f.read_bytes() for f in work.iterdir() if f.is_file()}
+    out = R.check_delivery(work, staged)
+    assert out["petab_lint"]["ok"], out["petab_lint"]
+    # the reconcile runs on a copy: the server still scores the files as delivered
+    assert {f.name: f.read_bytes() for f in work.iterdir() if f.is_file()} == delivered
+    assert out["estimated"] == sorted(["k1", "k2", "kd", "kx", "kf", "C_init"])
+    assert out["uncharged"] == [
+        "C_init = 3.7: no parameter-table row",
+        "kf = 0.2: estimate false -> true",
+        "kx = 0.37: no parameter-table row",
+        "unused: pruned, nothing reads it",
+    ]
+
+
+def test_the_panels_free_numbers_stay_free(tmp_path):
+    """What the reconcile leaves fixed costs the null nothing either: a start at 0, unset, or 1 —
+    written as a number or through the parameters of its initial assignment (`D = D0` with D0 at 1,
+    `H = H_tot*H_fold` with both at 0 or 1), with or without a fixed row — and a value a rule
+    computes (it cannot have a row at all)."""
+    import libsbml
+
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+
+    def edit(m):
+        for sid, value in (("D", None), ("D2", None), ("E", 1.0), ("F", 0.0), ("G", None)):
+            _add(m, "species", sid, value)
+        _add(m, "species", "H")
+        for pid, value in (("D0", 1.0), ("D20", 0.0), ("H_tot", 0.0), ("H_fold", 1.0)):
+            _add(m, "parameter", pid, value)
+        _add(m, "parameter", "p_rule", 0.0).setConstant(False)
+        for sid, math in (("D", "D0"), ("D2", "D20"), ("H", "H_tot * H_fold")):
+            ia = m.createInitialAssignment()
+            ia.setSymbol(sid)
+            ia.setMath(libsbml.parseL3Formula(math))
+        rule = m.createAssignmentRule()
+        rule.setVariable("p_rule")
+        rule.setMath(libsbml.parseL3Formula("2 * k2"))
+        _add_decay(m, "r3", ["D", "D2", "E", "F", "G", "H"], "k1 * p_rule * D * D2 * E * F * G * H")
+
+    _edit_model(work, edit)
+    _add_rows(work, "D20\tlin\t0.0\t1.0\t0.0\t0")
+    out = R.check_delivery(work, staged)
+    assert out["petab_lint"]["ok"], out["petab_lint"]
+    assert out["estimated"] == ["k1", "k2"] and out["uncharged"] == []
+
+
+def test_the_delivered_value_decides_the_unit_start(tmp_path):
+    """The score reads the table, not the SBML: `D = D0` declared at 1 but delivered estimated at
+    3.2 is a fitted start, and stays charged, where the SBML's 1 alone would read as a unit pool."""
+    import libsbml
+
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+
+    def edit(m):
+        _add(m, "species", "D")
+        _add(m, "parameter", "D0", 1.0)
+        ia = m.createInitialAssignment()
+        ia.setSymbol("D")
+        ia.setMath(libsbml.parseL3Formula("D0"))
+        _add_decay(m, "r3", ["D"], "k1 * D")
+
+    _edit_model(work, edit)
+    _add_rows(work, "D0\tlog10\t0.0001\t100.0\t3.2\t1")
+    out = R.check_delivery(work, staged)
+    assert out["petab_lint"]["ok"], out["petab_lint"]
+    assert out["estimated"] == ["D0", "k1", "k2"] and out["uncharged"] == []
+
+
+def test_a_parameter_only_the_condition_table_reads_is_charged(tmp_path):
+    """The fixed tables read model symbols too, and the reconcile never prunes what they read: a
+    condition that sets `A` to `A_dose` makes the model's `A_dose` a number of the fit."""
+    work = _workspace(tmp_path)
+    (work / "conditions.tsv").write_text("conditionId\tA\nc0\tA_dose\n")
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+    _edit_model(work, lambda m: _add(m, "parameter", "A_dose", 2.5))
+    out = R.check_delivery(work, staged)
+    assert out["petab_lint"]["ok"], out["petab_lint"]
+    assert out["uncharged"] == ["A_dose = 2.5: no parameter-table row"]
 
 
 def test_shipped_rows_are_protected(tmp_path):
@@ -316,6 +493,36 @@ def test_a_v2_delivery_that_rewrites_the_design_or_a_shipped_row_is_reported(tmp
     )
 
 
+def test_a_v2_delivery_is_charged_but_not_for_a_condition_target(tmp_path):
+    """v2 names its condition targets in `targetId` rows: a species the condition table sets
+    starts where the condition says, so its declared value is no number of the model's. Its
+    `estimate` column reads `false`, which must still read as a fixed row."""
+    work = _workspace_v2(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+
+    def edit(m):
+        import libsbml
+
+        m.removeInitialAssignment("A")
+        m.getSpecies("A").setInitialConcentration(3.7)
+        _add(m, "parameter", "kx", 0.37)
+        _add(m, "parameter", "kf", 0.2)
+        m.getReaction("r2").getKineticLaw().setMath(libsbml.parseL3Formula("k2 * kx * kf * B"))
+
+    _edit_model(work, edit)
+    header = (work / "parameters.tsv").read_text().splitlines()[0].split("\t")
+    row = {"parameterId": "kf", "parameterScale": "lin", "lowerBound": "0", "upperBound": "1"}
+    row |= {"nominalValue": "0.2", "estimate": "false"}
+    _add_rows(work, "\t".join(row.get(c, "") for c in header))
+    out = R.check_delivery(work, staged)
+    assert out["petab_lint"]["ok"], out["petab_lint"]
+    assert out["uncharged"] == [
+        "kf = 0.2: estimate false -> true",
+        "kx = 0.37: no parameter-table row",
+    ]
+
+
 def test_a_v2_lint_error_is_named(tmp_path):
     work = _workspace_v2(tmp_path)
     staged = R.stage_workspace(work)
@@ -342,6 +549,29 @@ def test_unscoreable_result_is_a_loss_not_an_abort(tmp_path):
     assert res["stop_reason"] == "completed"
     assert res["unscoreable_reason"].startswith("petab_invalid")
     assert (tmp_path / "result.json").is_file()
+
+
+def test_the_judge_is_handed_the_reconciled_estimates(monkeypatch, tmp_path):
+    """#1: the reconcile's estimates reach k only through this hand-off; dropped, the judge would
+    price the null at its delivered rows again while every judge test still passed."""
+    seen = {}
+
+    async def call(name, **_):
+        return {"model_id": "m", "model_authored": True}
+
+    async def judge(*_, estimated=None):
+        seen["estimated"] = estimated
+        return 0, {}
+
+    monkeypatch.setattr(R, "_wrap_call_timeout", lambda *_: None)
+    monkeypatch.setattr(R, "_wrap_tool_clock", lambda *_: SimpleNamespace(seconds=0.0))
+    monkeypatch.setattr(R, "_make_call", lambda *_: call)
+    monkeypatch.setattr(R, "_judge", judge)
+    delivery = {"estimated": ["k1", "kx"], "uncharged": ["kx = 0.37: no parameter-table row"]}
+    meta = {"delivery": delivery, "workspace_audit": {"shell_busy_seconds": 0.0}}
+    args = SimpleNamespace(n_starts=1)
+    asyncio.run(R._judge_delivered(None, None, tmp_path, args, meta, 0.0, 0.0))
+    assert seen["estimated"] == ["k1", "kx"]
 
 
 # --------------------------------------------------------------------------- timing
@@ -391,7 +621,10 @@ def test_the_null_arms_sandbox_and_scoring_time_is_compute_not_llm(tmp_path):
         reference_free=True,
         adequacy=S.ADEQUACY_CHI2,
     )
-    meta = {"workspace_audit": {"shell_busy_seconds": 500.0}}
+    meta = {
+        "workspace_audit": {"shell_busy_seconds": 500.0},
+        "delivery": {"estimated": None, "uncharged": []},
+    }
     args = argparse.Namespace(n_starts=10)
     now = time.monotonic()
     judged = R._judge_delivered(scenario, _Session(), tmp_path, args, meta, now - 1000, now - 300)

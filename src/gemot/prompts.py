@@ -104,6 +104,11 @@ _SIGMA_CAP_ADVISORY = (
     "on one."
 )
 
+#: The numerals ``petab_mcp.literals`` charges nothing for (its ``STRUCTURAL_VALUES``); every
+#: other distinct number in a model's math costs a parameter. The statements lead and the null are
+#: both told it.
+_FREE_LITERALS = "0, ±1, 2, 3, 4, 6, 100 and their reciprocals"
+
 #: ``dscore`` is 2·(dnll − price) and so NEGATIVE when the merge is worth taking. Stated as the
 #: sign convention rather than as a direction of change: "lowers the score by dscore" reads, for
 #: a dscore of −5.2, as raising it by 5.2.
@@ -467,8 +472,9 @@ INDRA_SYSTEM_PROMPT = (
     "3. READ THE RESULT: it IS the fit. `applied: false` means nothing changed: fix what the error "
     "names, never resend the same call. The ONLY target is BIC = 2·nll + k·ln(n). k counts every "
     "estimated parameter, plus each distinct number your rows write into the model (a binding "
-    "`kf=0.3`, a number in a written rate), once per value; 0, ±1, 2, 3, 4, 6, 100 and their "
-    "reciprocals are free, and the result lists the numbers you pay for (`hardcoded_constants`). "
+    "`kf=0.3`, a number in a written rate), once per value; "
+    + _FREE_LITERALS
+    + " are free, and the result lists the numbers you pay for (`hardcoded_constants`). "
     "A constant the problem ships FIXED costs nothing: bind it by name. A parameter costs ln(n): "
     "keep it only if it buys more. An "
     "exponent (a Hill n) is a parameter, never a literal. chi2 and its p-value say nothing while "
@@ -598,8 +604,15 @@ BAREBONES_SYSTEM_PROMPT_TMPL = (
     "You have a wall-clock budget of hours; use it, and deliver the best model you found.\n\n"
     "SCORING. Your delivered problem is scored EXACTLY AS DELIVERED: the model is simulated with "
     "AMICI at the `nominalValue`s in `parameters.tsv` — no refit — and the score is "
-    "BIC = 2·nll + k·ln(n), with k the number of {estimated} rows and n the number of "
-    "measurements; lower is better, and it is compared against a reference mechanism you cannot "
+    "BIC = 2·nll + k·ln(n), with n the number of measurements and k the number of {estimated} "
+    "rows plus one for every other number the model carries: each distinct numeric literal in its "
+    "math ("
+    + _FREE_LITERALS
+    + " are free), each parameter it declares with no row or with an {fixed} row the problem does "
+    "not ship, and each species initial value written as a number. An initial value of 0 or 1 "
+    "costs nothing however it is written, and neither does a "
+    "row the problem ships fixed; freezing a value you fitted costs what estimating it costs. "
+    "Lower is better, and the score is compared against a reference mechanism you cannot "
     "see. So fit your parameters well before you finish, write the fitted values back into "
     "`parameters.tsv`, and re-evaluate the likelihood of the SAVED files once more before you "
     "stop. A model whose SBML fails to import, or whose tables fail `petablint`, scores as no "

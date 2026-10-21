@@ -11,7 +11,8 @@ sees, so the harness's own ``run_live.json``/logs/result stay outside it — and
 tables), :func:`barebones_system_prompt` (the instructions for the problem's PEtab version,
 naming the design tables the check hashes), :func:`barebones_task` (the same known-constants note
 and entity names the panel gets),
-and :func:`check_delivery` (design tables untouched, shipped parameter rows intact, petab lint).
+and :func:`check_delivery` (design tables untouched, shipped parameter rows intact, petab lint,
+and the parameters the server's reconcile would estimate, which the judge counts).
 A tampered or unloadable delivery is recorded as a loss (``unscoreable_reason``), not an abort.
 Reasons are in ``docs/RATIONALE.md`` (the ``#203`` entries).
 
@@ -159,10 +160,12 @@ def stage_workspace(work: Path) -> dict:
     """Move the problem from ``work/`` into ``work/agent/`` (the agent's workspace), delete the rest
     of ``work/``, and return what the prompt and the delivery check need afterwards: ``agent_dir``,
     the ``withheld`` names, the problem's ``petab_version`` (its YAML's major version), the
-    design-table hashes, and the shipped parameter rows' ``(estimate, nominalValue)``.
+    design-table hashes, the shipped parameter rows' ``(estimate, nominalValue)``, and the shipped
+    parameter table as the server reads it (``shipped_parameter_df``, for :func:`_reconciled`).
 
     An allowlist (:func:`_staged_files`): whatever else the problem directory holds is withheld."""
     from petab.versions import get_major_version
+    from petab_mcp.problem import WorkingProblem
 
     handed = _staged_files(work)
     agent_dir = work / AGENT_SUBDIR
@@ -196,6 +199,10 @@ def stage_workspace(work: Path) -> dict:
         "files": files,
         "design_hashes": hashes,
         "shipped_rows": shipped_rows,
+        # Taken as the session takes its `shipped_parameter_df`, before the agent can touch it.
+        "shipped_parameter_df": WorkingProblem.from_yaml(
+            agent_dir / "problem.yaml"
+        ).parameter_df.copy(deep=True),
     }
 
 
@@ -236,15 +243,18 @@ def _parameter_rows(path: Path) -> dict[str, tuple[int | None, float | None]]:
 # --------------------------------------------------------------------------- delivery checks
 def check_delivery(work: Path, staged: dict) -> dict:
     """What the agent left behind, against the rules it was given: ``design_modified`` (design
-    tables whose bytes changed or left the YAML), ``shipped_rows_violated`` (shipped parameter
-    rows removed, re-flagged, or — fixed ones — re-valued), ``model_ant_set_aside``,
-    ``petab_lint`` (``{ok, messages}``) and ``model_authored``."""
+    tables whose bytes changed or left the YAML, and any the YAML lists beside them),
+    ``shipped_rows_violated`` (shipped parameter rows removed, re-flagged, or — fixed ones —
+    re-valued), ``model_ant_set_aside``, ``petab_lint`` (``{ok, messages}``), ``model_authored``,
+    and, for a delivery that lints, ``estimated`` and ``uncharged`` (:func:`_reconciled`)."""
     out: dict = {
         "design_modified": [],
         "shipped_rows_violated": [],
         "model_ant_set_aside": False,
         "petab_lint": {"ok": False, "messages": []},
         "model_authored": None,
+        "estimated": None,
+        "uncharged": [],
     }
     # a model.ant beside the YAML would be loaded instead of the SBML (session.py prefers it)
     ant = work / "model.ant"
@@ -262,6 +272,10 @@ def check_delivery(work: Path, staged: dict) -> dict:
         f = work / name
         if name not in listed or not f.is_file() or _sha256(f) != digest:
             out["design_modified"].append(name)
+    # An extra measurement file beside the untouched originals is a changed design too: the judge
+    # takes n from the delivered problem, so rows the model reproduces would lower its score (#1).
+    for role in _DESIGN_ROLES:
+        out["design_modified"].extend(sorted(set(files[role]) - set(staged["files"][role])))
     delivered_rows: dict = {}
     for name in files["parameter"]:
         delivered_rows.update(_parameter_rows(work / name))
@@ -274,7 +288,73 @@ def check_delivery(work: Path, staged: dict) -> dict:
         elif est == 0 and got[1] != nominal:
             out["shipped_rows_violated"].append(f"{pid}: fixed value {nominal} -> {got[1]}")
     out["petab_lint"], out["model_authored"] = _lint(work / "problem.yaml")
+    if out["petab_lint"]["ok"] and out["model_authored"]:
+        try:
+            out["estimated"], out["uncharged"] = _reconciled(
+                work / "problem.yaml", staged["shipped_parameter_df"]
+            )
+        except Exception as exc:  # noqa: BLE001 - a model the server cannot reconcile is unscoreable
+            out["petab_lint"] = {
+                "ok": False,
+                "messages": [f"the server's reconcile refuses the delivered model: {exc}"[:500]],
+            }
     return out
+
+
+def _reconciled(yaml_path: Path, shipped) -> "tuple[list[str], list[str]]":
+    """``(estimated, uncharged)`` for the delivered problem as the panel's server accounts for a
+    model: the ids its reconcile estimates, which is what the judge counts as the null's estimated
+    parameters, and how that differs from the delivered table, one entry per row.
+
+    The panel never has a model scored as written. The server's reconcile runs on every edit and
+    gives each parameter the model declares an ESTIMATED row and each species' nonzero, non-unit
+    initial value an estimated ``<sid>_init``, and no tool of the lead's can fix a parameter. A
+    delivery is scored as shipped, so the same numbers cost the null nothing written as a fixed row
+    the problem does not ship, as an SBML parameter value with no row, or as a numeric initial
+    value (#1).
+
+    So the server's own :func:`petab_mcp.reconcile.reconcile` runs here, on a copy of the delivered
+    problem read as the server reads it (:class:`petab_mcp.problem.WorkingProblem`), with the
+    parameter table the problem SHIPPED in place of the delivered one and ``shipped`` passed as
+    the session passes its own. Shipped rows come back as the problem defined them and every other
+    parameter as the reconcile defines it, so a row the agent added fixed comes back estimated.
+    The delivered table's values are written into the copy's SBML first: they are the values the
+    score reads, and the reconcile's 0/1 conventions for initial conditions are decided on them.
+    The scored files are not touched.
+
+    Charged, deliberately not refused: refusing would make the plain Antimony start ``A = 3.7`` a
+    lost run for the null where the panel pays one parameter for it. Literals in the math are the
+    server's ``hardcoded_constants``, for both arms. A rate law's local parameter is charged by
+    neither: the reconcile reads global parameters only, and Antimony, which the null is told to
+    write, emits none.
+    """
+    from petab_mcp import reconcile as R
+    from petab_mcp.problem import WorkingProblem
+
+    delivered = WorkingProblem.from_yaml(yaml_path)
+    table = delivered.parameter_df
+    sm = delivered.model.sbml_model
+    for pid, nominal in table["nominalValue"].items():
+        if sm.getParameter(str(pid)) is not None and nominal == nominal:  # NaN: keep the SBML's
+            sm.getParameter(str(pid)).setValue(float(nominal))
+    declared = {p.getId() for p in sm.getListOfParameters()}
+    problem = delivered.replace(parameter_df=shipped.copy(deep=True))
+    R.reconcile(problem, shipped=shipped.copy(deep=True))
+    estimated, was = set(problem.x_free_ids), set(delivered.x_free_ids)
+    reconciled = problem.parameter_df
+    uncharged = [
+        f"{pid} = {reconciled.loc[pid, 'nominalValue']:g}: "
+        + ("estimate false -> true" if pid in table.index else "no parameter-table row")
+        for pid in sorted(estimated - was)
+    ]
+    # Rows the reconcile no longer estimates, of the parameters the model declares: a shipped row
+    # for one it never declared was never counted (`in_model: false`) and is not news.
+    uncharged += [
+        f"{pid}: "
+        + ("estimate true -> false" if pid in reconciled.index else "pruned, nothing reads it")
+        for pid in sorted((was - estimated) & declared)
+    ]
+    return sorted(estimated), uncharged
 
 
 def _lint(yaml_path: Path) -> "tuple[dict, bool | None]":
@@ -480,9 +560,14 @@ async def _judge_delivered(
     )
     if not desc.get("model_authored", False):
         meta = {**meta, "stop_reason": "no_model_built"}
+    delivery = meta["delivery"]
+    if delivery["uncharged"]:
+        print(f"[judge] the reconcile changes the delivered estimates: {delivery['uncharged']}")
     # No baseline, as for a zero-shot build; every species the agent declared is "new".
     baseline = Baseline(nll=None, species=set(), structure={})
-    return await _judge(scenario, call, baseline, work, meta, clock, t0)
+    return await _judge(
+        scenario, call, baseline, work, meta, clock, t0, estimated=delivery["estimated"]
+    )
 
 
 async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) -> "tuple[int, dict]":

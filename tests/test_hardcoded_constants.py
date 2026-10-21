@@ -37,6 +37,9 @@ def test_the_judge_derives_the_same_k_from_its_own_reads():
     # a summary without the list (an older server) or an unreadable read charges none
     assert _candidate_k(params, {"neg_log_likelihood": -50.0}) == (2, 2, [])
     assert _candidate_k("not a list", None) == (0, 0, [])
+    # a null delivery is counted by what the server's reconcile estimates for it, not its rows (#1)
+    estimated = ["a", "b", "kx", "C_init"]
+    assert _candidate_k(params, final, estimated) == (6, 4, ["0.000878", "1.333"])
 
 
 _TOY_BASE = DATA_DIR / "problem.yaml"
