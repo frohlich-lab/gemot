@@ -190,3 +190,32 @@ def test_turns_are_matched_to_the_variants_they_committed():
     assert "variant_index" not in turns[1]
     assert turns[2]["variant_index"] == 1
     assert [v["no_turn"] for v in variants] == [False, False]
+
+
+def _version_dir(store, version, meta, estimated, n):
+    vdir = store / "versions" / f"v{version}"
+    vdir.mkdir(parents=True)
+    (vdir / "meta.json").write_text(json.dumps({"version": version, **meta}))
+    rows = "".join(f"p{i}\t{int(i < estimated)}\n" for i in range(3))
+    (vdir / "parameters.tsv").write_text("parameterId\testimate\n" + rows)
+    (vdir / "simulations.json").write_text(json.dumps({"n_data_points": n}))
+
+
+def test_archived_variants_carry_the_stored_bic_and_the_k_it_charged(tmp_path):
+    """The archive path recomputed BIC from the estimated rows of `parameters.tsv`, so a model
+    with a hardcoded constant scored one ln(n) better than its own fit result said and than the
+    span path showed it (#10). v1 has 2 estimated rows and one literal: the server charged k=3.
+    v2 is a version the server could not score: it gets no BIC, not a recomputed one."""
+    import math
+
+    n, nll = 20, 5.0
+    store = tmp_path / ".petab_mcp"
+    _version_dir(store, 1, {"neg_log_likelihood": nll, "bic": 2 * nll + 3 * math.log(n)}, 2, n)
+    _version_dir(store, 2, {"neg_log_likelihood": nll, "bic": None}, 2, n)
+
+    v1, v2 = B.load_variants(tmp_path, n_data_points=None)
+
+    assert v1["bic"] == 2 * nll + 3 * math.log(n) and v1["k"] == 3 and v1["n"] == n
+    assert v2["bic"] is None and v2["k"] == 2
+    # A BIC formed with another n gives no whole k: show the rows rather than a wrong count.
+    assert B._charged_k(2 * nll + 3 * math.log(n), nll, n + 1) is None

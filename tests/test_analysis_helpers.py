@@ -8,7 +8,6 @@ condition a login-node report runs under.
 from __future__ import annotations
 
 import json
-import math
 import sqlite3
 import subprocess
 import sys
@@ -462,8 +461,11 @@ def _write_store(run_dir: Path, metas: list[dict], events: list[dict] | None = N
         )
 
 
-def test_best_fitted_version_ignores_simulate_only_and_recomputes_a_missing_bic(tmp_path):
-    n = 100
+def test_best_fitted_version_ignores_simulate_only_and_never_recomputes_a_missing_bic(tmp_path):
+    """v1 has no stored BIC. Recomputed from `len(fitted_parameters)` it scored 20 + 2·ln(100)
+    ≈ 29.2 and BEAT the stored 30.0 of v2, though its `fitted_parameters` leave out the
+    inner-solved parameters and the hardcoded constants the server charges (#10). A version the
+    server did not score is not scored here either."""
     _write_store(
         tmp_path,
         [
@@ -473,16 +475,14 @@ def test_best_fitted_version_ignores_simulate_only_and_recomputes_a_missing_bic(
                 "fit_status": "fit",
                 "neg_log_likelihood": 10.0,
                 "fitted_parameters": {"a": 1, "b": 2},
-            },  # bic = 20 + 2 ln 100
-            {"version": 2, "fit_status": "fit", "neg_log_likelihood": 12.0, "bic": 25.0},
+            },
+            {"version": 2, "fit_status": "fit", "neg_log_likelihood": 12.0, "bic": 30.0},
             {"version": 3, "fit_status": "fit", "neg_log_likelihood": None},
         ],
     )
-    bic, meta, n_fitted = A.best_fitted_version(tmp_path, n)
-    assert meta["version"] == 2 and bic == pytest.approx(25.0) and n_fitted == 2
-    assert A.bic_of({"neg_log_likelihood": 10.0, "fitted_parameters": {"a": 1, "b": 2}}, n) == (
-        pytest.approx(20 + 2 * math.log(n))
-    )
+    bic, meta, n_fitted = A.best_fitted_version(tmp_path)
+    assert meta["version"] == 2 and bic == pytest.approx(30.0) and n_fitted == 1
+    assert A.bic_of({"neg_log_likelihood": 10.0, "fitted_parameters": {"a": 1, "b": 2}}) is None
     assert A.best_fitted_version(tmp_path / "absent") is None
 
 

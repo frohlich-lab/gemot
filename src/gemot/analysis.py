@@ -478,26 +478,21 @@ def _vnum(name: str) -> int:
     return int(digits) if digits else -1
 
 
-def bic_of(meta: dict, n_data_points: int | None) -> float | None:
-    """A version's BIC: its own stored value, else recomputed as ``2·nll + k·ln(n)`` from its
-    negative log-likelihood and fitted-parameter count — the same formula the reference BIC is
-    formed with, so the two are comparable. ``None`` when neither is possible."""
-    bic = meta.get("bic")
-    if bic is not None:
-        try:
-            return float(bic)
-        except (TypeError, ValueError):
-            pass
-    nll = meta.get("neg_log_likelihood")
-    if nll is None or not n_data_points:
+def bic_of(meta: dict) -> float | None:
+    """A version's BIC as the server stored it in its ``meta.json``, or ``None``.
+
+    Deliberately NOT recomputed where the stored value is missing: the server stores one on every
+    version it could score, and the ``k`` it charges (estimated parameters plus the model's
+    hardcoded constants) is not in the meta. The recompute this replaced took
+    ``len(fitted_parameters)``, which leaves out the inner-solved parameters and the constants, so
+    it scored a model better than the server did (#10)."""
+    try:
+        return float(meta["bic"]) if meta.get("bic") is not None else None
+    except (TypeError, ValueError):
         return None
-    k = len(meta.get("fitted_parameters") or {})
-    return 2.0 * float(nll) + k * math.log(n_data_points)
 
 
-def best_fitted_version(
-    run_dir: str | Path, n_data_points: int | None = None
-) -> tuple[float, dict, int] | None:
+def best_fitted_version(run_dir: str | Path) -> tuple[float, dict, int] | None:
     """``(bic, meta, n_fitted)`` for the lowest-BIC REAL fit in a run's store, or ``None``.
 
     Only versions with ``fit_status == "fit"`` and a finite nll count: a simulate-only pass or a
@@ -509,7 +504,7 @@ def best_fitted_version(
     for meta in iter_versions(run_dir):
         if meta.get("fit_status") != "fit" or meta.get("neg_log_likelihood") is None:
             continue
-        bic = bic_of(meta, n_data_points)
+        bic = bic_of(meta)
         if bic is None or not math.isfinite(bic):
             continue
         n_fitted += 1
@@ -710,7 +705,7 @@ def live_rows(job: str | int = "*", work_root: str | Path | None = None) -> list
             n_fits += 1
             best = bic if best is None else min(best, bic)
         if best is None:  # no provenance log: use the store
-            found = best_fitted_version(work, live.get("n_data_points"))
+            found = best_fitted_version(work)
             if found:
                 best, _, n_fits = found
         ref, thr = live.get("bic_reference"), live.get("bic_threshold")
