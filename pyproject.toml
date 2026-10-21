@@ -36,11 +36,11 @@ dependencies = [
     # law's local parameters become global ones with a row, so the null's reconcile charges them.
     # #100: under tic, k_eff charges hardcoded constants. #101: replicate lack-of-fit judged against
     # the scatter pooled over each noise sigma. #107: each AMICI's modules build in a folder of their
-    # own. #106: `piecewise` in a written rate. Also #89–#94. Now main at cdc68cc. #117: a fit whose
-    # starts stop finishing ends by a deadline, and a change while one is fitted is refused as
-    # `fit_in_progress`, the code the circuit breaker matches (gemot#59). #111: a chain grows only
-    # through a molecule bound while bound. #113: a readout that is a number is not refused. #114:
-    # the statements route says what to write in five of its rejections.
+    # own. #106: `piecewise` in a written rate. Also #89–#94. Now main at cdc68cc. #117: a fit
+    # whose starts stop finishing ends by a deadline, and a change while one is fitted is refused
+    # as `fit_in_progress`, the code the circuit breaker matches (gemot#59). #111: a chain grows
+    # only through a molecule bound while bound. #113: a readout that is a number is not refused.
+    # #114: the statements route says what to write in five of its rejections.
     "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@cdc68ccf7e06a2310aeb35a617574a64bf4537cd",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
