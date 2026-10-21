@@ -28,7 +28,8 @@ import math
 import time
 from pathlib import Path
 
-from .clock import _ToolClock
+from ..agent.circuit_breaker import _is_call_timeout
+from .clock import HELD_OUT_TOOL, _ToolClock
 from ..paths import validation_measurements_path
 from .provenance import _bic_reference, _judge_mode, _now_iso, _reference_score
 from ..scenario import Baseline, JudgeContext, Scenario
@@ -503,16 +504,25 @@ async def _judge(
     #
     # Guarded and best-effort, like the residual diagnosis above: a failure to read it must never
     # cost the run its result.json. `_validation_fields` turns "asked but not answered" into an
-    # explicit status rather than a blank, so a sweep can tell it from a clean skip.
+    # explicit status rather than a blank, so a sweep can tell it from a clean skip — and a call
+    # that ran out of time from one that failed, since the tool was there all along (gemot#57).
+    # How long the call may take is the clock's to decide (`clock._wrap_call_timeout`).
     validation = None
     if validation_measurements_path(scenario.example_dir).is_file():
+        waited_s = None
+        asked_at = time.monotonic()
         try:
-            validation_payload = await call("evaluate_validation_data")
+            validation_payload = await call(HELD_OUT_TOOL)
         except Exception as exc:  # noqa: BLE001 - report-only; never fail the judge on it
             validation_payload = None
-            print(f"  (held-out validation score unavailable: {type(exc).__name__}: {exc})")
+            if _is_call_timeout(exc):
+                waited_s = time.monotonic() - asked_at
+            print(
+                f"  (held-out validation score "
+                f"{'unavailable' if waited_s is None else 'timed out'}: {type(exc).__name__}: {exc})"
+            )
         try:
-            validation = _validation_fields(validation_payload, ref, asked=True)
+            validation = _validation_fields(validation_payload, ref, asked=True, waited_s=waited_s)
         except Exception as exc:  # noqa: BLE001 - report-only diagnostic
             print(f"  (held-out validation projection unavailable: {type(exc).__name__}: {exc})")
 

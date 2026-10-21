@@ -494,3 +494,80 @@ def test_a_fit_timeout_abort_scores_as_infrastructure_not_as_a_failed_model():
         }
     )
     assert not _is_infra_abort({"stop_reason": "completed"})
+
+
+# -- the judge's held-out score (gemot#57) ----------------------------------------------------
+def test_a_transfer_held_out_score_gets_one_fit_budget_per_unit():
+    """A transfer set REFITS the model on the held-out data, unit by unit, at the server's default
+    count. Sized as a read, the judge's call was cut at 900 s, and lucarelli (three units) went
+    unscored in all six runs of a sweep. It now gets what a `make_changes` at that count gets,
+    once per unit."""
+    from gemot.runner.clock import HELD_OUT_TOOL
+
+    s = _FakeSession()
+    _wrap_call_timeout(s, DEFAULT, held_out_fits=3)
+    asyncio.run(s.call_tool(HELD_OUT_TOOL, {}))
+    assert s.timeout_of() == timedelta(seconds=fit_time_budget_for(None, DEFAULT, fits=3))
+    assert s.timeout_of() == timedelta(seconds=3 * fit_time_budget(DEFAULT))
+
+
+def test_a_fixed_theta_held_out_score_keeps_the_read_timeout():
+    """A fixed-θ set is one objective evaluation at the fitted point. A fit budget there would let a
+    wedged score hold the judge for a multistart's wall clock, the cost the read bound exists to
+    stop."""
+    from gemot.runner.clock import HELD_OUT_TOOL, NON_FIT_CALL_TIMEOUT_S
+
+    s = _FakeSession()
+    _wrap_call_timeout(s, DEFAULT, held_out_fits=0)
+    asyncio.run(s.call_tool(HELD_OUT_TOOL, {}))
+    assert s.timeout_of() == timedelta(seconds=NON_FIT_CALL_TIMEOUT_S)
+
+
+def test_the_held_out_budget_stays_under_the_session_ceiling():
+    """Every per-call cut has to stay below the httpx ceiling, or a long one tears the transport
+    down instead of returning a clean 408. The product over units is clamped like any one fit."""
+    ceiling = max(FIT_BUDGET_CEILING_S, fit_time_budget_for(None, DEFAULT)) * 1.2
+    assert fit_time_budget_for(None, DEFAULT, fits=10**6) < ceiling
+    assert fit_time_budget_for(None, DEFAULT, fits=10**6) == max(
+        FIT_BUDGET_CEILING_S, fit_time_budget(DEFAULT)
+    )
+
+
+def _held_out_set(example_dir, *, transfer=False, units=None):
+    """A v2 held-out set the way PEtabAgentBench's materializer writes one, under the server's own
+    file names: a parameter table makes it a transfer set, a units table splits its refit."""
+    from petab_mcp.validation_data import HELD_OUT_PARAMETERS, HELD_OUT_UNITS
+
+    from gemot.paths import validation_measurements_path
+
+    path = validation_measurements_path(example_dir)
+    path.parent.mkdir(parents=True)
+    experiments = sorted(units) if units else ["e1"]
+    path.write_text(
+        "observableId\texperimentId\ttime\tmeasurement\n"
+        + "".join(f"obs\t{e}\t1\t0.5\n" for e in experiments)
+    )
+    if transfer:
+        path.with_name(HELD_OUT_PARAMETERS).write_text(
+            "parameterId\tlowerBound\tupperBound\tnominalValue\testimate\nk\t0.01\t100\t1\ttrue\n"
+        )
+    if units:
+        path.with_name(HELD_OUT_UNITS).write_text(
+            "experimentId\tunitId\n" + "".join(f"{e}\t{u}\n" for e, u in units.items())
+        )
+
+
+def test_the_held_out_fit_count_is_read_off_the_set_as_the_server_reads_it(tmp_path):
+    """The mode is the set's own parameter table, read with the server's reader, rather than a
+    second rule here that could call a set fixed-θ the server refits. lucarelli's six
+    experiments are three cell types, each refit on its own."""
+    from gemot.runner.clock import _held_out_fits
+
+    assert _held_out_fits(tmp_path / "none") == 0
+    _held_out_set(tmp_path / "fixed")
+    assert _held_out_fits(tmp_path / "fixed") == 0
+    _held_out_set(tmp_path / "pooled", transfer=True)
+    assert _held_out_fits(tmp_path / "pooled") == 1
+    cells = {f"{c}_TGFb{d}": c for c in ("HepG2", "PHH", "PMH") for d in (0, 1)}
+    _held_out_set(tmp_path / "lucarelli", transfer=True, units=cells)
+    assert _held_out_fits(tmp_path / "lucarelli") == 3

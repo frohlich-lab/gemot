@@ -33,6 +33,8 @@ _JUDGE_REF = {
 
 
 _RAISES = object()
+#: The call outlives its read timeout: mcp raises a bare ``McpError`` with code 408.
+_TIMES_OUT = object()
 
 
 # ------------------------------------------------------------------- the agent cannot see it
@@ -198,6 +200,18 @@ def _run_judge(work, *, has_held_out, payload, reference=None, nll=100.0):
         asked.append(name)
         if name == "evaluate_validation_data" and payload is _RAISES:
             raise RuntimeError("Unknown tool: evaluate_validation_data")
+        if name == "evaluate_validation_data" and payload is _TIMES_OUT:
+            from mcp.shared.exceptions import McpError
+            from mcp.types import ErrorData
+
+            await asyncio.sleep(0.2)
+            raise McpError(
+                ErrorData(
+                    code=408,
+                    message="Timed out while waiting for response to ClientRequest. "
+                    "Waited 900.0 seconds.",
+                )
+            )
         return canned.get(name, {})
 
     code, result = asyncio.run(
@@ -246,8 +260,41 @@ def test_a_failing_held_out_call_costs_the_run_nothing(tmp_path):
     assert "evaluate_validation_data" in asked
     # the reference HAS a bar, so the failure is recorded as unavailable rather than dropped
     assert result["validation"]["status"] == "unavailable"
+    assert "waited_s" not in result["validation"]
     assert result["validation"]["reference_nll"] == 400.0
     assert result["success"] is True and code == 0
+
+
+def test_a_held_out_call_that_times_out_is_recorded_as_timed_out_with_the_wait(tmp_path):
+    """gemot#57: all six lucarelli runs of one sweep recorded `unavailable`, whose reason says the
+    tool may be missing, for a call the transport cut at 900 s. The tool was there; the transfer
+    refit was slow. A timeout is its own status, with how long the judge waited, and like any
+    held-out status it leaves the verdict alone."""
+    code, result, _ = _run_judge(tmp_path, has_held_out=True, payload=_TIMES_OUT)
+    validation = result["validation"]
+    assert validation["status"] == "timed_out"
+    # measured around the call, not read off the message's 900
+    assert 0.2 <= validation["waited_s"] < 900
+    assert "evaluate_validation_data tool" not in validation["reason"]
+    assert validation["reference_nll"] == 400.0 and "delta_nll" not in validation
+    assert result["success"] is True and code == 0
+
+
+def test_a_timed_out_score_is_reported_even_with_no_reference_bar(tmp_path):
+    """The block's shape is the unavailable one, so every consumer reads it alike, and the history
+    CSV carries the status with no difference to average."""
+    from gemot import metrics
+
+    out = _validation_fields(None, {}, asked=True, waited_s=2604.37)
+    assert out["status"] == "timed_out" and out["waited_s"] == 2604.4
+    assert "2604 s" in out["reason"]
+    assert set(_validation_fields(None, {}, asked=True)) <= set(out)
+
+    path = metrics.append_history(
+        [metrics.build_row({"scenario": "lucarelli", "validation": out})], tmp_path / "h.csv"
+    )
+    row = dict(zip(*(line.split(",") for line in path.read_text().splitlines()[:2])))
+    assert row["val_status"] == "timed_out" and row["val_delta_nll"] == ""
 
 
 def test_the_span_and_the_csv_cannot_disagree_about_the_held_out_columns(monkeypatch):

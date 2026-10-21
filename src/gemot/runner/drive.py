@@ -21,7 +21,7 @@ from mcp import ClientSession
 from .. import ablations, infrastructure
 from .failure import _should_reraise, _summarize_exc, _write_degraded_result
 from .judge import _judge
-from .clock import _make_call, _wrap_call_timeout, _wrap_tool_clock
+from .clock import _held_out_fits, _make_call, _wrap_call_timeout, _wrap_tool_clock
 from .provenance import _agent_meta, _base_meta, _write_live_marker
 from ..scenario import Baseline, Scenario
 
@@ -69,7 +69,7 @@ async def _drive(
     # Per-call read timeouts FIRST, so every later shadow (and `raw_call_tool` below) inherits
     # them: the session-wide sse_read_timeout can only know the run default, but n_starts is a
     # per-call argument. See _wrap_call_timeout.
-    _wrap_call_timeout(session, args.n_starts)
+    _wrap_call_timeout(session, args.n_starts, held_out_fits=_held_out_fits(scenario.example_dir))
     # Capture the un-timed call handle BEFORE the clock wrapper, so the agent's internal
     # early-stop polls (get_progress, once per super-step) don't inflate the tool clock /
     # tool_calls metric. "Un-timed" means unmeasured, not unbounded — it still carries the

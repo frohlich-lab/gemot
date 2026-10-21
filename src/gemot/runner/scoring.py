@@ -46,7 +46,9 @@ __all__ = [
 REFERENCE_FREE_GOF_ALPHA = 0.05
 
 
-def _validation_fields(payload, reference, *, asked: bool = False) -> dict | None:
+def _validation_fields(
+    payload, reference, *, asked: bool = False, waited_s: float | None = None
+) -> dict | None:
     """The HELD-OUT (validation) block for result.json, or ``None`` when this run has no such check.
 
     ``payload`` is what ``evaluate_validation_data`` returned (:mod:`petab_mcp.validation_data`);
@@ -59,8 +61,11 @@ def _validation_fields(payload, reference, *, asked: bool = False) -> dict | Non
     this number across runs and examples, and recording it is how that gets collected.
 
     Every failure keeps its own ``status`` rather than collapsing to a null ``nll``.
-    ``unavailable`` means the tool was absent or unreadable. ``asked`` says the judge DID attempt
-    the call, which separates a run with no held-out set (``None``) from one whose check was
+    ``unavailable`` means the tool was absent or unreadable. ``timed_out`` means the call ran out of
+    time after ``waited_s`` seconds, which a sweep must not read as a missing tool: a transfer set
+    refits the model, and all six lucarelli runs of one sweep recorded ``unavailable`` for a call
+    cut at 900 s (gemot#57). Neither is a statement about the model. ``asked`` says the judge DID
+    attempt the call, which separates a run with no held-out set (``None``) from one whose check was
     attempted and failed while the reference had no bar yet — a silent ``null`` there is
     indistinguishable from a clean skip. The rest come from the scorer and are statements about the
     run. ``n_mismatch`` and ``mode_mismatch`` guard the subtraction itself —
@@ -105,7 +110,7 @@ def _validation_fields(payload, reference, *, asked: bool = False) -> dict | Non
             return None
         # `reference_chi2` rides along with the other reference fields: the block's SHAPE must not
         # depend on whether the tool answered, or every consumer special-cases the failure.
-        return {
+        block = {
             "status": "unavailable",
             "reason": (
                 "the server reported no held-out score (no evaluate_validation_data "
@@ -117,6 +122,11 @@ def _validation_fields(payload, reference, *, asked: bool = False) -> dict | Non
             "reference_chi2": ref_chi2,
             "reference_n": ref_n,
         }
+        if waited_s is not None:
+            block["status"] = "timed_out"
+            block["reason"] = f"the held-out score did not return within {waited_s:.0f} s"
+            block["waited_s"] = round(float(waited_s), 1)
+        return block
 
     mode = str(payload.get("mode") or "fixed")
     out = {
