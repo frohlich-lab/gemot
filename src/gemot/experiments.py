@@ -16,9 +16,10 @@ records exactly which prompts produced it and prompt changes are visible/attribu
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from . import models
+from . import infrastructure, models
 
 # Stable dataset-name prefix. Kept as "...-repair" (the examples' original framing; they are
 # now zero-shot BUILDS) on purpose: it is a Phoenix dataset *identifier*, so renaming it would
@@ -492,6 +493,16 @@ _INFRA_ABORT_MARKERS = (
     # httpx.ReadTimeout when the timeout moved from the session to
     # the individual call, and it must keep scoring as infra.
     "typeerror",  # e.g. a scoring float() crash before a verdict was reached
+    infrastructure.STOP_PREFIX,  # the server's infrastructure failed, e.g. a full disk (gemot#39)
+)
+
+# Each marker as a whole token, never inside a longer word or number. A substring test read the
+# out-of-credits "402" inside counts such as "20,402,551" or "1,000,402 tokens" (gemot#44), and
+# filed a run that stopped on a budget, with nothing committed, as infrastructure noise.
+_INFRA_ABORT_RE = re.compile(
+    r"(?<!\w)(?<!\d[,.])(?:"
+    + "|".join(re.escape(m) for m in _INFRA_ABORT_MARKERS)
+    + r")(?!\w)(?![,.]\d)"
 )
 
 
@@ -528,7 +539,7 @@ def _is_infra_abort(stop_reason: Any) -> bool:
         return False
     if s.startswith("aborted:"):  # pre-verdict transport abort (runner._write_degraded_result)
         return True
-    return any(m in s for m in _INFRA_ABORT_MARKERS)
+    return _INFRA_ABORT_RE.search(s) is not None
 
 
 def is_noop_infra_abort(row: dict[str, Any]) -> bool:
@@ -537,7 +548,13 @@ def is_noop_infra_abort(row: dict[str, Any]) -> bool:
     Only these are excluded from the success/ΔBIC aggregation: an infrastructure/transport stop
     (:func:`_is_infra_abort`) with no modeling work done (:func:`_did_modeling_work` is False).
     A LATE abort that did work is deliberately NOT one of these — its partial result is kept.
+
+    A run its infrastructure stopped (``infrastructure_error: <cause>``, a full disk) is one of
+    these whatever it did first: its work answered a broken server, which before PEtab-MCP#95
+    reported the disk to the agent as ill-posed models, so it is resubmitted rather than scored.
     """
+    if infrastructure.is_stop(row.get("stop_reason")):
+        return True
     return _is_infra_abort(row.get("stop_reason")) and not _did_modeling_work(row)
 
 
@@ -608,7 +625,8 @@ def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool 
     Those never built or fit a model, so their empty-model ΔBIC is scoring noise that would
     otherwise pollute the aggregation. Runs that DID modeling work before a late abort (credit
     exhaustion after real fits) are KEPT — their best-achieved ΔBIC is a valid partial result —
-    and genuine outcomes (completed, wall-time budget, recursion limit) are always kept. Pass
+    and genuine outcomes (completed, wall-time budget, recursion limit) are always kept. A run a
+    full disk stopped is excluded with the no-work aborts, whatever it did. Pass
     ``drop_noop_infra_aborts=False`` (``--include-crashed``) to keep the no-work aborts too.
     """
     import statistics
@@ -625,7 +643,8 @@ def summarize_sweep(rows: list[dict[str, Any]], *, drop_noop_infra_aborts: bool 
         by = Counter((r.get("stop_reason") or "?").split(":")[0].strip() for r in excluded)
         note = (
             f"(excluded {len(excluded)} no-work infrastructure abort(s) "
-            f"[n_ops==0 & n_fits==0] — {dict(by)}; late-abort partials are KEPT; "
+            f"[n_ops==0 & n_fits==0, or stopped by a full disk] — {dict(by)}; "
+            f"late-abort partials are KEPT; "
             f"pass --include-crashed to keep these too)\n"
         )
         if not rows:

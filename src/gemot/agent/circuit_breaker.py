@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .. import prompts
+from .. import infrastructure, prompts
+from ..infrastructure import Evidence, InfrastructureError
 from ..prompts import _DISABLED_TOOL_HINT_DEFAULT, _DISABLED_TOOL_HINTS
 
 # --- repeated-tool-error circuit breaker --------------------------------------------------
@@ -156,6 +157,10 @@ def _new_breaker_state() -> dict[str, Any]:
         # mimo-v2.5 run that made 134 failing make_changes calls wrote
         # `edit_rejects: {attempted: 0, rejected: 0, reject_rate: null}`.
         "calls": {},
+        # Core-tool calls whose result or error carried an infrastructure failure (a full disk),
+        # and the first one's `infrastructure.Evidence`. Once there is one, every later call is
+        # refused before it reaches the server (gemot#39).
+        "infrastructure": {"tool_calls": 0, "evidence": None},
     }
 
 
@@ -199,7 +204,20 @@ def _result_error(content: Any, artifact: Any) -> str | None:
             return _verdict_or_error(sc)
         if artifact.get("isError") or artifact.get("is_error"):
             return "tool error"
-    # Fallback: concatenate any text content blocks and look for the {"ok": false} shape.
+    # Fallback: look for the {"ok": false} shape in the text content blocks.
+    try:
+        obj = json.loads(_content_text(content))
+    except Exception:
+        return None
+    if isinstance(obj, dict) and obj.get("ok") is False:
+        return _verdict_or_error(obj)
+    return None
+
+
+def _content_text(content: Any) -> str:
+    """A tool result's text content blocks, concatenated."""
+    if isinstance(content, str):
+        return content
     text = ""
     if isinstance(content, list):
         for block in content:
@@ -207,17 +225,26 @@ def _result_error(content: Any, artifact: Any) -> str | None:
                 text += str(block.get("text") or "")
             elif isinstance(block, str):
                 text += block
-    elif isinstance(content, str):
-        text = content
-    try:
-        import json
+    return text
 
-        obj = json.loads(text)
-    except Exception:
-        return None
-    if isinstance(obj, dict) and obj.get("ok") is False:
-        return _verdict_or_error(obj)
-    return None
+
+def _infrastructure_error(state: dict[str, Any], name: str, hit: Evidence) -> InfrastructureError:
+    """Record a call that met an infrastructure failure; return the error that ends the run in
+    its place.
+
+    Raised, not returned. The model cannot free disk space, and handed the error it does what the
+    INDRA sweep's leads did with the same failures disguised as "ill-posed": re-author models that
+    were fine (gemot#39).
+    """
+    record = state["infrastructure"]
+    record["tool_calls"] += 1
+    evidence = Evidence(hit.cause, f"{name}: {hit.text}")
+    record["evidence"] = record["evidence"] or evidence
+    _note_call(state, name, _CALL_INFRASTRUCTURE)
+    print(
+        f"[circuit-breaker] infrastructure failure ({hit.cause}); stopping the run: {evidence.text}"
+    )
+    return InfrastructureError(evidence)
 
 
 def _verdict_or_error(payload: dict) -> str | None:
@@ -284,6 +311,12 @@ def _wrap_tools_with_circuit_breaker(
     can't fix); a transport error on a CORE petab tool (the local server) instead falls through to
     the normal 3-strike / re-raise path, so one localhost blip can't silently strip ``fit`` /
     ``make_changes`` for the rest of the run.
+
+    Every OTHER tool's result and error is also read for an infrastructure failure
+    (:func:`gemot.infrastructure.find`: the server's ``infrastructure_error`` report, or a full
+    disk's raw text), and one that carries it raises
+    :class:`~gemot.infrastructure.InfrastructureError` instead of returning, which ends the run.
+    The external tools are exempt: a hosted server's disk is not this run's to stop on.
     """
     import inspect
     from functools import wraps
@@ -299,8 +332,15 @@ def _wrap_tools_with_circuit_breaker(
         containers = _container_arg_names(tool)
 
         def _make(name: str, orig, hint: str, containers: dict):
+            ours = name not in transport_disable  # a tool of the run's own server
+
             @wraps(orig)
             async def _breaker(runtime=None, **arguments):
+                if state["infrastructure"]["tool_calls"]:
+                    # Another call already met the failure and the run is stopping; a call still
+                    # in flight beside it must not reach the server either.
+                    _note_call(state, name, _CALL_DISABLED)
+                    raise InfrastructureError(state["infrastructure"]["evidence"])
                 if name in state["disabled"]:
                     _note_call(state, name, _CALL_DISABLED)
                     return (_breaker_message(name, hint), None)  # short-circuit, no server hit
@@ -308,6 +348,10 @@ def _wrap_tools_with_circuit_breaker(
                 try:
                     result = await orig(runtime=runtime, **arguments)
                 except Exception as exc:  # a raised tool error (e.g. MCP isError -> ToolException)
+                    # The server's own report arrives here: an `isError` result, which the
+                    # adapter raises and its `handle_tool_error` would hand the model as a result.
+                    if ours and (hit := infrastructure.find_in_error(exc)) is not None:
+                        raise _infrastructure_error(state, name, hit) from exc
                     _note_call(
                         state,
                         name,
@@ -370,6 +414,13 @@ def _wrap_tools_with_circuit_breaker(
                         return (_breaker_message(name, hint), None)
                     raise
                 content, artifact = result if isinstance(result, tuple) else (result, None)
+                # The whole text, not only an error's: before PEtab-MCP#95 a fit that crashed on
+                # the errno came back as a REJECTION ("the edit applied but the fit crashed
+                # unexpectedly: [Errno 122] ..."), which `_result_error` rightly does not call an
+                # error. A build that failed on it said only "ill-posed"; the server's logs carry
+                # that one (LogWatch).
+                if ours and (hit := infrastructure.find(_content_text(content))) is not None:
+                    raise _infrastructure_error(state, name, hit)
                 err = _result_error(content, artifact)
                 if err is None:
                     state["streaks"].pop(name, None)  # a success clears the tool's error streak
@@ -422,6 +473,7 @@ _CALL_SERVER_REJECTED = "server_rejected"  # reached the server, `applied: false
 _CALL_CLIENT_INVALID = "client_invalid"  # never reached it: argument shape failed validation
 _CALL_TOOL_ERROR = "tool_error"  # raised anything else
 _CALL_DISABLED = "disabled"  # short-circuited by the breaker
+_CALL_INFRASTRUCTURE = "infrastructure_error"  # e.g. a full disk; the run stops at this call
 
 
 def _note_call(state: dict[str, Any], name: str, outcome: str) -> None:
@@ -480,17 +532,8 @@ def _rejection_error(content: Any, artifact: Any) -> str | None:
     if isinstance(artifact, dict) and isinstance(artifact.get("structured_content"), dict):
         obj = artifact["structured_content"]
     else:
-        text = ""
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text += str(block.get("text") or "")
-                elif isinstance(block, str):
-                    text += block
-        elif isinstance(content, str):
-            text = content
         try:
-            obj = json.loads(text)
+            obj = json.loads(_content_text(content))
         except Exception:
             return None
     if isinstance(obj, dict) and obj.get("applied") is False:

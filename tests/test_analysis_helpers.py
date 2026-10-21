@@ -257,6 +257,11 @@ def test_load_archive_results_reads_every_run_newest_first(tmp_path):
             "infra_partial",
         ),
         ({"stop_reason": "aborted: ClosedResourceError", "n_ops": 0}, "infra_noop"),
+        # a full disk is its own bucket whatever was done first, not a partial result (gemot#39)
+        (
+            {"stop_reason": "infrastructure_error: disk_full", "head_version": 4, "n_fits": 5},
+            "infrastructure_error",
+        ),
         (
             {"stop_reason": "recovered_from_incomplete_run: ...", "reconstructed": True},
             "reconstructed",

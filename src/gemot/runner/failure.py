@@ -14,6 +14,7 @@ from pathlib import Path
 from .provenance import _now_iso
 from ..analysis import store_dir
 from ..scenario import Scenario
+from .. import infrastructure
 
 
 def _summarize_exc(exc: BaseException) -> str:
@@ -88,6 +89,8 @@ def _write_degraded_result(
     reason: str,
     server_returncode: int | None = None,
     clock=None,
+    stop_reason: str | None = None,
+    extra: dict | None = None,
 ) -> dict:
     """Persist (and return) the degraded ``result.json`` written when a run aborts before a
     verdict, so the batch and the cross-run aggregator find a well-formed row instead of a
@@ -101,7 +104,13 @@ def _write_degraded_result(
     exited when the run aborted — the single most useful signal for diagnosing a transport
     ``ReadError``: a negative value is a fatal SIGNAL (e.g. ``-11`` = SIGSEGV, a hard crash
     during a tool call such as an AMICI import), distinguishing "the server died" from a mere
-    network blip (server still alive, ``None``)."""
+    network blip (server still alive, ``None``).
+
+    ``stop_reason`` replaces the ``aborted: <reason>`` label. An infrastructure stop
+    (:func:`gemot.infrastructure.stop_reason`) keeps its own bare label, which the analysis files
+    in a bucket of its own for the sweep to resubmit, rather than as an abort that may have left a
+    partial result. ``extra`` adds fields beside ``base_meta`` (the infrastructure count and
+    evidence an abort found, ``runner.drive._infrastructure_abort``)."""
     server_note = ""
     if server_returncode is not None:
         if server_returncode < 0:
@@ -116,13 +125,18 @@ def _write_degraded_result(
     )
     result = {
         **base_meta,
+        **(extra or {}),
         "scenario": scenario.name,
-        "stop_reason": f"aborted: {reason}",
+        "stop_reason": stop_reason or f"aborted: {reason}",
         "success": False,
         "delta_bic": None,
         "run_ended_at": _now_iso(),
         "server_returncode": server_returncode,
-        "error": "run aborted before a verdict (provider/connection failure)",
+        "error": (
+            "run stopped before a verdict: the server's infrastructure failed"
+            if infrastructure.is_stop(stop_reason)
+            else "run aborted before a verdict (provider/connection failure)"
+        ),
         # An aborted run still made edits, and they are the MOST interesting ones: omitting them
         # scored every abort as zero rejections, biasing the sweep-wide rate DOWN for exactly the
         # runs that struggled. `clock` is None only when the abort predates the session.
