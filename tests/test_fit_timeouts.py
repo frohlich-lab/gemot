@@ -356,11 +356,12 @@ def test_a_healthy_state_records_nothing():
     assert "unreadable_graph_state" not in stats
 
 
-def test_a_per_call_fit_timeout_takes_the_RESUME_path_not_the_model():
+def test_a_per_call_timeout_is_told_apart_from_an_ordinary_tool_error():
     """mcp turns an expired read_timeout_seconds into McpError(408), which is not in the httpx
-    family — so without this it reads as an ordinary tool error and goes back to the model, which
-    re-fits while the server is still running the abandoned multistart on the same worker pool.
-    The session-wide sse_read_timeout it replaced raised httpx.ReadTimeout and resumed."""
+    family — so without this it reads as an ordinary tool error and goes back to the model with
+    nothing to say the server is still running the abandoned multistart. A fit's goes to the lead
+    as a note that says so, and any other call's resumes, as the session-wide sse_read_timeout's
+    httpx.ReadTimeout did (tests/test_fit_call_timeout.py)."""
     from mcp.shared.exceptions import McpError
     from mcp.types import ErrorData
 
