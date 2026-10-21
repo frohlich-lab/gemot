@@ -281,8 +281,9 @@ async def _drive(
                 rc = server_proc.poll() if server_proc is not None else None
                 if infrastructure.is_stop(stop_reason):
                     # Not judged: a verdict on a run whose builds failed on a full disk scores
-                    # the disk, and the judge's own compiles would meet it too. Its own label,
-                    # so the sweep can tell it apart and resubmit it.
+                    # the disk, and the judge's own compiles would meet it too; a wedged fit
+                    # would hold every judge call behind it. Its own label, so the sweep can
+                    # tell it apart and resubmit it.
                     print(
                         f"[run] {stop_reason} ({meta['infrastructure_evidence']}); "
                         "skipping the judge."

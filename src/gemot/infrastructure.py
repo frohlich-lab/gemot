@@ -15,7 +15,8 @@ This module is the ONE definition of what such a failure looks like and of the s
 There are two kinds of evidence (:func:`find`):
 
 * the server's own report (PEtab-MCP#95): a tool error whose text starts
-  ``infrastructure_error: <cause>: <detail>``, ``disk_full`` being the only cause so far;
+  ``infrastructure_error: <cause>: <detail>``, ``disk_full`` being the only cause it reports so
+  far;
 * the raw disk-full text, from a server that predates that report, or anywhere the report does not
   reach: an ``OSError``, a linker's ``final link failed: Disk quota exceeded``, HDF5's error stack.
 
@@ -30,6 +31,9 @@ It is read in four places:
 * the analysis files :func:`stop_reason` in its own bucket, outside every success rate, so the
   sweep can resubmit the run.
 
+A server wedged on a fit (:data:`FIT_WEDGED`) is stopped the same way, though no text names it:
+the tool wrapper raises it on what the calls after a timed-out fit meet.
+
 Stdlib only: the agent package imports this (tests/test_import_lightness.py).
 """
 
@@ -43,8 +47,14 @@ from typing import NamedTuple
 #: report (``petab_mcp.errors.INFRASTRUCTURE_ERROR``; the two packages cannot share a constant).
 STOP_PREFIX = "infrastructure_error"
 
-#: The one cause so far (``petab_mcp.errors.DISK_FULL``).
+#: A full disk (``petab_mcp.errors.DISK_FULL``).
 DISK_FULL = "disk_full"
+
+#: A server wedged on a fit (gemot#56, PEtab-MCP#108): a fit outran its call timeout, and then a
+#: further call timed out too, or the server answered that the fit is still running. The tool
+#: wrapper is its witness (``agent.circuit_breaker._fit_wedged``). Every call the run, or a
+#: judge, would make next queues behind the same fit.
+FIT_WEDGED = "fit_wedged"
 
 
 def stop_reason(cause: str) -> str:

@@ -996,6 +996,14 @@ TOOL_DISABLED_TRANSPORT_TMPL = (
     "disabled for the rest of this run. Do NOT call it again — {hint}"
 )
 
+# In place of a fit that outran its call timeout (gemot#56). Nothing cancels that fit on the
+# server, and the server runs one fit at a time.
+FIT_CALL_TIMEOUT_TMPL = (
+    "FIT TIMED OUT: `{name}` did not return in time ({error}), so its result is unknown. The fit "
+    "may still be running on the server, which runs one fit at a time: your next fit starts only "
+    "once it ends. Choose fewer starts or a different model."
+)
+
 
 # ------------------------------------------------------------- the lead's finish gate (`finish`)
 # What the gate RETURNS to the model. The gate's own logic -- what it reads, what it counts, when
@@ -1525,6 +1533,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             **{f"turn_notice_{threshold}": text for threshold, text in SUBAGENT_TURN_NOTICES},
             "tool_disabled_repeated": TOOL_DISABLED_REPEATED_TMPL,
             "tool_disabled_transport": TOOL_DISABLED_TRANSPORT_TMPL,
+            "fit_call_timeout": FIT_CALL_TIMEOUT_TMPL,
             "disabled_tool_hint_default": _DISABLED_TOOL_HINT_DEFAULT,
             "disabled_tool_hints": _DISABLED_TOOL_HINTS,
         },

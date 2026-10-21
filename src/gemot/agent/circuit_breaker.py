@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from .. import infrastructure, prompts
@@ -106,17 +107,40 @@ def _is_call_timeout(exc: BaseException) -> bool:
     ``runner.clock._wrap_call_timeout`` gives every call a ``read_timeout_seconds`` sized to its
     own fit, and the session layer turns an expiry into ``McpError(code=408)``
     (``mcp/shared/session.py``) rather than anything in the httpx family. That distinction
-    matters here: a timed-out fit is NOT a tool error the model should see and retry. The server
-    is still running the abandoned multistart (mcp sends no cancellation), so handing the model
-    an error invites it to start a SECOND fit on top of the first, on the same session and the
-    same worker pool. Classifying it as transport routes it to the checkpoint resume instead,
-    which is what the session-wide ``sse_read_timeout`` used to do by raising ``httpx.ReadTimeout``
-    before the timeout moved per call.
+    matters here: a timed-out call is NOT a tool error the model should see and retry. The server
+    is still running the abandoned multistart (mcp sends no cancellation). A fit tool's timeout is
+    handed to the lead as a note that says so, and a further timeout behind it ends the run (see
+    :func:`_fit_wedged`). Every other call's is classified as transport, which routes it to the
+    checkpoint resume, as the session-wide ``sse_read_timeout`` did by raising
+    ``httpx.ReadTimeout`` before the timeout moved per call.
     """
     if type(exc).__name__ != "McpError":
         return False
     code = getattr(getattr(exc, "error", None), "code", None)
     return code == 408
+
+
+#: How the server says a fit is still running when another call arrives behind it
+#: (PEtab-MCP#108). Read only while a fit's call timeout is outstanding: before one, it can only
+#: answer a fit batched beside another, and goes to the lead like any other reply.
+_FIT_IN_PROGRESS = re.compile(r"\bfit_in_progress\b")
+
+
+def _fit_wedged(state: dict[str, Any], text: str, timed_out: bool) -> Evidence | None:
+    """The evidence that the server is wedged on a fit, or ``None``.
+
+    After a fit's call times out, the server keeps that fit, and the session lock it holds, until
+    the fit ends. A resume used to re-send the identical fit into it, and each resend waited out
+    the full timeout again: 8.4 h of one INDRA run's last 9 h, against a fit that had hung on the
+    server (gemot#56, PEtab-MCP#108). The wrapper hands the lead that first timeout instead, as
+    its tool result. Once one is outstanding, a further call that times out (``timed_out``), or
+    the server answering that the fit is still running, means the server is holding it still:
+    the run stops with ``infrastructure_error: fit_wedged``. A fit call that returns clears it.
+    """
+    held = state["fit_timeout"]
+    if held is None or not (timed_out or _FIT_IN_PROGRESS.search(text)):
+        return None
+    return Evidence(infrastructure.FIT_WEDGED, " ".join(f"{text[:300]}; behind {held}".split()))
 
 
 def _is_transport_error(exc: BaseException) -> bool:
@@ -161,6 +185,9 @@ def _new_breaker_state() -> dict[str, Any]:
         # and the first one's `infrastructure.Evidence`. Once there is one, every later call is
         # refused before it reaches the server (gemot#39).
         "infrastructure": {"tool_calls": 0, "evidence": None},
+        # The timed-out fit call the server may still be running, until a fit is answered: what
+        # tells a wedged server from a slow fit (`_fit_wedged`, gemot#56).
+        "fit_timeout": None,
     }
 
 
@@ -297,7 +324,10 @@ def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
 
 
 def _wrap_tools_with_circuit_breaker(
-    tools: list, state: dict[str, Any], transport_disable_names: set[str] | None = None
+    tools: list,
+    state: dict[str, Any],
+    transport_disable_names: set[str] | None = None,
+    fit_tools: frozenset[str] = frozenset(),
 ) -> list:
     """Wrap each tool's coroutine so repeated identical failures disable it (see above).
 
@@ -317,6 +347,10 @@ def _wrap_tools_with_circuit_breaker(
     disk's raw text), and one that carries it raises
     :class:`~gemot.infrastructure.InfrastructureError` instead of returning, which ends the run.
     The external tools are exempt: a hosted server's disk is not this run's to stop on.
+
+    ``fit_tools`` are the tools whose call runs a multistart. The first of their calls to time out
+    returns a note saying so, and a server still holding that fit raises the same error
+    (:func:`_fit_wedged`).
     """
     import inspect
     from functools import wraps
@@ -352,6 +386,10 @@ def _wrap_tools_with_circuit_breaker(
                     # adapter raises and its `handle_tool_error` would hand the model as a result.
                     if ours and (hit := infrastructure.find_in_error(exc)) is not None:
                         raise _infrastructure_error(state, name, hit) from exc
+                    sig = f"{type(exc).__name__}: {exc}"
+                    timed_out = _is_call_timeout(exc)
+                    if ours and (hit := _fit_wedged(state, sig, timed_out)) is not None:
+                        raise _infrastructure_error(state, name, hit) from exc
                     _note_call(
                         state,
                         name,
@@ -359,8 +397,12 @@ def _wrap_tools_with_circuit_breaker(
                         if _is_client_validation_error(exc)
                         else _CALL_TOOL_ERROR,
                     )
-                    sig = f"{type(exc).__name__}: {exc}"
                     tripped = _record_error(state, name, sig)
+                    if ours and timed_out and name in fit_tools:
+                        # The lead hears of it rather than a resume re-sending the same fit into
+                        # the server still running it (_fit_wedged).
+                        state["fit_timeout"] = f"{name}: {sig}"
+                        return (prompts.FIT_CALL_TIMEOUT_TMPL.format(name=name, error=sig), None)
                     # A TRANSPORT failure is exempt from the never-disable return below. The model
                     # cannot fix a closed session or an unreachable server by changing its
                     # arguments, so handing it "ClosedResourceError: ..." as a successful tool
@@ -419,8 +461,13 @@ def _wrap_tools_with_circuit_breaker(
                 # unexpectedly: [Errno 122] ..."), which `_result_error` rightly does not call an
                 # error. A build that failed on it said only "ill-posed"; the server's logs carry
                 # that one (LogWatch).
-                if ours and (hit := infrastructure.find(_content_text(content))) is not None:
+                text = _content_text(content)
+                if ours and (hit := infrastructure.find(text)) is not None:
                     raise _infrastructure_error(state, name, hit)
+                if ours and (hit := _fit_wedged(state, text, False)) is not None:
+                    raise _infrastructure_error(state, name, hit)
+                if name in fit_tools:
+                    state["fit_timeout"] = None  # answered, so the timed-out fit has ended
                 err = _result_error(content, artifact)
                 if err is None:
                     state["streaks"].pop(name, None)  # a success clears the tool's error streak

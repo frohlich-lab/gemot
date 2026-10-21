@@ -105,7 +105,14 @@ class _TimeoutAgent:
 
 
 def _run(
-    mod, monkeypatch, probe, confirm_after=None, agent=None, server_poll=None, driver_options=None
+    mod,
+    monkeypatch,
+    probe,
+    confirm_after=None,
+    agent=None,
+    server_poll=None,
+    driver_options=None,
+    coroutines=None,
 ):
     from langchain_core.tools import StructuredTool
 
@@ -123,9 +130,13 @@ def _run(
     monkeypatch.setattr(mod.driver, "_finish_tool", _capturing_finish_tool)
 
     # Real (inert) tool objects named per ALLOWED_TOOLS so _select_tools' curation passes; the
-    # faked create_deep_agent ignores them, so they are never actually invoked.
+    # faked create_deep_agent ignores them, so they are never actually invoked -- except the ones
+    # given ``coroutines``, which a fake agent can call through the real tool wrapper.
+    coroutines = coroutines or {}
     fake_tools = [
-        StructuredTool.from_function(func=(lambda: ""), name=n, description=n)
+        StructuredTool.from_function(
+            func=(lambda: ""), coroutine=coroutines.get(n), name=n, description=n
+        )
         for n in sorted(mod.ALLOWED_TOOLS)
     ]
 
@@ -440,3 +451,87 @@ def test_a_clean_run_reports_no_full_disk(monkeypatch):
     )
     assert result["stop_reason"] == "silent_stop"
     assert result["infrastructure_tool_calls"] == 0 and result["infrastructure_evidence"] is None
+
+
+# --- a fit that outruns its call timeout -----------------------------------------------------
+# gemot#56: a 150-start fit hung on the server (PEtab-MCP#108), and each of three resumes re-sent
+# it into the server still holding it, a full 7560s timeout apiece. The wrapper's half is in
+# tests/test_fit_call_timeout.py; these drive the loop around it.
+
+
+def _timing_out_fit(n_timeouts):
+    """A `make_changes` whose first ``n_timeouts`` calls time out the way mcp reports it."""
+
+    async def _make_changes(runtime=None, **kw):
+        from mcp.shared.exceptions import McpError
+        from mcp.types import ErrorData
+
+        _make_changes.calls += 1
+        if _make_changes.calls <= n_timeouts:
+            raise McpError(ErrorData(code=408, message="Timed out. Waited 7560.0 seconds."))
+        return ([{"type": "text", "text": '{"applied": true}'}], None)
+
+    _make_changes.calls = 0
+    return _make_changes
+
+
+class _FitAgent(_TimeoutAgent):
+    """Graph stub whose first astream calls the lead's `make_changes` ``fits`` times through the
+    real tool wrapper, as the tool node would, records what came back, and finishes."""
+
+    def __init__(self, fits):
+        super().__init__()
+        self.fits, self.results = fits, []
+
+    def astream(self, stream_input, config=None, stream_mode=None):
+        self.inputs.append(stream_input)
+        captured, results, fits = self.captured, self.results, self.fits
+
+        async def _gen():
+            make_changes = next(t for t in captured["tools"] if t.name == "make_changes")
+            for _ in range(fits):
+                results.append(await make_changes.coroutine(runtime=None, n_starts=150))
+                yield {"messages": [None] * len(results)}
+            captured["fs"]["confirmed"] = True
+
+        return _gen()
+
+
+@requires_harness
+def test_a_fit_timeout_reaches_the_lead_instead_of_a_resume(monkeypatch):
+    mod = _load_agent_module()
+    result, agent = _run(
+        mod,
+        monkeypatch,
+        _Probe(model_authored=True),
+        agent=_FitAgent(fits=2),
+        coroutines={"make_changes": _timing_out_fit(1)},
+    )
+
+    assert len(agent.inputs) == 1  # never resumed
+    assert agent.results[0][0].startswith("FIT TIMED OUT: `make_changes` did not return in time")
+    assert agent.results[1][0][0]["text"] == '{"applied": true}'  # the lead's next fit ran
+    assert result["stop_reason"] == "completed"
+
+
+@requires_harness
+def test_a_second_fit_timeout_ends_the_run_as_a_wedged_fit(monkeypatch):
+    """Rather than spending the resumes: each would re-send the fit for another full timeout."""
+    mod = _load_agent_module()
+    result, agent = _run(
+        mod,
+        monkeypatch,
+        _Probe(model_authored=True),
+        agent=_FitAgent(fits=2),
+        coroutines={"make_changes": _timing_out_fit(2)},
+        server_poll=lambda: None,
+    )
+
+    assert result["stop_reason"] == "infrastructure_error: fit_wedged"
+    assert len(agent.inputs) == 1  # no resume
+    assert result["infrastructure_evidence"].startswith("make_changes: McpError: Timed out.")
+    assert "behind make_changes: McpError" in result["infrastructure_evidence"]
+    assert result["make_changes_calls"]["by_outcome"] == {
+        "tool_error": 1,
+        "infrastructure_error": 1,
+    }

@@ -745,7 +745,9 @@ async def run_deepagents(
     # Only the EXTERNAL bio tools (flaky hosted servers) get the immediate transport-error disable;
     # a transport blip on a core petab tool must NOT silently strip it for the rest of the run.
     _bio_names = {nm for nm in (getattr(t, "name", None) for t in bio_tools) if nm}
-    _wrap_tools_with_circuit_breaker(all_tools, breaker_state, transport_disable_names=_bio_names)
+    _wrap_tools_with_circuit_breaker(
+        all_tools, breaker_state, transport_disable_names=_bio_names, fit_tools=_FIT_TOOLS
+    )
     # Provenance: record the biocurator's LITERATURE accesses (query + returned DOIs/PMIDs) for
     # audit + analysis (surfaced as biocurator_literature). Only literature tools are wrapped, and
     # only when the `bio_literature` ablation made them resolve into bio_tools; empty otherwise.
@@ -1424,12 +1426,12 @@ async def run_deepagents(
             elif (filtered := _content_filter_stop_reason(exc)) is not None:
                 stop_reason = filtered
             elif _is_call_timeout(exc):
-                # A per-call fit timeout that escaped the breaker (e.g. raised at the `task`
-                # subagent boundary). Same reasoning as in the breaker: the server is still
-                # running the abandoned multistart, so RESUME from the checkpoint rather than
-                # ending the run -- and rather than letting the model re-issue a fit on top of
-                # one still holding the worker pool. It cannot join _TRANSIENT_ERRORS because
-                # that is a tuple of CLASSES and this is one status code within McpError.
+                # A per-call timeout that escaped the breaker: a read's (e.g. raised at the
+                # `task` subagent boundary), since a fit's own goes to the lead and a timeout
+                # behind one ends the run (circuit_breaker._fit_wedged). The server may be busy
+                # with a fit, so RESUME from the checkpoint rather than ending the run. It cannot
+                # join _TRANSIENT_ERRORS because that is a tuple of CLASSES and this is one status
+                # code within McpError.
                 retriable = f"fit call timed out: {exc}"
             elif (transient := _transient_provider_reason(exc)) is not None:
                 retriable = transient  # resume from the checkpoint, keeping every version
