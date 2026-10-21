@@ -563,14 +563,15 @@ def test_the_judge_is_handed_the_reconciled_estimates(monkeypatch, tmp_path):
         seen["estimated"] = estimated
         return 0, {}
 
-    monkeypatch.setattr(R, "_wrap_call_timeout", lambda *_: None)
+    monkeypatch.setattr(R, "_wrap_call_timeout", lambda *_, **__: None)
     monkeypatch.setattr(R, "_wrap_tool_clock", lambda *_: SimpleNamespace(seconds=0.0))
     monkeypatch.setattr(R, "_make_call", lambda *_: call)
     monkeypatch.setattr(R, "_judge", judge)
     delivery = {"estimated": ["k1", "kx"], "uncharged": ["kx = 0.37: no parameter-table row"]}
     meta = {"delivery": delivery, "workspace_audit": {"shell_busy_seconds": 0.0}}
     args = SimpleNamespace(n_starts=1)
-    asyncio.run(R._judge_delivered(None, None, tmp_path, args, meta, 0.0, 0.0))
+    scenario = SimpleNamespace(example_dir=tmp_path)
+    asyncio.run(R._judge_delivered(scenario, None, tmp_path, args, meta, 0.0, 0.0))
     assert seen["estimated"] == ["k1", "kx"]
 
 

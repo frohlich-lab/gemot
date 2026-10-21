@@ -11,11 +11,13 @@ import contextlib
 import json
 import time
 from datetime import timedelta
+from pathlib import Path
 
 from mcp import ClientSession
 
 from .. import infrastructure
 from ..fit_budget import fit_time_budget_for
+from ..paths import validation_measurements_path
 
 
 # --------------------------------------------------------------------------- MCP glue
@@ -52,6 +54,37 @@ def _unwrap(result):
 #: read, `_current_fit` comes back empty, the gate refuses the finish, and five refusals relabel a
 #: fully fitted run `no_model_built`. Bounding once here keeps the queue term for reads too.
 NON_FIT_CALL_TIMEOUT_S = 900.0
+
+#: The judge's held-out score (:mod:`petab_mcp.validation_data`). A read on a fixed-θ set, but a
+#: transfer set REFITS the model on it, so `_wrap_call_timeout` sizes it by :func:`_held_out_fits`.
+HELD_OUT_TOOL = "evaluate_validation_data"
+
+
+def _held_out_fits(example_dir: Path) -> int:
+    """How many multistart fits :data:`HELD_OUT_TOOL` runs on the example's held-out set.
+
+    Zero for a fixed-θ set, which is scored at the fitted point; one per refit unit for a transfer
+    set (one when it names no units), since the server refits each unit on its own. Read with the
+    server's own reader, so the two agree on what makes a set a transfer set: a ``parameters.tsv``
+    beside the measurements. lucarelli's has three units, and under the read timeout its score
+    never finished (gemot#57).
+
+    Zero, too, for an absent or unreadable set: the server reads the same files at startup, so it
+    has no refit to run either, and a timeout must never be the thing that fails a run.
+    """
+    measurements = validation_measurements_path(example_dir)
+    if not measurements.is_file():
+        return 0
+    try:
+        from petab_mcp.validation_data import MODE_TRANSFER, read_held_out
+
+        held_out = read_held_out(measurements)
+    except Exception as exc:  # noqa: BLE001 - sizing must never fail a run
+        print(f"[runner] could not read the held-out set ({type(exc).__name__}: {exc})")
+        return 0
+    if held_out.mode != MODE_TRANSFER:
+        return 0
+    return len(set(held_out.units.values())) if held_out.units else 1
 
 
 def _make_call(session: ClientSession):
@@ -247,7 +280,9 @@ class _ToolClock:
         }
 
 
-def _wrap_call_timeout(session: ClientSession, default_n_starts: int) -> None:
+def _wrap_call_timeout(
+    session: ClientSession, default_n_starts: int, *, held_out_fits: int = 0
+) -> None:
     """Give every ``session.call_tool`` a read timeout sized to THAT CALL's own ``n_starts``.
 
     This is where a fit timeout is actually decided. The client's ``sse_read_timeout`` is a
@@ -272,6 +307,10 @@ def _wrap_call_timeout(session: ClientSession, default_n_starts: int) -> None:
     is already generous for a SQL read. An explicit caller-supplied ``read_timeout_seconds`` is
     never overridden. The number itself comes from ``fit_budget.fit_time_budget_for``, shared
     with the stall watchdog so the two cannot disagree about how long a fit may take.
+
+    ``held_out_fits`` is :func:`_held_out_fits` of the run's held-out set: the judge's
+    :data:`HELD_OUT_TOOL` call fits that many times at the server's default ``n_starts``, and is
+    sized as such a fit is. At 0, a fixed-θ set or none, it is a read like any other.
     """
     original = session.call_tool
     # n_starts of the fit calls currently in flight. `make_changes` holds `session.lock` for the
@@ -310,8 +349,10 @@ def _wrap_call_timeout(session: ClientSession, default_n_starts: int) -> None:
         # list it -- see test_the_transport_wrapper_is_deliberately_tool_agnostic. A known
         # edit tool WITHOUT the argument is still a fit: `make_changes` takes the server's
         # default when the agent omits it, and a malformed payload leaves it unreadable, so
-        # keying on presence alone would hand a real multistart a 900s budget.
-        can_fit = asked is not None or name in _EDIT_TOOLS
+        # keying on presence alone would hand a real multistart a 900s budget. So would the
+        # held-out score of a transfer set, which refits once per unit and carries no count.
+        fits = held_out_fits if name == HELD_OUT_TOOL else 0
+        can_fit = asked is not None or name in _EDIT_TOOLS or fits > 0
         if not override:
             # Queued behind whatever is already fitting (see `in_flight`). asyncio is
             # cooperative and there is no await between reading and appending, so the list is
@@ -329,7 +370,9 @@ def _wrap_call_timeout(session: ClientSession, default_n_starts: int) -> None:
                 )
             else:
                 budget = fit_time_budget_for(
-                    None if asked is None else _plus(asked, queued), default_n_starts
+                    None if asked is None else _plus(asked, queued),
+                    default_n_starts,
+                    fits=max(1, fits),
                 )
             kwargs["read_timeout_seconds"] = timedelta(seconds=budget)
         tracked = None
@@ -345,6 +388,7 @@ def _wrap_call_timeout(session: ClientSession, default_n_starts: int) -> None:
             with contextlib.suppress(Exception):
                 if asked is not None:
                     tracked = max(1, int(asked))
+            tracked *= max(1, fits)
             in_flight.append(tracked)
         try:
             # Pass the caller's args through untouched otherwise: the adapter sends

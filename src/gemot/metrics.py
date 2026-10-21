@@ -132,7 +132,8 @@ _RESULT_FIELDS = (
 # sweep grouped on these columns would read empty cells for a check that ran fine. `val_status` is
 # the one to filter on — an example with no held-out data, a model that would not integrate on the
 # unseen conditions, and a genuine score are three different rows, and only the third has a
-# `val_delta_nll` worth averaging.
+# `val_delta_nll` worth averaging. `unavailable` and `timed_out` are a fourth: the run never got a
+# score, which says nothing about the model, so neither belongs with `non_finite`.
 # `val_mode` says which comparison the row is (`fixed`: the fitted point evaluated on unseen
 # conditions), so a later kind of check cannot be mistaken for this one.
 _VALIDATION_FIELDS = (

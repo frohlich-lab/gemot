@@ -196,7 +196,7 @@ _MAX_DERIVABLE_N_STARTS = 10_000_000
 FIT_WATCHDOG_MARGIN = _env_float("PETAB_MCP_FIT_WATCHDOG_MARGIN", 1.15)
 
 
-def fit_time_budget_for(asked, default: int) -> float:
+def fit_time_budget_for(asked, default: int, *, fits: int = 1) -> float:
     """:func:`fit_time_budget` for a call/step that ASKED for ``asked`` starts, or ``default``.
 
     ONE implementation, deliberately: the stall watchdog (``agent.driver``) and the per-call
@@ -205,6 +205,11 @@ def fit_time_budget_for(asked, default: int) -> float:
     limit. They read ``n_starts`` from different places — a pending ``tool_calls`` entry and a
     live ``call_tool`` argument — but the rule turning that number into seconds belongs here,
     next to the formula it feeds.
+
+    ``fits`` is how many such multistarts the call runs one after another. Every edit fits once;
+    a transfer held-out set is refit unit by unit, each unit its own build and its own multistart
+    of the same count (``petab_mcp.validation_data.refit_problem``), so its score takes one fit's
+    window per unit. The ceiling below still bounds the product.
 
     ``asked`` is untrusted: it comes from the model. Coerced with a bare ``int()`` to match the
     server's own ``_coerce_n_starts``, so a model sending ``"300"`` as a string gets a window for
@@ -231,4 +236,4 @@ def fit_time_budget_for(asked, default: int) -> float:
             n = max(n, min(int(asked), _MAX_DERIVABLE_N_STARTS))
         except (TypeError, ValueError, OverflowError):
             pass
-    return max(floor, min(fit_time_budget(n), FIT_BUDGET_CEILING_S))
+    return max(floor, min(max(1, int(fits)) * fit_time_budget(n), FIT_BUDGET_CEILING_S))
