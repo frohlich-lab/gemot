@@ -61,8 +61,6 @@ _PROMPT_ROLES = {
     "petab-active-biology-context": "system",
     "petab-lead-system": "system",
     "petab-lead-system-indra": "system",  # the lead prompt on the indra_statements arm
-    "petab-lead-list-mechanisms": "system",  # a tool description, on the indra_statements arm
-    "petab-lead-indra-tools": "system",  # the arm's editor and model-reading descriptions
     "petab-lead-indra-no-model": "user",  # the arm's no-model nudge
     "petab-lead-indra-task": "user",  # the arm's task, without the Antimony readout paragraph
     "petab-lead-task": "user",
@@ -82,7 +80,6 @@ _PROMPT_ROLES = {
     "petab-biocurator-system": "system",
     "petab-biocurator-description": "system",
     "petab-biocurator-entity-block": "user",
-    "petab-tool-descriptions": "system",
     "petab-finish-description": "system",
     "petab-finish-gate": "user",
     "petab-nudges": "user",

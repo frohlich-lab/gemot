@@ -63,7 +63,12 @@ from .subagents import (
     _general_purpose_enabled,
 )
 from .token_usage import _LEAD_AGENT_NAME, _token_accountant
-from .tools import ORCHESTRATOR_TOOLS, _select_tools, _trim_descriptions
+from .tools import (
+    ORCHESTRATOR_TOOLS,
+    _blind_descriptions,
+    _check_statements_editor,
+    _select_tools,
+)
 from ..prompts import INDRA_STATEMENTS_ENABLED, _NO_MODEL_NUDGE, _SILENT_FINISH_NUDGE
 from .. import infrastructure, models, prompts
 
@@ -711,7 +716,8 @@ async def run_deepagents(
     # Adapt the MCP tools bound to this already-initialized session, then curate to the
     # union of the lead's + analysts' tools. This pool is only used to resolve each analyst's
     # tool objects; it is NOT what the lead gets (see lead_tools below).
-    petab_tools = _trim_descriptions(_select_tools(await load_mcp_tools(session)))
+    petab_tools = _blind_descriptions(_select_tools(await load_mcp_tools(session)))
+    _check_statements_editor(petab_tools)
     # Blinded bio-knowledge tools from one or more SECONDARY MCP servers (biocurator joins the
     # panel when enabled; endpoints hardcoded in runner.BIO_MCP_URLS = BioContextAI + OmniPath;
     # the `bio_literature` ablation adds EuropePMC/bioRxiv). They are

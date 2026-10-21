@@ -56,12 +56,10 @@ rules keep one fact from being written down twice:
   prompt AND spliced into `ORCHESTRATOR_TOOLS`, so the prompt cannot name a tool the lead does
   not hold.
 
-The server's tool docstrings are the other half of this: they state the tool's CONTRACT
-(arguments, result shape, what it rejects) for any client, and the `TOOL_DESCRIPTIONS` entry
-that replaces them for the panel states the same tool for the job the lead is doing. Neither
-restates the other. The two packages ship separately — `gemot` must import without
-`petab_mcp` ([test_import_lightness.py](../tests/test_import_lightness.py)) — so they cannot
-share a constant; keep them from describing the same thing instead.
+The server's tool descriptions are the other half of this, and the panel reads them as the
+server states them (frohlich-lab/PEtab-MCP#40): a tool's contract, and what an agent needs to use
+it, is the server's to write, and a rule only this harness's job adds (its finish gate, its
+analysts, when to merge) is the prompts'. Only the biology-blind arm replaces them.
 
 ## Types
 

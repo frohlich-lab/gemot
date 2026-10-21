@@ -98,6 +98,10 @@ _RESULT_FIELDS = (
     # the follow-up question — which group moved — which is read from result.json.
     "prompt_version",
     "skills_version",
+    # The server the run drove. The tool descriptions the panel reads are the server's own
+    # (frohlich-lab/PEtab-MCP#40), so this, not `prompt_version`, splits a sweep spanning a change
+    # to them. Flattened out of result.json's `server_code`.
+    "server_sha",
     # The arm. Same argument as `prompt_version` above, for the switches that change behaviour
     # WITHOUT changing prompt text (`bio_cache`, `omnipath_local`): those move neither git_sha nor
     # prompt_version, so this is the only column that can split them. Flat and canonical
@@ -163,6 +167,7 @@ _NESTED_SOURCE_FIELDS = (
     "edit_rejects",
     "residual_structure",
     "git_diff",
+    "server_code",
     "openrouter_endpoints",
     "validation",
     "adequacy",
@@ -364,6 +369,15 @@ def _flatten_git_diff(row: dict) -> dict:
     if not isinstance(diff, dict):
         return row
     return {**row, "git_diff_sha256": diff.get("sha256")}
+
+
+def _flatten_server_code(row: dict) -> dict:
+    """``server_sha`` out of result.json's nested ``server_code``: a checkout's ``git_sha``, else the
+    commit pip installed. Absent (older runs) passes through."""
+    code = row.get("server_code")
+    if not isinstance(code, dict):
+        return row
+    return {**row, "server_sha": code.get("git_sha") or code.get("commit")}
 
 
 def _is_subsequence(old: "tuple[str, ...]", new: "tuple[str, ...]") -> bool:
@@ -596,7 +610,9 @@ def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HIST
                     continue
                 seen.add(key)
             row = _flatten_served_endpoints(
-                _flatten_git_diff(_flatten_replicate_lof(_flatten_edit_rejects(row)))
+                _flatten_server_code(
+                    _flatten_git_diff(_flatten_replicate_lof(_flatten_edit_rejects(row)))
+                )
             )
             for name in _KEY_FLATTENERS:
                 row = {**row, **globals()[name](row)}

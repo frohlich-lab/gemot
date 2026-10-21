@@ -164,14 +164,12 @@ def test_the_surface_covers_every_kind_of_prompt():
         "lead",
         "analysts",
         "biocurator",
-        "tools",
         "control",
         "barebones",
         "biology_blind",
     }
     # the previously-untracked ones, named explicitly so a regression is legible
     tracked = P.all_prompts()
-    assert P.TOOL_DESCRIPTIONS["make_changes"] in tracked["petab-tool-descriptions"]
     assert P.BIOCURATOR_PROMPT == tracked["petab-biocurator-system"]
     assert P.FINISH_DESCRIPTION == tracked["petab-finish-description"]
     assert P._IDLE_NUDGE in tracked["petab-nudges"]
@@ -242,21 +240,6 @@ def test_collect_prompts_is_the_full_surface():
     assert set(collect_prompts()) <= set(_PROMPT_ROLES)
 
 
-# -- the panel's tool text is owned by prompts.py --------------------------
-def test_every_panel_tool_has_a_description():
-    """A tool without a TOOL_DESCRIPTIONS entry falls back to a truncated SERVER docstring, so
-    its panel-facing text lives outside prompts.py and outside the tracked surface. That is how
-    `list_conditions` came to be the one tool the panel read from server.py."""
-    pytest.importorskip("langchain_core", reason="agent stack not installed")
-    from gemot.agent.tools import ALLOWED_TOOLS
-
-    assert ALLOWED_TOOLS == set(P.TOOL_DESCRIPTIONS), (
-        "ALLOWED_TOOLS and TOOL_DESCRIPTIONS must match exactly; "
-        f"undescribed={sorted(ALLOWED_TOOLS - set(P.TOOL_DESCRIPTIONS))}, "
-        f"stale={sorted(set(P.TOOL_DESCRIPTIONS) - ALLOWED_TOOLS)}"
-    )
-
-
 # -- every result records it ----------------------------------------------
 def test_base_meta_stamps_the_prompt_version(tmp_path):
     """Not just Phoenix: a plain run.py / slurm run writes result.json through _base_meta, and
@@ -300,6 +283,7 @@ def test_skills_are_tracked_like_prompts(tmp_path):
         "petab-skill-petab-model-building",
         "petab-skill-antimony-authoring",
         "petab-skill-independence-audit",
+        "petab-skill-reading-fits",
     }
     assert all(text.strip() for text in skills.values())
 

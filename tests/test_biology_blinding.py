@@ -336,7 +336,7 @@ import sys
 import pytest
 from gemot import agent, prompts
 from gemot.scenario import Scenario
-from gemot.agent.tools import _trim_descriptions
+from gemot.agent.tools import _blind_descriptions
 from types import SimpleNamespace
 scenario = Scenario("Alkan", Path("/secret/Alkan/problem"), lambda *args: None,
                     task="EGFR biology", known_constants="U2OS cells", biocurator_entities=["EGFR"])
@@ -345,7 +345,7 @@ assert "biocurator" not in agent.SUBAGENT_NAMES
 assert "get_skill" not in agent.ALLOWED_TOOLS
 assert set(agent.ALLOWED_TOOLS) <= set(prompts.BIOLOGY_BLIND_TOOL_DESCRIPTIONS)
 tools = [SimpleNamespace(name=name, description="EGFR input") for name in agent.ALLOWED_TOOLS]
-tools = _trim_descriptions(tools)
+tools = _blind_descriptions(tools)
 assert all("EGFR" not in t.description for t in tools)
 panel = agent._build_subagents({t.name:t for t in tools})
 for spec in panel:

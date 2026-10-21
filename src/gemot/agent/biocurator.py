@@ -136,8 +136,8 @@ async def discover_bio_tools(
     NAMES, not a numeric cap, so it can never drop the one tool the holder needs. Per-server
     discovery is bounded and guarded (issue #86): a slow or already-dead server costs only its
     own tools. A name in ``exclude_names`` (a petab tool it would shadow in ``tools_by_name``) or
-    a duplicate from a second server is dropped with a warning. Tools keep their FULL server
-    descriptions — ``_trim_descriptions`` is petab-oriented and would truncate usage notes.
+    a duplicate from a second server is dropped with a warning. Tools keep their server
+    descriptions.
 
     Nothing resolved returns ``[]``: there is no all-tools fallback, and ``holder`` then runs
     "dumb" on the model's own biology knowledge, which the empty ``biocurator_tools`` in
