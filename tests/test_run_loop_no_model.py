@@ -535,3 +535,147 @@ def test_a_clean_run_reports_no_full_disk(monkeypatch):
     )
     assert result["stop_reason"] == "silent_stop"
     assert result["infrastructure_tool_calls"] == 0 and result["infrastructure_evidence"] is None
+
+
+# --- a call timeout is not a stall (gemot#55) --------------------------------------------------
+# On 2026-10-21 a ~14-minute OpenRouter outage on z-ai/glm-5.3-flash (four 120s chunk timeouts
+# and a 429) ended two INDRA runs with 17-20h of their wall budget left: the watchdog's
+# `except asyncio.TimeoutError` caught langchain's StreamChunkTimeoutError, a TimeoutError
+# subclass, so each call timeout read as a stall, doubled the stall window and spent a resume.
+
+
+class _ScriptedAgent(_FakeAgent):
+    """Graph stub that plays one scripted outcome per astream call, then behaves as `_FakeAgent`:
+    "chunk" raises langchain's StreamChunkTimeoutError, "timeout" a bare TimeoutError, "hang"
+    emits nothing until the watchdog ends it, and "step" emits two states, so it is progress
+    even as the first emission of a resume."""
+
+    def __init__(self, *script):
+        super().__init__()
+        self.script = list(script)
+
+    def astream(self, stream_input, config=None, stream_mode=None):
+        self.inputs.append(stream_input)
+        what = self.script.pop(0) if self.script else "step"
+        n = len(self.inputs)
+
+        async def _gen():
+            import asyncio
+
+            if what == "chunk":
+                from langchain_openai import StreamChunkTimeoutError
+
+                raise StreamChunkTimeoutError(120.0, model_name="z-ai/glm-5.3-flash")
+            if what == "timeout":
+                raise TimeoutError("a call inside the step timed out")
+            if what == "hang":
+                await asyncio.Event().wait()
+            yield {"messages": [{"role": "user", "content": "x"}] * (2 * n)}
+            yield {"messages": [{"role": "user", "content": "x"}] * (2 * n + 1)}
+
+        return _gen()
+
+
+def _record_windows(mod, monkeypatch) -> list:
+    """Record the window the driver arms for each step, but let a hung step expire at once."""
+    real_next_step = mod.driver._next_step
+    windows = []
+
+    async def _recording(agen, timeout):
+        windows.append(timeout)
+        return await real_next_step(agen, 0.01)
+
+    monkeypatch.setattr(mod.driver, "_next_step", _recording)
+    return windows
+
+
+@requires_harness
+@pytest.mark.parametrize("inner", ["chunk", "timeout"])
+def test_a_timeout_inside_the_step_is_an_outage_not_a_stall(monkeypatch, inner):
+    """The inner timeout is waited out as a provider outage: the next step runs at the SAME
+    window, and only the real stall after it doubles it."""
+    mod = _load_agent_module()
+    windows = _record_windows(mod, monkeypatch)
+    result, agent = _run(
+        mod, monkeypatch, _Probe(model_authored=True), agent=_ScriptedAgent(inner, "hang")
+    )
+
+    base = mod.driver._STEP_STALL_TIMEOUT_S
+    assert windows[:3] == [base, base, 2 * base]
+    assert result["provider_outage_retries"] == 1
+    assert result["provider_outage_wait_s"] == mod.driver._OUTAGE_BACKOFF_S
+    assert result["stop_reason"] == "silent_stop"  # ran on to its normal end
+
+
+@requires_harness
+def test_a_real_watchdog_expiry_is_still_a_stall(monkeypatch):
+    mod = _load_agent_module()
+    windows = _record_windows(mod, monkeypatch)
+    resumes = mod.driver._RUN_RESUME_ATTEMPTS
+    result, agent = _run(
+        mod,
+        monkeypatch,
+        _Probe(model_authored=True),
+        agent=_ScriptedAgent(*["hang"] * (1 + resumes)),
+    )
+
+    base = mod.driver._STEP_STALL_TIMEOUT_S
+    assert windows == [base * 2**i for i in range(1 + resumes)]
+    assert result["stop_reason"].startswith(f"stalled: no step completed in {windows[-1]:.0f}s")
+    assert result["provider_outage_retries"] == 0
+    assert len(agent.inputs) == 1 + resumes
+
+
+@requires_harness
+def test_an_outage_burst_does_not_end_the_run(monkeypatch):
+    """More outages than there are resumes, twice over, with a step between the bursts: each
+    burst stays inside the outage budget, and the step between them resets it."""
+    mod = _load_agent_module()
+    budget = mod.driver._OUTAGE_RETRY_ATTEMPTS
+    assert budget > mod.driver._RUN_RESUME_ATTEMPTS
+    burst = ["chunk"] * budget
+    result, agent = _run(
+        mod, monkeypatch, _Probe(model_authored=True), agent=_ScriptedAgent(*burst, "step", *burst)
+    )
+
+    assert result["stop_reason"] == "silent_stop"
+    assert result["provider_outage_retries"] == 2 * budget
+    assert result["provider_outage_wait_s"] == 2 * sum(
+        mod.driver._outage_backoff(i) for i in range(1, budget + 1)
+    )
+
+
+@requires_harness
+def test_an_outage_past_the_budget_ends_the_run(monkeypatch):
+    mod = _load_agent_module()
+    budget = mod.driver._OUTAGE_RETRY_ATTEMPTS
+    result, agent = _run(
+        mod,
+        monkeypatch,
+        _Probe(model_authored=True),
+        agent=_ScriptedAgent(*["chunk"] * (budget + 1)),
+    )
+
+    assert result["stop_reason"].startswith("stream: StreamChunkTimeoutError")
+    assert result["provider_outage_retries"] == budget
+    assert len(agent.inputs) == 1 + budget
+
+
+@requires_harness
+def test_the_wall_budget_bounds_an_outage_wait(monkeypatch):
+    """With 50s to the last step a run waits 30s for the first retry, but not 60s for the second:
+    it could not start a step after that wait, so it stops there with a budget label."""
+    mod = _load_agent_module()
+    result, agent = _run(
+        mod,
+        monkeypatch,
+        _Probe(model_authored=True),
+        agent=_ScriptedAgent("chunk", "chunk"),
+        driver_options={"max_wall_seconds": 100.0},  # headroom: half the budget, 50s
+    )
+
+    assert result["stop_reason"].startswith(
+        "wall_time_budget_exceeded (during retry: stream: StreamChunkTimeoutError"
+    )
+    assert result["provider_outage_retries"] == 1
+    assert len(agent.inputs) == 2

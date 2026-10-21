@@ -32,12 +32,16 @@ from .driver import (
     _LLM_TIMEOUT_S,
     _MAX_RUN_TOKENS,
     _NO_EMISSION_YET,
+    _OUTAGE_RETRY_ATTEMPTS,
     _RUN_RESUME_ATTEMPTS,
     _STEP_STALL_TIMEOUT_S,
+    _StepStalled,
     _chat_model_class,
     _content_filter_stop_reason,
     _env_token_limit,
     _extra_body,
+    _next_step,
+    _outage_backoff,
     _state_message_count,
     _transient_provider_reason,
 )
@@ -219,14 +223,17 @@ async def run_barebones(
     stream_input: Any = {"messages": [{"role": "user", "content": task}]}
     resume_left = _RUN_RESUME_ATTEMPTS if checkpointer is not None else 0
     stall_backoff = 1.0
+    # Provider outages in a row, and over the run with the total wait, as the panel driver keeps.
+    outage_streak = outage_retries = 0
+    outage_wait_s = 0.0
     last_message_count: Any = _NO_EMISSION_YET
     final_reply: str | None = None
     stop_reason = "completed"
     while True:
         retriable: str | None = None
+        outage = False
         agen = None
         wall_budget_exceeded = token_budget_exceeded = context_budget_exceeded = False
-        step_wait = step_limit_base * stall_backoff
         replay_pending = stream_input is None
         try:
             agen = agent.astream(stream_input, config=config, stream_mode="values").__aiter__()
@@ -238,7 +245,7 @@ async def run_barebones(
                         if deadline is None
                         else max(1.0, min(step_limit, deadline - time.monotonic()))
                     )
-                    state = await asyncio.wait_for(agen.__anext__(), timeout=step_wait)
+                    state = await _next_step(agen, step_wait)
                 except StopAsyncIteration:
                     break
                 n_msgs = _state_message_count(state)
@@ -246,6 +253,7 @@ async def run_barebones(
                 replay_pending = False
                 if not replay and (n_msgs is None or n_msgs != last_message_count):
                     stall_backoff = 1.0
+                    outage_streak = 0
                 last_message_count = n_msgs
                 if (reply := _final_reply(state)) is not None:
                     final_reply = reply
@@ -271,7 +279,7 @@ async def run_barebones(
                 if context_budget_exceeded
                 else "completed"
             )
-        except asyncio.TimeoutError:
+        except _StepStalled:
             if soft_deadline is not None and time.monotonic() >= soft_deadline:
                 wall_budget_exceeded = True
                 stop_reason = "wall_time_budget_exceeded"
@@ -282,11 +290,13 @@ async def run_barebones(
                 )
         except _TRANSIENT_ERRORS as exc:
             retriable = f"{type(exc).__name__}: {exc}"
+            outage = True
         except Exception as exc:
             if (filtered := _content_filter_stop_reason(exc)) is not None:
                 stop_reason = filtered
             elif (transient := _transient_provider_reason(exc)) is not None:
                 retriable = transient
+                outage = True
             else:
                 stop_reason = f"{type(exc).__name__}: {exc}"
         finally:
@@ -328,6 +338,26 @@ async def run_barebones(
         if token_accountant.max_prompt >= 0.90 * max_input_tokens:
             stop_reason = "context_budget_exceeded"
             break
+        # A provider outage waits on its own budget and spends no resume, as in the panel driver.
+        if outage and checkpointer is not None:
+            if outage_streak >= _OUTAGE_RETRY_ATTEMPTS:
+                stop_reason = retriable
+                break
+            backoff = _outage_backoff(outage_streak + 1)
+            if soft_deadline is not None and time.monotonic() + backoff >= soft_deadline:
+                stop_reason = f"wall_time_budget_exceeded (during retry: {retriable})"
+                break
+            outage_streak += 1
+            outage_retries += 1
+            outage_wait_s += backoff
+            print(
+                f"[null] {retriable} — provider outage {outage_streak}/{_OUTAGE_RETRY_ATTEMPTS} "
+                f"in a row; resuming from last checkpoint in {backoff:.0f}s "
+                f"({resume_left} resume(s) left, stall window x{stall_backoff:.0f})"
+            )
+            await asyncio.sleep(backoff)
+            stream_input = None
+            continue
         if resume_left <= 0:
             stop_reason = retriable
             break
@@ -354,6 +384,8 @@ async def run_barebones(
     )
     return {
         "stop_reason": stop_reason,
+        "provider_outage_retries": outage_retries,
+        "provider_outage_wait_s": outage_wait_s,
         "final_reply": final_reply,
         "workspace_audit": audit,
         "openrouter_extra_body": _extra_body(model),

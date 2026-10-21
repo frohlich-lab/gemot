@@ -111,11 +111,22 @@ def test_a_content_refusal_stays_terminal_even_though_it_carries_a_code():
 
 
 def test_an_error_with_no_code_is_left_alone():
-    from gemot.agent.driver import _transient_provider_reason
+    from gemot.agent.driver import _StepStalled, _transient_provider_reason
 
     for exc in (
         RuntimeError("Recursion limit of 250 reached"),
-        TimeoutError("stalled"),
+        _StepStalled(),
         ValueError("something went wrong"),
     ):
         assert _transient_provider_reason(exc) is None
+
+
+def test_a_timeout_from_inside_the_step_is_a_call_timeout():
+    """gemot#55: the watchdog's own expiry was a `TimeoutError` too, and this list used to hold
+    `TimeoutError("stalled")` for it. The watchdog raises `_StepStalled` now (above), so a
+    `TimeoutError` that reaches the classifier came from a call inside the step. Left
+    unclassified, it would end the run, where the watchdog used to resume it as a stall."""
+    from gemot.agent.driver import _transient_provider_reason
+
+    reason = _transient_provider_reason(TimeoutError("read timed out"))
+    assert reason == "call timeout: TimeoutError: read timed out"

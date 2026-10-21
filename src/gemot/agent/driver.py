@@ -11,7 +11,7 @@ The loop is where a run's failure modes are absorbed rather than thrown away:
   is not mistaken for a hang;
 * a **wall-clock deadline** and the server's own early-stop signal;
 * **resume from the last checkpoint** on a transient provider failure, instead of abandoning the
-  run;
+  run, waiting a provider outage out in minutes on a budget of its own;
 * **bounced silent stops** — a graph that ends on a no-tool turn is pushed back into the finish
   gate (with the build nudge when nothing was authored at all), up to ``_MAX_SILENT_BOUNCES``;
 * and an honest **relabel** at the end, so a degenerate run is reported as ``no_tools_executed``
@@ -84,7 +84,19 @@ from .. import infrastructure, models, prompts
 #     of aborting, so every committed model version and the conversation state are preserved.
 _LLM_TIMEOUT_S = 120.0
 _LLM_MAX_RETRIES = 4  # OpenAI-client retries for connection / timeout / 5xx / 429
-_RUN_RESUME_ATTEMPTS = 3  # resume the graph from the last checkpoint after a stall/transient
+# Resume the graph from the last checkpoint after a stall or a fit-call timeout. A provider
+# outage does not spend these: it has its own budget, `_OUTAGE_RETRY_ATTEMPTS`.
+_RUN_RESUME_ATTEMPTS = 3
+#: Provider outages waited out IN A ROW before the run ends; a completed step resets the count.
+#: Not `_RUN_RESUME_ATTEMPTS`, which are spent 5/10/15s apart: an outage has to be outlasted
+#: (gemot#55). OpenRouter failed z-ai/glm-5.3-flash for ~14 minutes on 2026-10-21 (four 120s
+#: chunk timeouts and a 429), and that spent all three resumes in two runs that each had 17-20h
+#: of wall budget left. Eight retries at `_outage_backoff` wait 45 minutes between them, plus
+#: each retry's own failing call; the wall budget still bounds the waiting.
+_OUTAGE_RETRY_ATTEMPTS = 8
+#: First outage wait, doubled per retry in a row up to `_OUTAGE_BACKOFF_MAX_S`.
+_OUTAGE_BACKOFF_S = 30.0
+_OUTAGE_BACKOFF_MAX_S = 600.0
 # Harness-level stall watchdog on the agent loop. The client `timeout` above does NOT reliably
 # catch a mid-stream provider stall (observed: a 24-min no-progress hang that the 120s timeout
 # never fired on). astream emits once per graph super-step (a lead LLM call, a tool, or a whole
@@ -220,6 +232,38 @@ def _state_message_count(state: Any) -> int | None:
         if isinstance(msgs, list):
             return len(msgs)
     return None
+
+
+class _StepStalled(Exception):
+    """The stall watchdog's own wait ran out: no super-step completed within its window.
+
+    Deliberately NOT ``TimeoutError`` (gemot#55). The watchdog used to be ``asyncio.wait_for``
+    under ``except asyncio.TimeoutError``, which on 3.11+ is ``TimeoutError`` itself, so it also
+    caught every call timeout raised INSIDE the step -- langchain's ``StreamChunkTimeoutError``
+    subclasses ``TimeoutError``. A 120s provider timeout was then reported as a 4830s stall,
+    doubled the stall window and spent a resume, and a 14-minute OpenRouter outage ended two runs
+    with most of their wall budget left. Only :func:`_next_step` raises this.
+    """
+
+
+async def _next_step(agen: Any, timeout: float) -> Any:
+    """``agen``'s next emission, or :class:`_StepStalled` if none arrives within ``timeout``.
+
+    A ``TimeoutError`` raised by the step itself propagates unchanged, to be classified with the
+    other provider failures (:func:`_transient_provider_reason`).
+    """
+    try:
+        async with asyncio.timeout(timeout) as watchdog:
+            return await agen.__anext__()
+    except TimeoutError:
+        if watchdog.expired():
+            raise _StepStalled from None
+        raise
+
+
+def _outage_backoff(streak: int) -> float:
+    """Seconds to wait before the ``streak``-th provider-outage retry in a row (1-based)."""
+    return min(_OUTAGE_BACKOFF_S * 2.0 ** (streak - 1), _OUTAGE_BACKOFF_MAX_S)
 
 
 def _pending_fit_starts(state: Any, default: int, stats: dict | None = None) -> int | None:
@@ -545,6 +589,9 @@ def _transient_provider_reason(exc: BaseException) -> str | None:
     upstream failure OpenRouter relays as an error event mid-stream, which the OpenAI client raises
     as the bare ``APIError`` -- no status, so none of the retryable classes. The bare class only:
     its subclasses (a 400 for an over-long conversation, say) would fail the same way again.
+
+    So does any other ``TimeoutError`` that escapes the step: a call that timed out, not a step
+    that stalled, which the watchdog reports as :class:`_StepStalled` (gemot#55).
     """
     try:
         import openai
@@ -554,6 +601,8 @@ def _transient_provider_reason(exc: BaseException) -> str | None:
     else:
         if isinstance(exc, StreamChunkTimeoutError) or type(exc) is openai.APIError:
             return f"stream: {type(exc).__name__}: {str(exc)[:120]}"
+    if isinstance(exc, TimeoutError):
+        return f"call timeout: {type(exc).__name__}: {str(exc)[:120]}"
     m = _PROVIDER_CODE_RE.search(str(exc))
     if not m or not 500 <= int(m.group(1)) <= 599:
         return None
@@ -932,14 +981,14 @@ async def run_deepagents(
     # transport layers the breaker classifies in _TRANSPORT_ERROR_NAMES: the anyio stream errors and
     # httpx's TransportError base (ConnectError/ReadError/WriteError/ReadTimeout/ConnectTimeout/
     # RemoteProtocolError all derive from it).
+    # Every other transient is waited out as a provider outage; a closed session stream does not
+    # reopen by waiting, so the anyio errors spend a resume instead (see the retry tail).
+    _CLOSED_STREAM_ERRORS: tuple = ()
     try:
         from anyio import BrokenResourceError, ClosedResourceError, EndOfStream
 
-        _TRANSIENT_ERRORS = _TRANSIENT_ERRORS + (
-            ClosedResourceError,
-            BrokenResourceError,
-            EndOfStream,
-        )
+        _CLOSED_STREAM_ERRORS = (ClosedResourceError, BrokenResourceError, EndOfStream)
+        _TRANSIENT_ERRORS = _TRANSIENT_ERRORS + _CLOSED_STREAM_ERRORS
     except Exception:  # pragma: no cover - anyio always present with mcp, but never fail on import
         pass
     try:
@@ -1170,6 +1219,11 @@ async def run_deepagents(
     # the HARD deadline -- so a wedged run can still consume the `step_headroom` reserve meant for
     # scoring. Escalation is therefore deliberately gated to stalls only, and reset on progress.
     stall_backoff = 1.0
+    # Provider outages waited out in a row (reset by a completed step, like stall_backoff), and
+    # over the whole run with the total wait, for result.json. See _OUTAGE_RETRY_ATTEMPTS.
+    outage_streak = 0
+    outage_retries = 0
+    outage_wait_s = 0.0
     # Message count of the PREVIOUS emission, so a resume's checkpoint replay (which re-emits
     # state we have already seen, at the same count) is distinguishable from a real step. Lives
     # outside the resume loop for the same reason `pending_fit` does.
@@ -1183,7 +1237,7 @@ async def run_deepagents(
     # count is progress; only an unchanged count is a replay.
     last_message_count: Any = _NO_EMISSION_YET
     # A silent stop (graph ends on a no-tool turn) without a confirmed finish is bounced back
-    # into the finish gate this many times; separate from resume_left, which is for transients.
+    # into the finish gate this many times; separate from resume_left and the outage budget.
     silent_bounces = 0
     # Last clean-completion probe of whether a model was authored (see the silent-stop bounce);
     # captured so the post-loop relabel reuses it instead of re-probing. Only read when
@@ -1204,19 +1258,13 @@ async def run_deepagents(
         )
     while True:
         retriable: str | None = None
+        # Whether `retriable` is a provider outage, waited out on its own budget.
+        outage = False
         agen = None
         wall_budget_exceeded = False
         token_budget_exceeded = False
         context_budget_exceeded = False
         early_stopped: str | None = None
-        # Bound BEFORE the try: the `except asyncio.TimeoutError` handler reports it, and on
-        # 3.11+ `asyncio.TimeoutError is TimeoutError`, so a TimeoutError raised anywhere in the
-        # block -- including from astream() itself, before the inner loop assigns this -- reaches
-        # that handler. Without a binding here the report raises UnboundLocalError and kills the
-        # run instead of resuming.
-        # Same expression as the in-loop floor, so a TimeoutError raised by astream() itself
-        # reports the window that was actually in force rather than the un-backed-off one.
-        step_wait = float(_STEP_STALL_TIMEOUT_S) * stall_backoff
         # On the input=None resume path, langgraph emits the CHECKPOINT state before scheduling
         # a single task (pregel/_loop.py: `if is_resuming: ... self._emit("values", ...)`), so
         # the first __anext__ below returns in milliseconds without the provider having done
@@ -1282,7 +1330,7 @@ async def run_deepagents(
                         if deadline is None
                         else max(1.0, min(step_limit, deadline - time.monotonic()))
                     )
-                    state = await asyncio.wait_for(agen.__anext__(), timeout=step_wait)
+                    state = await _next_step(agen, step_wait)
                 except StopAsyncIteration:
                     break
                 # A step COMPLETED, so the provider is responsive: drop back to the base window.
@@ -1304,6 +1352,7 @@ async def run_deepagents(
                 replay_pending = False
                 if not replay and (n_msgs is None or n_msgs != last_message_count):
                     stall_backoff = 1.0
+                    outage_streak = 0
                 last_message_count = n_msgs
                 # Arm the NEXT wait from what this emission leaves pending. Deliberately after
                 # the await and before every break below: a step that ends the loop does not need
@@ -1385,7 +1434,7 @@ async def run_deepagents(
                 if early_stopped
                 else "completed"
             )
-        except asyncio.TimeoutError:
+        except _StepStalled:
             if soft_deadline is not None and time.monotonic() >= soft_deadline:
                 # The wait was cut short by the wall-time cap above, not by a wedged step. This is
                 # the budget expiring mid-super-step, so it must STOP (and let the judge score what
@@ -1410,6 +1459,7 @@ async def run_deepagents(
                 )
         except _TRANSIENT_ERRORS as exc:  # call-level retries exhausted -> resume the run
             retriable = f"{type(exc).__name__}: {exc}"
+            outage = not isinstance(exc, _CLOSED_STREAM_ERRORS)
         except Exception as exc:
             # A provider CONTENT-POLICY refusal is terminal and deterministic: the same transcript
             # re-sent trips it again, so it must not join _TRANSIENT_ERRORS and be resumed. Give it
@@ -1435,6 +1485,7 @@ async def run_deepagents(
                 retriable = f"fit call timed out: {exc}"
             elif (transient := _transient_provider_reason(exc)) is not None:
                 retriable = transient  # resume from the checkpoint, keeping every version
+                outage = True
             else:
                 stop_reason = f"{type(exc).__name__}: {exc}"
         finally:
@@ -1577,14 +1628,39 @@ async def run_deepagents(
                 "timeout."
             )
             break
+        # A provider outage is waited out in minutes, on its own budget, and spends no resume
+        # (see _OUTAGE_RETRY_ATTEMPTS). The wall budget still bounds it: a wait that would end
+        # past the soft deadline could not start another step anyway, so stop now.
+        if outage and checkpointer is not None:
+            if outage_streak >= _OUTAGE_RETRY_ATTEMPTS:
+                stop_reason = retriable  # out of outage retries — end with whatever was built
+                break
+            backoff = _outage_backoff(outage_streak + 1)
+            if soft_deadline is not None and time.monotonic() + backoff >= soft_deadline:
+                stop_reason = f"wall_time_budget_exceeded (during retry: {retriable})"
+                print(
+                    f"[agent] {retriable} — a {backoff:.0f}s outage wait would end past the "
+                    "wall-time budget's last step; stopping instead of resuming."
+                )
+                break
+            outage_streak += 1
+            outage_retries += 1
+            outage_wait_s += backoff
+            print(
+                f"[agent] {retriable} — provider outage {outage_streak}/{_OUTAGE_RETRY_ATTEMPTS} "
+                f"in a row; resuming from last checkpoint in {backoff:.0f}s "
+                f"({resume_left} resume(s) left, stall window x{stall_backoff:.0f})"
+            )
+            await asyncio.sleep(backoff)
+            stream_input = None
+            continue
         if resume_left <= 0:
             stop_reason = retriable  # out of resume attempts — end with whatever was built
             break
         resume_left -= 1
-        # Escalate ONLY for a stall. The retry tail is shared with rate limits, connection drops
-        # and fit-call 408s, and none of those says anything about how long a healthy step takes
-        # -- widening the hang detector because the provider returned 429 three times would be
-        # unrelated cause and effect.
+        # Escalate ONLY for a stall. The retry tail is shared with fit-call 408s and closed
+        # session streams, and neither says anything about how long a healthy step takes --
+        # widening the hang detector because a fit overran would be unrelated cause and effect.
         if retriable.startswith("stalled:"):
             stall_backoff *= 2.0
         backoff = min(5.0 * (_RUN_RESUME_ATTEMPTS - resume_left), 30.0)
@@ -1647,6 +1723,10 @@ async def run_deepagents(
 
     return {
         "stop_reason": stop_reason,
+        # gemot#55: provider outages resumed from without spending a stall resume, and the
+        # seconds waited between them -- a run's wall time includes them, its work does not.
+        "provider_outage_retries": outage_retries,
+        "provider_outage_wait_s": outage_wait_s,
         "n_tool_errors": breaker_state["n_tool_errors"],
         "disabled_tools": sorted(breaker_state["disabled"]),
         # Call-level outcomes for the single editor, counted at the CLIENT wrapper. Distinct from
