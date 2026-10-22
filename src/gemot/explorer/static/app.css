@@ -189,6 +189,8 @@ table.runs tbody tr:hover { background:var(--panel); }
 .vc-just .lbl{ color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; display:block; margin-bottom:2px; }
 .vc-ant { margin:0; overflow:auto; max-height:38vh; padding:10px 12px; font-family:var(--mono); font-size:12px;
   white-space:pre; background:var(--bg); }
+.vc-stmts { border-bottom:1px solid var(--line); }
+.vc-stmts > summary { padding:6px 12px; font-size:12px; color:var(--muted); cursor:pointer; }
 .badge-best { background:color-mix(in srgb,var(--best) 18%,transparent); color:var(--best);
   border-radius:5px; padding:1px 6px; font-size:11px; font-weight:600; }
 

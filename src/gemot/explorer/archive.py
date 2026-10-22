@@ -2,24 +2,34 @@
 
 The Phoenix trace (conversation/tokens/sub-agents) persists in the collector on its own and is
 fetched lazily by the viewer via ``phoenix_trace_id``. What does NOT survive is the server's
-version store under ``work/.petab_mcp`` — the next run of the same example ``rmtree``s ``work/``.
-So at run end we copy the lightweight, durable pieces (``result.json`` + each version's
-``meta.json`` / ``model.ant`` / ``parameters.tsv`` / ``simulations.json`` + ``provenance.jsonl``
-+ ``errors.jsonl``) into ``examples/_runs_archive/<run_id>/``, laid out as ``.petab_mcp/`` so
-:mod:`.bundle` reads it unchanged. Best-effort: any failure is swallowed so archiving never
-breaks a run.
+version store under ``work/.petab_mcp`` — the next run of the same example ``rmtree``s ``work/``,
+and a sweep task removes its own when it exits. So at run end we copy the durable pieces
+(``result.json``, ``provenance.jsonl``, ``errors.jsonl`` and, per version,
+:data:`_VERSION_FILES` plus a gzipped ``optimization.json``) into
+``examples/_runs_archive/<run_id>/``, laid out as ``.petab_mcp/`` so :mod:`.bundle` reads it
+unchanged; :func:`gemot.analysis.read_version_json` reads a gzipped file under its plain name.
+Best-effort: any failure is swallowed so archiving never breaks a run.
+
+``pypesto_result.hdf5`` is archived only when ``GEMOT_ARCHIVE_PYPESTO_HDF5=1``: it is pyPESTO's
+own copy of the fit ``optimization.json`` already holds, kept for interop, at up to ~5 MB a
+version.
+``simulations.tsv`` is never archived: ``simulations.json`` holds the same table and is the one
+every reader reads.
 """
 
 from __future__ import annotations
 
+import gzip
 import json
+import os
 import shutil
 from pathlib import Path
 
 from .. import paths
 
-# per-version files worth keeping — small + sufficient for the trajectory panel. The big
-# pypesto_result.hdf5 / optimization.json are deliberately skipped to keep the archive lean.
+#: Per-version files copied as they are. A file a version lacks is skipped, which is ordinary:
+#: only a model built from statements has ``statements.json``, and only a server with
+#: frohlich-lab/PEtab-MCP#119 writes ``validation_simulations.json``.
 _VERSION_FILES = (
     "meta.json",
     "model.ant",
@@ -29,7 +39,29 @@ _VERSION_FILES = (
     # exists for (`child.source == parent.source + ops`) dies with work/ on the
     # next run of the same example — the identical hole errors.jsonl had.
     "model_source.ant",
+    # The INDRA arm's model as the agent wrote it: rows, mechanisms, starts, amounts, readouts.
+    # model.ant is only its BioNetGen expansion (species `__s0`, reactions `r0`...), so without
+    # this the statements of a finished run survived only in its Phoenix trace, and could be
+    # neither rendered, nor resubmitted, nor counted (#62, the fontaine_sag sweep). 2-17 kB.
+    "statements.json",
+    # The held-out simulations, beside simulations.json (frohlich-lab/PEtab-MCP#119).
+    "validation_simulations.json",
 )
+
+#: Per-version files archived gzipped, as ``<name>.gz``. ``optimization.json`` is the multistart
+#: behind a version's score — every start's ``x``, ``fval`` and time, the exit-flag histogram, the
+#: per-iteration trace — and without it a finished run cannot say whether its best was found by
+#: one start or by many, nor which parameters sit at bounds across starts (#62). 1.4-1.9 MB raw
+#: for a 50-start fit, about a fifth of that gzipped.
+_GZIPPED_VERSION_FILES = ("optimization.json",)
+
+
+def _archive_pypesto_hdf5() -> bool:
+    """Whether ``GEMOT_ARCHIVE_PYPESTO_HDF5`` asks for each version's ``pypesto_result.hdf5`` too.
+    Only an explicit on-word counts, so an empty ``GEMOT_ARCHIVE_PYPESTO_HDF5=`` in a submit
+    script leaves it off."""
+    raw = os.environ.get("GEMOT_ARCHIVE_PYPESTO_HDF5", "")
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def default_archive_root() -> Path:
@@ -136,13 +168,21 @@ def archive_run(work: Path, result: dict, archive_root: Path | None = None) -> P
                 shutil.copy2(src, dest_store / name)
         vsrc = store / "versions"
         if vsrc.is_dir():
+            copied = _VERSION_FILES
+            if _archive_pypesto_hdf5():
+                copied += ("pypesto_result.hdf5",)
             for vd in vsrc.glob("v*"):
                 out = dest_store / "versions" / vd.name
                 out.mkdir(parents=True, exist_ok=True)
-                for fn in _VERSION_FILES:
+                for fn in copied:
                     f = vd / fn
                     if f.is_file():
                         shutil.copy2(f, out / fn)
+                for fn in _GZIPPED_VERSION_FILES:
+                    f = vd / fn
+                    if f.is_file():
+                        with f.open("rb") as src, gzip.open(out / f"{fn}.gz", "wb") as gz:
+                            shutil.copyfileobj(src, gz)
         return dest
     except Exception:
         return None
