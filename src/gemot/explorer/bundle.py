@@ -5,7 +5,8 @@
     {
       "run_id", "meta": {...result.json...},
       "variants": [ {index, version, nll, bic, chi2, is_new_best, timestamp,
-                     antimony, params:[...], k, justification} ],
+                     antimony, params:[...], k, justification,
+                     starts:{n_starts, n_at_best, exitflag_counts}, statements} ],
       "turns":    [ {i, kind:"lead", items:[...], tokens:{...}, model, variant_index} ],
       "totals":   {prompt, completion, cache_read, total, lead_turns, analyst_turns, tool_calls},
       "phoenix":  {ok, trace_id, note}
@@ -24,7 +25,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from ..analysis import bic_of
+from ..analysis import bic_of, read_version_json
 
 # ---------------------------------------------------------------- Phoenix message parsing
 
@@ -484,6 +485,27 @@ def _charged_k(bic: float | None, nll, n: int | None) -> int | None:
     return round(k) if math.isfinite(k) and abs(k - round(k)) < 1e-6 * max(1.0, abs(k)) else None
 
 
+#: How close to the best fval a start must end to count as having reached it: the margin of the
+#: server's own ``converged~N`` in its fit log (``petab_mcp.fitting``), so the two counts agree.
+_AT_BEST_TOL = 1e-3
+
+
+def _multistart(opt: dict | None) -> dict | None:
+    """What the card shows of a version's multistart (its ``optimization.json``): how many starts
+    ran, how many reached the best fval, and how they ended. A best that one start of fifty found
+    is not the same evidence as one that thirty did (#62). ``None`` for a version with no fit."""
+    if not opt:
+        return None
+    starts = [s for s in opt.get("starts") or [] if isinstance(s, dict)]
+    fvals = [f for f in (_num(s.get("fval")) for s in starts) if f is not None and math.isfinite(f)]
+    best = min(fvals, default=None)
+    return {
+        "n_starts": opt.get("n_starts") or len(starts),
+        "n_at_best": None if best is None else sum(f <= best + _AT_BEST_TOL for f in fvals),
+        "exitflag_counts": opt.get("exitflag_counts"),
+    }
+
+
 def load_variants(run_dir: Path, n_data_points: int | None) -> list[dict]:
     """Build the ordered model-variant trajectory from ``<run_dir>/.petab_mcp``."""
     store = run_dir / ".petab_mcp"
@@ -531,6 +553,11 @@ def load_variants(run_dir: Path, n_data_points: int | None) -> list[dict]:
                 "timestamp": meta.get("timestamp"),
                 "antimony": _safe_read(d / "model.ant"),
                 "params": params,
+                # Both read through `read_version_json`, which takes the archive's gzipped
+                # optimization.json under its plain name: an archived run shows the same card
+                # as the live one did.
+                "starts": _multistart(read_version_json(d, "optimization.json")),
+                "statements": read_version_json(d, "statements.json"),
                 "justification": justif.get(
                     int(meta.get("version", _vnum(d.name)))
                     if str(meta.get("version", "")).strip() != ""

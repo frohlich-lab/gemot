@@ -757,10 +757,20 @@ function renderVariantCard(card, v, meta, metric) {
     el("span", { class: "m", html: `<span>bic</span> ${fmt(v.bic, 2)}` }),
     el("span", { class: "m", html: `<span>ΔBIC</span> ${dbic == null ? "—" : (dbic >= 0 ? "+" : "") + fmt(dbic, 2)}` }),
     el("span", { class: "m", html: `<span>chi2</span> ${fmt(v.chi2, 1)}` }),
-    el("span", { class: "m", html: `<span>k</span> ${v.k ?? "—"}` }));
+    el("span", { class: "m", html: `<span>k</span> ${v.k ?? "—"}` }),
+    // how many of the multistart's starts reached the best fval; how they ended on hover
+    v.starts ? el("span", { class: "m", title: Object.entries(v.starts.exitflag_counts || {})
+        .map(([f, n]) => `${f.replace(/^ExitFlag\./, "")} ${n}`).join(", ") || false },
+      el("span", { text: "at best" }), ` ${v.starts.n_at_best ?? "—"}/${v.starts.n_starts ?? "—"}`) : null);
   card.append(head, metrics);
   if (v.justification) card.append(el("div", { class: "vc-just" },
     el("span", { class: "lbl", text: "justification" }), v.justification));
+  // On the INDRA arm model.ant is the BioNetGen expansion of what the agent wrote; this is what
+  // it wrote.
+  const rows = v.statements && v.statements.rows;
+  if (rows && rows.length) card.append(el("details", { class: "vc-stmts" },
+    el("summary", { text: `${rows.length} statement${rows.length === 1 ? "" : "s"}` }),
+    el("pre", { class: "vc-ant", text: pretty(v.statements) })));
   card.append(el("pre", { class: "vc-ant", html: highlightAntimony(v.antimony) }));
 }
 

@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import csv
 import glob
+import gzip
 import json
 import math
 import os
@@ -481,6 +482,25 @@ def iter_versions(run_dir: str | Path) -> list[dict]:
             metas.append(meta)
     metas.sort(key=lambda m: _vnum(str(m.get("version"))))
     return metas
+
+
+def read_version_json(vdir: str | Path, name: str) -> dict | None:
+    """A version's JSON file ``name`` (``optimization.json``, ``statements.json``, ...), read from
+    ``vdir/name`` or, failing that, ``vdir/name.gz``. ``None`` when neither exists or parses.
+
+    A live store holds ``optimization.json`` and the run archive holds it gzipped
+    (``gemot.explorer.archive``), so a reader that goes through here gets the same payload from
+    either (#62)."""
+    vdir = Path(vdir)
+    plain, gzipped = vdir / name, vdir / f"{name}.gz"
+    if plain.is_file() or not gzipped.is_file():
+        return _load_json(plain)
+    try:
+        with gzip.open(gzipped, "rt", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, EOFError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _vnum(name: str) -> int:

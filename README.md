@@ -68,7 +68,9 @@ export PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006         # in the run's t
 
 The run exits `0` if the judge accepts the built model, writes its verdict to
 `examples/predator_prey/work/result.json` and archives the run under
-`examples/_runs_archive/`.
+`examples/_runs_archive/`. The archive keeps each version's model, parameters, statements,
+simulations and multistart (`optimization.json.gz`). Set `GEMOT_ARCHIVE_PYPESTO_HDF5=1` to keep
+pyPESTO's HDF5 result as well.
 
 `--model` picks another OpenRouter model, and `--driver scripted` builds the true model
 without an LLM as a self-test of the pipeline.
