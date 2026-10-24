@@ -119,7 +119,8 @@ def test_the_guard_bounces_antimony_and_passes_statements():
         request = types.SimpleNamespace(tool_call={"name": name, "args": args, "id": "c1"})
         return guard.wrap_tool_call(request, lambda r: "dispatched")
 
-    assert call("make_changes", {"statements": ["r1: A binds B"]}) == "dispatched"
+    rows = {"statements": ["r1: A binds B"], "bindings": {"r1": "default"}}
+    assert call("make_changes", rows) == "dispatched"
     assert call("get_model", {"format": "statements"}) == "dispatched"
     bounced = call("make_changes", {"antimony": "model m end", "justification": "j"})
     assert bounced != "dispatched" and bounced.status == "error"
