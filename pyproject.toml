@@ -36,12 +36,19 @@ dependencies = [
     # law's local parameters become global ones with a row, so the null's reconcile charges them.
     # #100: under tic, k_eff charges hardcoded constants. #101: replicate lack-of-fit judged against
     # the scatter pooled over each noise sigma. #107: each AMICI's modules build in a folder of their
-    # own. #106: `piecewise` in a written rate. Also #89–#94. Now main at cdc68cc. #117: a fit
+    # own. #106: `piecewise` in a written rate. Also #89–#94. Then cdc68cc: #117: a fit
     # whose starts stop finishing ends by a deadline, and a change while one is fitted is refused
     # as `fit_in_progress`, the code the circuit breaker matches (gemot#59). #111: a chain grows
     # only through a molecule bound while bound. #113: a readout that is a number is not refused.
-    # #114: the statements route says what to write in five of its rejections.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@cdc68ccf7e06a2310aeb35a617574a64bf4537cd",
+    # #114: the statements route says what to write in five of its rejections. Now main at cb263c1.
+    # #133: pyPESTO at main 053079a (with ICB-DCM/pyPESTO#1786) and fides >= 0.8.1. #121: a start
+    # stuck past its cap is stopped and scored as failed, the fit from the rest. #120: a held-out
+    # score writes its per-point records to the head version's `validation_simulations.json`, which
+    # the run archive keeps. #123/#124/#127/#128: a statement states its regulators (`inhibited_by`,
+    # `activated_by`, `modulated_by`), recorded as the kind its rate shows, and projects them onto
+    # INDRA statements; `modifiers` are gone. #115/#116: exact reductions of multisite statement
+    # models. #132: the reconcile simulates the model as authored.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@cb263c1c30d9b9730871dc519a028de5c872e2a9",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
     # deleted, and mcp 2.0 reworks the client API used here (streamablehttp_client ->
@@ -62,7 +69,7 @@ dependencies = [
     "scipy>=1.10",
     "amici>=1.1",
     "pypesto[petab]>=0.5",
-    "fides>=0.7",
+    "fides>=0.8.1",
     # Promised to the barebones agent's sandbox by name (BAREBONES_SYSTEM_PROMPT_TMPL), and
     # nothing above brings it. 1.4.2 is the first release built against NumPy 2; an older one
     # fails to import beside the numpy 2 this environment resolves.
