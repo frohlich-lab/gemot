@@ -182,7 +182,9 @@ def _check_statements_editor(tools: list) -> None:
     """On the indra_statements arm, refuse a server whose ``make_changes`` is not the
     statements-only editor. The lead is prompted for statements alone and the statements-only
     guard bounces every other route, so a run against the wrong server would spend its budget
-    unscored."""
+    unscored. The editor takes each row's binding apart from its statement (``bindings``), as the
+    lead is prompted to give it; one that takes neither is a server from before the two were
+    split, which refuses no row it is sent."""
     if not INDRA_STATEMENTS_ENABLED:
         return
     editor = next((t for t in tools if getattr(t, "name", None) == "make_changes"), None)
@@ -192,6 +194,12 @@ def _check_statements_editor(tools: list) -> None:
         raise RuntimeError(
             "indra_statements is on, but the server's make_changes is not the statements-only "
             f"editor (its arguments: {sorted(args)}); was it started without an entity map?"
+        )
+    if "bindings" not in args:
+        raise RuntimeError(
+            "indra_statements is on, but the server's make_changes takes no `bindings`: it "
+            "predates rows and their bindings given apart, which the lead is prompted for; "
+            "move the petab-mcp pin past frohlich-lab/PEtab-MCP#135."
         )
 
 

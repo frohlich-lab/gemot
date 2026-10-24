@@ -88,10 +88,16 @@ def test_on_the_arm_only_the_statements_editor_is_accepted(monkeypatch):
     """`_statements_route` refused a server without the route; its successor must still fail at
     startup, not bounce every call of a run against the wrong server."""
     monkeypatch.setattr(tools, "INDRA_STATEMENTS_ENABLED", True)
-    tools._check_statements_editor([_make_changes_tool("statements", "statement_edits")])
-    for wrong in (("antimony", "model_edits"), ("statements", "antimony")):
+    tools._check_statements_editor(
+        [_make_changes_tool("statements", "bindings", "statement_edits")]
+    )
+    for wrong in (("antimony", "model_edits"), ("statements", "bindings", "antimony")):
         with pytest.raises(RuntimeError, match="statements-only"):
             tools._check_statements_editor([_make_changes_tool(*wrong)])
+    # A server from before rows and their bindings were given apart: the lead's rows would not
+    # match the editor it is prompted for.
+    with pytest.raises(RuntimeError, match="no `bindings`"):
+        tools._check_statements_editor([_make_changes_tool("statements", "statement_edits")])
     monkeypatch.setattr(tools, "INDRA_STATEMENTS_ENABLED", False)
     tools._check_statements_editor([_make_changes_tool("antimony")])
 
