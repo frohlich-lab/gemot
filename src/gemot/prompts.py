@@ -1449,9 +1449,9 @@ def _hash_input(entries: "dict[str, str]") -> str:
 INDRA_NO_MODEL_NUDGE = (
     "You ended the run without authoring a model — nothing was built, so there is nothing to "
     "score. The task is to BUILD a kinetic model of this system: call make_changes with "
-    "`statements` rows (the mechanism, plus the `readouts` over `amounts` that define every "
-    "readout_* symbol) — that call fits it too. Do that now — do not stop until a fitted "
-    "model exists."
+    "`statements` rows (what happens), each row's `bindings` entry under its prefix (the "
+    "mechanism), and the `readouts` over `amounts` that define every readout_* symbol — that "
+    "call fits it too. Do that now — do not stop until a fitted model exists."
 )
 
 

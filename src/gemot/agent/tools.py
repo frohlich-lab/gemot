@@ -182,9 +182,9 @@ def _check_statements_editor(tools: list) -> None:
     """On the indra_statements arm, refuse a server whose ``make_changes`` is not the
     statements-only editor. The lead is prompted for statements alone and the statements-only
     guard bounces every other route, so a run against the wrong server would spend its budget
-    unscored. The editor takes each row's binding apart from its statement (``bindings``), as the
-    lead is prompted to give it; one that takes neither is a server from before the two were
-    split, which refuses no row it is sent."""
+    unscored. The editor must also take each row's binding apart from its statement
+    (``bindings``), as the lead is prompted to give it: a server from before the two were split
+    reads a row without its `| policy` as malformed, so it would refuse every row the lead sends."""
     if not INDRA_STATEMENTS_ENABLED:
         return
     editor = next((t for t in tools if getattr(t, "name", None) == "make_changes"), None)
