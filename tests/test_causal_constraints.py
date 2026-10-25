@@ -347,9 +347,10 @@ def test_the_judged_models_behaviour_is_read_off_its_simulation(tmp_path):
             {
                 "justification": "a cascade",
                 "statements": [
-                    "phos: A phosphorylates B at S10 | default",
-                    "dephos: B is dephosphorylated at S10 | basal",
+                    "phos: A phosphorylates B at S10",
+                    "dephos: B is dephosphorylated at S10",
                 ],
+                "bindings": {"phos": "default", "dephos": "basal"},
                 "readouts": {"readout_B": "amount(B{pS10})"},
             },
         )

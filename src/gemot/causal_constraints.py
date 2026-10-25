@@ -192,12 +192,15 @@ class _Judged:
     def __init__(self, run_dir: Path, version: int, entity_map: str | Path | None) -> None:
         from petab.v1.models.sbml_model import SbmlModel
         from petab_mcp.problem import WorkingProblem
+        from petab_mcp.provenance import statements_record
 
         from .analysis import read_version_json, store_dir
 
         self.run_dir, self.version, self.entity_map = run_dir, version, entity_map
         self.vdir = store_dir(run_dir) / "versions" / f"v{version}"
-        self.record = read_version_json(self.vdir, "statements.json")
+        # As the server reads it now: a record stored before rows and their bindings were given
+        # apart (PEtab-MCP#135) reads as the same rows and bindings.
+        self.record = statements_record(read_version_json(self.vdir, "statements.json"))
         if not self.record:
             raise ValueError(f"version {version} was not built from statements")
         self.sbml = SbmlModel.from_antimony(
@@ -215,7 +218,7 @@ class _Judged:
         from petab.v1.models.sbml_model import SbmlModel
         from petab_mcp import operations, protocols, seeding
 
-        rows, starts, readouts, given, _ = operations.apply_statement_edits(
+        rows, bindings, starts, readouts, given, _ = operations.apply_statement_edits(
             self.record,
             [{"op": "set_amount", "name": name, "agent": agent} for name, agent in amounts.items()],
         )
@@ -231,7 +234,7 @@ class _Judged:
             shipped_parameter_df=self.problem.parameter_df.copy(deep=True),
         )
         antimony, *_ = operations.statements_to_antimony(
-            session, rows, None, starts, readouts, given
+            session, rows, bindings, None, starts, readouts, given
         )
         return SbmlModel.from_antimony(antimony).sbml_model
 
