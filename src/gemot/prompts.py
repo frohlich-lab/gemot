@@ -51,6 +51,7 @@ BIOLOGY_BLIND_ENABLED = _ablations.enabled("biology_blind")
 # One effective policy for prompt text, roster, model construction and bio connections.
 BIOCURATOR_ENABLED = _ablations.enabled("biocurator") and not BIOLOGY_BLIND_ENABLED
 INDRA_STATEMENTS_ENABLED = _ablations.enabled("indra_statements")
+CAUSAL_CONSTRAINTS_ENABLED = _ablations.enabled("causal_constraints")
 
 
 # The petab-model-building skill, INLINED into the analyst persona prompts. Measured: every
@@ -550,6 +551,15 @@ DEFAULT_TASK = (
 # The task on the indra_statements arm: DEFAULT_TASK without its READOUTS paragraph, which teaches the
 # Antimony route's assignment rules. The arm's system prompt defines readouts through `readouts`.
 INDRA_TASK = DEFAULT_TASK.split("\n\nREADOUTS:")[0]
+
+# Appended to INDRA_TASK on the causal_constraints arm (Scenario.agent_task). What the constraints
+# mean on the rows is the server's to say, in make_changes' description; this says only whose they
+# are and that they bind every model.
+INDRA_CONSTRAINTS_NOTE = (
+    "\n\nCONSTRAINTS: the claims `list_constraints` lists are the user's prior knowledge of this "
+    "system, and every model you build must make them. A change whose model breaks one is refused "
+    "and nothing applies, so build your first model to make them all."
+)
 
 
 # ---------------------------------------------------------------- the barebones (null) agent
@@ -1469,6 +1479,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
         "petab-lead-system-indra": INDRA_SYSTEM_PROMPT,
         "petab-lead-indra-no-model": INDRA_NO_MODEL_NUDGE,
         "petab-lead-indra-task": INDRA_TASK,
+        "petab-lead-indra-constraints": INDRA_CONSTRAINTS_NOTE,
     },
     # The three analyst personas, plus the one-liners the LEAD reads when picking one.
     "analysts": {

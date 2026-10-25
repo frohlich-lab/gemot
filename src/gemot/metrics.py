@@ -160,6 +160,16 @@ _LOF_FIELDS = ("lof_status", "lof_weak", "lof_df")
 # judge did not count as a pass). Empty on every reference-judged run.
 _ADEQUACY_FIELDS = ("adequacy_test", "adequacy_passed")
 
+# The causal_constraints arm's cost, flattened out of the nested `causal_constraints` block: the
+# make_changes calls the server refused for breaking a constraint, the first version making them
+# all and the calls it took. Empty off the arm. The per-constraint refusals and the behaviour at
+# the fit stay in result.json, where a follow-up reads them by constraint.
+_CONSTRAINT_FIELDS = (
+    "constraint_refusals",
+    "constraint_first_satisfying_version",
+    "constraint_edits_to_first_satisfying",
+)
+
 # result.json keys whose value is a NESTED dict, carried into the row so the write-time flatteners
 # below can expand them. build_row copies only the flat _RESULT_FIELDS, so without this the flatteners
 # saw nothing on the collect() path and every column derived from a nested block stayed empty —
@@ -172,6 +182,7 @@ _NESTED_SOURCE_FIELDS = (
     "openrouter_endpoints",
     "validation",
     "adequacy",
+    "causal_constraints",
 )
 
 # Columns derived from the Phoenix trace (token usage + span breakdown).
@@ -189,7 +200,12 @@ _PHOENIX_FIELDS = (
 )
 
 HISTORY_FIELDS = (
-    _RESULT_FIELDS + _LOF_FIELDS + _VALIDATION_FIELDS + _ADEQUACY_FIELDS + _PHOENIX_FIELDS
+    _RESULT_FIELDS
+    + _LOF_FIELDS
+    + _VALIDATION_FIELDS
+    + _ADEQUACY_FIELDS
+    + _CONSTRAINT_FIELDS
+    + _PHOENIX_FIELDS
 )
 DEFAULT_HISTORY = paths.metrics_history()
 
@@ -513,6 +529,19 @@ def flatten_adequacy(row: dict) -> dict:
     return {"adequacy_test": block.get("test"), "adequacy_passed": block.get("passed")}
 
 
+def flatten_constraints(row: dict) -> dict:
+    """The flat ``constraint_*`` pairs for a result's ``causal_constraints`` block, ``{}`` off the
+    arm. Keys-only and public for the same reason as :func:`flatten_validation`."""
+    block = row.get("causal_constraints")
+    if not isinstance(block, dict):
+        return {}
+    return {
+        "constraint_refusals": block.get("refusals"),
+        "constraint_first_satisfying_version": block.get("first_satisfying_version"),
+        "constraint_edits_to_first_satisfying": block.get("edits_to_first_satisfying"),
+    }
+
+
 #: Flatteners that return only THEIR OWN keys, merged into the row rather than replacing it. The
 #: four `_flatten_*` helpers above return the WHOLE row and chain; these do not, and the split is
 #: load-bearing (a keys-only mapping is what lets `tracing` stamp the same names without restating
@@ -524,7 +553,7 @@ def flatten_adequacy(row: dict) -> dict:
 #: the Phoenix span together — would change what `tracing` stamps (it resolves the name per call)
 #: and NOT what this writes, silently un-syncing the two surfaces the split exists to keep
 #: identical. Resolved per call so both sides see the same function.
-_KEY_FLATTENERS = ("flatten_validation", "flatten_adequacy")
+_KEY_FLATTENERS = ("flatten_validation", "flatten_adequacy", "flatten_constraints")
 
 # Resolved ONCE, here, so a typo is a hard failure at IMPORT rather than a KeyError inside
 # `append_history` — which runs at the very end of a run, after the agent loop, the fits and the

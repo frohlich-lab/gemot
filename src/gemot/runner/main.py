@@ -63,6 +63,29 @@ def _empty_entity_map(build_root: Path) -> Path:
     return path
 
 
+def _constraints(scenario: Scenario) -> str:
+    """The bootstrap's ``<constraints>``: ``""`` off the causal_constraints arm, else the problem's
+    constraints file (:attr:`Scenario.constraints_file`).
+
+    The arm is refused rather than run where it cannot mean what it says. Without the file it would
+    run with no constraints, a baseline recorded as the arm; without indra_statements the server
+    has no rows to check them against (it refuses constraints without an entity map)."""
+    if not ablations.enabled("causal_constraints"):
+        return ""
+    if not ablations.enabled("indra_statements"):
+        raise ValueError(
+            "causal_constraints needs indra_statements on: a constraint is checked against the "
+            "statements route's rows"
+        )
+    path = scenario.constraints_file
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"causal_constraints is on, but {scenario.name} ships no constraints ({path}): the arm "
+            "is refused rather than run with none"
+        )
+    return str(path)
+
+
 class _ServerHandle:
     """What :func:`_petab_server` hands its caller: the server process and a live MCP session."""
 
@@ -128,6 +151,8 @@ async def _petab_server(
         str(_empty_entity_map(build_root))
         if ablations.enabled("indra_statements")
         else "",
+        # <constraints>: the causal_constraints arm's file, "" off it.
+        _constraints(scenario),
     ]
     server_log_path = work / "server.log"
     amici_log_path = work / "amici_build.log"

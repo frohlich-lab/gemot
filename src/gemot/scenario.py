@@ -317,6 +317,14 @@ class Scenario:
         return self.problem_dir.parent
 
     @property
+    def constraints_file(self) -> Path:
+        """The causal constraints a problem ships (PEtabAgentBench's ``indra/constraints.txt``,
+        beside ``problem/``): the claims its author curated as prior knowledge, which the
+        causal_constraints arm starts the server with. Whether it exists is the runner's question
+        (``runner.main._constraints``), which refuses the arm without it."""
+        return self.example_dir / "indra" / "constraints.txt"
+
+    @property
     def agent_task(self) -> str:
         """The task handed to the deepagents driver: the base task plus any scenario-specific
         ``known_constants`` note (so the agent is told about shipped fixed constants) and, with
@@ -324,14 +332,17 @@ class Scenario:
         observables; the synthetic demos carry no note).
 
         On the indra_statements arm the task is the arm's own and the readout note is left off:
-        both teach the Antimony route's assignment rules. With the reference_handoff ablation off
-        the note is left off altogether."""
+        both teach the Antimony route's assignment rules; on the causal_constraints arm it says
+        what the constraints are. With the reference_handoff ablation off the note is left off
+        altogether."""
         from . import ablations, prompts
 
         if ablations.enabled("biology_blind"):
             return prompts.BIOLOGY_BLIND_TASK
         indra = ablations.enabled("indra_statements")
         task = prompts.INDRA_TASK if indra else self.task
+        if indra and ablations.enabled("causal_constraints"):
+            task += prompts.INDRA_CONSTRAINTS_NOTE
         if not self.known_constants or not ablations.enabled("reference_handoff"):
             return task
         return f"{task}\n\n{self.known_constants}{'' if indra else KNOWN_CONSTANTS_READOUT_NOTE}"

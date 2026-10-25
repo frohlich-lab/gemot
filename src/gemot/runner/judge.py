@@ -23,11 +23,14 @@ decided ``success``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
+import tempfile
 import time
 from pathlib import Path
 
+from .. import ablations
 from ..agent.circuit_breaker import _is_call_timeout
 from .clock import HELD_OUT_TOOL, _ToolClock
 from ..paths import validation_measurements_path
@@ -526,6 +529,30 @@ async def _judge(
         except Exception as exc:  # noqa: BLE001 - report-only diagnostic
             print(f"  (held-out validation projection unavailable: {type(exc).__name__}: {exc})")
 
+    # The causal_constraints arm's record (gemot.causal_constraints): the refusals per constraint,
+    # the first version making them all, and the judged model's behaviour on each indirect one.
+    # Report-only and guarded like the held-out read above; its simulation compiles, so it runs in
+    # a thread. The entity map is the arm's own, the empty one indra_statements starts the server
+    # with (`runner.main._empty_entity_map`), so the rebuild reads the rows' agents with none.
+    causal_constraints = None
+    if ablations.enabled("causal_constraints"):
+        from .. import causal_constraints as constraints_record
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="gemot_constraints_") as build:
+                causal_constraints = await asyncio.to_thread(
+                    constraints_record.record,
+                    work,
+                    scenario.constraints_file,
+                    clock,
+                    head,
+                    entity_map=None,
+                    build_dir=build,
+                )
+        except Exception as exc:  # noqa: BLE001 - report-only; never fail the judge on it
+            print(f"  (causal-constraints record unavailable: {type(exc).__name__}: {exc})")
+            causal_constraints = {"error": f"{type(exc).__name__}: {exc}"}
+
     # PREFER the reference-sigma comparison (#118): a candidate sigma is judged against the TRUE
     # model's own fitted sigma, not against a fraction of the marginal data std (which conflates
     # explained and unexplained variance, so no fixed band holds the truth). Falls back to the
@@ -885,6 +912,9 @@ async def _judge(
         # against the true model's. REPORT-ONLY — deliberately not in the `success` gate above.
         # `None` on an example that ships no held-out data.
         "validation": validation,
+        # The causal_constraints arm's refusals, first satisfying version and behaviour at the fit;
+        # None off the arm.
+        "causal_constraints": causal_constraints,
         # Noise-sigma plausibility of the scored model: GATES success (an inflated/collapsed sigma
         # disqualifies an otherwise-passing score; see the gate above) but never shown to the agent.
         "noise_sigma_report": noise_sigma_report,

@@ -16,6 +16,7 @@ from pathlib import Path
 from mcp import ClientSession
 
 from .. import infrastructure
+from ..causal_constraints import CONSTRAINT_VIOLATED, broken_constraints
 from ..fit_budget import fit_time_budget_for
 from ..paths import validation_measurements_path
 
@@ -201,6 +202,8 @@ class _ToolClock:
         "rejects",
         "fit_reverts",
         "reject_causes",
+        "by_constraint",
+        "first_commit_edit",
         "by_tool",
     )
 
@@ -213,6 +216,12 @@ class _ToolClock:
         self.rejects = 0
         self.fit_reverts = 0
         self.reject_causes: dict[str, int] = {}
+        # Refusals per causal constraint, on the causal_constraints arm: which of the user's claims
+        # the agent kept breaking. A refusal naming two counts for each.
+        self.by_constraint: dict[str, int] = {}
+        # Which editing call committed the run's first version (1-based), or None: how many calls
+        # it took the agent to get a model past the server's checks.
+        self.first_commit_edit: int | None = None
         # Per-tool CALL COUNTS. `calls` alone is a bare total, so "was this tool used at all?" was
         # answerable only from the Phoenix traces -- which need a shared collector running, and
         # otherwise land in `.slurm_scratch`, which is deleted when a task completes. A sweep run
@@ -248,6 +257,8 @@ class _ToolClock:
         if payload is None:
             return
         self.edits += 1
+        if self.first_commit_edit is None and payload.get("committed") is True:
+            self.first_commit_edit = self.edits
         # `applied is False` ALONE is the edit verdict. The payload flattens the FIT's keys in
         # too, so an `error` can ride on a change that applied and was even snapshotted — testing
         # it counted those as refusals and polluted `by_cause` with fit failures, in the one
@@ -268,6 +279,9 @@ class _ToolClock:
         # carry no label.
         cause = payload.get("error_cause") or _reject_cause(str(payload.get("error") or ""))
         self.reject_causes[cause] = self.reject_causes.get(cause, 0) + 1
+        if cause == CONSTRAINT_VIOLATED:
+            for cid in broken_constraints(str(payload.get("error") or "")):
+                self.by_constraint[cid] = self.by_constraint.get(cid, 0) + 1
 
     def reject_summary(self) -> dict:
         """``{attempted, rejected, reject_rate, by_cause}`` for ``result.json``."""
