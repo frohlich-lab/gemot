@@ -47,8 +47,13 @@ dependencies = [
     # the run archive keeps. #123/#124/#127/#128: a statement states its regulators (`inhibited_by`,
     # `activated_by`, `modulated_by`), recorded as the kind its rate shows, and projects them onto
     # INDRA statements; `modifiers` are gone. #115/#116: exact reductions of multisite statement
-    # models. #132: the reconcile simulates the model as authored.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@cb263c1c30d9b9730871dc519a028de5c872e2a9",
+    # models. #132: the reconcile simulates the model as authored. Now main at 5730835: #135: a
+    # statements row and its binding are given apart (the lead prompt since gemot#65). #136/#147:
+    # causal constraints every model must make, read with `list_constraints`, and `set_constraints`
+    # only with updates on (the causal_constraints arm). #137: agents matched by name, not
+    # grounding. #140: a scheme binds a stated regulator as a molecule. Also #139, #141, #143, #145,
+    # #146, #148, #150, #153.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@573083598689cd13dba980325a7cf2401925e36d",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
     # deleted, and mcp 2.0 reworks the client API used here (streamablehttp_client ->
