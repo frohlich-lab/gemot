@@ -14,7 +14,8 @@ from pathlib import Path
 from .provenance import _now_iso
 from ..analysis import store_dir
 from ..scenario import Scenario
-from .. import infrastructure
+from .. import ablations, infrastructure
+from ..causal_constraints import CONSTRAINT_VIOLATED
 
 
 def _summarize_exc(exc: BaseException) -> str:
@@ -145,6 +146,18 @@ def _write_degraded_result(
                 "tool_calls": clock.calls,
                 "tool_call_counts": dict(clock.by_tool),
                 "edit_rejects": clock.reject_summary(),
+                # The causal_constraints arm's refusals, the part of its record an abort leaves
+                # (the judge adds the rest, `gemot.causal_constraints.record`).
+                **(
+                    {
+                        "causal_constraints": {
+                            "refusals": clock.reject_causes.get(CONSTRAINT_VIOLATED, 0),
+                            "refusals_by_constraint": dict(clock.by_constraint),
+                        }
+                    }
+                    if ablations.enabled("causal_constraints")
+                    else {}
+                ),
             }
             if clock
             else {}

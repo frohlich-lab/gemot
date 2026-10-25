@@ -95,6 +95,9 @@ without an LLM as a self-test of the pipeline.
 - `gemot.explorer` — the run viewer over archived and in-flight runs.
 - `gemot.analysis`, `gemot.ablations` — sweep analysis (`python -m gemot.analysis`) and the
   registry of every switch that changes what a run does (`python -m gemot.ablations`).
+- `gemot.causal_constraints` — what the `causal_constraints` arm records: the refusals per
+  constraint, the first version making them all, and how the judged model behaves on each
+  indirect constraint, read with the gain norms of Fröhlich et al., MSB 2023.
 
 ## Design notes
 

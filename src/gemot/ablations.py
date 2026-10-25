@@ -125,6 +125,17 @@ ABLATIONS: tuple[Ablation, ...] = (
         "own, so no reference structure reaches the agent",
     ),
     Ablation(
+        name="causal_constraints",
+        env="PETAB_CAUSAL_CONSTRAINTS",
+        default_on=False,
+        changes_prompt=True,
+        effect="ON starts the server with the problem's curated causal constraints "
+        "(PEtabAgentBench's `indra/constraints.txt`), claims every model must make, and tells the "
+        "lead they are the user's prior knowledge; make_changes refuses a model breaking one. "
+        "Needs indra_statements on, and a problem that ships the file: either missing refuses the "
+        "run. The lead never gets `set_constraints`",
+    ),
+    Ablation(
         name="reference_handoff",
         env="PETAB_REFERENCE_HANDOFF",
         default_on=True,

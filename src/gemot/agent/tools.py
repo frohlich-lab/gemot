@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from ..prompts import (
     BIOLOGY_BLIND_ENABLED,
+    CAUSAL_CONSTRAINTS_ENABLED,
     INDRA_STATEMENTS_ENABLED,
     BIOLOGY_BLIND_TOOL_DESCRIPTIONS,
     LEAD_SELF_READ_TOOLS,
@@ -70,6 +71,9 @@ ORCHESTRATOR_TOOLS = [
     # FOR is documented at that tuple.
     *LEAD_SELF_READ_TOOLS,
     "list_conditions",  # per-condition inputs/doses set in the condition table (match by name)
+    # The causal_constraints arm's claims, with what makes each hold on the current model. Only
+    # on the arm: the server offers it nowhere else, and `_select_tools` warns of a missing tool.
+    *(["list_constraints"] if CAUSAL_CONSTRAINTS_ENABLED else []),
     "list_experiments",  # when each condition applies: the periods of every experiment
     # score / diagnose (both COMPACT + bounded) / history
     # NOTE: get_fit_summary is deliberately NOT here. `make_changes` already returns

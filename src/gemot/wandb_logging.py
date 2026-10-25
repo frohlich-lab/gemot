@@ -108,10 +108,12 @@ def log_result(
     from .experiments import reduced_chi2
 
     metrics["reduced_chi2"] = reduced_chi2(result)
-    # A reference-free run's declared test and verdict, under the history CSV's own column names.
-    from .metrics import flatten_adequacy
+    # A reference-free run's declared test and verdict, and the causal_constraints arm's cost,
+    # under the history CSV's own column names.
+    from .metrics import flatten_adequacy, flatten_constraints
 
     metrics.update(flatten_adequacy(result))
+    metrics.update(flatten_constraints(result))
 
     run = None
     try:

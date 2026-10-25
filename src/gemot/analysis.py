@@ -1046,6 +1046,10 @@ _ROW_PASSTHROUGH = (
 
 
 def _cmd_rows(args) -> int:
+    # The causal_constraints arm's cost, named once in metrics (`flatten_constraints`) for the
+    # history CSV, the run span and here; blank off the arm.
+    from .metrics import _CONSTRAINT_FIELDS, flatten_constraints
+
     rows = load_sweep_results(args.jobs, args.results_dir, include_missing=True)
     writer = csv.writer(__import__("sys").stdout)
     writer.writerow(
@@ -1061,6 +1065,7 @@ def _cmd_rows(args) -> int:
             "stop_reason",
             "cost",
             *_ROW_PASSTHROUGH,
+            *_CONSTRAINT_FIELDS,
         ]
     )
     for r in rows:
@@ -1077,6 +1082,7 @@ def _cmd_rows(args) -> int:
                 r.get("stop_reason"),
                 run_cost(r.get("token_usage")),
                 *(r.get(f) for f in _ROW_PASSTHROUGH),
+                *(flatten_constraints(r).get(f) for f in _CONSTRAINT_FIELDS),
             ]
         )
     return 0
