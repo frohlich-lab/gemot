@@ -432,9 +432,11 @@ INDRA_SYSTEM_PROMPT = (
     + ".\n\n"
     "1. ORIENT in at most ~3 rounds: describe_problem, list_observables, list_conditions, "
     "list_experiments; read `get_skill('petab-model-building')` and `list_mechanisms` once.\n"
-    "2. BUILD the WHOLE model in ONE `make_changes(statements=[...])` call. A row is one line, "
-    "`prefix: <statement> | <policy> <bindings>`, e.g. `b_p: A{!L} phosphorylates B at "
-    "S10 | two_step kf=k_on` (the editor's description gives the full notation). Use the "
+    "2. BUILD the WHOLE model in ONE `make_changes(statements=[...], bindings={...})` call. A row "
+    "is the claim, one line, `prefix: <statement>`, e.g. `b_p: A{!L} phosphorylates B at S10`; "
+    "its binding, under the same prefix in `bindings`, is the maths: `<policy> <parameter "
+    "bindings>`, e.g. `{\"b_p\": \"two_step kf=k_on\"}` (the editor's description gives the full "
+    "notation). Every row has its binding, and a row never carries it. Use the "
     "statement that says what happens (a binding, a phosphorylation, a translocation; a "
     "conversion only where one species becomes another) and a policy whose reactions you have "
     "READ in `list_mechanisms`. When none builds the reactions you mean, write your own in "
@@ -477,9 +479,12 @@ INDRA_SYSTEM_PROMPT = (
     + _SIGMA_CAP_ADVISORY
     + "\n"
     "4. REVISE BY ROWS with `statement_edits`, which change the current rows and leave the rest: "
-    "`replace_row` rewrites the row with that prefix (a new policy, a rebound rate, "
-    "`kf=k_shared` on two rows merging their constants), `add_row`/`remove_row`, `set_start`, "
-    "`set_readout`, `set_amount`, `remove_start` and `remove_amount`. KEEP a row's prefix while "
+    "`rebind` gives the row with that prefix a new binding, its statement as it was (a new "
+    "policy, a rebound rate, `kf=k_shared` on two rows merging their constants: `{op: 'rebind', "
+    "prefix: 'b_p', binding: 'two_step kf=k_shared'}`), `replace_row` rewrites a row's statement "
+    "(its binding kept, or a new `binding` beside it), `add_row` (a row and its `binding`)/"
+    "`remove_row`, `set_start`, `set_readout`, `set_amount`, `remove_start` and "
+    "`remove_amount`. KEEP a row's prefix while "
     "the row stays, so its parameters keep their ids and fitted values, and name prefixes for "
     "yourself (`b_phos`, not `r7`). One call is one fit and one version: put a whole change in "
     "it. To go back AND change, add `base_version=N` to the `statement_edits`: they apply to "
@@ -1202,11 +1207,12 @@ FINISH_CHI2_UNAVAILABLE_NOTE = (
 STATEMENTS_ONLY_REJECT_TMPL = (
     "MAKE_CHANGES REJECTED — in this run the model is authored as INDRA statements only, and this "
     "call carried {routes}, which NOTHING applied. Send the change as `statement_edits` "
-    "(`replace_row`, `add_row`, `remove_row`, `set_start`, `set_readout`, ...) or the whole set "
-    "as `statements`; `get_model(format='statements')` shows the current rows, mechanisms, "
-    "starts, amounts and readouts. Merging two rate constants is a row binding (`kf=shared_k` on "
-    "both rows); fixing one is `kf=0.5` or `parameters`. `parameters` (bounds, scales) and "
-    "`base_version` still go alongside."
+    "(`rebind`, `replace_row`, `add_row`, `remove_row`, `set_start`, `set_readout`, ...) or the "
+    "whole set as `statements` with their `bindings`; `get_model(format='statements')` shows "
+    "the current rows, their bindings, mechanisms, starts, amounts and readouts. Merging two rate "
+    "constants is a `rebind` of each row (`kf=shared_k` in both bindings); fixing one is "
+    "`kf=0.5` or `parameters`. `parameters` (bounds, scales) and `base_version` still go "
+    "alongside."
 )
 
 TASK_ARG_REJECT_TMPL = (
@@ -1453,9 +1459,9 @@ def _hash_input(entries: "dict[str, str]") -> str:
 INDRA_NO_MODEL_NUDGE = (
     "You ended the run without authoring a model — nothing was built, so there is nothing to "
     "score. The task is to BUILD a kinetic model of this system: call make_changes with "
-    "`statements` rows (the mechanism, plus the `readouts` over `amounts` that define every "
-    "readout_* symbol) — that call fits it too. Do that now — do not stop until a fitted "
-    "model exists."
+    "`statements` rows (what happens), each row's `bindings` entry under its prefix (the "
+    "mechanism), and the `readouts` over `amounts` that define every readout_* symbol — that "
+    "call fits it too. Do that now — do not stop until a fitted model exists."
 )
 
 
