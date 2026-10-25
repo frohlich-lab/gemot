@@ -33,6 +33,9 @@ _OPTIMIZATION = {
     "exitflag_counts": {"ExitFlag.FTOL": 2, "ExitFlag.MAXTIME": 1},
 }
 
+# A record in the shape stored before frohlich-lab/PEtab-MCP#135 gave each row's binding apart
+# (`policy` on the row, no `bindings`): kept so, since the archive copies statements.json whatever
+# its shape, and the server still reads one of these (`provenance.statements_record`).
 _STATEMENTS = {
     "rows": [
         {"statement": {"type": "IncreaseAmount", "obj": {"name": "GliA"}}, "policy": "mass_action"}

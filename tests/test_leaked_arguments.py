@@ -3,7 +3,8 @@
 Claude Haiku 4.5, on the indra_statements arm, closed `justification` and carried on in
 Anthropic's XML tool-call syntax inside the JSON, so `make_changes` arrived with no `statements`:
 141 "nothing to do" rejections in one sweep, and two runs ended without a model. The case below is
-one of those calls, trimmed.
+one of those calls, trimmed, its rows' bindings given apart in `bindings` as the server takes them
+since frohlich-lab/PEtab-MCP#135.
 """
 
 from __future__ import annotations
@@ -17,9 +18,11 @@ from gemot.agent import guards
 _LEAKED = {
     "justification": 'Initial model for HIV-1 viral dynamics under protease inhibitor treatment.",\n'
     '<parameter name="statements">[\n'
-    '  "prod: infected_cells() IncreaseAmount virions() | indra_default kf=\'k_prod\'",\n'
-    '  "clear: virions() DecreaseAmount void() | indra_default kf=\'k_clear\'"\n'
-    "]",
+    '  "prod: infected_cells() IncreaseAmount virions()",\n'
+    '  "clear: virions() DecreaseAmount void()"\n'
+    "]\n"
+    '<parameter name="bindings">{"prod": "indra_default kf=k_prod", '
+    '"clear": "indra_default kf=k_clear"}',
     "starts": [{"agent": "virions", "amount": "V_0"}],
     "readouts": {"readout_viral_load": "amount(virions())"},
 }
@@ -27,26 +30,29 @@ _LEAKED = {
 
 def test_the_leaked_rows_are_moved_back_to_their_argument():
     args, moved = guards._recover_leaked_arguments(_LEAKED)
-    assert moved == ["statements"]
+    assert moved == ["statements", "bindings"]
     assert args["justification"] == (
         "Initial model for HIV-1 viral dynamics under protease inhibitor treatment."
     )
     assert args["statements"][0].startswith("prod: infected_cells()")
     assert len(args["statements"]) == 2
+    assert args["bindings"] == {"prod": "indra_default kf=k_prod", "clear": "indra_default kf=k_clear"}
     assert args["starts"] == _LEAKED["starts"] and args["readouts"] == _LEAKED["readouts"]
 
 
 def test_a_closed_tag_and_a_second_leak_are_read_too():
     args, moved = guards._recover_leaked_arguments(
         {
-            "justification": 'why",\n<parameter name="statements">["a: A becomes B | mass_action"]'
-            '</parameter>\n<parameter name="n_starts">20</parameter>'
+            "justification": 'why",\n<parameter name="statements">["a: A becomes B"]</parameter>\n'
+            '<parameter name="bindings">{"a": "mass_action"}</parameter>\n'
+            '<parameter name="n_starts">20</parameter>'
         }
     )
-    assert moved == ["statements", "n_starts"]
+    assert moved == ["statements", "bindings", "n_starts"]
     assert args == {
         "justification": "why",
-        "statements": ["a: A becomes B | mass_action"],
+        "statements": ["a: A becomes B"],
+        "bindings": {"a": "mass_action"},
         "n_starts": 20,
     }
 
@@ -64,16 +70,19 @@ def test_keys_written_as_json_inside_the_string_are_moved_back():
     args, moved = guards._recover_leaked_arguments(
         {
             "justification": 'Return to version 2 and merge.", "base_version": 2}',
-            "statements": ["a: A becomes B | mass_action"],
+            "statements": ["a: A becomes B"],
+            "bindings": {"a": "mass_action"},
         }
     )
     assert moved == ["base_version"]
     assert args["justification"] == "Return to version 2 and merge."
-    assert args["base_version"] == 2 and args["statements"] == ["a: A becomes B | mass_action"]
+    assert args["base_version"] == 2 and args["statements"] == ["a: A becomes B"]
+    assert args["bindings"] == {"a": "mass_action"}
 
 
 def test_a_call_without_a_leak_is_untouched():
-    clean = {"justification": "why", "statements": ["a: A becomes B | mass_action"]}
+    clean = {"justification": "why", "statements": ["a: A becomes B"],
+             "bindings": {"a": "mass_action"}}
     assert guards._recover_leaked_arguments(clean) == (clean, [])
     assert guards._recover_leaked_arguments(None) == (None, [])
     as_string = {"justification": "why", "amounts": '{"amt_a": "A", "amt_b": "B"}'}
