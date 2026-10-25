@@ -8,10 +8,10 @@ makes them all, the judged one included. Two things are left to measure, post ho
 * **The cost.** The refusals per constraint (tallied by the runner's tool clock,
   ``runner.clock._ToolClock.by_constraint``), the first version that makes them all, and how many
   ``make_changes`` calls it took to get there.
-* **The behaviour at the fit** (decision 9 on #134). An indirect constraint holds on a chain of its
-  sign, but which way a model with feedback moves its object is the fit's to say, not its
-  structure's: bachmann's ``SOCS3 increases STAT5{pY694}`` holds on a feedback shadow, and
-  isensee's forskolin claim turns with an estimated factor. So on the judged model, at its fitted
+* **The behaviour at the fit** (decision 9 on #134). An indirect constraint holds wherever the
+  server's trace moves its form as claimed (``petab_mcp.tracing``), whatever else the trace also
+  finds; which way the model moves its object is the fit's to say, not its structure's, once it has
+  feedback, and isensee's forskolin claim turns with an estimated factor. So on the judged model, at its fitted
   values, each signed indirect constraint's subject is perturbed (its starting amount raised by
   half, or seeded where it starts at 0, as the #134 prototype measured the reference signs) and the
   object's amount compared with the gain norms of Fröhlich et al., MSB 2023
@@ -78,20 +78,31 @@ def broken_constraints(error: str) -> list[str]:
 
 
 def first_satisfying_version(constraints: Any, run_dir: str | Path) -> int | None:
-    """The first stored version that makes every constraint, checked as the server checks a
-    change (``petab_mcp.constraints.violations``), or ``None`` when none does. A version not built
-    from statements claims nothing, so it makes only the negative ones."""
+    """The first stored version that makes every constraint, or ``None`` when none does.
+
+    A version built from statements keeps the verdicts it was committed under
+    (``petab_mcp.constraints.kept``), and on the arm every commit is checked under the run's
+    constraints, so those say; re-checking would trace each indirect constraint on a rebuilt
+    model, which the server already did. One not built from statements claims nothing, so it makes
+    only the negative constraints, which ``constraints.check`` reads with no model."""
     from petab_mcp import constraints as constraints_mod
 
     from .analysis import iter_versions, read_version_json, store_dir
 
-    versions = [int(m["version"]) for m in iter_versions(run_dir)]
-    records = {
-        v: read_version_json(store_dir(run_dir) / "versions" / f"v{v}", "statements.json")
-        for v in versions
-    }
-    broken = constraints_mod.violations(constraints, records)
-    return next((v for v in versions if v not in broken), None)
+    for meta in iter_versions(run_dir):
+        version = int(meta["version"])
+        record = read_version_json(
+            store_dir(run_dir) / "versions" / f"v{version}", "statements.json"
+        )
+        if record:
+            verdicts = constraints_mod.kept(constraints, record)
+            if len(verdicts) < len(constraints.items):
+                continue  # checked under another set: it says nothing of this one
+        else:
+            verdicts = constraints_mod.check(constraints, None)
+        if all(v.ok for v in verdicts.values()):
+            return version
+    return None
 
 
 # -------------------------------------------------------------------------------- the behaviour
