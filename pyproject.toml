@@ -40,20 +40,25 @@ dependencies = [
     # whose starts stop finishing ends by a deadline, and a change while one is fitted is refused
     # as `fit_in_progress`, the code the circuit breaker matches (gemot#59). #111: a chain grows
     # only through a molecule bound while bound. #113: a readout that is a number is not refused.
-    # #114: the statements route says what to write in five of its rejections. Now main at cb263c1.
+    # #114: the statements route says what to write in five of its rejections. Then cb263c1:
     # #133: pyPESTO at main 053079a (with ICB-DCM/pyPESTO#1786) and fides >= 0.8.1. #121: a start
     # stuck past its cap is stopped and scored as failed, the fit from the rest. #120: a held-out
     # score writes its per-point records to the head version's `validation_simulations.json`, which
     # the run archive keeps. #123/#124/#127/#128: a statement states its regulators (`inhibited_by`,
     # `activated_by`, `modulated_by`), recorded as the kind its rate shows, and projects them onto
     # INDRA statements; `modifiers` are gone. #115/#116: exact reductions of multisite statement
-    # models. #132: the reconcile simulates the model as authored. Now main at 5730835: #135: a
-    # statements row and its binding are given apart (the lead prompt since gemot#65). #136/#147:
-    # causal constraints every model must make, read with `list_constraints`, and `set_constraints`
-    # only with updates on (the causal_constraints arm). #137: agents matched by name, not
-    # grounding. #140: a scheme binds a stated regulator as a molecule. Also #139, #141, #143, #145,
-    # #146, #148, #150, #153.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@573083598689cd13dba980325a7cf2401925e36d",
+    # models. #132: the reconcile simulates the model as authored.
+    # Now main at 44475a7: #135: a row's binding is given apart from its statement,
+    # `bindings={prefix: ...}`, as gemot#65's prompt asks; the inline `| policy` form is refused.
+    # #136/#147: causal constraints held on every change, off unless the server is started with
+    # them. #137: agents are matched by name, not grounding. #138: a gate's comparison stays in
+    # the net rate. #139: a condition target INDRA renames is held. #140: a scheme binds a
+    # stated regulator as a molecule. #141: `is_new_best` is the checkpoint's decision, and a
+    # declined fit says why in `new_best_declined`. #142: `restore_version` says HEAD moves.
+    # #143: a rate reading an amount no species forms is refused. #144-#146, #160, #161:
+    # entity-map, regulator and corpus fixes. #162: an active-form constraint reads INDRA's
+    # activity types, which #161 left in place of notation's.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@44475a7a171468ec6fca6568259908b2dbda7e73",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
     # deleted, and mcp 2.0 reworks the client API used here (streamablehttp_client ->
