@@ -75,6 +75,31 @@ pyPESTO's HDF5 result as well.
 `--model` picks another OpenRouter model, and `--driver scripted` builds the true model
 without an LLM as a self-test of the pipeline.
 
+### Codex and Claude CLI drivers
+
+Run a native CLI agent for the whole task with `.[harness]` installed and the CLI authenticated:
+
+```bash
+codex login
+python examples/predator_prey/run.py --driver codex --model YOUR_CODEX_MODEL_ID
+claude auth login
+python examples/predator_prey/run.py --driver claude --model sonnet
+```
+
+Each run starts one `codex exec` or `claude -p` session and supplies the task once. The CLI
+owns its conversation, tool loop, prompt caching, and compaction. These drivers have no gemot
+panel or finish gate. They use the shared scored PEtab MCP tools through a local gateway;
+file/shell access and heldout judging tools are restricted to preserve benchmark blindness.
+
+`--model` is required and passed directly to the CLI. No OpenRouter key is needed.
+`--biocurator-model` is unavailable; `--recursion-limit` does not apply. Optional
+`--max-wall-seconds` or `--codex-timeout` / `--claude-timeout` bounds the entire session.
+
+Phoenix records observed native events and actual gateway tool calls under the run trace.
+Codex usage is session aggregate; Claude additionally exposes response usage. Raw events are
+archived as `work/codex_events.jsonl` or `work/claude_events.jsonl`. See
+[CLI drivers](docs/CLI_DRIVERS.md) for setup, trace limits, and the ChatGPT terms assessment.
+
 ## Project structure
 
 [`gemot`](src/gemot/) (under `src/`); each submodule is documented in its own docstrings.

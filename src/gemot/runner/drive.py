@@ -1,7 +1,7 @@
 """One run, from a connected session to a written verdict.
 
-Preflight the server, score the baseline, dispatch to the chosen driver (the deepagents panel or
-the scenario's scripted canonical repair), then judge and archive. Wrapped so that anything
+Preflight the server, score the baseline, dispatch to the panel, a native CLI session or the
+scenario's scripted canonical repair, then judge and archive. Wrapped so that anything
 escaping the driver still produces a degraded result rather than a traceback and no record.
 """
 
@@ -27,8 +27,8 @@ from ..scenario import Baseline, Scenario
 
 
 def _reasoning_effort(args) -> str | None:
-    """The run's ``--reasoning-effort`` as the driver sends it: ``None`` for ``default``, each model
-    keeping its own setting (:mod:`gemot.models`)."""
+    """The run's ``--reasoning-effort`` as sent: ``None`` for ``default``, keeping the CLI's
+    default or the OpenRouter model's setting (:mod:`gemot.models`)."""
     effort = getattr(args, "reasoning_effort", None)
     return None if effort == "default" else effort
 
@@ -154,26 +154,34 @@ async def _drive(
             meta = {**base_meta, "stop_reason": "completed"}
             return await _judge(scenario, call, baseline, work, meta, clock, t0)
 
-        # --- deepagents driver: the LLM panel diagnoses + repairs --------------------------
-        # Arize Phoenix tracing (mandatory — always on, no off switch): instrument the
-        # LangChain stack BEFORE the agent runs so every LLM + tool-call span is captured.
+        # All model drivers share a root trace and independent judge. Native CLIs are observed
+        # through their event streams and MCP gateway; only deepagents uses LangChain spans.
+        cli_driver = args.driver in {"codex", "claude"}
         if args.phoenix:
             from ..tracing import setup_phoenix_tracing
 
-            tracing = setup_phoenix_tracing(project_name=args.phoenix_project)
-
-        api_key = args.api_key or os.environ.get("OPENROUTER_API_KEY")
-        if not api_key:
-            raise SystemExit(
-                "No OpenRouter API key: set OPENROUTER_API_KEY (or pass --api-key). "
-                "Get one at https://openrouter.ai/keys, or use --driver scripted for a "
-                "no-LLM self-test."
+            tracing = setup_phoenix_tracing(
+                project_name=args.phoenix_project,
+                **({"instrument_langchain": False} if cli_driver else {}),
             )
-        print(
-            f"[agent] driving {args.model} via OpenRouter + deepagents "
-            f"(recursion_limit={args.recursion_limit})"
+
+        if not cli_driver:
+            api_key = args.api_key or os.environ.get("OPENROUTER_API_KEY")
+            if not api_key:
+                raise SystemExit(
+                    "No OpenRouter API key: set OPENROUTER_API_KEY (or pass --api-key). "
+                    "Get one at https://openrouter.ai/keys, or use --driver scripted for a "
+                    "no-LLM self-test."
+                )
+        transport_label = {"codex": "Codex CLI", "claude": "Claude Code CLI"}.get(
+            args.driver, "OpenRouter"
         )
-        from ..agent import run_deepagents
+        architecture = (
+            "native session"
+            if cli_driver
+            else f"deepagents (recursion_limit={args.recursion_limit})"
+        )
+        print(f"[agent] driving {args.model} via {transport_label}, {architecture}")
         from ..tracing import record_run_result, run_span, trace_id_hex
 
         # A run-level span parents the whole agent trace, so each run is one self-describing
@@ -184,9 +192,9 @@ async def _drive(
             "example_version": scenario.version,
             "model": args.model,
             "driver": args.driver,
-            "temperature": args.temperature,
+            "temperature": None if cli_driver else args.temperature,
             "reasoning_effort": _reasoning_effort(args),
-            "recursion_limit": args.recursion_limit,
+            "recursion_limit": None if cli_driver else args.recursion_limit,
             "n_starts": args.n_starts,
             "git_sha": git_sha,
             "run_started_at": run_started_at,
@@ -219,37 +227,71 @@ async def _drive(
             # whole report after.
             meta = base_meta
             try:
-                # The default lead prompt and run_deepagents share prompts.BIOCURATOR_ENABLED,
-                # so the prompt cannot promise a curator that the selected arm omits. Its tools are the
-                # curated agent.DEFAULT_BIO_TOOLS allowlist (+ literature under the
-                # `bio_literature` ablation, PETAB_BIO_LITERATURE=1).
-                agent_out = await run_deepagents(
-                    agent_session,
-                    model=args.model,
-                    base_url=args.base_url,
-                    api_key=api_key,
-                    system_prompt=scenario.system_prompt,
-                    task=scenario.agent_task,
-                    recursion_limit=args.recursion_limit,
-                    temperature=args.temperature,
-                    reasoning_effort=_reasoning_effort(args),
-                    n_starts=args.n_starts,
-                    max_wall_seconds=args.max_wall_seconds,
-                    progress_probe=raw_call_tool,
-                    # The EXACT liveness signal, not a probe: Popen.poll() cannot confuse a
-                    # server that is busy fitting with one that is gone (see _server_is_alive).
-                    server_poll=(server_proc.poll if server_proc is not None else None),
-                    infrastructure_probe=server_logs,
-                    bio_sessions=bio_sessions,
-                    bio_literature=ablations.enabled("bio_literature"),
-                    # Hand-curated biological entities for the blinded biocurator (issue #91);
-                    # empty for scenarios with no lookupable biology (the abstract toys).
-                    curated_entities=scenario.agent_entities,
-                    biocurator_model=getattr(args, "biocurator_model", None),
-                    biology_blinded=blind_names is not None,
-                    # The anonymized input protocols; the driver writes them into the blind task.
-                    input_protocols=blind_names.protocols if blind_names is not None else None,
-                )
+                if cli_driver:
+                    from .. import prompts
+                    from ..agent.native_cli import run_native_cli
+                    from ..fit_budget import FIT_BUDGET_CEILING_S, fit_time_budget_for
+
+                    timeout = getattr(args, f"{args.driver}_timeout", None)
+                    if args.max_wall_seconds is not None:
+                        remaining = args.max_wall_seconds - (time.monotonic() - t0)
+                        timeout = min(timeout, remaining) if timeout is not None else remaining
+                    if timeout is not None and timeout <= 0:
+                        agent_out = {"stop_reason": "wall_time_budget_exceeded"}
+                    else:
+                        agent_out = await run_native_cli(
+                            agent_session,
+                            driver=args.driver,
+                            model=args.model,
+                            task=(
+                                prompts.biology_blind_task(blind_names.protocols)
+                                if blind_names is not None
+                                else scenario.agent_task
+                            ),
+                            work=work,
+                            executable=getattr(args, f"{args.driver}_executable", args.driver),
+                            reasoning_effort=_reasoning_effort(args),
+                            timeout=timeout,
+                            tracing=tracing,
+                            parent_span=span,
+                            biology_blinded=blind_names is not None,
+                            tool_timeout=max(
+                                FIT_BUDGET_CEILING_S, fit_time_budget_for(None, args.n_starts)
+                            )
+                            * 1.2,
+                        )
+                else:
+                    from ..agent import run_deepagents
+
+                    # The default lead prompt and run_deepagents share BIOCURATOR_ENABLED,
+                    # so the prompt cannot promise a curator that the selected arm omits.
+                    agent_out = await run_deepagents(
+                        agent_session,
+                        model=args.model,
+                        base_url=args.base_url,
+                        api_key=api_key,
+                        system_prompt=scenario.system_prompt,
+                        task=scenario.agent_task,
+                        recursion_limit=args.recursion_limit,
+                        temperature=args.temperature,
+                        reasoning_effort=_reasoning_effort(args),
+                        n_starts=args.n_starts,
+                        max_wall_seconds=args.max_wall_seconds,
+                        progress_probe=raw_call_tool,
+                        # The exact liveness signal, not a probe: Popen.poll() cannot confuse
+                        # a server busy fitting with one that is gone (see _server_is_alive).
+                        server_poll=(server_proc.poll if server_proc is not None else None),
+                        infrastructure_probe=server_logs,
+                        bio_sessions=bio_sessions,
+                        bio_literature=ablations.enabled("bio_literature"),
+                        # Hand-curated entities for the blinded biocurator (issue #91);
+                        # empty for abstract scenarios with no lookupable biology.
+                        curated_entities=scenario.agent_entities,
+                        biocurator_model=getattr(args, "biocurator_model", None),
+                        biology_blinded=blind_names is not None,
+                        # The driver writes these anonymized protocols into the blind task.
+                        input_protocols=blind_names.protocols if blind_names is not None else None,
+                    )
                 stop_reason = agent_out.get("stop_reason", "completed")
                 # The logs once more, to their end: the driver stops reading them at its first
                 # evidence, and a full disk can show in the run's last step.
@@ -258,10 +300,7 @@ async def _drive(
                 ):
                     stop_reason = infrastructure.stop_reason(hit.cause)
                 if stop_reason != "completed":
-                    print(
-                        f"[agent] stopped early: {stop_reason} "
-                        f"(raise --recursion-limit if it ran out of steps)"
-                    )
+                    print(f"[agent] stopped early: {stop_reason}")
                 # The driver's whole return, wholesale (see provenance._agent_meta), and the log
                 # count for every run, so a contaminated one is visible even where nothing
                 # stopped it.

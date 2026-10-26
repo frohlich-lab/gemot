@@ -9,7 +9,8 @@ Given a :class:`~scenario.Scenario`, the pipeline is always the same:
   (b) start the ``petab-mcp`` server on ``work/problem.yaml`` (HTTP transport, one
       long-lived stateful process shared by the whole run), and
   (c) drive the chosen driver — ``deepagents`` (an OpenRouter-hosted model with the
-      analyst panel from :mod:`agent` — three analysts + the biocurator) or
+      analyst panel from :mod:`agent` — three analysts + the biocurator), ``codex``
+      or ``claude`` (one native CLI session with the PEtab MCP tools), or
       ``scripted`` (the scenario's canonical
       repair, no LLM) — then judge the result INDEPENDENTLY via the criterion gate in ``_judge``
       (``delta_criterion <= scenario.bic_threshold`` against the true model;
@@ -28,12 +29,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import math
 import os
 
 from .failure import _should_reraise, _summarize_exc
 from .main import _constraints, _main_async
 from ..scenario import Scenario
 from .. import models
+
+
+def _positive_seconds(value: str) -> float:
+    """A finite, positive cap for an entire native CLI session."""
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError("must be a finite number greater than zero")
+    return number
 
 
 def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
@@ -43,17 +53,20 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--driver",
-        choices=["deepagents", "scripted", "barebones"],
+        choices=["deepagents", "codex", "claude", "scripted", "barebones"],
         default="deepagents",
         help="deepagents: drive an OpenRouter model through the panel + MCP server; "
+        "codex: one native Codex CLI session with PEtab MCP tools; "
+        "claude: one native Claude Code CLI session with PEtab MCP tools; "
         "scripted: deterministic repair, no LLM; barebones: the NULL arm — one "
         "stock deepagent with a shell and the PEtab files on disk, no server, no "
         "panel, judged on the problem it delivers (see runner/barebones.py).",
     )
     p.add_argument(
         "--model",
-        default=models.DEFAULT,
-        help="OpenRouter model id, or a go-to alias (deepagents driver). Aliases: "
+        default=None,
+        help="OpenRouter model id, or a go-to alias (deepagents driver); for codex/claude, "
+        "an explicit model id accepted by that CLI (required, no gemot alias resolution). Aliases: "
         f"{', '.join(models.MODELS)} (see gemot/models.py). Default "
         f"'{models.DEFAULT}' = {models.resolve(models.DEFAULT)}, 1M-token context. "
         "Every aliased model is pinned to a single provider (see "
@@ -63,7 +76,7 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
     p.add_argument(
         "--biocurator-model",
         default=None,
-        help="Run the BIOCURATOR on its own model (alias or OpenRouter id), leaving "
+        help="Run the BIOCURATOR on its own model (alias or OpenRouter id; deepagents only), leaving "
         "the lead and analysts on --model. It is the panel's heaviest reader — "
         "entity lookups return whole database entries that then ride its context "
         "— and its job is retrieval, not modelling, so a cheaper model here is "
@@ -80,6 +93,23 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
         default=None,
         help="OpenRouter API key (default: the OPENROUTER_API_KEY environment variable).",
     )
+    for driver, label, login in (
+        ("codex", "Codex", "codex login"),
+        ("claude", "Claude Code", "claude auth login"),
+    ):
+        p.add_argument(
+            f"--{driver}-executable",
+            default=driver,
+            help=f"{label} CLI executable for --driver {driver} (default: {driver} on PATH). "
+            f"Authenticate separately with `{login}`.",
+        )
+        p.add_argument(
+            f"--{driver}-timeout",
+            type=_positive_seconds,
+            default=None,
+            help=f"Optional maximum seconds for the entire {label} CLI session. "
+            "Also bounded by --max-wall-seconds when set; no default CLI time cap.",
+        )
     p.add_argument(
         "--temperature",
         type=float,
@@ -90,13 +120,15 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
     p.add_argument(
         "--reasoning-effort",
         choices=["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"],
-        default="max",
+        default=None,
         help="OpenRouter reasoning effort for every panel model (deepagents driver), replacing "
         "the model's own setting (gemot.models); OpenRouter maps it to the nearest level a model "
         "has. `max` (the default) is the largest thinking budget a budget-based model "
         "(Anthropic) is given, ~95%% of its output ceiling. `default` keeps each model's own "
         "setting, and only such a run retries a reasoning runaway at lower effort "
-        "(agent.guards). Recorded per run for sweeps.",
+        "(agent.guards). For codex/claude, omission/default keeps the CLI's setting. "
+        "Codex does not support max; Claude supports low/medium/high/xhigh/max. "
+        "Recorded per run for sweeps.",
     )
     p.add_argument(
         "--recursion-limit",
@@ -124,7 +156,8 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
         "result at all. Default: unlimited (only the stall watchdog + outer "
         "scheduler limit apply). A sweep should set this comfortably below its "
         "Slurm --time (see make_sweep.py). The barebones driver stops its agent "
-        "early to compile and score the delivery inside this budget.",
+        "early to compile and score the delivery inside this budget. Native CLI drivers "
+        "terminate their session when this deadline is reached, then judge committed work.",
     )
     p.add_argument(
         "--reference-validation",
@@ -172,11 +205,45 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
 
 def run_scenario(scenario: Scenario, argv: list[str] | None = None) -> int:
     """Parse args, run the pipeline for ``scenario``, and return a process exit code."""
-    args = build_parser(scenario).parse_args(argv)
-    args.model = models.resolve(args.model)  # go-to alias (e.g. "luna") -> OpenRouter id
+    parser = build_parser(scenario)
+    args = parser.parse_args(argv)
     # Before anything is wiped or launched, and outside the catch below, which would file it as a
     # teardown error: an arm this problem cannot run is refused, not run as something else.
     _constraints(scenario)
+    if args.driver in {"codex", "claude"}:
+        if not args.model or not args.model.strip():
+            parser.error(
+                f"--driver {args.driver} requires --model with a model id accepted by its CLI"
+            )
+        if args.api_key is not None:
+            login = "codex login" if args.driver == "codex" else "claude auth login"
+            parser.error(f"--api-key is for OpenRouter; authenticate the CLI with `{login}`")
+        if args.biocurator_model is not None:
+            parser.error("--biocurator-model is a panel option; native CLI drivers have no panel")
+        if args.max_wall_seconds is not None and (
+            not math.isfinite(args.max_wall_seconds) or args.max_wall_seconds <= 0
+        ):
+            parser.error("--max-wall-seconds must be finite and positive for native CLI runs")
+        if args.driver == "codex" and args.reasoning_effort == "max":
+            parser.error("--reasoning-effort max is not supported by Codex; use xhigh or default")
+        if args.driver == "claude" and args.reasoning_effort in {"none", "minimal"}:
+            parser.error(
+                "Claude supports --reasoning-effort low, medium, high, xhigh, max or default"
+            )
+        # Check before _main_async recreates work/: a missing CLI must not erase a previous run.
+        if args.driver == "codex":
+            from ..agent.codex import check_codex_cli as check_cli
+        else:
+            from ..agent.claude import check_claude_cli as check_cli
+
+        try:
+            version = check_cli(getattr(args, f"{args.driver}_executable"))
+            setattr(args, f"{args.driver}_version", version)
+        except (OSError, RuntimeError, ValueError) as exc:
+            parser.error(str(exc))
+    else:
+        args.model = models.resolve(args.model or models.DEFAULT)
+        args.reasoning_effort = args.reasoning_effort or "max"
     result: dict = {}
     # The null arm inverts the pipeline (agent first, server after, on what it delivered), so it
     # is a separate main rather than a branch inside the shared one. Resolved lazily: the module

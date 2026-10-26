@@ -295,7 +295,7 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
             # #86). Empty for scripted or a disabled curator. An enabled curator stays on the
             # panel even if no bio tools resolve, using the model's own knowledge.
             bio_urls = (
-                BIO_MCP_URLS if args.driver != "scripted" and prompts.BIOCURATOR_ENABLED else ()
+                BIO_MCP_URLS if args.driver == "deepagents" and prompts.BIOCURATOR_ENABLED else ()
             )
             async with open_bio_sessions(bio_urls) as bio_sessions:
                 exit_code, result = await _drive(

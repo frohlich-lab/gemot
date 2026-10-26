@@ -134,6 +134,25 @@ def test_a_run_with_no_errors_still_archives(tmp_path):
     assert (store / "versions" / "v0" / "model.ant").is_file()
 
 
+@pytest.mark.parametrize("driver", ["codex", "claude"])
+def test_native_session_evidence_survives_work_cleanup(tmp_path, driver):
+    """CLI JSONL is the only full event record when the observer cannot decode a new event."""
+    import shutil
+
+    work = _work(tmp_path)
+    evidence = {
+        f"{driver}_events.jsonl": '{"type":"future_native_event"}\n',
+        f"{driver}_prompt.txt": "One initial task",
+        f"{driver}_final.txt": "The fitted model is committed.",
+    }
+    for name, contents in evidence.items():
+        (work / name).write_text(contents)
+    dest = archive_run(work, {"phoenix_trace_id": f"t-{driver}"}, tmp_path / "archive")
+    shutil.rmtree(work)
+    assert dest is not None
+    assert {name: (dest / name).read_text() for name in evidence} == evidence
+
+
 def test_the_version_source_is_archived(tmp_path):
     """`model_source.ant` is what makes lineage checkable after the fact (`child.source ==
     parent.source + ops`). Left out of _VERSION_FILES it dies with work/ on the next run of the

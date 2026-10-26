@@ -66,6 +66,9 @@ dependencies = [
     # holds this today, but that cap is the server's to lift. Revisit once langchain-mcp-adapters
     # ships mcp 2.0 support.
     "mcp<2",
+    # Native Codex/Claude runs connect to an in-process loopback MCP gateway. Import uvicorn
+    # directly for that gateway instead of relying on the MCP server's transitive dependency.
+    "uvicorn>=0.23",
     # Imported directly here too (judge, simulate, the neural route), or promised to the
     # barebones agent's sandbox (pyPESTO, which its prompt tells the agent to fit with), so named
     # rather than left to arrive through petab-mcp, whose pyproject says why each floor.
