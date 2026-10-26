@@ -95,6 +95,7 @@ def test_native_command_preserves_mcp_and_has_no_model_adapter(tmp_path, monkeyp
     assert 'mcp_servers.gemot.url="http://127.0.0.1:1234/mcp"' in command
     assert "mcp_servers.gemot.tool_timeout_sec=30000" in command
     assert "mcp_servers.gemot.required=true" in command
+    assert 'mcp_servers.gemot.default_tools_approval_mode="approve"' in command
     assert 'model_reasoning_effort="high"' in command
     assert "features.shell_tool=false" in command
     assert "features.hooks=false" not in command

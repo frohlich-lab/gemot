@@ -97,6 +97,10 @@ def codex_command(
         "mcp_servers.gemot.url=" + json.dumps(mcp_url),
         "mcp_servers.gemot.required=true",
         f"mcp_servers.gemot.tool_timeout_sec={tool_timeout:g}",
+        # Codex's default (`auto`) asks before a tool that writes, and under approval_policy
+        # "never" an asked call is refused: `make_changes` failed with "MCP tool call requires
+        # approval, but approval policy is never". The gateway serves only the scored tools.
+        'mcp_servers.gemot.default_tools_approval_mode="approve"',
     ]
     if reasoning_effort is not None:
         settings.append("model_reasoning_effort=" + json.dumps(reasoning_effort))
