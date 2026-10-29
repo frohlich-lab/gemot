@@ -48,7 +48,7 @@ dependencies = [
     # `activated_by`, `modulated_by`), recorded as the kind its rate shows, and projects them onto
     # INDRA statements; `modifiers` are gone. #115/#116: exact reductions of multisite statement
     # models. #132: the reconcile simulates the model as authored.
-    # Now main at 44475a7: #135: a row's binding is given apart from its statement,
+    # Then 44475a7: #135: a row's binding is given apart from its statement,
     # `bindings={prefix: ...}`, as gemot#65's prompt asks; the inline `| policy` form is refused.
     # #136/#147: causal constraints held on every change, off unless the server is started with
     # them. #137: agents are matched by name, not grounding. #138: a gate's comparison stays in
@@ -57,8 +57,11 @@ dependencies = [
     # declined fit says why in `new_best_declined`. #142: `restore_version` says HEAD moves.
     # #143: a rate reading an amount no species forms is refused. #144-#146, #160, #161:
     # entity-map, regulator and corpus fixes. #162: an active-form constraint reads INDRA's
-    # activity types, which #161 left in place of notation's.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@44475a7a171468ec6fca6568259908b2dbda7e73",
+    # activity types, which #161 left in place of notation's. Then a32a1f6: #169: a server offers
+    # the `statements` route or the text routes, never both; an entity map implies the former, and
+    # `statements_only` is gone. #163: an offset in an observable formula is solved as an inner
+    # offset, not a second scaling, so a problem with both fits them hierarchically again.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@a32a1f6f400459bb4c1df1dd58f320f7568bb92a",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK: the adapters hard-import `mcp.server.fastmcp`, which mcp 2.0
     # deleted, and mcp 2.0 reworks the client API used here (streamablehttp_client ->

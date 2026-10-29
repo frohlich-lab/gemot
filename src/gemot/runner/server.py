@@ -26,8 +26,8 @@ from ..scenario import Scenario
 # score yet. Every argument is always passed — positional and fixed-arity, so a missing one is a
 # hard ValueError ("not enough values to unpack") at startup rather than a server that silently
 # comes up without the judge's held-out read registered. <entity_map> is "" off the
-# indra_statements arm; on it, the server offers make_changes the `statements` route alone
-# (create_server(statements_only=True)), documented in the server's own description.
+# indra_statements arm; on it, the server offers make_changes the `statements` route alone, which
+# a map implies (frohlich-lab/PEtab-MCP#169), documented in the server's own description.
 # <constraints> is "" off the causal_constraints arm; on it, the problem's constraints file, which
 # the server checks every change against (create_server(constraints=...)). Updates stay off
 # (constraint_updates="off"), so the server registers no `set_constraints` and no agent can change
@@ -61,7 +61,6 @@ _SERVER_BOOTSTRAP = (
     "                    validation_measurements=validation_tsv or None,\n"
     "                    score_shipped_model=(score_shipped == '1'),\n"
     "                    entity_map=entity_map or None,\n"
-    "                    statements_only=bool(entity_map),\n"
     "                    constraints=constraints or None,\n"
     "                    constraint_updates='off')\n"
     # fastmcp >=3.4 dropped `srv.settings`; host/port are passed to run() (forwarded to the
