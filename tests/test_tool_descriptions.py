@@ -53,7 +53,7 @@ def test_the_statements_arm_reads_the_servers_statements_editor(tmp_path):
     Antimony route, and both are the server's."""
     entity_map = tmp_path / "entity_map.json"
     entity_map.write_text("{}")
-    served, panel = _served_and_panel(tmp_path, entity_map=str(entity_map), statements_only=True)
+    served, panel = _served_and_panel(tmp_path, entity_map=str(entity_map))
     editor = panel["make_changes"]
     assert editor.description == served["make_changes"].description
     assert "`statements` authors the WHOLE model" in editor.description

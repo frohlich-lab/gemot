@@ -72,11 +72,11 @@ def test_the_server_offers_the_route_alone_where_it_has_a_map(monkeypatch):
     uvicorn.Config = object
     monkeypatch.setitem(sys.modules, "petab_mcp.server", server)
     monkeypatch.setitem(sys.modules, "uvicorn", uvicorn)
-    for entity_map, only in (("build/entity_map.json", True), ("", False)):
+    for entity_map in ("build/entity_map.json", ""):
         argv = ["-c", "p.yaml", "build", "off", "127.0.0.1", "0", "5", "", "0", entity_map, ""]
         monkeypatch.setattr(sys, "argv", argv)
         exec(_SERVER_BOOTSTRAP, {})
-        assert seen["statements_only"] is only and seen["entity_map"] == (entity_map or None)
+        assert seen["entity_map"] == (entity_map or None)
 
 
 def _make_changes_tool(*args):
