@@ -54,7 +54,14 @@ def _real_graph_nodes():
 #   PatchToolCallsMiddleware.before_agent -- a `before_agent` hook: fires once per agent
 #       invocation, not once per step, so it cannot grow as O(steps^2). Measured at 87 KB
 #       average / 0.12 GB across the whole July corpus, against 27.1 GB for the three stripped.
-_DELIBERATELY_KEPT = {"tools", "PatchToolCallsMiddleware.before_agent"}
+#   _ParentNotifierMiddleware.after_agent -- deepagents 0.7.27's, on every deep agent: an
+#       `after_agent` hook, so once per invocation for the same reason, and deepagents already
+#       records its input as `{}` (`TracePolicy(process_inputs=omit_payload)`).
+_DELIBERATELY_KEPT = {
+    "tools",
+    "PatchToolCallsMiddleware.before_agent",
+    "_ParentNotifierMiddleware.after_agent",
+}
 
 
 def test_the_real_graph_has_no_unstripped_per_step_wrapper():

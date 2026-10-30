@@ -394,7 +394,9 @@ def _tool_dispatch_guard(stats: dict[str, Any], *, max_idle_steps: int = _MAX_ID
 # now injected into the biocurator directly (hand-curated per scenario; _build_biocurator_subagent);
 # this guard closes the other half: it makes the dropped-kwarg bug LOUD instead of silent by
 # bouncing such a call back to the model with a corrective error, so the model re-issues it with
-# everything in `description` (this protects the analysts' `prompt=` drops too).
+# everything in `description` (this protects the analysts' `prompt=` drops too). deepagents 0.7.18
+# refuses such a call itself now; the guard stays for what upstream does not do: count it
+# (`task_arg_rejections`, in result.json), keep it out of `tools_executed`, and relent after a bound.
 _TASK_ALLOWED_ARGS = frozenset({"description", "subagent_type"})
 _MAX_TASK_ARG_REJECTIONS = 3  # bounded push-back on unexpected task kwargs per run, then relent
 
@@ -566,31 +568,33 @@ def _task_arg_guard(stats: dict[str, Any], *, max_rejections: int = _MAX_TASK_AR
     ``task_arg_rejections`` (how many calls were bounced). It works by returning an error
     ``ToolMessage`` in place of dispatching (the same short-circuit shape the circuit breaker
     uses) — it does NOT call ``handler``, so the subagent never runs on truncated input. The
-    push-back is bounded: once ``max_rejections`` is hit it RELENTS and lets the call through (the
-    task tool drops the extras — the original behavior) so a stubborn model still makes progress;
-    the occurrence is still recorded. Defined lazily so importing this module doesn't require
-    langchain — only the deepagents driver does.
+    push-back is bounded: once ``max_rejections`` is hit it RELENTS and dispatches the call with the
+    extras dropped, so a stubborn model still makes progress; the occurrence is still recorded. The
+    guard drops them itself: the task tool did until deepagents 0.7.18, and now refuses unknown keys,
+    so a call let through unchanged would only trade this rejection for its own. Defined lazily so
+    importing this module doesn't require langchain — only the deepagents driver does.
     """
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.messages import ToolMessage
 
-    def _reject(request):
-        """Return an error ToolMessage to bounce this call, or None to dispatch normally."""
+    def _check(request):
+        """An error ToolMessage to bounce this call, else the request to dispatch."""
         tc = getattr(request, "tool_call", None) or {}
         if tc.get("name") != "task":
-            return None
+            return request
         bad = _unexpected_task_kwargs(tc.get("args"))
         if not bad:
-            return None
+            return request
         stats["unexpected_task_kwargs"] = sorted(
             set(stats.get("unexpected_task_kwargs") or []) | set(bad)
         )
         if stats.get("task_arg_rejections", 0) >= max_rejections:
             print(
                 f"[task-arg guard] unexpected task kwargs {bad} — relenting after "
-                f"{max_rejections} rejections; dispatching (the extras are dropped)."
+                f"{max_rejections} rejections; dispatching without them."
             )
-            return None
+            args = {k: v for k, v in tc["args"].items() if k in _TASK_ALLOWED_ARGS}
+            return request.override(tool_call={**tc, "args": args})
         stats["task_arg_rejections"] = stats.get("task_arg_rejections", 0) + 1
         print(
             f"[task-arg guard] rejecting task(...) with unexpected kwargs {bad} "
@@ -602,12 +606,12 @@ def _task_arg_guard(stats: dict[str, Any], *, max_rejections: int = _MAX_TASK_AR
 
     class _TaskArgGuard(AgentMiddleware):
         def wrap_tool_call(self, request, handler):
-            rejection = _reject(request)
-            return rejection if rejection is not None else handler(request)
+            checked = _check(request)
+            return checked if isinstance(checked, ToolMessage) else handler(checked)
 
         async def awrap_tool_call(self, request, handler):
-            rejection = _reject(request)
-            return rejection if rejection is not None else await handler(request)
+            checked = _check(request)
+            return checked if isinstance(checked, ToolMessage) else await handler(checked)
 
     return _TaskArgGuard()
 
