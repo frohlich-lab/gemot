@@ -464,12 +464,14 @@ def _chat_model_class():
     It also copies a stream's usage chunk onto ``response_metadata["token_usage"]``, where a
     non-streamed response already carries it.
 
-    And it carries each turn's REASONING back to the provider. ``langchain_openai`` drops
+    And it carries REASONING back to a provider that needs it. ``langchain_openai`` drops
     OpenRouter's ``reasoning_details`` both ways, so every request after the first sent the
     assistant's tool-call turns without the thinking that produced them; Anthropic then runs the
     next call without thinking at all (Haiku 4.5 reasoned on 0 of 1,466 calls after a tool result).
-    The details ride the AIMessage's ``additional_kwargs`` and are put back, untouched (their
-    signatures are verified), on that assistant message of every later request.
+    The details ride the AIMessage's ``additional_kwargs`` and, for a model in
+    :func:`models.returns_reasoning`, are put back untouched (their signatures are verified) on
+    the assistant messages of the tool-use turn in progress (:func:`_return_reasoning`). Every
+    other model gets none back (gemot#76).
 
     ``lru_cache``d, and the caller passes ``name="ChatOpenAI"`` -- both for reasons that bite
     silently. LangChain derives a run's name (and openinference the SPAN name) from the class name,
@@ -486,8 +488,9 @@ def _chat_model_class():
     class _ChatOpenAIRecordingProvider(ChatOpenAI):
         def _get_request_payload(self, input_, *, stop=None, **kwargs):
             payload = super()._get_request_payload(input_, stop=stop, **kwargs)
-            _return_reasoning(self._convert_input(input_).to_messages(), payload)
-            config = models.caching_config(payload.get("model") or self.model_name)
+            model = payload.get("model") or self.model_name
+            _return_reasoning(self._convert_input(input_).to_messages(), payload, model)
+            config = models.caching_config(model)
             if config is not None:
                 _apply_cache_breakpoints(payload, config)
             return payload
@@ -554,13 +557,37 @@ def _keep_reasoning(response, result) -> None:
         pass
 
 
-def _return_reasoning(messages, payload) -> None:
-    """Put each AIMessage's ``reasoning_details`` back on its assistant message in ``payload``.
+def _turn_start(messages) -> int:
+    """Index of the first message of the tool-use turn in progress: the one after the last plain
+    user message, or 0.
+
+    A user message right after tool results is not plain. The provider merges it into the user
+    message that returns them, so the turn goes on: the subagent turn limit's notice
+    (``guards._subagent_turn_limit``) lands there, and ending the turn at it would strip an
+    analyst's thinking for its last calls. The task, a nudge after a text-only turn and the
+    thinking hand-off's instruction do end it."""
+    start = 0
+    for i, message in enumerate(messages):
+        before = getattr(messages[i - 1], "type", None) if i else None
+        if getattr(message, "type", None) == "human" and before not in ("tool", "human"):
+            start = i + 1
+    return start
+
+
+def _return_reasoning(messages, payload, model: str) -> None:
+    """Put the ``reasoning_details`` of each AIMessage in the tool-use turn in progress
+    (:func:`_turn_start`) back on its assistant message in ``payload``, if ``model`` takes
+    reasoning back (:func:`models.returns_reasoning`). Earlier turns' reasoning stays on their
+    AIMessages, in the run's own record, and is not sent.
+
     The payload's messages are the input's, one for one; when they are not, nothing is touched."""
+    if not models.returns_reasoning(model):
+        return
     sent = payload.get("messages")
     if not isinstance(sent, list) or len(sent) != len(messages):
         return
-    for message, out in zip(messages, sent):
+    start = _turn_start(messages)
+    for message, out in zip(messages[start:], sent[start:]):
         details = (getattr(message, "additional_kwargs", None) or {}).get("reasoning_details")
         if details and isinstance(out, dict) and out.get("role") == "assistant":
             out["reasoning_details"] = details
@@ -609,6 +636,35 @@ def _transient_provider_reason(exc: BaseException) -> str | None:
     return f"provider {m.group(1)}: {type(exc).__name__}: {str(exc)[:120]}"
 
 
+#: The stop_reason of a run OpenRouter refused for credit (:func:`_is_provider_credit`). Bare, like
+#: the budget stops: the provider's text, with a count unique to each run ("can only afford
+#: 91509"), goes to the log.
+PROVIDER_CREDIT = "provider_credit"
+
+
+def _is_provider_credit(exc: BaseException) -> bool:
+    """Whether ``exc`` is OpenRouter's 402: the key's credit cannot cover the request.
+
+    OpenRouter reserves a request's whole ``max_tokens`` against the key's credit before running
+    it, so this ends runs with credit still left ("You requested up to 131072 tokens, but can only
+    afford 91509", perica_egf, gemot#76), which ended as the raw exception text, unique per run.
+    It is terminal, not an outage: the same request is refused until the account is topped up, so
+    it must be checked before :func:`_transient_provider_reason`, which waits a bare ``APIError``
+    out as one.
+
+    Read by its CODE, wherever the client puts it: ``status_code`` on the ``APIStatusError`` an
+    HTTP 402 raises, ``body["code"]`` on the bare ``APIError`` of a mid-stream error event, and the
+    quoted ``'code': 402`` of an HTTP-200 error body (:func:`_transient_provider_reason`).
+    """
+    body = getattr(exc, "body", None)
+    if getattr(exc, "status_code", None) == 402 or (
+        isinstance(body, dict) and body.get("code") == 402
+    ):
+        return True
+    m = _PROVIDER_CODE_RE.search(str(exc))
+    return m is not None and m.group(1) == "402"
+
+
 # NOTE: the lead used to run a ContextEditingMiddleware (ClearToolUsesEdit) that cleared old
 # tool results once its context passed ~90k tokens — a guard against an early failure mode where
 # re-sent tool RESULTS ballooned a run to ~1.1M tokens and hanging calls. It was removed: all
@@ -627,8 +683,8 @@ def _server_is_alive(server_poll) -> "bool | None":
     Deliberately a process check and NOT a probe call. The obvious implementation -- read something
     cheap and see whether it answers -- cannot work here, because it cannot tell a dead server from
     a busy one, and the only moment this is consulted is the moment the server is guaranteed busy:
-    `_is_call_timeout` documents that the abandoned multistart is STILL RUNNING (mcp sends no
-    cancellation). Worse, `make_changes` is a sync `def`, and mcp runs sync tool functions directly
+    `_is_call_timeout` documents that the abandoned multistart is STILL RUNNING (gemot never
+    cancels it, see `runner.main._ToolCallsRunOn`). Worse, `make_changes` is a sync `def`, and mcp runs sync tool functions directly
     on the event loop (`fastmcp.utilities.func_metadata`: `if fn_is_async: await fn(...) else:
     return fn(...)`), holding `session.lock` for the whole change-and-fit section. So NOTHING can be
     answered for the remainder of a multi-thousand-second fit. A read-based probe would report
@@ -740,7 +796,7 @@ async def run_deepagents(
     function just drives the loop to completion.
     """
     from deepagents import create_deep_agent
-    from langchain_mcp_adapters.tools import load_mcp_tools
+    from .mcp_tools import load_mcp_tools
 
     biology_blind = prompts.BIOLOGY_BLIND_ENABLED
     biocurator_enabled = prompts.BIOCURATOR_ENABLED
@@ -876,10 +932,13 @@ async def run_deepagents(
     # 0.85-0.89 normal) and ~33s, at a median trigger prompt of 169,266 tokens — 16% of the
     # 1M window this driver already assumes everywhere else (it deliberately runs no history
     # trimmer, and models.py pins 1M-context endpoints for exactly that reason). With the
-    # profile set, the trigger becomes 0.85 x window ≈ 891k. Long large-model runs DO reach it
-    # now (lucarelli 845-927k, raimundez 862k on the 2026-08-20/21 sweeps), and that is by
-    # design: one compaction is cheaper than the explicit stop that used to fire at 0.8 and
-    # ended runs mid-improvement. The context-stop below is the true backstop, at 0.90.
+    # profile set, the trigger becomes 0.85 x window ≈ 891k -- or, from deepagents 0.7.14, the
+    # input budget if lower: 0.95 x window minus the `max_tokens` asked for below, ≈ 865k at
+    # the defaults. That reserves room for the full output budget; it does not cap it. Long
+    # large-model runs DO reach it now (lucarelli 845-927k, raimundez 862k on the 2026-08-20/21
+    # sweeps), and that is by design: one compaction is cheaper than the explicit stop that used
+    # to fire at 0.8 and ended runs mid-improvement. The context-stop below is the true backstop,
+    # at 0.90.
     max_input_tokens = _env_token_limit("PETAB_MCP_MAX_INPUT_TOKENS", 1_048_576, minimum=1)
     # Output ceiling. An explicit 0 leaves `max_tokens` OFF so the provider default applies (the
     # behaviour before 2026-08-28); unset uses the 131_072 default — see the parameter below for
@@ -979,8 +1038,9 @@ async def run_deepagents(
     # e.g. raised at the `task` subagent boundary or the bio ClientSession itself — should RESUME
     # the run from the checkpoint rather than abort it (the petab server is still alive). Cover both
     # transport layers the breaker classifies in _TRANSPORT_ERROR_NAMES: the anyio stream errors and
-    # httpx's TransportError base (ConnectError/ReadError/WriteError/ReadTimeout/ConnectTimeout/
-    # RemoteProtocolError all derive from it).
+    # httpx2's TransportError base (ConnectError/ReadError/WriteError/ReadTimeout/ConnectTimeout/
+    # RemoteProtocolError all derive from it). httpx2, not httpx: mcp 2 runs its transport on it,
+    # and httpx2's errors do not derive from httpx's.
     # Every other transient is waited out as a provider outage; a closed session stream does not
     # reopen by waiting, so the anyio errors spend a resume instead (see the retry tail).
     _CLOSED_STREAM_ERRORS: tuple = ()
@@ -992,10 +1052,10 @@ async def run_deepagents(
     except Exception:  # pragma: no cover - anyio always present with mcp, but never fail on import
         pass
     try:
-        import httpx
+        import httpx2
 
-        _TRANSIENT_ERRORS = _TRANSIENT_ERRORS + (httpx.TransportError,)
-    except Exception:  # pragma: no cover - httpx always present with mcp, but never fail on import
+        _TRANSIENT_ERRORS = _TRANSIENT_ERRORS + (httpx2.TransportError,)
+    except Exception:  # pragma: no cover - httpx2 always present with mcp, but never fail on import
         pass
 
     # deepagents renamed the prompt kwarg between releases (instructions -> system_prompt).
@@ -1473,6 +1533,9 @@ async def run_deepagents(
             # full filesystem. The check after this try ends the run on it.
             if (hit := infrastructure.find_in_error(exc)) is not None:
                 infra["evidence"] = infra["evidence"] or hit
+            elif _is_provider_credit(exc):
+                stop_reason = PROVIDER_CREDIT  # terminal: a resume is refused the same way
+                print(f"[agent] {PROVIDER_CREDIT}: {str(exc)[:300]} — stopping, no resume.")
             elif (filtered := _content_filter_stop_reason(exc)) is not None:
                 stop_reason = filtered
             elif _is_call_timeout(exc):
@@ -1481,7 +1544,7 @@ async def run_deepagents(
                 # behind one ends the run (circuit_breaker._fit_wedged). The server may be busy
                 # with a fit, so RESUME from the checkpoint rather than ending the run. It cannot
                 # join _TRANSIENT_ERRORS because that is a tuple of CLASSES and this is one status
-                # code within McpError.
+                # code within MCPError.
                 retriable = f"fit call timed out: {exc}"
             elif (transient := _transient_provider_reason(exc)) is not None:
                 retriable = transient  # resume from the checkpoint, keeping every version

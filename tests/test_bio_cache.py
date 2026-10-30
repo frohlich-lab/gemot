@@ -20,12 +20,12 @@ class _Result:
 
     def __init__(self, text: str, is_error: bool = False) -> None:
         self.text = text
-        self.isError = is_error
+        self.is_error = is_error
 
     def __eq__(self, other) -> bool:
-        return isinstance(other, _Result) and (self.text, self.isError) == (
+        return isinstance(other, _Result) and (self.text, self.is_error) == (
             other.text,
-            other.isError,
+            other.is_error,
         )
 
 
@@ -118,8 +118,8 @@ def test_an_unwritable_cache_directory_does_not_break_the_run(tmp_path):
 
 
 def test_the_production_call_shape_is_cached(tmp_path):
-    """THE test this file was missing. langchain-mcp-adapters is the only consumer of these sessions
-    and passes `progress_callback=` on EVERY call (tools.py:489). The first version bypassed the
+    """THE test this file was missing. langchain-mcp-adapters was the only consumer of these
+    sessions and passed `progress_callback=` on EVERY call (tools.py:489). The first version bypassed the
     cache on any kwarg, so it served 0% in production while every test here — which called the
     stand-in in the plain shape — passed. Measured before the fix: 3 identical langchain-shaped
     calls produced 3 network calls and 0 hits."""

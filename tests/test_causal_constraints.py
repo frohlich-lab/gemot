@@ -318,28 +318,21 @@ def _toy(tmp_path: Path) -> Path:
     return work
 
 
-def test_the_judged_models_behaviour_is_read_off_its_simulation(tmp_path):
-    """End to end on a stored version: the server builds a phosphorylation cascade under the
-    constraints, and the record finds the subject and object species by the server's own reading,
-    perturbs the subject and reads the object's gain. Raising A raises B{pS10} (a plain cascade);
-    the direct constraint and the one claiming no sign are not read."""
-    pytest.importorskip("amici")
+def _cascade(work: Path, tmp_path: Path, constraints: str, phos: str = "default"):
+    """``(constraints file, make_changes result)``: the server, held to ``constraints``, commits a
+    phosphorylation cascade on the problem in ``work``, A phosphorylating B at S10 by binding
+    ``phos``."""
     from petab_mcp.server import create_server
 
-    work = _toy(tmp_path)
     (tmp_path / "entities.json").write_text("{}\n")
-    constraints = tmp_path / "constraints.txt"
-    constraints.write_text(
-        "c1: A increases B{pS10}, indirectly\n"
-        "c2: A phosphorylates B at S10, directly\n"
-        "c3: B does not affect A, indirectly\n"
-    )
+    path = tmp_path / "constraints.txt"
+    path.write_text(constraints)
     mcp = create_server(
         str(work / "problem.yaml"),
         build_root=str(tmp_path / "build"),
         auto_fit=False,
         entity_map=str(tmp_path / "entities.json"),
-        constraints=str(constraints),
+        constraints=str(path),
     )
     out = asyncio.run(
         mcp.call_tool(
@@ -350,12 +343,30 @@ def test_the_judged_models_behaviour_is_read_off_its_simulation(tmp_path):
                     "phos: A phosphorylates B at S10",
                     "dephos: B is dephosphorylated at S10",
                 ],
-                "bindings": {"phos": "default", "dephos": "basal"},
+                "bindings": {"phos": phos, "dephos": "basal"},
                 "readouts": {"readout_B": "amount(B{pS10})"},
             },
         )
     ).structured_content
     assert out.get("committed") is True, out
+    return path, out
+
+
+def test_the_judged_models_behaviour_is_read_off_its_simulation(tmp_path):
+    """End to end on a stored version: the server builds a phosphorylation cascade under the
+    constraints, and the record finds the subject and object species by the server's own reading,
+    perturbs the subject and reads the object's gain. Raising A raises B{pS10} (a plain cascade);
+    the direct constraint and the one claiming no sign are not read."""
+    pytest.importorskip("amici")
+
+    work = _toy(tmp_path)
+    constraints, out = _cascade(
+        work,
+        tmp_path,
+        "c1: A increases B{pS10}, indirectly\n"
+        "c2: A phosphorylates B at S10, directly\n"
+        "c3: B does not affect A, indirectly\n",
+    )
     clock = _ToolClock()
     clock.note_result("make_changes", _Envelope(out))
     got = CC.record(
@@ -367,4 +378,128 @@ def test_the_judged_models_behaviour_is_read_off_its_simulation(tmp_path):
     c1 = got["behaviour"]["c1"]
     assert c1["linf"]["verdict"] == "as_claimed" and c1["l1_logt"]["verdict"] == "as_claimed"
     assert c1["linf"]["gain"] > 1 and c1["perturbation"] == ["raised"]
+    assert "pre_equilibration" not in c1
     assert set(got["behaviour"]["c2"]) == set(got["behaviour"]["c3"]) == {"skipped"}
+
+
+#: A pre-equilibrated problem, as perica_egf's are (#74): `stim` off at rest and on from time 0,
+#: and `boost` set at rest by a second row, which nothing resets. Plus an experiment that switches
+#: `stim` off again at 5, which PEtab v1 cannot state.
+_PRE_EQUILIBRATED = {
+    "problem.yaml": "format_version: 2.0.0\n"
+    "parameter_files: [parameters.tsv]\n"
+    "model_files:\n  pre_toy:\n    location: model.xml\n    language: sbml\n"
+    "observable_files: [observables.tsv]\n"
+    "measurement_files: [measurements.tsv]\n"
+    "condition_files: [conditions.tsv]\n"
+    "experiment_files: [experiments.tsv]\n",
+    "conditions.tsv": "conditionId\ttargetId\ttargetValue\n"
+    "off\tstim\t0\non\tstim\t1\nboosted\tboost\t0.2\n",
+    "experiments.tsv": "experimentId\ttime\tconditionId\n"
+    "e_pre\t-inf\toff\ne_pre\t-inf\tboosted\ne_pre\t0\ton\n"
+    "e_three\t-inf\toff\ne_three\t0\ton\ne_three\t5\toff\n",
+    "measurements.tsv": "observableId\texperimentId\ttime\tmeasurement\n"
+    + "".join(f"obs_B\te_pre\t{t}\t{0.1 * t}\n" for t in (0, 1, 2, 4))
+    + "".join(f"obs_B\te_three\t{t}\t0.1\n" for t in (0, 1, 6)),
+    "observables.tsv": "observableId\tobservableFormula\tnoiseFormula\tnoiseDistribution\n"
+    "obs_B\treadout_B\tsigma_B\tnormal\n",
+    "parameters.tsv": "parameterId\tparameterScale\tlowerBound\tupperBound\tnominalValue\testimate\n"
+    "sigma_B\tlin\t0.0001\t100.0\t0.1\tfalse\n",
+}
+
+
+def test_a_periods_conditions_apply_together_and_only_v1s_periods_are_read():
+    """Rows are grouped by time (#74): every condition of a period applies, whether one row names
+    them or several. A period from time 0, or one at -inf and one at 0, is read; any other start
+    or a later period is skipped, and so is a value that is an expression."""
+    import pandas as pd
+
+    experiments = pd.DataFrame(
+        [
+            ("e_pre", float("-inf"), "off"),
+            ("e_pre", float("-inf"), "boosted"),
+            ("e_pre", 0.0, "on"),
+            ("e_one", 0.0, "on"),
+            ("e_one", 0.0, "boosted"),
+            ("e_three", float("-inf"), "off"),
+            ("e_three", 0.0, "on"),
+            ("e_three", 5.0, "off"),
+            ("e_late", 5.0, "on"),
+            ("e_expr", 0.0, "dosed"),
+        ],
+        columns=["experimentId", "time", "conditionId"],
+    )
+    conditions = pd.DataFrame(
+        [("off", "stim", "0"), ("on", "stim", "1"), ("boosted", "boost", "0.2")]
+        + [("dosed", "stim", "2 * k")],
+        columns=["conditionId", "targetId", "targetValue"],
+    )
+    measured = [*experiments["experimentId"].unique(), ""]
+    problem = types.SimpleNamespace(
+        experiment_df=experiments,
+        condition_df=conditions,
+        measurement_df=pd.DataFrame({"experimentId": measured}),
+    )
+    read, skipped = CC._Judged.experiments(types.SimpleNamespace(problem=problem))
+    assert read == {
+        "": (None, {}),
+        "e_one": (None, {"stim": 1.0, "boost": 0.2}),
+        "e_pre": ({"stim": 0.0, "boost": 0.2}, {"stim": 1.0}),
+    }
+    assert skipped == ["e_expr", "e_late", "e_three"]
+
+
+def test_a_pre_equilibrated_experiment_is_read_across_both_periods(tmp_path, monkeypatch):
+    """#74: on perica_egf every experiment is pre-equilibrated, and the check read none of them.
+    Each runs as PEtab v1's pre-equilibration: the -inf period's conditions to steady state, then
+    the main period's. The main condition restates what the pre-equilibration set (v2's changes
+    persist); a lost `boost` would leave the stimulated cascade at the model's own value. The
+    subject is perturbed in both periods, so A's raised start survives the rest (its own gain 1.5)
+    and raises B{pS10} there too. The experiment v1 cannot state is listed, not read; and where
+    none can be, the record says so instead of carrying an error."""
+    pytest.importorskip("amici")
+    from petab_mcp import constraints as K
+
+    from gemot import simulate
+
+    work = tmp_path / "work"
+    work.mkdir()
+    for name, text in _PRE_EQUILIBRATED.items():
+        (work / name).write_text(text)
+    _write_empty_sbml(work / "model.xml", "pre_toy")
+    constraints, out = _cascade(
+        work, tmp_path, "c1: A increases B{pS10}, indirectly\n", "default kf=k_p*(boost+stim)"
+    )
+    seen = {}
+    real = simulate.simulate_true
+
+    def spy(model, parameters, conditions, observables, measurements, **kw):
+        seen.update(conditions=conditions.set_index("conditionId"), measurements=measurements)
+        return real(model, parameters, conditions, observables, measurements, **kw)
+
+    monkeypatch.setattr(simulate, "simulate_true", spy)
+    held = K.read(constraints)
+    got = CC.behaviour(work, out["version"], held, entity_map=None, build_dir=tmp_path / "metric")[
+        "c1"
+    ]
+    assert got["linf"]["verdict"] == got["l1_logt"]["verdict"] == "as_claimed"
+    assert got["pre_equilibration"]["verdict"] == "as_claimed"
+    assert got["pre_equilibration"]["subject_gain"] == pytest.approx(1.5)
+    assert got["perturbation"] == ["raised"]
+    assert got["experiments"] == ["e_pre"] and got["experiments_skipped"] == ["e_three"]
+    base = seen["conditions"].loc[["e_pre__gemot_base_pre", "e_pre__gemot_base"], ["stim", "boost"]]
+    assert base.values.tolist() == [[0.0, 0.2], [1.0, 0.2]]
+    m = seen["measurements"]
+    assert set(
+        m.loc[m["simulationConditionId"] == "e_pre__gemot_base", "preequilibrationConditionId"]
+    ) == {"e_pre__gemot_base_pre"}
+
+    (work / "experiments.tsv").write_text(
+        _PRE_EQUILIBRATED["experiments.tsv"].replace(
+            "e_pre\t0\ton\n", "e_pre\t0\ton\ne_pre\t3\toff\n"
+        )
+    )
+    none = CC.behaviour(work, out["version"], held, entity_map=None, build_dir=tmp_path / "metric")
+    assert none == {
+        "c1": {"skipped": CC.NO_EXPERIMENT, "experiments_skipped": ["e_pre", "e_three"]}
+    }

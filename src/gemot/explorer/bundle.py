@@ -73,13 +73,14 @@ def _assistant_from_output(output_messages: Any) -> dict:
     return {"text": text, "tool_calls": calls}
 
 
-def _system_prompt(msg_list) -> str:
-    """The first system message's text from an LLM span's ``llm.input_messages`` (the persona:
-    the lead and each analyst subagent run under a distinct, stable system prompt)."""
-    for m in msg_list if msg_list is not None else []:
-        if isinstance(m, dict) and m.get("message.role") == "system":
-            return _msg_text(m).strip()
-    return ""
+def _agent_name(metadata) -> str:
+    """Which agent made an LLM call, from the span's LangChain ``metadata.lc_agent_name``:
+    ``lead``, or the analyst's name, which is also the ``subagent_type`` it was delegated under.
+
+    Not from the system prompt in ``llm.input_messages``, as it used to be: the tracer keeps only
+    each call's new messages (``gemot.tracing``), so most LLM spans no longer carry one."""
+    metadata = _jload(metadata)
+    return str(metadata.get("lc_agent_name") or "") if isinstance(metadata, dict) else ""
 
 
 def _emits_task(out_msgs) -> bool:
@@ -88,22 +89,13 @@ def _emits_task(out_msgs) -> bool:
     return any(tc.get("name") == "task" for tc in _assistant_from_output(out_msgs)["tool_calls"])
 
 
-def _match_pending_subagent(
-    system_prompt: str, emitted: list[dict]
-) -> tuple[str | None, str | None]:
-    """Best-effort (subagent_type, description) for an in-progress analyst, by matching the
-    lead's emitted ``task`` calls against the analyst's persona prompt (e.g. subagent_type
-    ``mathematician`` ↔ a prompt beginning "You are a mathematician…").
-
-    Only the persona intro (the "You are a …" clause) is matched, not the whole prompt: the
-    shared report contract mentions every analyst, so a full-text search would mislabel."""
-    intro = (system_prompt or "").lower()[:80]
+def _match_pending_subagent(agent: str, emitted: list[dict]) -> tuple[str | None, str | None]:
+    """(subagent_type, description) for an in-progress analyst: its agent name, and the
+    description of the lead's emitted ``task`` call for that subagent_type, if there is one."""
     for a in emitted:
-        st = a.get("subagent_type")
-        toks = str(st or "").lower().replace("_", " ").replace("-", " ").split()
-        if toks and toks[0] in intro:
-            return st, a.get("description")
-    return None, None
+        if a.get("subagent_type") == agent:
+            return agent, a.get("description")
+    return agent or None, None
 
 
 def _num(v) -> float | None:
@@ -144,7 +136,7 @@ class _Trace:
                 "in": r.get("attributes.input.value"),
                 "out": r.get("attributes.output.value"),
                 "tool_name": r.get("attributes.tool.name"),
-                "in_msgs": r.get("attributes.llm.input_messages"),
+                "agent": _agent_name(r.get("attributes.metadata")),
                 "out_msgs": r.get("attributes.llm.output_messages"),
                 "model": r.get("attributes.llm.model_name"),
                 "tok_prompt": _num(r.get("attributes.llm.token_count.prompt")),
@@ -251,20 +243,19 @@ def load_turns(
     # In-progress delegations (LIVE): while an analyst subagent is still running, its `task`
     # TOOL span hasn't ended, so it isn't in the trace yet and its analyst LLM spans have no
     # task ancestor — the tree alone would drop them into the lead timeline. The lead is the
-    # only agent that emits `task` tool calls, so its system prompt is a reliable signature:
-    # any LLM span NOT under a completed task whose system prompt isn't the lead's is an
-    # in-progress analyst. (Empty lead-prompt set ⇒ no delegation has started ⇒ no orphans.)
-    lead_prompts = {
-        _system_prompt(s["in_msgs"])
+    # only agent that emits `task` tool calls, so its agent name is a reliable signature:
+    # any LLM span NOT under a completed task whose agent isn't the lead is an in-progress
+    # analyst. (Empty lead set ⇒ no delegation has started ⇒ no orphans.)
+    lead_agents = {
+        s["agent"]
         for sid, s in tr.by_id.items()
         if s["kind"] == "LLM" and _emits_task(s["out_msgs"])
     }
     orphan_analyst_ids = []
-    if lead_prompts:
+    if lead_agents:
         for sid, s in tr.by_id.items():
             if s["kind"] == "LLM" and sid not in all_analyst_ids:
-                sp = _system_prompt(s["in_msgs"])
-                if sp and sp not in lead_prompts:
+                if s["agent"] and s["agent"] not in lead_agents:
                     orphan_analyst_ids.append(sid)
 
     # Lead timeline = every span EXCEPT those inside a completed task subtree, the in-progress
@@ -318,12 +309,12 @@ def load_turns(
             for tc in (it.get("tool_calls") or [])
             if tc.get("name") == "task" and isinstance(tc.get("args"), dict)
         ]
-        by_prompt: dict[str, list[str]] = {}
+        by_agent: dict[str, list[str]] = {}
         for sid in orphan_analyst_ids:
-            by_prompt.setdefault(_system_prompt(tr.by_id[sid]["in_msgs"]), []).append(sid)
-        for sp, ids in by_prompt.items():
+            by_agent.setdefault(tr.by_id[sid]["agent"], []).append(sid)
+        for name, ids in by_agent.items():
             sub_items = tr.timeline(ids, inner_ex)
-            st, desc = _match_pending_subagent(sp, emitted)
+            st, desc = _match_pending_subagent(name, emitted)
             lead_items.append(
                 {
                     "type": "tool",
