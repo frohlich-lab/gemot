@@ -89,7 +89,7 @@ class _Session:
 
     async def call_tool(self, name, arguments=None, *args, **kwargs):
         replies = {"describe_problem": {"model_authored": False}, "get_model_structure": {}}
-        return SimpleNamespace(structuredContent=replies.get(name, {}))
+        return SimpleNamespace(structured_content=replies.get(name, {}))
 
 
 def _drive_failing(tmp_path, monkeypatch, *, in_judge: bool) -> dict:

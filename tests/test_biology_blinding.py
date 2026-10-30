@@ -248,26 +248,26 @@ def test_judge_translates_model_arguments_and_noise_keys():
 
 
 def test_agent_payloads_hide_example_paths_and_keep_transport_error_codes():
-    from mcp.shared.exceptions import McpError
-    from mcp.types import CallToolResult, ErrorData, TextContent
+    from mcp import MCPError
+    from mcp.types import REQUEST_TIMEOUT, CallToolResult, TextContent
 
     class Session:
         async def call_tool(self, name, *args, **kwargs):
             if name == "error":
-                raise McpError(ErrorData(code=408, message="Timeout at /runs/Alkan/work"))
+                raise MCPError(code=REQUEST_TIMEOUT, message="Timeout at /runs/Alkan/work")
             return CallToolResult(
                 content=[TextContent(type="text", text="/runs/Alkan/work/model.xml")],
-                structuredContent={"path": "examples/Alkan/work", "nll": 12.5},
+                structured_content={"path": "examples/Alkan/work", "nll": 12.5},
             )
 
     async def check():
         session = AnonymousSession(Session(), Path("/runs/Alkan"))
         result = await session.call_tool("get_model")
         assert result.content[0].text == "/task/work/model.xml"
-        assert result.structuredContent == {"path": "/task/work", "nll": 12.5}
-        with pytest.raises(McpError) as exc:
+        assert result.structured_content == {"path": "/task/work", "nll": 12.5}
+        with pytest.raises(MCPError) as exc:
             await session.call_tool("error")
-        assert exc.value.error.code == 408
+        assert exc.value.code == REQUEST_TIMEOUT
         assert "Alkan" not in str(exc.value)
 
     asyncio.run(check())

@@ -404,12 +404,12 @@ class AnonymousSession:
         return value
 
     async def call_tool(self, *args, **kwargs):
-        from mcp.shared.exceptions import McpError
+        from mcp import MCPError
 
         try:
             result = await self._call_tool(*args, **kwargs)
-        except McpError as error:
-            raise McpError(
+        except MCPError as error:
+            raise MCPError.from_error_data(
                 type(error.error).model_validate(self._scrub(error.error.model_dump()))
             ) from None
         return type(result).model_validate(self._scrub(result.model_dump()))

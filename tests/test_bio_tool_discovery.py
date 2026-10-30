@@ -16,9 +16,9 @@ def test_discovery_is_the_curated_allowlist(monkeypatch):
     """The curated names resolve; a literature tool only under the ablation; a petab-name
     collision and a second server's duplicate are dropped; a server whose discovery raises costs
     only its own tools."""
-    pytest.importorskip("langchain_mcp_adapters")
+    pytest.importorskip("langchain.mcp")
     from langchain_core.tools import StructuredTool
-    import langchain_mcp_adapters.tools as lmt
+    from gemot.agent import mcp_tools as lmt
     from gemot.agent import biocurator as B
 
     def _tool(name):
@@ -53,9 +53,9 @@ def test_discovery_is_the_curated_allowlist(monkeypatch):
 
 def test_a_server_exposing_nothing_curated_leaves_the_biocurator_dumb(monkeypatch):
     """No all-tools fallback: an unrecognised roster yields no tools, not every tool."""
-    pytest.importorskip("langchain_mcp_adapters")
+    pytest.importorskip("langchain.mcp")
     from langchain_core.tools import StructuredTool
-    import langchain_mcp_adapters.tools as lmt
+    from gemot.agent import mcp_tools as lmt
     from gemot.agent import biocurator as B
 
     async def _fake_load(session):

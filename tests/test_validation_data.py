@@ -33,7 +33,7 @@ _JUDGE_REF = {
 
 
 _RAISES = object()
-#: The call outlives its read timeout: mcp raises a bare ``McpError`` with code 408.
+#: The call outlives its read timeout: mcp raises a bare ``MCPError`` with ``REQUEST_TIMEOUT``.
 _TIMES_OUT = object()
 
 
@@ -201,17 +201,11 @@ def _run_judge(work, *, has_held_out, payload, reference=None, nll=100.0):
         if name == "evaluate_validation_data" and payload is _RAISES:
             raise RuntimeError("Unknown tool: evaluate_validation_data")
         if name == "evaluate_validation_data" and payload is _TIMES_OUT:
-            from mcp.shared.exceptions import McpError
-            from mcp.types import ErrorData
+            from mcp import MCPError
+            from mcp.types import REQUEST_TIMEOUT
 
             await asyncio.sleep(0.2)
-            raise McpError(
-                ErrorData(
-                    code=408,
-                    message="Timed out while waiting for response to ClientRequest. "
-                    "Waited 900.0 seconds.",
-                )
-            )
+            raise MCPError(code=REQUEST_TIMEOUT, message="Request 'tools/call' timed out")
         return canned.get(name, {})
 
     code, result = asyncio.run(

@@ -12,14 +12,14 @@ import asyncio
 
 import pytest
 
-pytest.importorskip("langchain_mcp_adapters", reason="agent stack not installed")
+pytest.importorskip("langchain.mcp", reason="agent stack not installed")
 
 from conftest import YAML_PATH  # noqa: E402
 from fastmcp import Client  # noqa: E402
-from langchain_mcp_adapters.tools import load_mcp_tools  # noqa: E402
 from petab_mcp.references import StubReferenceResolver  # noqa: E402
 from petab_mcp.server import create_server  # noqa: E402
 
+from gemot.agent.mcp_tools import load_mcp_tools  # noqa: E402
 from gemot.agent.tools import ALLOWED_TOOLS, _blind_descriptions, _select_tools  # noqa: E402
 
 
@@ -34,7 +34,9 @@ def _served_and_panel(tmp_path, **kwargs):
     )
 
     async def load():
-        async with Client(server) as client:
+        # The handshake era, which is what the runner's own `ClientSession.initialize()` speaks
+        # to the server; fastmcp 4's client would otherwise negotiate the sessionless one.
+        async with Client(server, mode="legacy") as client:
             served = {t.name: t for t in await client.list_tools()}
             return served, await load_mcp_tools(client.session)
 
