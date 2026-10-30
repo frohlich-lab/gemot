@@ -609,7 +609,7 @@ def test_the_null_arms_sandbox_and_scoring_time_is_compute_not_llm(tmp_path):
 
     class _Session:
         async def call_tool(self, name, arguments=None, read_timeout_seconds=None, **_):
-            return SimpleNamespace(structuredContent=canned.get(name, {}))
+            return SimpleNamespace(structured_content=canned.get(name, {}))
 
     async def _no_fix(call, n_starts):  # pragma: no cover - never driven here
         return None
@@ -737,10 +737,10 @@ def test_bio_tool_discovery_is_the_panels_allowlist(monkeypatch):
     """Both arms hold the same lookups because both call `discover_bio_tools`: the curated
     allowlist resolves, a literature tool only under the ablation, a petab-name collision and a
     duplicate are dropped, and a server whose discovery raises costs only its own tools."""
-    pytest.importorskip("langchain_mcp_adapters")
+    pytest.importorskip("langchain.mcp")
     import asyncio
     from langchain_core.tools import StructuredTool
-    import langchain_mcp_adapters.tools as lmt
+    from gemot.agent import mcp_tools as lmt
     from gemot.agent import biocurator as B
 
     def _tool(name):

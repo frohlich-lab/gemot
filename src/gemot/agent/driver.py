@@ -683,8 +683,8 @@ def _server_is_alive(server_poll) -> "bool | None":
     Deliberately a process check and NOT a probe call. The obvious implementation -- read something
     cheap and see whether it answers -- cannot work here, because it cannot tell a dead server from
     a busy one, and the only moment this is consulted is the moment the server is guaranteed busy:
-    `_is_call_timeout` documents that the abandoned multistart is STILL RUNNING (mcp sends no
-    cancellation). Worse, `make_changes` is a sync `def`, and mcp runs sync tool functions directly
+    `_is_call_timeout` documents that the abandoned multistart is STILL RUNNING (gemot never
+    cancels it, see `runner.main._ToolCallsRunOn`). Worse, `make_changes` is a sync `def`, and mcp runs sync tool functions directly
     on the event loop (`fastmcp.utilities.func_metadata`: `if fn_is_async: await fn(...) else:
     return fn(...)`), holding `session.lock` for the whole change-and-fit section. So NOTHING can be
     answered for the remainder of a multi-thousand-second fit. A read-based probe would report
@@ -796,7 +796,7 @@ async def run_deepagents(
     function just drives the loop to completion.
     """
     from deepagents import create_deep_agent
-    from langchain_mcp_adapters.tools import load_mcp_tools
+    from .mcp_tools import load_mcp_tools
 
     biology_blind = prompts.BIOLOGY_BLIND_ENABLED
     biocurator_enabled = prompts.BIOCURATOR_ENABLED
@@ -1038,8 +1038,9 @@ async def run_deepagents(
     # e.g. raised at the `task` subagent boundary or the bio ClientSession itself — should RESUME
     # the run from the checkpoint rather than abort it (the petab server is still alive). Cover both
     # transport layers the breaker classifies in _TRANSPORT_ERROR_NAMES: the anyio stream errors and
-    # httpx's TransportError base (ConnectError/ReadError/WriteError/ReadTimeout/ConnectTimeout/
-    # RemoteProtocolError all derive from it).
+    # httpx2's TransportError base (ConnectError/ReadError/WriteError/ReadTimeout/ConnectTimeout/
+    # RemoteProtocolError all derive from it). httpx2, not httpx: mcp 2 runs its transport on it,
+    # and httpx2's errors do not derive from httpx's.
     # Every other transient is waited out as a provider outage; a closed session stream does not
     # reopen by waiting, so the anyio errors spend a resume instead (see the retry tail).
     _CLOSED_STREAM_ERRORS: tuple = ()
@@ -1051,10 +1052,10 @@ async def run_deepagents(
     except Exception:  # pragma: no cover - anyio always present with mcp, but never fail on import
         pass
     try:
-        import httpx
+        import httpx2
 
-        _TRANSIENT_ERRORS = _TRANSIENT_ERRORS + (httpx.TransportError,)
-    except Exception:  # pragma: no cover - httpx always present with mcp, but never fail on import
+        _TRANSIENT_ERRORS = _TRANSIENT_ERRORS + (httpx2.TransportError,)
+    except Exception:  # pragma: no cover - httpx2 always present with mcp, but never fail on import
         pass
 
     # deepagents renamed the prompt kwarg between releases (instructions -> system_prompt).
@@ -1543,7 +1544,7 @@ async def run_deepagents(
                 # behind one ends the run (circuit_breaker._fit_wedged). The server may be busy
                 # with a fit, so RESUME from the checkpoint rather than ending the run. It cannot
                 # join _TRANSIENT_ERRORS because that is a tuple of CLASSES and this is one status
-                # code within McpError.
+                # code within MCPError.
                 retriable = f"fit call timed out: {exc}"
             elif (transient := _transient_provider_reason(exc)) is not None:
                 retriable = transient  # resume from the checkpoint, keeping every version

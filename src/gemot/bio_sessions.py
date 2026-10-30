@@ -1,7 +1,7 @@
 """Supervised, ISOLATED bio-knowledge MCP sessions for the blinded ``biocurator`` (issue #86).
 
 The biocurator queries two HOSTED bio-knowledge MCP servers (``runner.BIO_MCP_URLS``:
-BioContextAI + OmniPath). Each ``streamablehttp_client`` + ``ClientSession`` spawns background
+BioContextAI + OmniPath). Each ``streamable_http_client`` + ``ClientSession`` spawns background
 anyio tasks (a ``post_writer``, an SSE reader, a receive loop). Before this module those sessions
 were opened on the SAME ``AsyncExitStack`` as the essential petab session, so their task groups'
 cancel scopes sat on the run's own task: a transport failure on a bio session — a
@@ -30,20 +30,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import inspect
 from typing import Any, AsyncIterator, Callable
 
 # --- transport hardening (issue #86 fix #2) ------------------------------------------------
 # A GENEROUS httpx connect timeout for the bio transport: the abort in #86 was a ConnectTimeout at
 # the TLS handshake under load, so the tight httpx default is replaced with a roomier one.
-# sse_read_timeout is separate — the in-session streaming read window (long, for tool responses);
+# The read timeout is separate — the in-session streaming read window (long, for tool responses);
 # it deliberately does NOT govern the startup handshake, which the per-attempt deadline below
 # bounds so a slow server can't stall run startup. A hung server is retried a couple of times.
 _BIO_TRANSPORT_TIMEOUT_S = 10.0  # httpx connect/write/pool timeout for a bio session
 _BIO_SSE_READ_TIMEOUT_S = 120.0  # in-session streaming read window (tool responses), not startup
 # Per-ATTEMPT budget for a full connect+initialize. It EXCEEDS the httpx connect timeout above so a
 # real handshake isn't cut short, and the ~10s of headroom over it covers a normal initialize();
-# it deliberately caps the whole startup handshake well under sse_read_timeout so a slow/hung
+# it deliberately caps the whole startup handshake well under the read timeout so a slow/hung
 # server can't stall startup (the long streaming window is for live tool calls, not this handshake).
 _BIO_CONNECT_TIMEOUT_S = 20.0
 _BIO_CONNECT_RETRIES = 2  # extra attempts after the first (up to 3 total per server)
@@ -82,25 +81,18 @@ async def _default_bio_opener(url: str) -> AsyncIterator[Any]:
     supervision logic with a fake opener) needs no ``mcp`` install. Uses the generous bio
     transport timeouts above so a handshake under load isn't cut short by the tight default.
     """
+    import httpx2
     from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.streamable_http import streamable_http_client
 
-    # ``sse_read_timeout`` is passed unconditionally (the petab session already uses it, so the
-    # pinned mcp supports it). The connect ``timeout`` is NEWLY used here, so pass it ONLY if this
-    # mcp version's client actually accepts it — otherwise a signature mismatch would TypeError on
-    # EVERY connect and silently disable the biocurator (dumb) on every run. Absent the kwarg we
-    # simply fall back to the client's default connect timeout (the hardening no-ops, not the run).
-    kwargs: dict[str, Any] = {"sse_read_timeout": _BIO_SSE_READ_TIMEOUT_S}
-    try:
-        if "timeout" in inspect.signature(streamablehttp_client).parameters:
-            kwargs["timeout"] = _BIO_TRANSPORT_TIMEOUT_S
-    except (ValueError, TypeError):  # pragma: no cover - unsignaturable callable: skip the hint
-        pass
-
-    async with streamablehttp_client(url, **kwargs) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            yield session
+    # Both timeouts live on the httpx2 client the transport runs on (mcp 1.x took them as the
+    # transport's `timeout` and `sse_read_timeout`).
+    timeout = httpx2.Timeout(_BIO_TRANSPORT_TIMEOUT_S, read=_BIO_SSE_READ_TIMEOUT_S)
+    async with httpx2.AsyncClient(timeout=timeout) as http:
+        async with streamable_http_client(url, http_client=http) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                yield session
 
 
 async def _bio_session_runner(

@@ -42,13 +42,13 @@ def _bio_urls() -> "list[str]":
 
 async def _discover_tool_names(urls: "list[str]") -> "set[str]":
     from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.client.streamable_http import streamable_http_client
 
     names: "set[str]" = set()
     for url in urls:
 
         async def _one(u=url):
-            async with streamablehttp_client(u) as (read, write, _):
+            async with streamable_http_client(u) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     res = await session.list_tools()

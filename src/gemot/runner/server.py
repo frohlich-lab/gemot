@@ -74,7 +74,7 @@ def _server_env(scenario: Scenario) -> dict[str, str]:
     from: the run records them by resolving this same dict (``provenance._fit_settings``).
 
     It exports the harness's resolved Fides per-start cap + worker count, so the server's candidate
-    fits use the SAME cap AND parallelism the harness sized its sse_read_timeout + stall watchdog
+    fits use the SAME cap AND parallelism the harness sized its read timeout + stall watchdog
     to (fit_budget.py); otherwise the budget would not match the real wall-clock. The problem's own
     AMICI tolerances go last, so they win over any inherited from the caller: they are part of what
     the example IS, and its reference bar was fitted under them.

@@ -61,18 +61,22 @@ dependencies = [
     # the `statements` route or the text routes, never both; an entity map implies the former, and
     # `statements_only` is gone. #163: an offset in an observable formula is solved as an inner
     # offset, not a second scaling, so a problem with both fits them hierarchically again.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@a32a1f6f400459bb4c1df1dd58f320f7568bb92a",
-    # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
-    # extra pins need the 1.x SDK. The adapters will not get mcp 2.0 support: the repository was
-    # archived in 2026-09, its last release (0.3.2) caps `mcp<2`, and its successor is LangChain's
-    # own `langchain.mcp` (`langchain[mcp]`), which needs fastmcp >= 4.0.11 and so mcp >= 2.3.
-    # petab-mcp's `fastmcp<4` is therefore what holds this now; frohlich-lab/PEtab-MCP#181 lifts
-    # it to `<5` (arize-phoenix 20.7+ needs fastmcp 4 as well, see `harness`). mcp 2.0 also
-    # reworks the client API used here (streamablehttp_client -> streamable_http_client;
-    # CallToolResult/Tool fields went snake_case; httpx -> httpx2). Revisit once the petab-mcp
-    # pin is past #181: move `load_mcp_tools` to `langchain.mcp`, port the client code, then lift
-    # this.
-    "mcp<2",
+    # Then 569fd47, frohlich-lab/PEtab-MCP#181's head (UNMERGED: re-point at the main commit that
+    # merges it): fastmcp 4, so the mcp 2.0 SDK, which `mcp` below moves with. It sits on main
+    # 8659cdb, which adds #170: a provenance store keeps each fit's values once, in compact JSON.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@569fd47f0617f9941f131e8a50a6916c6c317f55",
+    # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
+    # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
+    # is built on it; 2.3 is the first release fastmcp 4.1 accepts. What 2.0 changed for the code
+    # here: `streamable_http_client` takes an httpx2 client instead of timeouts; `read_timeout_seconds`
+    # is a float of seconds; `McpError` is `MCPError`; result and tool fields are snake_case
+    # (`structured_content`, `is_error`, `input_schema`), and the camelCase attributes are gone,
+    # not deprecated. Capped below 3, the next break of that API; revisit when mcp 3 ships.
+    "mcp>=2.3,<3",
+    # Imported directly: runner.main and bio_sessions build the client the MCP transport runs on,
+    # and the circuit breaker and the run loop's resume classify its TransportError. httpx2, not
+    # httpx: mcp 2 runs on it, and its errors do not derive from httpx's. 2.10 is mcp 2.3's floor.
+    "httpx2>=2.10",
     # Imported directly here too (judge, simulate, the neural route), or promised to the
     # barebones agent's sandbox (pyPESTO, which its prompt tells the agent to fit with), so named
     # rather than left to arrive through petab-mcp, whose pyproject says why each floor.
@@ -113,9 +117,9 @@ dev = [
     # developer runs the same check locally.
     "ruff>=0.6",
     # The tests that drive the server in-process connect through fastmcp's own `Client`
-    # (test_tool_descriptions, test_diagnosis_never_compiles). Its upper bound is the server's:
-    # petab-mcp pins `fastmcp<4`, and fastmcp 4 needs the mcp 2.0 that `mcp<2` above holds back.
-    "fastmcp>=3",
+    # (test_tool_descriptions, test_diagnosis_never_compiles). Both bounds are the server's:
+    # petab-mcp pins `fastmcp>=4,<5`.
+    "fastmcp>=4,<5",
     "gemot[agent]",
     "gemot[neural]",
     "gemot[tracing]",
@@ -154,11 +158,14 @@ agent = [
     # `checkpointer` kwargs the driver adapts to, and the SubAgent spec + HarnessProfile
     # containment APIs (agent/subagents.py) are unchanged.
     "deepagents==0.7.32",
-    # The MCP<->langchain bridge (load_mcp_tools). Not a dependency of either package above, so
-    # it has to be named: tests/test_run_loop_no_model.py's guard requires it, and without it
-    # that file -- the only coverage of run_deepagents' run loop -- skips in CI too. 0.3.2 is the
-    # last release (archived, see `mcp<2`); exact so the bridge cannot move under a sweep.
-    "langchain-mcp-adapters==0.3.2",
+    # The MCP<->langchain bridge: LangChain's own `langchain.mcp` (`as_langchain_tool`, through
+    # agent/mcp_tools.py), the successor of the archived langchain-mcp-adapters. The `mcp` extra
+    # brings the fastmcp it imports, which deepagents does not. 1.4.7 is what deepagents above
+    # needs anyway (`langchain.mcp` arrived in 1.4.0). It is a BETA namespace, and the bridge hands
+    # it an mcp session where it expects a fastmcp client (agent/mcp_tools.py says why), so a
+    # langchain release that changes what it reads off that client fails
+    # tests/test_mcp_tools.py rather than a sweep.
+    "langchain[mcp]>=1.4.7,<2",
     "langchain-openai>=1.3,<2",
 ]
 
@@ -176,14 +183,21 @@ harness = [
     # Traces every LLM + MCP tool call the agent makes as OpenTelemetry spans viewable in the
     # Phoenix UI. The `tracing` extra EXPORTS the spans; the full `arize-phoenix` package
     # provides the local in-process UI the runner launches when no PHOENIX_COLLECTOR_ENDPOINT is
-    # set, and >=19 provides the run_experiment / Datasets / Prompt-registry API that
+    # set, and it provides the run_experiment / Datasets / Prompt-registry API that
     # gemot_iclr_2026's scripts/run_experiments.py uses.
-    # Resolves to 20.6.0: 20.7 onwards needs fastmcp 4 and so mcp 2, which `mcp<2` holds back --
-    # deliberately no bound here, so this one lifts with that one. When it does, note 21.0's
-    # MIGRATION.md: a server bound to a non-loopback address (the shared sweep collector) turns
-    # authentication on unless PHOENIX_ENABLE_AUTH=false, and the exporters then need
-    # PHOENIX_API_KEY.
-    "arize-phoenix>=19.13",
+    # Floored at 21.0: nothing older installs beside mcp 2 (below 20.7 it needs fastmcp 3, so
+    # mcp 1.x), and 21.0 is what the span stripping (see `tracing`) and the shared collector's
+    # start (gemot_iclr_2026#386) were checked against. 21.0's MIGRATION.md changes how a SERVER
+    # starts, not what this package calls: `phoenix serve --host` is gone (PHOENIX_HOST instead),
+    # and a server bound to a non-loopback address -- the shared sweep collector,
+    # gemot_iclr_2026's slurm/phoenix_server.sh -- turns authentication on unless
+    # PHOENIX_ENABLE_AUTH=false, after which every exporter needs PHOENIX_API_KEY. The in-process
+    # `launch_app` binds loopback, so it stays unauthenticated.
+    # Capped below 22 for that reason: a major release changed the collector's defaults, and a
+    # sweep would have seen it only as a 401 on every span export, which array_task.sh's probe
+    # counts as a live collector. Revisit when 22 ships: read its MIGRATION.md against
+    # slurm/phoenix_server.sh and this package's exporter (tracing.py).
+    "arize-phoenix>=21.0,<22",
     "gemot[tracing]",
     # Weights & Biases metrics logging for the model x temperature sweep (opt-in via run.py
     # --wandb). Cluster-friendly alternative analysis UI to Phoenix Experiments; logs one

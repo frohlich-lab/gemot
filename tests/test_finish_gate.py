@@ -20,7 +20,7 @@ from gemot import prompts  # noqa: E402
 
 class _FakeResult:
     def __init__(self, payload):
-        self.structuredContent = payload
+        self.structured_content = payload
 
 
 # An identifiability payload the PARSIMONY gate reads as CLEAN (identifiable): available, a full-

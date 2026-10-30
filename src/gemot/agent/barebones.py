@@ -177,9 +177,11 @@ async def run_barebones(
         JSONDecodeError,
     )
     with contextlib.suppress(Exception):
-        import httpx
+        # httpx2, not httpx: the openai 3 SDK and mcp 2 both run on it, and its errors do not
+        # derive from httpx's.
+        import httpx2
 
-        _TRANSIENT_ERRORS = _TRANSIENT_ERRORS + (httpx.TransportError,)
+        _TRANSIENT_ERRORS = _TRANSIENT_ERRORS + (httpx2.TransportError,)
 
     # deepagents' own `general-purpose` subagent stays ON (RATIONALE.md); recorded, not assumed,
     # because the panel driver disables it through a process-global profile registration.

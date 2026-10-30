@@ -15,7 +15,7 @@ def _structured(res) -> Any:
     """The tool's structured payload from a CallToolResult — unwrapping FastMCP's ``{"result": x}``
     envelope — or ``None`` when there is no structured dict. The one place the finish gate and the
     driver probes share for reading a tool result, so the unwrap rule lives in exactly one spot."""
-    sc = getattr(res, "structuredContent", None)
+    sc = getattr(res, "structured_content", None)
     if isinstance(sc, dict):
         return sc.get("result", sc) if set(sc.keys()) == {"result"} else sc
     return None

@@ -102,22 +102,26 @@ _TRANSPORT_ERROR_NAMES = frozenset(
 
 
 def _is_call_timeout(exc: BaseException) -> bool:
-    """True for mcp's per-call read timeout — an ``McpError`` carrying HTTP 408.
+    """True for mcp's per-call read timeout — a bare ``MCPError`` carrying ``REQUEST_TIMEOUT``.
 
     ``runner.clock._wrap_call_timeout`` gives every call a ``read_timeout_seconds`` sized to its
-    own fit, and the session layer turns an expiry into ``McpError(code=408)``
-    (``mcp/shared/session.py``) rather than anything in the httpx family. That distinction
-    matters here: a timed-out call is NOT a tool error the model should see and retry. The server
-    is still running the abandoned multistart (mcp sends no cancellation). A fit tool's timeout is
-    handed to the lead as a note that says so, and a further timeout behind it ends the run (see
+    own fit, and the session layer turns an expiry into ``MCPError(code=REQUEST_TIMEOUT)``
+    (``mcp/shared/jsonrpc_dispatcher.py``) rather than anything in the httpx2 family. The code is
+    the SDK's constant, -32001 since mcp 2.0; mcp 1.x sent HTTP's 408, and a match on that never
+    fires now (tests/test_judge_call_timeout.py pins the real shape). That distinction matters
+    here: a timed-out call is NOT a tool error the model should see and retry. The server is
+    still running the abandoned multistart: gemot never cancels it, though mcp 2 would by default
+    (``runner.main._ToolCallsRunOn``). A fit tool's timeout is handed to
+    the lead as a note that says so, and a further timeout behind it ends the run (see
     :func:`_fit_wedged`). Every other call's is classified as transport, which routes it to the
-    checkpoint resume, as the session-wide ``sse_read_timeout`` did by raising
+    checkpoint resume, as the session-wide read timeout did by raising
     ``httpx.ReadTimeout`` before the timeout moved per call.
     """
-    if type(exc).__name__ != "McpError":
+    if type(exc).__name__ != "MCPError":
         return False
-    code = getattr(getattr(exc, "error", None), "code", None)
-    return code == 408
+    from mcp.types import REQUEST_TIMEOUT
+
+    return getattr(exc, "code", None) == REQUEST_TIMEOUT
 
 
 #: How the server says a fit is still running when another call arrives behind it
@@ -147,19 +151,20 @@ def _is_transport_error(exc: BaseException) -> bool:
     """True for a transport/connection failure (an unreachable/closed MCP server, or a call that
     out-idled its own timeout) as opposed to a normal tool error the model should see and retry.
     Covers the anyio stream errors (by name), the builtin ConnectionError, the WHOLE
-    httpx.TransportError family (ConnectError/ReadError/WriteError/ReadTimeout/ConnectTimeout/
-    RemoteProtocolError/PoolTimeout/WriteTimeout/… ), and mcp's own 408 (see _is_call_timeout) —
-    the same surface the run-loop resume backstop matches, so the two never disagree on what is
-    'transport'."""
+    httpx2.TransportError family (ConnectError/ReadError/WriteError/ReadTimeout/ConnectTimeout/
+    RemoteProtocolError/PoolTimeout/WriteTimeout/… ), and mcp's own timeout (see _is_call_timeout)
+    — the same surface the run-loop resume backstop matches, so the two never disagree on what is
+    'transport'. httpx2, not httpx: mcp 2 runs its transport on it, and httpx2's errors do not
+    derive from httpx's."""
     if type(exc).__name__ in _TRANSPORT_ERROR_NAMES or isinstance(exc, ConnectionError):
         return True
     if _is_call_timeout(exc):
         return True
     try:
-        import httpx
-    except Exception:  # pragma: no cover - httpx always present with mcp
+        import httpx2
+    except Exception:  # pragma: no cover - httpx2 always present with mcp
         return False
-    return isinstance(exc, httpx.TransportError)
+    return isinstance(exc, httpx2.TransportError)
 
 
 def _new_breaker_state() -> dict[str, Any]:
@@ -212,8 +217,8 @@ def _result_error(content: Any, artifact: Any) -> str | None:
     """Return the error string if a (content, artifact) tool result is a FAILURE, else None.
 
     The petab-mcp server returns a failed read/diagnostic tool as a normal result carrying
-    ``{"ok": false, "error": ...}`` (not an MCP protocol error), which langchain-mcp-adapters
-    exposes in the artifact's ``structured_content`` and in the text content. A rejected
+    ``{"ok": false, "error": ...}`` (not an MCP protocol error), which the tool bridge
+    (``agent.mcp_tools``) exposes in the artifact's ``structured_content`` and in the text content. A rejected
     *operation* (``{"committed": false}`` — e.g. a lint failure the agent should fix and retry)
     is deliberately NOT treated as a breaker error: that is the normal edit/retry feedback loop.
 

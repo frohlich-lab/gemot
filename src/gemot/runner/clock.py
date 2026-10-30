@@ -10,7 +10,6 @@ from __future__ import annotations
 import contextlib
 import json
 import time
-from datetime import timedelta
 from pathlib import Path
 
 from mcp import ClientSession
@@ -24,7 +23,7 @@ from ..paths import validation_measurements_path
 # --------------------------------------------------------------------------- MCP glue
 def _unwrap(result):
     """Turn a CallToolResult into the tool's Python return value."""
-    sc = getattr(result, "structuredContent", None)
+    sc = getattr(result, "structured_content", None)
     if sc is not None:
         # FastMCP wraps non-dict returns as {"result": <value>}.
         if isinstance(sc, dict) and set(sc.keys()) == {"result"}:
@@ -105,7 +104,7 @@ def _make_call(session: ClientSession):
         result = await session.call_tool(tool, args or {})
         value = _unwrap(result)
         if (
-            getattr(result, "isError", False)
+            getattr(result, "is_error", False)
             and isinstance(value, str)
             and (hit := infrastructure.find(value)) is not None
         ):
@@ -299,17 +298,17 @@ def _wrap_call_timeout(
 ) -> None:
     """Give every ``session.call_tool`` a read timeout sized to THAT CALL's own ``n_starts``.
 
-    This is where a fit timeout is actually decided. The client's ``sse_read_timeout`` is a
-    per-SESSION httpx read timeout, so it cannot know any call's ``n_starts`` — and ``n_starts``
+    This is where a fit timeout is actually decided. The transport's read timeout is a
+    per-SESSION httpx2 read timeout, so it cannot know any call's ``n_starts`` — and ``n_starts``
     is per call: ``make_changes`` (the only fitting tool) takes one that REPLACES the run
     default, the agent picks it at runtime, and ``build_true_model`` floors it higher still (
     bruno 400, fujita 300) on a scripted path that has no driver loop at all. So the session
     timeout is left deliberately non-binding (``runner.main``) and the exact cut is made here.
 
     Note the layering, which is easy to get backwards: ``read_timeout_seconds`` takes precedence
-    per call, but it is an ``anyio.fail_after`` INSIDE the session — it can only end a call
-    EARLIER than the httpx ceiling, never later. Raising a per-call budget above
-    ``sse_read_timeout`` would achieve nothing; the ceiling has to be high and this has to be
+    per call, but it is a deadline INSIDE the session — it can only end a call
+    EARLIER than the httpx2 ceiling, never later. Raising a per-call budget above
+    that read timeout would achieve nothing; the ceiling has to be high and this has to be
     the tight one.
 
     Shadowing the instance method is how the runner already reaches every call site (see
@@ -336,7 +335,7 @@ def _wrap_call_timeout(
 
     async def with_timeout(*args, **kwargs):
         # args[2] is `read_timeout_seconds` in ClientSession.call_tool(name, arguments,
-        # read_timeout_seconds, progress_callback, *, meta). Check the positional slot too:
+        # read_timeout_seconds, progress_callback, *, ...), a float of seconds since mcp 2.0. Check the positional slot too:
         # injecting the keyword on top of a positional one raises "got multiple values for
         # argument", which would make this wrapper the thing that fails the call.
         override = "read_timeout_seconds" in kwargs or len(args) > 2
@@ -350,9 +349,8 @@ def _wrap_call_timeout(
         # Anything unexpected leaves `asked` None and takes the default budget rather than
         # raising -- a timeout must never be the thing that fails a call.
         with contextlib.suppress(Exception):
-            # langchain-mcp-adapters passes (name, arguments) POSITIONALLY with only
-            # progress_callback by keyword (langchain_mcp_adapters/tools.py), and so does
-            # `_make_call`; the keyword form is accepted for any caller that uses it.
+            # The tool bridge (agent/mcp_tools.py) passes (name, arguments) POSITIONALLY, and so
+            # does `_make_call`; the keyword form is accepted for any caller that uses it.
             tool_args = kwargs.get("arguments")
             if tool_args is None and len(args) > 1:
                 tool_args = args[1]
@@ -388,7 +386,7 @@ def _wrap_call_timeout(
                     default_n_starts,
                     fits=max(1, fits),
                 )
-            kwargs["read_timeout_seconds"] = timedelta(seconds=budget)
+            kwargs["read_timeout_seconds"] = budget
         tracked = None
         if can_fit:
             # Gated on `can_fit`, NOT on `asked is not None`. The server's own docstring tells the
@@ -444,7 +442,7 @@ def _wrap_tool_clock(session: ClientSession) -> _ToolClock:
     """Time every ``session.call_tool`` into a returned clock (best-effort).
 
     Both the runner's own calls and the deepagents panel's calls route through
-    ``session.call_tool`` (langchain-mcp-adapters invokes the bound session), so shadowing
+    ``session.call_tool`` (the tool bridge, ``agent.mcp_tools``, calls through it), so shadowing
     the instance method captures ALL tool time — which for these demos is dominated by the
     AMICI compile + every pyPESTO fit + the SQL queries. Subtracting it from the wall clock
     isolates the LLM/inference time. If the method can't be shadowed the clock simply stays

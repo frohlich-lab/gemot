@@ -1,11 +1,12 @@
 """End-to-end cover for the per-call timeout, over a REAL ClientSession.
 
 Written after a post-mortem of bachmann task 52859568_0 went wrong twice for want of exactly
-this. The abort read ``McpError: ... Waited 4200.0 seconds``, and `runner.failure._summarize_exc`
-unwraps an exception group to its first leaf — so that text is equally consistent with a bare
-``McpError`` and with ``BaseExceptionGroup(McpError, CancelledError)``. Reasoning from the text
+this. The abort read ``McpError: ... Waited 4200.0 seconds`` (mcp 1.x's name), and
+`runner.failure._summarize_exc` unwraps an exception group to its first leaf — so that text is
+equally consistent with a bare ``McpError`` and with ``BaseExceptionGroup(McpError,
+CancelledError)``. Reasoning from the text
 alone produced a confident, wrong diagnosis (that the group shape was defeating
-`_is_call_timeout`, whose first line is ``type(exc).__name__ != "McpError"``). It is not: mcp
+`_is_call_timeout`, whose first line is ``type(exc).__name__ != "MCPError"``). It is not: mcp
 raises the timeout BARE, which the classifier already handles.
 
 So these tests pin the real shape against the real client rather than a hand-built exception,
@@ -16,7 +17,7 @@ actually blocks — instead of an ``asyncio.sleep`` that could hide a scheduling
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+import contextlib
 
 import pytest
 
@@ -55,9 +56,9 @@ def _server():
     is covered separately by `test_a_BUSY_server_must_not_read_as_dead`; do not read these tests
     as evidence that a busy server stays reachable, because it does not."""
     import anyio
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server import MCPServer
 
-    srv = FastMCP("rosenbrock")
+    srv = MCPServer("rosenbrock")
 
     @srv.tool()
     async def make_changes(n_starts: int = 1) -> str:
@@ -72,10 +73,13 @@ def _server():
     return srv
 
 
+@contextlib.asynccontextmanager
 async def _session():
-    from mcp.shared.memory import create_connected_server_and_client_session
+    """A real ClientSession on `_server()`, in the handshake era the runner's own session speaks."""
+    from mcp import Client
 
-    return create_connected_server_and_client_session(_server()._mcp_server)
+    async with Client(_server(), mode="legacy") as client:
+        yield client.session
 
 
 @pytest.mark.parametrize("n_starts", [1, 4])
@@ -84,7 +88,7 @@ def test_a_fit_that_finishes_inside_its_budget_returns_normally(n_starts):
     simply broken."""
 
     async def go():
-        async with await _session() as s:
+        async with _session() as s:
             _wrap_call_timeout(s, DEFAULT_N_STARTS)
             out = await _make_call(s)("make_changes", n_starts=n_starts)
             assert "fitted" in str(out)
@@ -92,25 +96,26 @@ def test_a_fit_that_finishes_inside_its_budget_returns_normally(n_starts):
     asyncio.run(go())
 
 
-def test_an_overrunning_fit_raises_a_BARE_McpError_408_that_the_classifier_catches():
-    """The shape assertion. `_is_call_timeout` reads `type(exc).__name__` and `exc.error.code`,
-    so it only works if mcp hands the timeout up unwrapped — assert that directly, because the
-    stop_reason recorded in result.json cannot distinguish it."""
+def test_an_overrunning_fit_raises_a_BARE_MCPError_that_the_classifier_catches():
+    """The shape assertion. `_is_call_timeout` reads `type(exc).__name__` and `exc.code`, so it
+    only works if mcp hands the timeout up unwrapped — assert that directly, because the
+    stop_reason recorded in result.json cannot distinguish it. The code is checked against the
+    SDK's constant: mcp 1.x sent HTTP's 408 here, mcp 2.0 sends -32001, and a classifier still
+    matching 408 never fired."""
+    from mcp.types import REQUEST_TIMEOUT
 
     async def go():
-        async with await _session() as s:
+        async with _session() as s:
             with pytest.raises(BaseException) as ei:
                 # 200 starts against a 50ms budget: the cut fires long before the fit ends.
-                await s.call_tool(
-                    "make_changes", {"n_starts": 200}, read_timeout_seconds=timedelta(seconds=0.05)
-                )
+                await s.call_tool("make_changes", {"n_starts": 200}, read_timeout_seconds=0.05)
             return ei.value
 
     exc = asyncio.run(go())
-    assert type(exc).__name__ == "McpError", f"shape changed: {type(exc).__name__}"
+    assert type(exc).__name__ == "MCPError", f"shape changed: {type(exc).__name__}"
     # Bare, NOT wrapped in a group — an ExceptionGroup would slip past the driver's classifiers.
     assert isinstance(exc, Exception) and not isinstance(exc, BaseExceptionGroup)
-    assert exc.error.code == 408
+    assert exc.code == REQUEST_TIMEOUT
     assert _is_call_timeout(exc)
     assert _is_transport_error(exc)
 
@@ -123,13 +128,13 @@ def _budgets_reaching_the_transport(calls):
     """
 
     async def go():
-        async with await _session() as s:
+        async with _session() as s:
             seen: list[float | None] = []
             original = s.call_tool
 
             async def spy(*a, **kw):
                 got = kw.get("read_timeout_seconds")
-                seen.append(got.total_seconds() if got is not None else None)
+                seen.append(got)
                 return await original(*a, **kw)
 
             s.call_tool = spy
@@ -167,12 +172,12 @@ def test_a_read_queued_behind_a_live_fit_still_gets_to_outwait_it():
 
     def _read_budget_while_fitting(fit_args):
         async def go():
-            async with await _session() as s:
+            async with _session() as s:
                 seen: list[float] = []
                 original = s.call_tool
 
                 async def spy(*a, **kw):
-                    seen.append(kw["read_timeout_seconds"].total_seconds())
+                    seen.append(kw["read_timeout_seconds"])
                     return await original(*a, **kw)
 
                 s.call_tool = spy
