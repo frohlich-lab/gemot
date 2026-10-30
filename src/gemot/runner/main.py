@@ -14,6 +14,7 @@ from typing import AsyncIterator
 import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.jsonrpc_dispatcher import JSONRPCDispatcher
 from .. import ablations, prompts
 from ..paths import validation_measurements_path
 from ..bio_sessions import open_bio_sessions
@@ -84,6 +85,43 @@ def _constraints(scenario: Scenario) -> str:
             "is refused rather than run with none"
         )
     return str(path)
+
+
+class _ToolCallsRunOn(JSONRPCDispatcher):
+    """mcp 2's dispatcher, without the cancel it sends for a ``tools/call`` gemot stops awaiting.
+
+    mcp 2 sends ``notifications/cancelled`` when a call is abandoned -- its read timeout fires, or
+    the task awaiting it is cancelled -- and petab-mcp then stops a fit in flight. gemot lets that
+    fit finish and commit, as on mcp 1.x, which told the server nothing: the agent waits for it
+    (``wait_for_fit``) and the judge scores its version (gemot#79). It matters most behind the
+    native CLI driver's gateway (gemot#69), which forwards the CLI's calls through this session and
+    abandons every fit past the CLI's own tool timeout (600 s). A fit the server cannot end is
+    bounded by the server's own deadline (frohlich-lab/PEtab-MCP#117, #121), not by a cancel.
+    """
+
+    async def send_raw_request(self, method, params, opts=None, **kwargs):
+        if method == "tools/call":
+            opts = {**(opts or {}), "cancel_on_abandon": False}
+        return await super().send_raw_request(method, params, opts, **kwargs)
+
+
+@contextlib.asynccontextmanager
+async def _open_session(
+    url: str, *, read_ceiling_s: float, call_timeout_s: float
+) -> AsyncIterator[ClientSession]:
+    """An initialized MCP session to the petab server at ``url``: ``read_ceiling_s`` is the
+    transport's read timeout, ``call_timeout_s`` the session's fallback per call (see
+    :func:`_petab_server` for how the two are sized)."""
+    # connect/write/pool: mcp's own default for this transport.
+    timeout = httpx2.Timeout(30.0, read=read_ceiling_s)
+    async with httpx2.AsyncClient(timeout=timeout) as http:
+        async with streamable_http_client(url, http_client=http) as (read, write):
+            dispatcher = _ToolCallsRunOn(read, write)
+            async with ClientSession(
+                dispatcher=dispatcher, read_timeout_seconds=call_timeout_s
+            ) as session:
+                await session.initialize()
+                yield session
 
 
 class _ServerHandle:
@@ -216,38 +254,21 @@ async def _petab_server(
         # httpx2 read timeout instead of the clean "wall_time_budget_exceeded" stop the driver is
         # there to produce, i.e. a confusing error in place of a scored result. The wall budget
         # is already enforced where it can stop cleanly (agent.driver, at a step boundary).
-        async with contextlib.AsyncExitStack() as stack:
-            http = await stack.enter_async_context(
-                httpx2.AsyncClient(
-                    timeout=httpx2.Timeout(
-                        # connect/write/pool: mcp's own default for this transport.
-                        30.0,
-                        # Above the CEILING *and* above this run's own default budget: a
-                        # 1-worker run with a large --n-starts can compute a default budget past
-                        # the ceiling (the ceiling bounds what the MODEL may ask for, not what
-                        # the operator configured), and this has to stay looser than both.
-                        read=max(FIT_BUDGET_CEILING_S, fit_time_budget_for(None, args.n_starts))
-                        * 1.2,
-                    )
-                )
-            )
-            read, write = await stack.enter_async_context(
-                streamable_http_client(handle.url, http_client=http)
-            )
-            # Session-wide fallback UNDER the per-call cut. mcp prefers a per-request
-            # read_timeout_seconds outright (it does not take a min), so clock._wrap_call_timeout
-            # still overrides this on every tool call. It matters in the two windows that shadow
-            # does not cover: `initialize()` below, which would otherwise run against the
-            # non-binding ceiling, and the case where installing the shadow FAILS -- which
-            # previously left the run with no effective call timeout at all.
-            session = await stack.enter_async_context(
-                ClientSession(
-                    read,
-                    write,
-                    read_timeout_seconds=fit_time_budget_for(None, args.n_starts),
-                )
-            )
-            await session.initialize()
+        # Above the CEILING *and* above this run's own default budget: a 1-worker run with a large
+        # --n-starts can compute a default budget past the ceiling (the ceiling bounds what the
+        # MODEL may ask for, not what the operator configured), and this has to stay looser than
+        # both.
+        read_ceiling_s = max(FIT_BUDGET_CEILING_S, fit_time_budget_for(None, args.n_starts)) * 1.2
+        # Session-wide fallback UNDER the per-call cut. mcp prefers a per-request
+        # read_timeout_seconds outright (it does not take a min), so clock._wrap_call_timeout
+        # still overrides this on every tool call. It matters in the two windows that shadow
+        # does not cover: `initialize()`, which would otherwise run against the non-binding
+        # ceiling, and the case where installing the shadow FAILS -- which previously left the
+        # run with no effective call timeout at all.
+        call_timeout_s = fit_time_budget_for(None, args.n_starts)
+        async with _open_session(
+            handle.url, read_ceiling_s=read_ceiling_s, call_timeout_s=call_timeout_s
+        ) as session:
             handle.session = session
             yield handle
     finally:

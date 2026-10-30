@@ -1011,8 +1011,8 @@ TOOL_DISABLED_TRANSPORT_TMPL = (
     "disabled for the rest of this run. Do NOT call it again — {hint}"
 )
 
-# In place of a fit that outran its call timeout (gemot#56). mcp 2 asks the server to cancel that
-# fit, but it stops only when its wait next polls, and the server runs one fit at a time.
+# In place of a fit that outran its call timeout (gemot#56). Nothing cancels that fit on the
+# server, and the server runs one fit at a time.
 FIT_CALL_TIMEOUT_TMPL = (
     "FIT TIMED OUT: `{name}` did not return in time ({error}), so its result is unknown. The fit "
     "may still be running on the server, which runs one fit at a time: your next fit starts only "

@@ -627,8 +627,8 @@ def _server_is_alive(server_poll) -> "bool | None":
     Deliberately a process check and NOT a probe call. The obvious implementation -- read something
     cheap and see whether it answers -- cannot work here, because it cannot tell a dead server from
     a busy one, and the only moment this is consulted is the moment the server is guaranteed busy:
-    `_is_call_timeout` documents that the abandoned multistart may be STILL RUNNING (mcp 2 cancels
-    it, but a fit stops only when its wait next polls). Worse, `make_changes` is a sync `def`, and mcp runs sync tool functions directly
+    `_is_call_timeout` documents that the abandoned multistart is STILL RUNNING (gemot never
+    cancels it, see `runner.main._ToolCallsRunOn`). Worse, `make_changes` is a sync `def`, and mcp runs sync tool functions directly
     on the event loop (`fastmcp.utilities.func_metadata`: `if fn_is_async: await fn(...) else:
     return fn(...)`), holding `session.lock` for the whole change-and-fit section. So NOTHING can be
     answered for the remainder of a multi-thousand-second fit. A read-based probe would report

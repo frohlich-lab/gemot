@@ -109,9 +109,9 @@ def _is_call_timeout(exc: BaseException) -> bool:
     (``mcp/shared/jsonrpc_dispatcher.py``) rather than anything in the httpx2 family. The code is
     the SDK's constant, -32001 since mcp 2.0; mcp 1.x sent HTTP's 408, and a match on that never
     fires now (tests/test_judge_call_timeout.py pins the real shape). That distinction matters
-    here: a timed-out call is NOT a tool error the model should see and retry. mcp 2 also sends
-    the server a cancel, which petab-mcp's ``_Cancellation`` applies to the fit, but a fit stops
-    only when its wait next polls, so it may still be running. A fit tool's timeout is handed to
+    here: a timed-out call is NOT a tool error the model should see and retry. The server is
+    still running the abandoned multistart: gemot never cancels it, though mcp 2 would by default
+    (``runner.main._ToolCallsRunOn``). A fit tool's timeout is handed to
     the lead as a note that says so, and a further timeout behind it ends the run (see
     :func:`_fit_wedged`). Every other call's is classified as transport, which routes it to the
     checkpoint resume, as the session-wide read timeout did by raising
@@ -134,8 +134,7 @@ def _fit_wedged(state: dict[str, Any], text: str, timed_out: bool) -> Evidence |
     """The evidence that the server is wedged on a fit, or ``None``.
 
     After a fit's call times out, the server keeps that fit, and the session lock it holds, until
-    the fit ends. mcp 2 sends it a cancel, which a fit that has hung never polls for. A resume used
-    to re-send the identical fit into it, and each resend waited out
+    the fit ends. A resume used to re-send the identical fit into it, and each resend waited out
     the full timeout again: 8.4 h of one INDRA run's last 9 h, against a fit that had hung on the
     server (gemot#56, PEtab-MCP#108). The wrapper hands the lead that first timeout instead, as
     its tool result. Once one is outstanding, a further call that times out (``timed_out``), or
