@@ -62,6 +62,8 @@ _RESULT_FIELDS = (
     "criterion_reference",
     "delta_criterion",
     "head_version",
+    "scored_version",
+    "fit_wait_seconds",
     "n_errors",
     "n_tool_errors",
     "tool_calls",

@@ -12,7 +12,8 @@ recorded on every run regardless (``bic`` / ``delta_bic``), which keeps arms com
 fixed scale; under the default criterion the two are the same number.
 
 Scores the run's BEST checkpoint, not whatever HEAD happens to be: a run that ended on a worse
-model is rolled back first.
+model is rolled back first. It first waits out a fit the agent left running, and it scores only
+reads that are all of that one version (``scored_version``), failing the judgement otherwise.
 
 A ``reference_free`` scenario (a model-free data package) has no true model, so there is no Δ to
 gate on. Its bar is instead the absolute goodness-of-fit test the scenario declares
@@ -59,6 +60,96 @@ async def _head_version(call) -> "int | None":
     return int(desc.get("current_version", -1)) if isinstance(desc, dict) else None
 
 
+class MixedVersionsError(RuntimeError):
+    """The judge's reads describe more than one version, so no score is written from them
+    (gemot#73; see :func:`_scored_version_mismatch`)."""
+
+
+async def _wait_for_running_fit(call) -> "float | None":
+    """Wait until no change is being fitted on the session; return the seconds that took.
+
+    The agent can stop while its last ``make_changes`` is still fitting, and the server finishes
+    that fit and commits its version whenever it ends. perica_egf (gemot#73, a Codex CLI out of
+    credits mid-call): the scan listed v1-v5, v6 committed between ``get_fit_summary`` and
+    ``get_parameters``, and result.json carried v5's nll with v6's k — a BIC no version has, on a
+    run whose true best was v6.
+
+    No tool is named for the wait; ``get_progress`` keeps it. The server reads the progress under
+    the session lock, which ``make_changes`` holds for a change and its whole fit (petab_mcp's
+    ``PetabSession.change``), so the call answers only once that fit has committed or failed.
+    ``None`` when the call failed (a fit outlasting the read's budget, say): the judge goes on,
+    and :func:`_scored_version_mismatch` still catches a version landing during its reads.
+    """
+    asked = time.monotonic()
+    try:
+        await call("get_progress")
+    except Exception as exc:  # noqa: BLE001 - the version check after the reads still guards them
+        print(f"[judge] could not wait for a fit still running ({type(exc).__name__}: {exc})")
+        return None
+    waited = time.monotonic() - asked
+    if waited >= 1.0:  # a bare read answers in milliseconds; a second or more was a fit
+        print(f"[judge] waited {waited:.0f}s for the fit still running when the agent stopped")
+    return waited
+
+
+def _estimated_ids(rows) -> "set[str]":
+    """The ids of the estimated rows of a parameter table that are the model's own — the rows
+    :func:`_candidate_k` counts. A stored version's table carries no ``in_model``: every row of it
+    is the model's."""
+    return {
+        str(p.get("parameterId"))
+        for p in rows
+        if isinstance(p, dict) and p.get("estimate") and p.get("in_model", True)
+    }
+
+
+def _scored_version_mismatch(version, head, stored, final, params) -> "str | None":
+    """Why the judge's reads are not all ``version``'s, or ``None`` when nothing says so.
+
+    The verdict is assembled from working-state reads (``get_fit_summary`` for nll and n,
+    ``get_parameters`` for k, then the structure, the residuals and the held-out score), and they
+    describe one model only if nothing moved between them. Checked two ways: HEAD must still be
+    ``version`` after the reads, since a commit moves it, and the reads must agree with
+    ``version``'s stored record, since a change edits the working state before its fit commits.
+    gemot#73 was the first: v5's nll beside v6's parameter table.
+
+    Deliberately a check on the working reads, not a score read off the stored record instead: the
+    record carries the nll, n and estimated rows, but not the hardcoded constants that k also
+    charges, and the structure, residual and held-out reads have no stored counterpart at all. The
+    working state has to be the scored version either way; this is what says it was. A record that
+    does not say it is ``version`` (an error payload, a fake) is not compared, nor a field it lacks.
+    """
+    if version is None:
+        return None
+    if head != version:
+        return f"HEAD moved from v{version} to v{head} during the reads"
+    if not isinstance(stored, dict) or stored.get("version") != version:
+        return None
+    simulation = stored.get("simulation")
+    simulation = simulation if isinstance(simulation, dict) else {}
+    final = final if isinstance(final, dict) else {}
+    # The SIMULATION's nll, not the meta's: a restore puts exactly that blob back, while a version
+    # stored without one is re-simulated on restore and need not reproduce the optimizer's value.
+    nll, stored_nll = final.get("neg_log_likelihood"), simulation.get("neg_log_likelihood")
+    if (
+        isinstance(nll, (int, float))
+        and isinstance(stored_nll, (int, float))
+        and not math.isclose(nll, stored_nll, rel_tol=1e-9)
+    ):
+        return f"get_fit_summary reports nll {nll}, v{version} stored {stored_nll}"
+    n, stored_n = final.get("n_data_points"), simulation.get("n_data_points")
+    if isinstance(stored_n, int) and n != stored_n:
+        return f"get_fit_summary reports n {n}, v{version} stored {stored_n}"
+    rows = stored.get("parameters")
+    if isinstance(rows, list) and isinstance(params, list):
+        if differ := _estimated_ids(rows) ^ _estimated_ids(params):
+            return (
+                f"get_parameters' estimated rows are not v{version}'s ({len(differ)} differ, "
+                f"e.g. {sorted(differ)[:3]})"
+            )
+    return None
+
+
 #: How many fitted versions the scoring scan will inspect, best-scoring first — EVERY one of them.
 #: Each costs a restore and a score read (no fit, no compile), and the count is already bounded by
 #: the run's own turn budget: a version exists only where a `make_changes` call fitted one, so the
@@ -68,8 +159,9 @@ async def _head_version(call) -> "int | None":
 _SCORING_SCAN_LIMIT = None
 
 
-async def _restore_best_checkpoint(call, reference=None) -> None:
-    """Make the best model the judge can legitimately score the current HEAD before scoring.
+async def _restore_best_checkpoint(call, reference=None) -> "int | None":
+    """Make the best model the judge can legitimately score the current HEAD before scoring, and
+    return that version: the one the judge scores, or ``None`` where no probe could say.
 
     Agents wander off their best model and finish worse (verified pass→fail flips on a credit
     abort, e.g. armistead v56 → v66), so the judge must score the BEST fitted version, not the
@@ -125,7 +217,7 @@ async def _restore_best_checkpoint(call, reference=None) -> None:
     # and printing the choice first would put a version number in the log that nothing scored.
     if not await _restore(call, chosen, head):
         print(f"[judge] could not restore v{chosen}; scoring HEAD v{head} instead")
-        return
+        return head
     if not clean:
         # Every candidate would fail the sigma gate. Score the plain best-scoring one: the run's
         # own lowest-scoring model is the honest thing to report, and the gate still fails it.
@@ -138,6 +230,7 @@ async def _restore_best_checkpoint(call, reference=None) -> None:
             f"[judge] scoring v{chosen} — the best-scoring version whose noise sigma is "
             f"plausible (v{fallback} scores better but its sigma would fail the gate)"
         )
+    return chosen
 
 
 def _implausible_sigma_text(flag: dict) -> str:
@@ -338,20 +431,21 @@ async def _restore(call, version: int, head: "int | None") -> bool:
         return False
 
 
-async def _restore_checkpoint_only(call) -> None:
-    """The pre-scan behaviour, for a server that cannot list versions: restore ``best_version``."""
+async def _restore_checkpoint_only(call) -> "int | None":
+    """The pre-scan behaviour, for a server that cannot list versions: restore ``best_version``.
+    Returns the version left as HEAD, like :func:`_restore_best_checkpoint`."""
     try:
         progress = await call("get_progress")
     except Exception:  # pragma: no cover - older server without the tool: score HEAD
-        return
+        return await _head_version(call)
     best = progress.get("best_version") if isinstance(progress, dict) else None
-    if best is None:
-        return
     head = await _head_version(call)
-    if best == head:
-        return  # already on the best model
+    if best is None or best == head:
+        return head  # nothing to restore, or already on the best model
     if await _restore(call, best, head):
         print(f"[judge] restored best-scoring checkpoint v{best} (was HEAD v{head}) before scoring")
+        return best
+    return head
 
 
 async def _judge(
@@ -395,11 +489,14 @@ async def _judge(
 
     from ..scenario import chi2_gof_pvalue
 
+    # First let a fit the agent left running commit, so the scan sees its version and nothing
+    # moves under the reads below (gemot#73).
+    fit_wait = await _wait_for_running_fit(call)
     # Restore + score the best model this judge can legitimately score — not whatever was committed
     # last, and not a lower-scoring version whose noise model the gate below would reject while a
     # clean one sits unscored (see the helper). Handed the reference so the scan asks the SAME sigma
     # question the gate does.
-    await _restore_best_checkpoint(call, scenario.reference())
+    scored_version = await _restore_best_checkpoint(call, scenario.reference())
 
     structure = await call("get_model_structure")
     reactions = structure.get("reactions", []) or []
@@ -468,13 +565,20 @@ async def _judge(
     # k_eff well below k says the data did not determine that many parameters. Read off the STORED
     # version, like the sigma reports in the scan above — it is on no result the agent sees, and
     # deriving it needs the built objective. Report-only: a store without it records None.
-    k_eff = None
+    k_eff = stored = None
     try:
         stored = await call("get_version", version=head) if head is not None else None
         sim = stored.get("simulation") if isinstance(stored, dict) else None
         k_eff = sim.get("k_eff") if isinstance(sim, dict) else None
     except Exception:  # noqa: BLE001 - report-only
         k_eff = None
+    # Every read above is the scored version's, or there is no score: nll, n and k off two
+    # versions make a number no version has (gemot#73). Raised, so the run is written as degraded
+    # with this message rather than judged.
+    if why := _scored_version_mismatch(scored_version, head, stored, final, params):
+        raise MixedVersionsError(f"judge: the reads are not all v{scored_version}'s: {why}")
+    if scored_version is None:
+        scored_version = head
     errors = await call("get_errors", limit=20)
     # baseline.nll is None for a zero-shot build (no model shipped → nothing to score).
     delta = (
@@ -928,6 +1032,14 @@ async def _judge(
         "new_species": new_species,
         "success": success,
         "head_version": head,
+        # The version every number above was read off: the scan's choice, checked to have stayed
+        # HEAD and to match its stored record through the reads (gemot#73). Equal to
+        # `head_version` in any result that exists; named apart because `head_version` only says
+        # where HEAD was when read. -1 when nothing was fitted, as there.
+        "scored_version": scored_version,
+        # Seconds the judge waited for a fit still running when the agent stopped (a few ms when
+        # none was); None when it could not wait.
+        "fit_wait_seconds": None if fit_wait is None else round(fit_wait, 1),
         "n_errors": len(errors) if isinstance(errors, list) else 0,
         "wall_seconds": round(wall, 1),
         "compute_seconds": round(compute_s, 1),
