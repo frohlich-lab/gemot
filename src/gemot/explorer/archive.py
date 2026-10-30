@@ -10,9 +10,6 @@ and a sweep task removes its own when it exits. So at run end we copy the durabl
 unchanged; :func:`gemot.analysis.read_version_json` reads a gzipped file under its plain name.
 Best-effort: any failure is swallowed so archiving never breaks a run.
 
-``pypesto_result.hdf5`` is archived only when ``GEMOT_ARCHIVE_PYPESTO_HDF5=1``: it is pyPESTO's
-own copy of the fit ``optimization.json`` already holds, kept for interop, at up to ~5 MB a
-version.
 ``simulations.tsv`` is never archived: ``simulations.json`` holds the same table and is the one
 every reader reads.
 """
@@ -21,7 +18,6 @@ from __future__ import annotations
 
 import gzip
 import json
-import os
 import shutil
 from pathlib import Path
 
@@ -46,6 +42,9 @@ _VERSION_FILES = (
     "statements.json",
     # The held-out simulations, beside simulations.json (frohlich-lab/PEtab-MCP#119).
     "validation_simulations.json",
+    # pyPESTO's own result for the fit, readable by pyPESTO itself. Already compressed, so it is
+    # copied as it is, at up to ~5 MB a version.
+    "pypesto_result.hdf5",
 )
 
 #: Per-version files archived gzipped, as ``<name>.gz``. ``optimization.json`` is the multistart
@@ -54,14 +53,6 @@ _VERSION_FILES = (
 #: one start or by many, nor which parameters sit at bounds across starts (#62). 1.4-1.9 MB raw
 #: for a 50-start fit, about a fifth of that gzipped.
 _GZIPPED_VERSION_FILES = ("optimization.json",)
-
-
-def _archive_pypesto_hdf5() -> bool:
-    """Whether ``GEMOT_ARCHIVE_PYPESTO_HDF5`` asks for each version's ``pypesto_result.hdf5`` too.
-    Only an explicit on-word counts, so an empty ``GEMOT_ARCHIVE_PYPESTO_HDF5=`` in a submit
-    script leaves it off."""
-    raw = os.environ.get("GEMOT_ARCHIVE_PYPESTO_HDF5", "")
-    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def default_archive_root() -> Path:
@@ -176,13 +167,10 @@ def archive_run(work: Path, result: dict, archive_root: Path | None = None) -> P
                 shutil.copy2(src, dest_store / name)
         vsrc = store / "versions"
         if vsrc.is_dir():
-            copied = _VERSION_FILES
-            if _archive_pypesto_hdf5():
-                copied += ("pypesto_result.hdf5",)
             for vd in vsrc.glob("v*"):
                 out = dest_store / "versions" / vd.name
                 out.mkdir(parents=True, exist_ok=True)
-                for fn in copied:
+                for fn in _VERSION_FILES:
                     f = vd / fn
                     if f.is_file():
                         shutil.copy2(f, out / fn)

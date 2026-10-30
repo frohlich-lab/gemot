@@ -11,7 +11,6 @@ count, and the layering that makes it work.
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
 
 from gemot.agent.driver import _pending_fit_starts
 from gemot.fit_budget import (
@@ -50,21 +49,21 @@ def test_a_call_asking_for_more_starts_gets_that_fits_budget():
     """The motivating case: build_true_model's 400 starts against a run default of 50."""
     s = _wrapped()
     asyncio.run(s.call_tool("make_changes", {"antimony": "x", "n_starts": 400}))
-    assert s.timeout_of() == timedelta(seconds=fit_time_budget_for(400, DEFAULT))
+    assert s.timeout_of() == fit_time_budget_for(400, DEFAULT)
     # ...and never LESS than the old `2 * default` guess. Not a strict `>`: fit_time_budget
     # counts worker WAVES, so on a box with FIT_N_WORKERS >= 400 both counts are one wave and
     # the budgets are legitimately equal. FIT_N_WORKERS is bound at import from the environment
     # and no test pins it, so a strict comparison would pass or fail by allocation size.
-    assert s.timeout_of() >= timedelta(seconds=fit_time_budget_for(2 * DEFAULT, DEFAULT))
+    assert s.timeout_of() >= fit_time_budget_for(2 * DEFAULT, DEFAULT)
 
 
 def test_keyword_arguments_are_read_too():
-    """Both real callers (`_make_call` and langchain-mcp-adapters) pass name+arguments
-    POSITIONALLY, with only progress_callback by keyword — the positional path is the one that
+    """Both real callers (`_make_call` and the tool bridge, agent/mcp_tools.py) pass
+    name+arguments POSITIONALLY — the positional path is the one that
     carries production traffic. The keyword form is accepted for any other caller."""
     s = _wrapped()
     asyncio.run(s.call_tool(name="make_changes", arguments={"n_starts": 300}))
-    assert s.timeout_of() == timedelta(seconds=fit_time_budget_for(300, DEFAULT))
+    assert s.timeout_of() == fit_time_budget_for(300, DEFAULT)
 
 
 def test_a_tool_that_cannot_fit_gets_the_short_budget_not_the_run_default():
@@ -75,7 +74,7 @@ def test_a_tool_that_cannot_fit_gets_the_short_budget_not_the_run_default():
 
     s = _wrapped()
     asyncio.run(s.call_tool("get_fit_summary", {}))
-    assert s.timeout_of() == timedelta(seconds=NON_FIT_CALL_TIMEOUT_S)
+    assert s.timeout_of() == NON_FIT_CALL_TIMEOUT_S
 
 
 def test_an_edit_tool_that_omits_n_starts_still_gets_a_FIT_budget():
@@ -83,7 +82,7 @@ def test_an_edit_tool_that_omits_n_starts_still_gets_a_FIT_budget():
     n_starts" must not be read as "cannot fit" — that would cut a healthy fit at 900s."""
     s = _wrapped()
     asyncio.run(s.call_tool("make_changes", {}))
-    assert s.timeout_of() == timedelta(seconds=fit_time_budget_for(None, DEFAULT))
+    assert s.timeout_of() == fit_time_budget_for(None, DEFAULT)
 
 
 def test_asking_for_fewer_starts_does_not_shrink_the_window():
@@ -91,19 +90,19 @@ def test_asking_for_fewer_starts_does_not_shrink_the_window():
     already trust and cutting below it buys nothing — it only risks killing a healthy call."""
     s = _wrapped()
     asyncio.run(s.call_tool("make_changes", {"n_starts": 5}))
-    assert s.timeout_of() == timedelta(seconds=fit_time_budget_for(None, DEFAULT))
+    assert s.timeout_of() == fit_time_budget_for(None, DEFAULT)
 
 
 def test_an_explicit_caller_timeout_is_never_overridden():
     s = _wrapped()
     asyncio.run(
-        s.call_tool("make_changes", {"n_starts": 400}, read_timeout_seconds=timedelta(seconds=7))
+        s.call_tool("make_changes", {"n_starts": 400}, read_timeout_seconds=7)
     )
-    assert s.timeout_of() == timedelta(seconds=7)
+    assert s.timeout_of() == 7
 
 
 def test_other_kwargs_are_passed_through_untouched():
-    """langchain-mcp-adapters sends progress_callback= on every single call and relies on it
+    """langchain-mcp-adapters sent progress_callback= on every single call and relied on it
     arriving; a wrapper that rebuilt the kwargs would silently drop it."""
     sentinel = object()
     s = _wrapped()
@@ -119,14 +118,14 @@ def test_a_string_typed_n_starts_is_read_like_the_server_reads_it():
     or it silently under-sizes exactly the calls most likely to be long."""
     s = _wrapped()
     asyncio.run(s.call_tool("make_changes", {"n_starts": "400"}))
-    assert s.timeout_of() == timedelta(seconds=fit_time_budget_for(400, DEFAULT))
+    assert s.timeout_of() == fit_time_budget_for(400, DEFAULT)
 
 
 def test_a_malformed_arguments_payload_still_gets_a_timeout():
     """A timeout must never be the thing that fails a call."""
     s = _wrapped()
     asyncio.run(s.call_tool("make_changes", "not-a-dict"))
-    assert s.timeout_of() == timedelta(seconds=fit_time_budget_for(None, DEFAULT))
+    assert s.timeout_of() == fit_time_budget_for(None, DEFAULT)
 
 
 def test_the_scripted_path_gets_the_scenario_floor_without_Scenario_exposing_it():
@@ -153,7 +152,7 @@ def test_the_scripted_path_gets_the_scenario_floor_without_Scenario_exposing_it(
     # 86400) and a handful of waves on an 8-core box (nowhere near it). That is why this passed
     # locally and failed in CI on py3.12 AND py3.13 -- the same machine-dependence the wave-count
     # comment at the top of this file already warns about.
-    assert s.timeout_of() == timedelta(seconds=fit_time_budget_for(400, DEFAULT))
+    assert s.timeout_of() == fit_time_budget_for(400, DEFAULT)
 
 
 # -- the stall watchdog reads the PENDING fit ------------------------------------------------
@@ -261,7 +260,7 @@ def test_the_watchdog_and_the_transport_derive_the_SAME_budget():
     asyncio.run(s.call_tool("make_changes", {"n_starts": 400}))
     state = _state({"name": "make_changes", "args": {"n_starts": 400}})
     watchdog = fit_time_budget_for(_pending_fit_starts(state, DEFAULT), DEFAULT)
-    assert s.timeout_of() == timedelta(seconds=watchdog)
+    assert s.timeout_of() == watchdog
 
 
 def test_a_hallucinated_n_starts_cannot_buy_an_unbounded_window():
@@ -272,15 +271,15 @@ def test_a_hallucinated_n_starts_cannot_buy_an_unbounded_window():
     assert capped < fit_time_budget(10**9)  # the clamp actually bit
     s = _wrapped()
     asyncio.run(s.call_tool("make_changes", {"n_starts": 10**9}))
-    assert s.timeout_of() == timedelta(seconds=capped)
+    assert s.timeout_of() == capped
 
 
 def test_a_positionally_supplied_timeout_does_not_break_the_call():
     """call_tool's third positional IS read_timeout_seconds; injecting the keyword on top of it
     raises "got multiple values for argument" — the wrapper failing the call it is protecting."""
     s = _wrapped()
-    asyncio.run(s.call_tool("make_changes", {"n_starts": 400}, timedelta(seconds=9)))
-    assert s.calls[0][0][2] == timedelta(seconds=9)
+    asyncio.run(s.call_tool("make_changes", {"n_starts": 400}, 9))
+    assert s.calls[0][0][2] == 9
     assert "read_timeout_seconds" not in s.calls[0][1]
 
 
@@ -318,7 +317,7 @@ def test_the_transport_wrapper_is_deliberately_tool_agnostic():
     someone remembers to add it to a list."""
     s = _wrapped()
     asyncio.run(s.call_tool("some_future_fitting_tool", {"n_starts": 400}))
-    assert s.timeout_of() == timedelta(seconds=fit_time_budget_for(400, DEFAULT))
+    assert s.timeout_of() == fit_time_budget_for(400, DEFAULT)
 
 
 # -- regressions the second review surfaced ---------------------------------------------------
@@ -357,21 +356,21 @@ def test_a_healthy_state_records_nothing():
 
 
 def test_a_per_call_timeout_is_told_apart_from_an_ordinary_tool_error():
-    """mcp turns an expired read_timeout_seconds into McpError(408), which is not in the httpx
-    family — so without this it reads as an ordinary tool error and goes back to the model with
+    """mcp turns an expired read_timeout_seconds into MCPError(REQUEST_TIMEOUT), which is not in
+    the httpx2 family — so without this it reads as an ordinary tool error and goes back to the model with
     nothing to say the server is still running the abandoned multistart. A fit's goes to the lead
     as a note that says so, and any other call's resumes, as the session-wide sse_read_timeout's
     httpx.ReadTimeout did (tests/test_fit_call_timeout.py)."""
-    from mcp.shared.exceptions import McpError
-    from mcp.types import ErrorData
+    from mcp import MCPError
+    from mcp.types import REQUEST_TIMEOUT
 
     from gemot.agent.circuit_breaker import _is_call_timeout, _is_transport_error
 
-    timed_out = McpError(ErrorData(code=408, message="Timed out waiting for response"))
+    timed_out = MCPError(code=REQUEST_TIMEOUT, message="Timed out waiting for response")
     assert _is_call_timeout(timed_out)
     assert _is_transport_error(timed_out)
     # A 400 is a deterministic tool error and MUST still reach the model.
-    bad_request = McpError(ErrorData(code=400, message="invalid antimony"))
+    bad_request = MCPError(code=400, message="invalid antimony")
     assert not _is_call_timeout(bad_request)
     assert not _is_transport_error(bad_request)
     assert not _is_transport_error(ValueError("ordinary failure"))
@@ -451,8 +450,8 @@ def test_a_second_batched_fit_is_sized_for_its_wait_on_the_server_lock():
         await _aio.gather(first, second)
 
     _aio.run(drive())
-    assert s.timeout_of(0) == timedelta(seconds=fit_time_budget_for(400, DEFAULT))
-    assert s.timeout_of(1) == timedelta(seconds=fit_time_budget_for(800, DEFAULT))
+    assert s.timeout_of(0) == fit_time_budget_for(400, DEFAULT)
+    assert s.timeout_of(1) == fit_time_budget_for(800, DEFAULT)
 
 
 def test_an_in_flight_fit_is_released_when_the_call_returns():
@@ -460,7 +459,7 @@ def test_an_in_flight_fit_is_released_when_the_call_returns():
     s = _wrapped()
     for _ in range(3):
         asyncio.run(s.call_tool("make_changes", {"n_starts": 400}))
-    assert s.timeout_of(2) == timedelta(seconds=fit_time_budget_for(400, DEFAULT))
+    assert s.timeout_of(2) == fit_time_budget_for(400, DEFAULT)
 
 
 def test_a_pending_fit_survives_a_middleware_message_landing_after_it():
@@ -508,8 +507,8 @@ def test_a_transfer_held_out_score_gets_one_fit_budget_per_unit():
     s = _FakeSession()
     _wrap_call_timeout(s, DEFAULT, held_out_fits=3)
     asyncio.run(s.call_tool(HELD_OUT_TOOL, {}))
-    assert s.timeout_of() == timedelta(seconds=fit_time_budget_for(None, DEFAULT, fits=3))
-    assert s.timeout_of() == timedelta(seconds=3 * fit_time_budget(DEFAULT))
+    assert s.timeout_of() == fit_time_budget_for(None, DEFAULT, fits=3)
+    assert s.timeout_of() == 3 * fit_time_budget(DEFAULT)
 
 
 def test_a_fixed_theta_held_out_score_keeps_the_read_timeout():
@@ -521,7 +520,7 @@ def test_a_fixed_theta_held_out_score_keeps_the_read_timeout():
     s = _FakeSession()
     _wrap_call_timeout(s, DEFAULT, held_out_fits=0)
     asyncio.run(s.call_tool(HELD_OUT_TOOL, {}))
-    assert s.timeout_of() == timedelta(seconds=NON_FIT_CALL_TIMEOUT_S)
+    assert s.timeout_of() == NON_FIT_CALL_TIMEOUT_S
 
 
 def test_the_held_out_budget_stays_under_the_session_ceiling():

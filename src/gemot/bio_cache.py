@@ -23,8 +23,8 @@ DESIGN NOTES
 * Keyed on ``(url, tool_name, arguments)`` with arguments canonicalised, so argument order cannot
   produce a spurious miss.
 * Values are pickled ``CallToolResult`` objects rather than an extracted string. The consumers are
-  langchain-mcp-adapters and the deepagents panel, which read fields beyond the text content; a
-  hand-rolled stub would work until something read ``isError`` or ``structuredContent``. Any
+  the tool bridge (``agent.mcp_tools``) and the deepagents panel, which read fields beyond the text
+  content; a hand-rolled stub would work until something read ``is_error`` or ``structured_content``. Any
   unpickling failure is treated as a MISS, so a library upgrade degrades to a network call rather
   than an exception.
 * Writes are atomic (temp file + ``os.replace``): a sweep has many array tasks sharing one cache
@@ -51,11 +51,15 @@ from typing import Any, Callable
 # Bumped when the stored representation changes in a way that makes old entries unreadable or
 # wrong. Entries live in a subdirectory named for it, so a bump orphans the old ones rather than
 # mixing them in — and the old directory can simply be deleted.
-_CACHE_SCHEMA = "v1"
+# v2: mcp 2.0's CallToolResult. A v1 entry, pickled under mcp 1.x, loads into it WITHOUT error but
+# keeps the camelCase fields, so `is_error` and `structured_content` raise on it: served as a hit,
+# it would break the consumer instead of falling back to the network.
+_CACHE_SCHEMA = "v2"
 
 # Keyword arguments that change how a result is DELIVERED, not what it is, so a cached answer is
 # still correct in their presence. Everything else bypasses the cache. `progress_callback` is the
-# load-bearing entry: langchain-mcp-adapters passes it on every call.
+# load-bearing entry: langchain-mcp-adapters passed it on every call. The langchain.mcp bridge that
+# replaced it passes none, but a consumer that does must still be cached.
 _INERT_KWARGS = frozenset({"progress_callback", "read_timeout_seconds"})
 
 
@@ -201,8 +205,8 @@ def wrap_session(
         # Extra state generally makes a call uncacheable — a cached answer that ignored it would be
         # subtly wrong, worse than not caching. But TRANSPORT arguments are not extra state: they
         # affect how the answer is delivered, not what it is, so bypassing on them disables the
-        # cache entirely. That is not hypothetical: langchain-mcp-adapters (the ONLY consumer of
-        # these sessions, via `load_mcp_tools`) passes `progress_callback=` on every single call
+        # cache entirely. That is not hypothetical: langchain-mcp-adapters (then the ONLY consumer
+        # of these sessions, via `load_mcp_tools`) passed `progress_callback=` on every single call
         # (tools.py:489), so a blanket `if kwargs: bypass` produced a 0% hit rate in production
         # while every unit test — which called the stand-in in the plain shape — passed.
         if args or (set(kwargs) - _INERT_KWARGS):
@@ -222,7 +226,7 @@ def wrap_session(
         result = await original(name, arguments)
         # Never cache an error: a failed lookup is what should be retried, and pinning a transient
         # outage into the cache would degrade every later run of the sweep.
-        if not getattr(result, "isError", False):
+        if not getattr(result, "is_error", False):
             cache.put(key, result, name=str(name), arguments=arguments)
         return result
 

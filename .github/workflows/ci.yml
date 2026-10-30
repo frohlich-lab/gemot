@@ -94,9 +94,10 @@ jobs:
       # they SILENTLY SKIP if it is absent -- which is how a broken _trim_europepmc_search and,
       # before it, the uncurated `general-purpose` subagent (issue #112) stayed invisible to CI.
       # `.[dev]` above covers them: dev -> gemot[agent], which pins deepagents,
-      # langchain-openai AND langchain-mcp-adapters. Do not add a manual install step back -- the
-      # one removed here omitted langchain-mcp-adapters, so it was strictly weaker than the extra
-      # it duplicated, and it could drift out of step with the pins in pyproject.toml.
+      # langchain-openai AND langchain[mcp], the tool bridge. Do not add a manual install step back
+      # -- the one removed here omitted the bridge (then langchain-mcp-adapters), so it was strictly
+      # weaker than the extra it duplicated, and it could drift out of step with the pins in
+      # pyproject.toml.
 
       # `swig` is an (unpinned) AMICI dependency, so `.[dev]` already pulls it;
       # install it explicitly too so CI never silently relies on the transitive

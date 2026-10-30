@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from gemot.agent import cli_mcp as C
@@ -24,8 +24,8 @@ from gemot.agent import cli_mcp as C
 def _result(payload, *, error=False):
     return CallToolResult(
         content=[TextContent(type="text", text=json.dumps(payload))],
-        structuredContent=payload,
-        isError=error,
+        structured_content=payload,
+        is_error=error,
     )
 
 
@@ -37,28 +37,32 @@ class _Upstream:
             Tool(
                 name="future_diagnostic",
                 description="A server read outside the former panel's curated roster.",
-                inputSchema={
+                input_schema={
                     "type": "object",
                     "properties": {"version": {"type": "integer"}},
                     "required": ["version"],
                     "additionalProperties": False,
                 },
-                outputSchema={"type": "object", "properties": {"version": {"type": "integer"}}},
-                _meta={"upstream-marker": "preserved"},
+                output_schema={"type": "object", "properties": {"version": {"type": "integer"}}},
+                meta={"upstream-marker": "preserved"},
             ),
             Tool(
                 name="make_changes",
                 description="Author, fit and snapshot one model.",
-                inputSchema={"type": "object", "properties": {"justification": {"type": "string"}}},
+                input_schema={
+                    "type": "object",
+                    "properties": {"justification": {"type": "string"}},
+                },
             ),
-            Tool(name="raises", inputSchema={"type": "object"}),
-            Tool(name="evaluate_validation_data", inputSchema={"type": "object"}),
+            Tool(name="raises", input_schema={"type": "object"}),
+            Tool(name="evaluate_validation_data", input_schema={"type": "object"}),
         ]
 
-    async def list_tools(self, cursor=None):
+    async def list_tools(self, *, params=None):
+        cursor = params.cursor if params else None
         self.cursors.append(cursor)
         if cursor is None:
-            return ListToolsResult(tools=self.tools[:2], nextCursor="page-2")
+            return ListToolsResult(tools=self.tools[:2], next_cursor="page-2")
         assert cursor == "page-2"
         return ListToolsResult(tools=self.tools[2:])
 
@@ -75,7 +79,7 @@ class _Upstream:
 
 @contextlib.asynccontextmanager
 async def _client(url):
-    async with streamablehttp_client(url) as (read, write, _):
+    async with streamable_http_client(url) as (read, write):
         async with ClientSession(read, write) as client:
             initialized = await client.initialize()
             yield client, initialized
@@ -105,7 +109,7 @@ def test_gateway_preserves_schemas_and_forwards_calls_to_existing_session():
                 result = await client.call_tool("future_diagnostic", {"version": 7})
                 assert result.model_dump() == _result({"version": 7, "applied": True}).model_dump()
                 result = await client.call_tool("make_changes", {"justification": "measured rate"})
-                assert result.structuredContent["applied"] is True
+                assert result.structured_content["applied"] is True
             assert upstream.calls == [
                 ("future_diagnostic", {"version": 7}),
                 ("make_changes", {"justification": "measured rate"}),
@@ -134,15 +138,17 @@ def test_hidden_tools_cannot_be_called_and_errors_keep_their_results():
         async with C.serve_cli_tools(upstream) as gateway:
             async with _client(gateway.url) as (client, _):
                 hidden = await client.call_tool("evaluate_validation_data", {})
-                assert hidden.isError
+                assert hidden.is_error
                 assert upstream.calls == []
                 rejected = await client.call_tool("make_changes", {"justification": "reject"})
-                assert not rejected.isError
-                assert rejected.structuredContent == {"applied": False, "error": "invalid model"}
+                assert not rejected.is_error
+                assert rejected.structured_content == {"applied": False, "error": "invalid model"}
                 failed = await client.call_tool("make_changes", {"justification": "error"})
-                assert failed.isError and failed.structuredContent["error"] == "fit storage failed"
+                assert (
+                    failed.is_error and failed.structured_content["error"] == "fit storage failed"
+                )
                 raised = await client.call_tool("raises", {})
-                assert raised.isError and "upstream disconnected" in raised.content[0].text
+                assert raised.is_error and "upstream disconnected" in raised.content[0].text
             assert gateway.stats["n_tool_errors"] == 3
             assert gateway.stats["make_changes_calls"] == {
                 "attempted": 2,
@@ -267,7 +273,7 @@ def test_blind_descriptions_do_not_mutate_the_upstream_tools():
         tools = await C._listed_tools(upstream, biology_blinded=True)
         editor = next(tool for tool in tools if tool.name == "make_changes")
         assert editor.description == BIOLOGY_BLIND_TOOL_DESCRIPTIONS["make_changes"]
-        assert editor.inputSchema == upstream.tools[1].inputSchema
+        assert editor.input_schema == upstream.tools[1].input_schema
         assert [tool.model_dump() for tool in upstream.tools] == originals
         assert next(tool for tool in tools if tool.name == "future_diagnostic").description == ""
 

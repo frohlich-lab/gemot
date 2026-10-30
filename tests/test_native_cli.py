@@ -348,7 +348,7 @@ def test_real_native_subprocess_calls_real_mcp_gateway(tmp_path, driver):
     program.write_text(
         """import asyncio, json, os, sys
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 args = sys.argv[1:]
 if args[0] == 'exec':
@@ -361,7 +361,7 @@ prompt = sys.stdin.read()
 assert os.listdir() == []
 
 async def run():
-    async with streamablehttp_client(url) as (read, write, _):
+    async with streamable_http_client(url) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = (await session.list_tools()).tools
@@ -370,7 +370,7 @@ async def run():
                 'justification': 'measured rate', 'prompt': prompt,
                 'cwd': os.getcwd(), 'gateway': url,
             })
-            assert result.structuredContent == {'applied': True, 'version': 1}
+            assert result.structured_content == {'applied': True, 'version': 1}
 asyncio.run(run())
 """
         + f"\nfor event in {repr(_events(driver))}:\n    print(json.dumps(event), flush=True)\n"
@@ -385,11 +385,11 @@ asyncio.run(run())
     executable.chmod(0o700)
     calls = []
 
-    async def list_tools():
+    async def list_tools(*, params=None):
         return ListToolsResult(
             tools=[
-                Tool(name="make_changes", inputSchema={"type": "object"}),
-                Tool(name="evaluate_validation_data", inputSchema={"type": "object"}),
+                Tool(name="make_changes", input_schema={"type": "object"}),
+                Tool(name="evaluate_validation_data", input_schema={"type": "object"}),
             ]
         )
 
@@ -399,7 +399,7 @@ asyncio.run(run())
         payload = {"applied": True, "version": 1}
         return CallToolResult(
             content=[TextContent(type="text", text=json.dumps(payload))],
-            structuredContent=payload,
+            structured_content=payload,
         )
 
     async def run():

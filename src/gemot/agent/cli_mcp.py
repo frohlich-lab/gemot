@@ -90,9 +90,9 @@ def _tool_span(tracer: Any, parent: Any, name: str, arguments: dict[str, Any]):
 
 def _outcome(result: Any) -> str:
     """Distinguish a scored edit rejection from a failed tool, without changing either reply."""
-    if result.isError:
+    if result.is_error:
         return "tool_error"
-    payload = result.structuredContent
+    payload = result.structured_content
     if payload is None:
         text = "".join(
             block.text for block in result.content if getattr(block, "type", None) == "text"
@@ -121,15 +121,19 @@ def _record(stats: dict[str, Any], name: str, outcome: str) -> None:
 
 async def _listed_tools(session: Any, *, biology_blinded: bool) -> list[Any]:
     """Read every tools/list page before publishing the stable surface for this run."""
+    from mcp.types import PaginatedRequestParams
+
     tools: dict[str, Any] = {}
     cursor = None
     seen_cursors = set()
     while True:
-        page = await session.list_tools(cursor=cursor) if cursor else await session.list_tools()
+        page = await session.list_tools(
+            params=PaginatedRequestParams(cursor=cursor) if cursor else None
+        )
         for tool in page.tools:
             if tool.name not in _JUDGE_TOOLS:
                 tools[tool.name] = tool
-        cursor = page.nextCursor
+        cursor = page.next_cursor
         if not cursor:
             break
         if cursor in seen_cursors:
@@ -176,7 +180,7 @@ async def serve_cli_tools(
     from mcp.server.lowlevel import Server
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     from mcp.server.transport_security import TransportSecuritySettings
-    from mcp.types import CallToolResult, TextContent
+    from mcp.types import CallToolResult, ListToolsResult, TextContent
 
     tools = await _listed_tools(session, biology_blinded=biology_blinded)
     names = frozenset(tool.name for tool in tools)
@@ -191,16 +195,14 @@ async def serve_cli_tools(
         },
     }
     tracer, parent = _trace_context(tracing)
-    server = Server("gemot-petab")
 
-    @server.list_tools()
-    async def list_tools():
-        return tools
+    async def list_tools(ctx, params):
+        return ListToolsResult(tools=tools)
 
-    # Validation belongs to the real server. Keeping it there preserves its normal diagnostics
-    # and ensures every forwarded attempt is timed and traced, including a malformed request.
-    @server.call_tool(validate_input=False)
-    async def call_tool(name: str, arguments: dict[str, Any]):
+    # Validation belongs to the real server, and this low-level server does none: that keeps its
+    # normal diagnostics, and every forwarded attempt is timed and traced, a malformed one too.
+    async def call_tool(ctx, params):
+        name, arguments = params.name, params.arguments or {}
         stats["native_tool_calls"] += 1
         with _tool_span(tracer, parent, name, arguments) as span:
             try:
@@ -215,7 +217,7 @@ async def serve_cli_tools(
             except Exception as exc:
                 result = CallToolResult(
                     content=[TextContent(type="text", text=f"{type(exc).__name__}: {exc}")],
-                    isError=True,
+                    is_error=True,
                 )
             outcome = _outcome(result)
             _record(stats, name, outcome)
@@ -230,6 +232,11 @@ async def serve_cli_tools(
             if outcome == "tool_error":
                 _span_error(span, "Tool returned an error")
             return result
+
+    server = Server("gemot-petab", on_list_tools=list_tools, on_call_tool=call_tool)
+    # mcp 2 wraps each message in an OTel SERVER span of its own. The CLI sends no trace context,
+    # so those would be parentless duplicates of the tool spans above, which keep the run's parent.
+    server.middleware = []
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     http_task = None

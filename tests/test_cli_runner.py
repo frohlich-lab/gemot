@@ -214,7 +214,7 @@ def test_native_runner_records_phoenix_and_judges_without_panel(monkeypatch, tmp
 
     async def call(name, arguments=None, **kwargs):
         replies = {"describe_problem": {"model_authored": False}, "get_model_structure": {}}
-        return SimpleNamespace(structuredContent=replies.get(name, {}))
+        return SimpleNamespace(structured_content=replies.get(name, {}))
 
     monkeypatch.setattr(tracing, "setup_phoenix_tracing", setup)
     monkeypatch.setattr(tracing, "run_span", root_span)

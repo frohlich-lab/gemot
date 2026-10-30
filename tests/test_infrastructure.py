@@ -183,17 +183,17 @@ def test_a_raised_error_on_a_full_disk_stops_the_run_too():
 
 
 def test_the_servers_report_stops_the_run_instead_of_reaching_the_model():
-    """PEtab-MCP#95 ends the call as an `isError` result. The adapter raises it as a
+    """PEtab-MCP#95 ends the call as an `is_error` result. The bridge raises it as a
     ToolException, and its `handle_tool_error` would hand the model that text as the tool's
-    result; the wrapper sees it first. Built through the adapter's own conversion, so the
-    exception is the one a real call raises."""
-    pytest.importorskip("langchain_mcp_adapters")
-    from langchain_mcp_adapters.tools import _convert_call_tool_result
+    result; the wrapper sees it first. Built through the bridge's own conversion
+    (`langchain.mcp`), so the exception is the one a real call raises."""
+    pytest.importorskip("langchain.mcp")
+    from langchain.mcp.tools import _convert_call_tool_result
     from mcp.types import CallToolResult, TextContent
 
     async def _make_changes(runtime=None, **kw):
         return _convert_call_tool_result(
-            CallToolResult(content=[TextContent(type="text", text=_REPORT)], isError=True)
+            CallToolResult(content=[TextContent(type="text", text=_REPORT)], is_error=True)
         )
 
     state = B._new_breaker_state()
@@ -341,7 +341,7 @@ def test_an_infrastructure_error_escaping_the_driver_keeps_its_label_and_evidenc
 
 
 def test_the_runners_own_calls_raise_on_the_servers_report():
-    """The judge and preflight read through `_make_call`, which unwraps an `isError` result to its
+    """The judge and preflight read through `_make_call`, which unwraps an `is_error` result to its
     text. The server's report must end the run there, not reach the judge as a string."""
     from types import SimpleNamespace
 
@@ -349,7 +349,7 @@ def test_the_runners_own_calls_raise_on_the_servers_report():
 
     def _result(text):
         return SimpleNamespace(
-            isError=True, structuredContent=None, content=[SimpleNamespace(text=text)]
+            is_error=True, structured_content=None, content=[SimpleNamespace(text=text)]
         )
 
     class _Session:

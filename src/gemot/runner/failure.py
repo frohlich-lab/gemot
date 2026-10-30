@@ -37,7 +37,7 @@ def _should_reraise(exc: BaseException) -> bool:
     The degraded-result guards are widened from ``except Exception`` to ``except
     BaseException`` so a ``BaseExceptionGroup`` from anyio's TaskGroup teardown — whose leaf
     is a *background* ``asyncio.CancelledError`` raised while the
-    streamablehttp_client/ClientSession task group unwinds after a provider stall — is
+    streamable_http_client/ClientSession task group unwinds after a provider stall — is
     caught. Such a group is a ``BaseException`` but NOT an ``Exception`` (an ``ExceptionGroup``
     of all-``Exception`` leaves *is* an ``Exception`` and was already caught), so the original
     guards let it escape and vanish the run with no result.json.

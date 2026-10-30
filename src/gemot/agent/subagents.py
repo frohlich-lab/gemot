@@ -235,7 +235,7 @@ def _general_purpose_enabled(llm) -> "bool | None":
 
 
 # deepagents injects a set of built-in filesystem + todo tools (ls/glob/read_file/write_file/
-# edit_file/grep/execute/write_todos) into every agent, on top of the `tools` we pass. This
+# edit_file/delete/grep/execute/write_todos) into every agent, on top of the `tools` we pass. This
 # task has no filesystem — the real tools are the MCP tools — so those built-ins are pure
 # overhead: their JSON schemas are re-sent on every turn (the input-token cost this module
 # works hard to keep lean, see agent/tools.py), and each call the model
@@ -247,6 +247,9 @@ def _general_purpose_enabled(llm) -> "bool | None":
 # tool-caller and is the one worth trimming. Trimming the analysts cleanly needs an upstream
 # deepagents fix. Note this caveat no longer covers the biggest FS-call sink: the uncurated
 # `general-purpose` subagent is removed outright above, not filtered.
+# This is a deny-list, so a built-in deepagents adds reaches the lead until it is named here:
+# `delete` did, on every lead turn through deepagents 0.7.32. tests/test_builtin_tool_filter.py
+# checks what the lead's model is actually bound to, so the next one fails there instead.
 _BUILTIN_TOOLS_TO_HIDE = frozenset(
     {
         "write_todos",
@@ -254,6 +257,7 @@ _BUILTIN_TOOLS_TO_HIDE = frozenset(
         "read_file",
         "write_file",
         "edit_file",
+        "delete",
         "glob",
         "grep",
         "execute",

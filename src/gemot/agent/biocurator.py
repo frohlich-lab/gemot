@@ -145,7 +145,7 @@ async def discover_bio_tools(
     """
     import asyncio
 
-    from langchain_mcp_adapters.tools import load_mcp_tools
+    from .mcp_tools import load_mcp_tools
 
     if not bio_sessions:
         return []

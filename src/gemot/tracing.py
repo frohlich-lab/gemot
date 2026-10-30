@@ -24,8 +24,11 @@ without changing the agent's prompt, conversation, or context management.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
+import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -99,21 +102,19 @@ def phoenix_base_url(url: str) -> str:
 # ------------------------------------------------------------------ span input stripping
 # The LangChain instrumentor turns every LangGraph node and every middleware hook into a
 # CHAIN span whose ``input.value`` is the serialized graph state -- which embeds the whole
-# ``messages`` list. Three such hooks fire per agent step, so the transcript is stored four
-# times per step (these three plus the ``ChatOpenAI`` LLM span that legitimately holds it),
-# and since the transcript grows with every step the total scales as O(steps^2). Measured on
-# the July sweep collector DB: 27.1 GB of its 37.6 GB was these three spans' ``input.value``,
-# against 4 KB of genuinely-theirs ``output.value``.
+# ``messages`` list. Such hooks fire on every agent step, so the transcript is stored once per
+# hook per step, and since the transcript grows with every step the total scales as
+# O(steps^2). Measured on the July sweep collector DB: 27.1 GB of its 37.6 GB was these spans'
+# ``input.value``, against 4 KB of genuinely-theirs ``output.value``.
 #
 # Stripping is by span name rather than by a size threshold so it can never touch a span we
-# read: the ``ChatOpenAI`` LLM span, any TOOL span (whose ``input.value`` is the tool
-# arguments), the ``model_build_run`` root span (whose ``input.value`` is this module's own
-# ``petab.*`` run metadata), or a subagent's delegation prompt. The cost is that a rename
-# upstream silently stops the saving -- ``tests/test_tracing_span_inputs.py`` pins these
-# against the node names a real LangChain agent graph produces, so that shows up as a test
-# failure. Note the names are LangChain graph node names, not class names: the middleware
-# ones come from ``AgentMiddleware.name``, an overridable property that merely *defaults*
-# to the class name.
+# read: any TOOL span (whose ``input.value`` is the tool arguments), the ``model_build_run``
+# root span (whose ``input.value`` is this module's own ``petab.*`` run metadata), or a
+# subagent's delegation prompt. The cost is that a rename upstream silently stops the saving --
+# ``tests/test_tracing_span_inputs.py`` pins these against the node names a real LangChain
+# agent graph produces, so that shows up as a test failure. Note the names are LangChain graph
+# node names, not class names: the middleware ones come from ``AgentMiddleware.name``, an
+# overridable property that merely *defaults* to the class name.
 #
 # The graph's other per-step node, ``tools``, is deliberately absent: its ``input.value`` is
 # the tool call being dispatched, ~0.5 KB, not a transcript copy.
@@ -121,24 +122,216 @@ _STRIPPED_INPUT_SPANS = frozenset(
     {
         "model",  # LangChain's model node
         "TodoListMiddleware.after_model",  # deepagents
-        "_ToolDispatchGuard.after_model",  # ours, see gemot.agent.guards
+        "_ToolDispatchGuard.after_model",  # ours, the lead's, see gemot.agent.guards
+        "_SubagentTurnLimit.after_model",  # ours, every analyst's, see gemot.agent.guards
     }
 )
+
+# LLM spans are stripped of ``input.value`` too, by kind rather than by name (a span's name is
+# its chat-model class). Their transcript is ``llm.input_messages``, which the Phoenix UI reads
+# (kept as a delta, see below); ``input.value`` is a second copy of it as LangChain-serialized
+# messages, and that copy also carries what no reader wants: every MCP result twice (the ToolMessage
+# ``artifact`` keeps the full structured result even after deepagents evicted a large one to
+# its filesystem) and every earlier turn's ``reasoning_details`` (already in that turn's own
+# ``output.value``). On the 2026-10-25 raimundez run it was 97 MB of the LLM spans' 131 MB.
+_STRIPPED_INPUT_KINDS = frozenset({"LLM"})
 
 # Only the payload goes; the span, its parentage and its timings stay, so the trace tree is
 # unchanged. Dropping these spans outright is NOT an option -- ``ChatOpenAI`` is their child
 # and would be orphaned.
 _STRIPPED_INPUT_KEYS = ("input.value", "input.mime_type")
 
+# ---------------------------------------------------------------------- LLM input deltas
+# What the strip leaves on an LLM span is ``llm.input_messages``: the whole request, which repeats
+# the conversation so far, so a conversation of n calls stores ~n/2 copies of its final input --
+# O(steps^2) again, and most of the 48-143 MB per run that was left after the strip. So an LLM span
+# stores only the messages after its common prefix with the previous call of its conversation,
+# re-indexed from 0, and where that prefix is:
+#
+#   gemot.input_prefix_len   n, the leading messages it shares with the previous call
+#   gemot.input_prefix_span  that call's span id
+#
+# and :func:`rebuild_input_messages` puts the input back as ``input_prev[:n] + delta``. A span
+# without the two carries its full input: the first call of a conversation, a checkpoint (below),
+# a call without a system message, and every trace written before this.
+#
+# Lossless by construction, because the prefix is compared message by message: whatever made an
+# input other than an extension of the previous one shows up as a shorter prefix, never as lost
+# messages. Compaction rewriting the history to [system, summary, tail], a turn-limit notice that
+# is sent with one request only, a runaway retry resending the same input -- each was reproduced
+# on the real graph and is rebuilt exactly (tests/test_tracing_span_inputs.py). Outputs are not
+# touched, so a reply a guard changed before it reached state (a deduplicated tool call, a
+# discarded runaway turn) is still on its own span.
+#
+# A conversation is one agent's thread within one trace: ``lc_agent_name`` (the lead, or the
+# analyst), the ``checkpoint_ns`` of a subagent delegation (``tools:<id>``, one per `task` call; the
+# lead's is ``model:<id>`` and changes every step, so it is left out), and the system prompt. A call
+# without a system message -- deepagents' summarizer -- is one-shot and keeps its full input. The
+# key only chooses which call to diff against, and the span records which one that was, so a key
+# that groups wrongly costs saving, never correctness.
+#
+# The cost: the Phoenix UI shows a delta span's new messages only. The whole request of any span is
+# :func:`rebuild_input_messages_from_dataframe` over its trace.
+_INPUT_MESSAGES = "llm.input_messages."
+_PREFIX_LEN = "gemot.input_prefix_len"
+_PREFIX_SPAN = "gemot.input_prefix_span"
 
-def _strip_span_inputs(span: Any) -> Any:
-    """Return ``span`` with the bulky ``input.*`` attributes removed, or unchanged if it
-    isn't one of the wrapper spans.
+# A conversation writes its full input again every this many calls, and every conversation does
+# after a failed export: a lost span breaks every later input of its chain, and a collector can
+# lose one without the export failing. 20 is an analyst delegation's whole turn budget
+# (ANALYST_MAX_TURNS), so a delegation is one chain, and a 100-turn lead pays ~2x its final input
+# in checkpoints on top of ~1x in deltas, against ~50x written in full.
+_FULL_INPUT_EVERY = 20
 
-    Name check FIRST: this runs for every span in every export batch, and the large majority
-    return here unchanged, so nothing more expensive than a set lookup belongs above it.
+
+def _message_digest(message: dict[str, Any]) -> bytes:
+    """A message's identity for the prefix comparison: all of its attributes, not just its text,
+    so two messages with the same content and different tool calls are different."""
+    return hashlib.blake2b(
+        json.dumps(message, sort_keys=True, default=str).encode(), digest_size=16
+    ).digest()
+
+
+def _conversation_key(span: Any, attributes: dict[str, Any], system: dict[str, Any]) -> Any:
+    """The conversation an LLM call belongs to (see above), or None for a one-shot call."""
+    if system.get("message.role") != "system":
+        return None
+    try:
+        metadata = json.loads(attributes.get("metadata") or "{}")
+    except (TypeError, ValueError):
+        metadata = {}
+    metadata = metadata if isinstance(metadata, dict) else {}
+    namespace = str(metadata.get("checkpoint_ns") or "")
+    return (
+        span.context.trace_id,
+        metadata.get("lc_agent_name"),
+        namespace if namespace.startswith("tools:") else "",
+        _message_digest(system),
+    )
+
+
+class _InputDeltas:
+    """Rewrites each LLM span's ``llm.input_messages`` as a delta on its conversation's previous
+    call. Holds one digest per message of each conversation's last input, not the messages, so a
+    finished conversation costs a few KB for the rest of the process."""
+
+    def __init__(self) -> None:
+        # conversation -> (its last call's span id, that call's message digests, calls in the
+        # chain since its last full input)
+        self._last: dict[Any, tuple[str, list[bytes], int]] = {}
+
+    def reset(self) -> None:
+        """Make every conversation's next call write its full input."""
+        self._last.clear()
+
+    def encode(self, span: Any, attributes: dict[str, Any]) -> dict[str, Any]:
+        if span.context is None:
+            return attributes
+        messages: dict[int, dict[str, Any]] = {}
+        rest: dict[str, Any] = {}
+        for key, value in attributes.items():
+            if not key.startswith(_INPUT_MESSAGES):
+                rest[key] = value
+                continue
+            index, _, field = key[len(_INPUT_MESSAGES) :].partition(".")
+            if not index.isdigit():
+                return attributes
+            messages.setdefault(int(index), {})[field] = value
+        # Only an unbroken 0..m-1 list re-indexes and comes back as it was.
+        if not messages or max(messages) != len(messages) - 1:
+            return attributes
+        ordered = [messages[i] for i in range(len(messages))]
+        key = _conversation_key(span, attributes, ordered[0])
+        if key is None:
+            return attributes
+        digests = [_message_digest(m) for m in ordered]
+        last = self._last.get(key)
+        n = 0
+        if last is not None and last[2] < _FULL_INPUT_EVERY:
+            # At least 1: the system prompt is part of the key.
+            while n < min(len(last[1]), len(digests)) and last[1][n] == digests[n]:
+                n += 1
+        self._last[key] = (format(span.context.span_id, "016x"), digests, last[2] + 1 if n else 1)
+        if not n:
+            return attributes
+        rest[_PREFIX_LEN] = n
+        rest[_PREFIX_SPAN] = last[0]
+        for i, message in enumerate(ordered[n:]):
+            for field, value in message.items():
+                rest[f"{_INPUT_MESSAGES}{i}.{field}"] = value
+        return rest
+
+
+def rebuild_input_messages(
+    spans: Mapping[str, tuple[Any, Any, Any]],
+) -> dict[str, list | None]:
+    """Every span's full ``llm.input_messages``, put back together from the deltas the exporter
+    wrote (see ``_InputDeltas``).
+
+    ``spans`` maps a span id to what that span stores: its input messages as a list, in whichever
+    form the reader has them (Phoenix's spans dataframe, its database, OTel's flat keys grouped by
+    index), its ``gemot.input_prefix_len`` and its ``gemot.input_prefix_span``. Both are absent
+    (``None``, or NaN from a dataframe) on a span that holds its full input. A span whose chain
+    runs into a span not in ``spans`` maps to ``None``, never to a shorter input.
     """
-    if span.name not in _STRIPPED_INPUT_SPANS:
+    full: dict[str, list | None] = {}
+    for span_id in spans:
+        chain: list[str] = []
+        current = span_id
+        while current not in full and current not in chain:
+            if current not in spans:
+                full[current] = None
+                break
+            chain.append(current)
+            previous = spans[current][2]
+            if not isinstance(previous, str):
+                break
+            current = previous
+        for sid in reversed(chain):
+            messages, n, previous = spans[sid]
+            messages = list(messages) if isinstance(messages, (list, tuple)) else []
+            if not isinstance(previous, str):
+                full[sid] = messages
+                continue
+            base = full.get(previous)
+            full[sid] = None if base is None or len(base) < int(n) else base[: int(n)] + messages
+    return {span_id: full[span_id] for span_id in spans}
+
+
+def rebuild_input_messages_from_dataframe(df: Any) -> dict[str, list | None]:
+    """:func:`rebuild_input_messages` for the LLM spans of a Phoenix spans dataframe, as
+    ``Client().spans.get_spans_dataframe`` returns it (indexed by span id).
+
+    Phoenix flattens only OpenInference's own attributes into columns, so the two ``gemot.*`` ones
+    come back nested, as one ``attributes.gemot`` dict (arize-phoenix 20.6). Looked for as flat
+    columns they are missing, every span seems to hold its full input, and the deltas come back as
+    if they were the inputs. So both shapes are read.
+    """
+    spans: dict[str, tuple[Any, Any, Any]] = {}
+    for span_id, row in df.iterrows():
+        if row.get("attributes.openinference.span.kind") != "LLM":
+            continue
+        nested = row.get("attributes.gemot")
+        n, previous = (
+            nested.get(key.removeprefix("gemot."))
+            if isinstance(nested, dict)
+            else row.get(f"attributes.{key}")
+            for key in (_PREFIX_LEN, _PREFIX_SPAN)
+        )
+        spans[str(span_id)] = (row.get("attributes.llm.input_messages"), n, previous)
+    return rebuild_input_messages(spans)
+
+
+def _strip_span_inputs(span: Any, deltas: _InputDeltas | None = None) -> Any:
+    """Return ``span`` with the bulky ``input.*`` attributes removed, or unchanged if it
+    is neither one of the wrapper spans nor an LLM span. With ``deltas``, an LLM span's input
+    messages are also cut down to the delta on its conversation's previous call.
+
+    These checks FIRST: this runs for every span in every export batch, and the large majority
+    return here unchanged, so nothing more expensive than a set lookup belongs above them.
+    """
+    kind = (span.attributes or {}).get("openinference.span.kind")
+    if span.name not in _STRIPPED_INPUT_SPANS and kind not in _STRIPPED_INPUT_KINDS:
         return span
     from opentelemetry.sdk.trace import ReadableSpan
 
@@ -147,6 +340,8 @@ def _strip_span_inputs(span: Any) -> Any:
         for key, value in (span.attributes or {}).items()
         if key not in _STRIPPED_INPUT_KEYS
     }
+    if deltas is not None and kind == "LLM":
+        attributes = deltas.encode(span, attributes)
     return ReadableSpan(
         name=span.name,
         context=span.context,
@@ -164,20 +359,36 @@ def _strip_span_inputs(span: Any) -> Any:
 
 
 def _make_stripping_exporter(inner: Any) -> Any:
-    """Wrap a ``SpanExporter`` so wrapper-span inputs are dropped on the way out.
+    """Wrap a ``SpanExporter`` so wrapper-span inputs are dropped, and LLM inputs cut to their
+    deltas, on the way out.
 
     Filtering at the exporter, not in a second ``SpanProcessor``: a processor added after the
     default one would have to mutate the span while the batch processor's exporter thread may
-    already be serializing it.
+    already be serializing it. The exporter is also the one place that knows whether a span
+    reached the collector, which the delta chains depend on.
     """
     from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
     class _StrippingSpanExporter(SpanExporter):
         def __init__(self, wrapped: Any) -> None:
             self._wrapped = wrapped
+            self._deltas = _InputDeltas()
+            self._lock = threading.Lock()
 
         def export(self, spans: Any) -> "SpanExportResult":
-            return self._wrapped.export([_strip_span_inputs(s) for s in spans])
+            # Encoding and exporting under one lock: a batch encoded against spans whose own export
+            # then failed would point at spans the collector never got.
+            with self._lock:
+                try:
+                    result = self._wrapped.export(
+                        [_strip_span_inputs(s, self._deltas) for s in spans]
+                    )
+                except Exception:
+                    self._deltas.reset()
+                    raise
+                if result != SpanExportResult.SUCCESS:
+                    self._deltas.reset()
+                return result
 
         def shutdown(self) -> None:
             self._wrapped.shutdown()
@@ -202,12 +413,16 @@ def _install_stripping_processor(tracer_provider: Any, traces_endpoint: str) -> 
 
         if not isinstance(tracer_provider, PhoenixTracerProvider):
             return False
-        # `add_span_processor` only drops the default processor while this private flag is
-        # set (phoenix.otel sets it at the end of `register`). If a future release stops
-        # setting it, ours would be *appended* instead and every span would export twice --
-        # one copy unstripped. Refuse rather than risk that; the count is asserted in
-        # tests/test_tracing_span_inputs.py.
-        if getattr(tracer_provider, "_default_processor", False) is not True:
+        # `add_span_processor` only drops the default processor while the provider holds one,
+        # which it records in the private `_default_processor`: `True` up to arize-phoenix-otel
+        # 0.16, the processor itself (else None) from 0.17. If it holds none, ours would be
+        # *appended* and every span would export twice -- one copy unstripped. Refuse rather than
+        # risk that; the count is asserted in tests/test_tracing_span_inputs.py.
+        #
+        # Truthiness, NOT `is True`: that check was written against 0.16, and from 0.17 it refused
+        # every provider, so every run of the October indra sweeps exported its transcript in full
+        # (238 of the 2026-10-25 raimundez run's 389 MB were the stripped spans' inputs).
+        if not getattr(tracer_provider, "_default_processor", None):
             return False
         exporter = _make_stripping_exporter(HTTPSpanExporter(traces_endpoint))
         tracer_provider.add_span_processor(BatchSpanProcessor(span_exporter=exporter))

@@ -14,7 +14,7 @@ import pytest
 
 pytest.importorskip("langchain_core", reason="harness-only dependency")
 anyio = pytest.importorskip("anyio")
-httpx = pytest.importorskip("httpx")
+httpx2 = pytest.importorskip("httpx2")
 
 from gemot.agent import circuit_breaker as _breaker  # noqa: E402
 
@@ -33,15 +33,16 @@ def test_is_transport_error_matches_real_and_generic():
     mod = _breaker
     assert mod._is_transport_error(anyio.ClosedResourceError()) is True  # the real class name
     assert mod._is_transport_error(ConnectionError("down")) is True
-    # The WHOLE httpx.TransportError family classifies as transport (same surface as the resume
+    # The WHOLE httpx2.TransportError family classifies as transport (same surface as the resume
     # backstop), including subclasses the old hand-listed name set omitted — e.g. PoolTimeout.
-    assert mod._is_transport_error(httpx.ConnectError("refused")) is True
-    assert mod._is_transport_error(httpx.PoolTimeout("no conn")) is True
+    # httpx2, which mcp 2 runs its transport on: an httpx error would derive from neither.
+    assert mod._is_transport_error(httpx2.ConnectError("refused")) is True
+    assert mod._is_transport_error(httpx2.PoolTimeout("no conn")) is True
     assert mod._is_transport_error(ValueError("bad args")) is False
     assert (
         mod._is_transport_error(
-            httpx.HTTPStatusError(  # NOT transport: a real HTTP response
-                "500", request=httpx.Request("GET", "http://x"), response=httpx.Response(500)
+            httpx2.HTTPStatusError(  # NOT transport: a real HTTP response
+                "500", request=httpx2.Request("GET", "http://x"), response=httpx2.Response(500)
             )
         )
         is False
