@@ -8,7 +8,9 @@ server editing boundary, run trace and independent judging used by the other dri
 An empty temporary working directory keeps the benchmark's reference files out of the CLI's
 project context. Native JSONL and the initial/final text live in ``work/`` for archival, outside
 that directory. Process errors retain partial accounting so the runner can judge committed
-work; cancellation propagates after the process, gateway and spans have been closed.
+work; cancellation propagates after the process, gateway and spans have been closed. A tool
+call the CLI refused itself ends the session at once as an infrastructure stop
+(:data:`gemot.infrastructure.CLI_REFUSED`), which the runner does not judge.
 """
 
 from __future__ import annotations
@@ -41,14 +43,15 @@ async def run_native_cli(
     where applicable; MCP fitting timeouts are separate and can be much longer than ordinary
     HTTP defaults. Success requires the CLI's terminal success event, not just exit status zero.
     """
-    from .. import prompts
-    from .claude import claude_command
+    from .. import infrastructure, prompts
+    from .claude import claude_command, claude_refusal
     from .cli_mcp import serve_cli_tools
     from .cli_process import CLIProcessError, diagnostic, run_cli
     from .cli_tracing import NativeCLIRecorder
-    from .codex import codex_command
+    from .codex import codex_command, codex_refusal
 
     builders = {"codex": codex_command, "claude": claude_command}
+    refusals = {"codex": codex_refusal, "claude": claude_refusal}
     if driver not in builders:
         raise ValueError(f"Unknown native CLI driver: {driver!r}")
     if timeout is not None and (not math.isfinite(timeout) or timeout <= 0):
@@ -64,7 +67,7 @@ async def run_native_cli(
     recorder = NativeCLIRecorder(driver, model, tracing=tracing, parent_span=parent_span)
     recorder.start(prompt)
     event_count, terminal_success = 0, False
-    error = None
+    error = evidence = None
     stop_reason = "completed"
     returncode = None
     gateway = None
@@ -78,6 +81,13 @@ async def run_native_cli(
                 terminal_success = event["type"] == "turn.completed"
         elif event.get("type") == "result":
             terminal_success = event.get("subtype") == "success" and not event.get("is_error")
+        # The CLI tells the model why it refused, and the model writes a report on what it could
+        # not do: a run that "completes" with nothing committed (gemot#69). Raised here, it ends
+        # the process, as an infrastructure failure ends a deepagents run.
+        if (refusal := refusals[driver](event)) is not None:
+            raise infrastructure.InfrastructureError(
+                infrastructure.Evidence(infrastructure.CLI_REFUSED, refusal)
+            )
 
     try:
         # Include tools/list and gateway startup: a server stalled before the first model
@@ -122,6 +132,9 @@ async def run_native_cli(
         stop_reason = (
             "wall_time_budget_exceeded" if isinstance(exc.__cause__, TimeoutError) else "cli_error"
         )
+    except infrastructure.InfrastructureError as exc:
+        error = evidence = diagnostic(exc.evidence.text)
+        stop_reason = infrastructure.stop_reason(exc.evidence.cause)
     except asyncio.CancelledError:
         error = "Native CLI session cancelled."
         raise
@@ -145,5 +158,6 @@ async def run_native_cli(
         "native_trace_diagnostics": recorder.diagnostics,
         "cli_returncode": returncode,
         "cli_error": error,
+        "infrastructure_evidence": evidence,
         **(gateway.stats if gateway else {}),
     }

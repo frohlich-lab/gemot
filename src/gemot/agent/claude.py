@@ -1,9 +1,9 @@
 """Configure one native Claude Code print session for a complete gemot run.
 
 Claude owns the conversation, prompt caching, compaction and MCP tool loop. This module checks
-its CLI capabilities and connects the run's gemot gateway, without a LangChain chat-model
-adapter or structured-output shim. Authentication stays with the installed official CLI.
-Native JSON events, including partial messages, are observed by gemot's tracing layer.
+its CLI capabilities, connects the run's gemot gateway, and recognizes the calls Claude denied
+(:func:`claude_refusal`), without a LangChain chat-model adapter or structured-output shim.
+Authentication stays with the installed official CLI. Native JSON events, including partial messages, are observed by gemot's tracing layer.
 """
 
 from __future__ import annotations
@@ -111,3 +111,16 @@ def claude_command(
     if reasoning_effort is not None:
         command.extend(["--effort", reasoning_effort])
     return command
+
+
+def claude_refusal(event: dict) -> str | None:
+    """Which calls Claude denied, if ``event`` is the session's result and records any.
+
+    ``permission_denials`` is the CLI's own record of the calls it did not run. ``--allowedTools``
+    grants every gateway tool, so a denial is that grant failing, never the model's doing.
+    """
+    denials = event.get("permission_denials") if event.get("type") == "result" else None
+    if not denials or not isinstance(denials, list):
+        return None
+    tools = sorted({str(d.get("tool_name")) for d in denials if isinstance(d, dict)})
+    return f"Claude denied {len(denials)} call(s) to {', '.join(tools) or 'unnamed tools'}"

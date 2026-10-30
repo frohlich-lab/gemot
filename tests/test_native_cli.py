@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 from gemot.agent import native_cli as N
-from gemot import prompts
+from gemot import infrastructure, prompts
 from gemot.agent import cli_mcp, cli_process
 from gemot.agent.cli_process import CLIProcessError, CLIProcessResult
 
@@ -208,6 +208,104 @@ def test_native_failure_preserves_logs_and_closes_boundaries(
     assert not state.open and not state.cwd.exists()
     assert state.event_log.is_file()
     assert (tmp_path / f"{driver}_final.txt").read_text() == "done"
+
+
+#: Codex's refusal of fontaine run 386d9522's first ``make_changes`` (codex-cli 0.154.0,
+#: 2026-10-26), as its ``codex_events.jsonl`` recorded it, with ``arguments`` cut to one statement.
+_CODEX_REFUSAL = {
+    "type": "item.completed",
+    "item": {
+        "id": "item_20",
+        "type": "mcp_tool_call",
+        "server": "gemot",
+        "tool": "make_changes",
+        "arguments": {
+            "statements": [
+                {
+                    "prefix": "n1",
+                    "statement": {
+                        "type": "PopulationTransition",
+                        "source": {"name": "NMP"},
+                        "target": {"name": "Early"},
+                    },
+                }
+            ]
+        },
+        "result": None,
+        "error": {"message": "MCP tool call requires approval, but approval policy is never"},
+        "status": "failed",
+    },
+}
+
+
+def _codex_call(**item):
+    return {**_CODEX_REFUSAL, "item": {**_CODEX_REFUSAL["item"], **item}}
+
+
+@pytest.mark.parametrize(
+    "driver, event, stops",
+    [
+        ("codex", _CODEX_REFUSAL, True),
+        # The wording is Codex's to change; a refusal it renames must stop the run all the same.
+        ("codex", _codex_call(error={"message": "MCP tool call blocked by a hook"}), True),
+        # Not refusals: a call Codex sent that went unanswered, and a tool error the server returned.
+        ("codex", _codex_call(error={"message": "tool call error: timed out"}), False),
+        (
+            "codex",
+            _codex_call(error=None, result={"content": [], "isError": True}),
+            False,
+        ),
+        # Claude records its denials on the session's result (the shape Claude Code 2.1.302 emits).
+        (
+            "claude",
+            {
+                **_events("claude")[-1],
+                "permission_denials": [
+                    {
+                        "tool_name": "mcp__gemot__make_changes",
+                        "tool_use_id": "toolu_01",
+                        "tool_input": {},
+                    }
+                ],
+            },
+            True,
+        ),
+    ],
+)
+def test_a_call_the_cli_refused_is_an_infrastructure_stop(
+    monkeypatch, tmp_path, driver, event, stops
+):
+    """gemot#69: Codex refused every ``make_changes`` of seven fontaine runs; they committed no
+    model and were recorded ``completed``. A refusal now ends the session at once as an
+    infrastructure stop, which the runner does not judge and the analysis keeps out of every
+    success rate."""
+    events = _events(driver)
+    events = [*events[:1], event, *events[1:]] if driver == "codex" else [*events[:-1], event]
+    session, _, state, seen = _stub_boundaries(monkeypatch, driver, events=events)
+    result = asyncio.run(
+        N.run_native_cli(
+            session,
+            driver=driver,
+            model="raw-native-model",
+            task=_TASK,
+            work=tmp_path,
+            executable="native-executable",
+            reasoning_effort="high",
+            tool_timeout=1234.0,
+        )
+    )
+    assert result["stop_reason"] == (
+        infrastructure.stop_reason(infrastructure.CLI_REFUSED) if stops else "completed"
+    )
+    assert seen[-1] == "gateway-close" and not state.cwd.exists()
+    if stops:
+        assert infrastructure.is_stop(result["stop_reason"])
+        assert "make_changes" in result["infrastructure_evidence"]
+        assert result["cli_error"] == result["infrastructure_evidence"]
+        # Nothing after the refusal is observed: the session ends there.
+        assert result["native_event_count"] == events.index(event) + 1
+    else:
+        assert result["infrastructure_evidence"] is None
 
 
 def test_whole_session_deadline_includes_gateway_startup(monkeypatch, tmp_path):

@@ -32,7 +32,9 @@ It is read in four places:
   sweep can resubmit the run.
 
 A server wedged on a fit (:data:`FIT_WEDGED`) is stopped the same way, though no text names it:
-the tool wrapper raises it on what the calls after a timed-out fit meet.
+the tool wrapper raises it on what the calls after a timed-out fit meet. So is a tool call a native
+CLI refused itself (:data:`CLI_REFUSED`), which the native driver reads from the CLI's own event
+stream (:mod:`gemot.agent.native_cli`).
 
 Stdlib only: the agent package imports this (tests/test_import_lightness.py).
 """
@@ -55,6 +57,12 @@ DISK_FULL = "disk_full"
 #: wrapper is its witness (``agent.circuit_breaker._fit_wedged``). Every call the run, or a
 #: judge, would make next queues behind the same fit.
 FIT_WEDGED = "fit_wedged"
+
+#: A native CLI refused a gateway tool call itself, so the call never reached the server
+#: (gemot#69). On 2026-10-26 Codex's approval policy refused every ``make_changes`` of seven
+#: fontaine runs, which committed no model and were recorded ``completed``. What the CLI may call
+#: is the harness's configuration, not the model's, and every later call meets the same refusal.
+CLI_REFUSED = "cli_refused"
 
 
 def stop_reason(cause: str) -> str:

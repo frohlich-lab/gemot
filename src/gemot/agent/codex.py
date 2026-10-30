@@ -1,7 +1,8 @@
 """Configure one native Codex CLI session for a complete gemot run.
 
 Codex owns its agent loop, history, prompt caching and MCP calls. This module only checks
-its documented command-line capabilities and points it at the run's gemot MCP gateway.
+its documented command-line capabilities, points it at the run's gemot MCP gateway, and
+recognizes a gateway call Codex refused to send (:func:`codex_refusal`).
 There is no LangChain model adapter, serialized transcript protocol, or per-turn subprocess.
 Authentication stays in the official CLI and administrator-managed policy remains effective.
 """
@@ -28,6 +29,12 @@ _REQUIRED_EXEC_FLAGS = (
     "--model",
 )
 _EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+
+#: How Codex reports an MCP call it sent that got no answer (``handle_approved_mcp_tool_call``
+#: in ``codex-rs/core/src/mcp_tool_call.rs``). Every other call it completes with no result is
+#: one it refused to send (``notify_mcp_tool_call_skip``). A tool error is a result: the gateway
+#: returns every upstream failure as one.
+_SENT_CALL_ERROR = "tool call error:"
 
 
 def check_codex_cli(executable: str = "codex") -> str:
@@ -108,3 +115,26 @@ def codex_command(
         command.extend(["-c", setting])
     command.append("-")
     return command
+
+
+def codex_refusal(event: dict) -> str | None:
+    """Which call Codex refused and why, if ``event`` completes one it never sent, else ``None``.
+
+    Deliberately NOT a match on the one refusal seen so far ("MCP tool call requires approval,
+    but approval policy is never"): Codex also refuses for a hook, an app policy or a tool it no
+    longer lists, and its wording and the setting that avoids it are Codex's to rename. Any call
+    completed with neither a result nor the sent-call error counts, so a renamed refusal still
+    stops the run instead of leaving it ``completed`` with nothing committed.
+    """
+    item = event.get("item")
+    if event.get("type") != "item.completed" or not isinstance(item, dict):
+        return None
+    if item.get("type") != "mcp_tool_call" or item.get("status") == "completed":
+        return None
+    if item.get("result") is not None:
+        return None
+    error = item.get("error")
+    message = str((error.get("message") if isinstance(error, dict) else error) or "no reason given")
+    if message.startswith(_SENT_CALL_ERROR):
+        return None
+    return f"Codex refused {item.get('server')}/{item.get('tool')}: {message}"
