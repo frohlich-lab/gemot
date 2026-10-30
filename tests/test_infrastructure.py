@@ -254,7 +254,7 @@ def _drive(monkeypatch, tmp_path, run_deepagents):
     import gemot.agent
     from gemot.runner import drive
 
-    async def _call(tool, args=None):
+    async def _call(tool, **_):
         return {"model_authored": False} if tool == "describe_problem" else {"species": []}
 
     async def _judge(*a, **kw):
