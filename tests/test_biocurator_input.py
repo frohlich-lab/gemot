@@ -175,6 +175,9 @@ class _FakeRequest:
     def __init__(self, name, args, id_="c1"):
         self.tool_call = {"name": name, "args": args, "id": id_, "type": "tool_call"}
 
+    def override(self, *, tool_call):
+        return _FakeRequest(tool_call["name"], tool_call["args"], tool_call["id"])
+
 
 @requires_langchain
 def test_task_arg_guard_rejects_a_task_with_unexpected_kwargs():
@@ -233,9 +236,11 @@ def test_task_arg_guard_relents_after_the_cap():
     assert isinstance(mw.wrap_tool_call(bad, handler), ToolMessage)  # reject 1
     assert isinstance(mw.wrap_tool_call(bad, handler), ToolMessage)  # reject 2
     assert dispatched == []
-    # cap hit -> relent: the third bad call falls through and dispatches (extras dropped downstream)
+    # cap hit -> relent: the third bad call dispatches with the extras dropped HERE. Passing it
+    # through whole made no progress from deepagents 0.7.18 on, whose task tool refuses them too.
     assert mw.wrap_tool_call(bad, handler) == "DISPATCHED"
     assert len(dispatched) == 1
+    assert dispatched[0].tool_call["args"] == {"description": "d", "subagent_type": "biocurator"}
     assert stats["task_arg_rejections"] == 2  # counter stopped at the cap
     assert stats["unexpected_task_kwargs"] == ["prompt"]  # still recorded every time
 

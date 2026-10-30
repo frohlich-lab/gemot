@@ -876,10 +876,13 @@ async def run_deepagents(
     # 0.85-0.89 normal) and ~33s, at a median trigger prompt of 169,266 tokens — 16% of the
     # 1M window this driver already assumes everywhere else (it deliberately runs no history
     # trimmer, and models.py pins 1M-context endpoints for exactly that reason). With the
-    # profile set, the trigger becomes 0.85 x window ≈ 891k. Long large-model runs DO reach it
-    # now (lucarelli 845-927k, raimundez 862k on the 2026-08-20/21 sweeps), and that is by
-    # design: one compaction is cheaper than the explicit stop that used to fire at 0.8 and
-    # ended runs mid-improvement. The context-stop below is the true backstop, at 0.90.
+    # profile set, the trigger becomes 0.85 x window ≈ 891k -- or, from deepagents 0.7.14, the
+    # input budget if lower: 0.95 x window minus the `max_tokens` asked for below, ≈ 865k at
+    # the defaults. That reserves room for the full output budget; it does not cap it. Long
+    # large-model runs DO reach it now (lucarelli 845-927k, raimundez 862k on the 2026-08-20/21
+    # sweeps), and that is by design: one compaction is cheaper than the explicit stop that used
+    # to fire at 0.8 and ended runs mid-improvement. The context-stop below is the true backstop,
+    # at 0.90.
     max_input_tokens = _env_token_limit("PETAB_MCP_MAX_INPUT_TOKENS", 1_048_576, minimum=1)
     # Output ceiling. An explicit 0 leaves `max_tokens` OFF so the provider default applies (the
     # behaviour before 2026-08-28); unset uses the 131_072 default — see the parameter below for
