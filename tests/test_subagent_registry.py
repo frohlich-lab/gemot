@@ -92,13 +92,16 @@ def test_create_deep_agent_does_not_add_the_general_purpose_subagent(monkeypatch
     assert agent._disable_general_purpose_subagent() is True
 
     captured: dict = {}
-    real_middleware = da_graph.SubAgentMiddleware
 
-    def _recording_middleware(*args, **kwargs):
-        captured["names"] = [spec["name"] for spec in kwargs["subagents"]]
-        return real_middleware(*args, **kwargs)
+    # A subclass, not a recording function: deepagents >= 0.7.15 also runs `isinstance(...,
+    # SubAgentMiddleware)` against the name patched here. Same class name, because deepagents
+    # places middleware by `.name`, which defaults to it.
+    class SubAgentMiddleware(da_graph.SubAgentMiddleware):
+        def __init__(self, *args, **kwargs):
+            captured["names"] = [spec["name"] for spec in kwargs["subagents"]]
+            super().__init__(*args, **kwargs)
 
-    monkeypatch.setattr(da_graph, "SubAgentMiddleware", _recording_middleware)
+    monkeypatch.setattr(da_graph, "SubAgentMiddleware", SubAgentMiddleware)
 
     llm = ChatOpenAI(model="test-model", api_key="not-a-real-key")
     assert agent._general_purpose_enabled(llm) is False

@@ -82,7 +82,8 @@ analysts, when to merge) is the prompts'. Only the biology-blind arm replaces th
 ## Dependencies
 
 - **Every pin carries a why-comment** naming what breaks outside the range. `mcp<2`
-  documents the mcp-2.0 / langchain-mcp-adapters chain that forces the upper bound.
+  documents the chain that forces the upper bound: the archived langchain-mcp-adapters, its
+  fastmcp-4 successor, and the server's `fastmcp<4`.
 - **An upper bound needs a "revisit once…" condition**, so the next person knows what would
   let them lift it.
 - **A new import means a new pin.** Some dependencies are pinned precisely because
