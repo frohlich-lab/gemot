@@ -6,7 +6,7 @@ hang:
 
   * the server's Fides per-start cap (``fides.Options.MAXTIME``) — bounds ONE optimization start;
   * the MCP client's per-call ``read_timeout_seconds`` — drops the fit's response if the whole fit
-    out-idles it (``runner.clock._wrap_call_timeout``; the session-wide ``sse_read_timeout`` above
+    out-idles it (``runner.clock._wrap_call_timeout``; the session-wide read timeout above
     it is deliberately non-binding, since it cannot see a per-call ``n_starts``);
   * the harness stall watchdog (``agent._STEP_STALL_TIMEOUT_S``) — declares the run wedged.
 
@@ -186,11 +186,11 @@ _MAX_DERIVABLE_N_STARTS = 10_000_000
 
 #: Margin the STALL WATCHDOG sits above the per-call transport cut for the same fit.
 #:
-#: The three timeouts have to be strictly ordered, not merely "all big enough": httpx ceiling >
+#: The three timeouts have to be strictly ordered, not merely "all big enough": httpx2 ceiling >
 #: watchdog > per-call cut. Ties are not safe. When the watchdog and the transport cut are set to
 #: the same number the watchdog ALWAYS wins -- its `asyncio.wait_for` is armed a graph-dispatch
 #: earlier than the call's `anyio.fail_after` -- so an overrunning fit is cancelled mid-flight as
-#: "stalled" and the clean `McpError(408)` path (which resumes from the checkpoint WITHOUT the
+#: "stalled" and the clean `MCPError(REQUEST_TIMEOUT)` path (which resumes from the checkpoint WITHOUT the
 #: model being told to re-fit) is unreachable. This margin makes the transport cut provably the
 #: first to fire, so a slow fit degrades the gentle way.
 FIT_WATCHDOG_MARGIN = _env_float("PETAB_MCP_FIT_WATCHDOG_MARGIN", 1.15)

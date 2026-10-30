@@ -67,7 +67,7 @@ async def _drive(
     """
     t0 = time.monotonic()
     # Per-call read timeouts FIRST, so every later shadow (and `raw_call_tool` below) inherits
-    # them: the session-wide sse_read_timeout can only know the run default, but n_starts is a
+    # them: the session-wide read timeout can only know the run default, but n_starts is a
     # per-call argument. See _wrap_call_timeout.
     _wrap_call_timeout(session, args.n_starts, held_out_fits=_held_out_fits(scenario.example_dir))
     # Capture the un-timed call handle BEFORE the clock wrapper, so the agent's internal
@@ -324,7 +324,7 @@ async def _drive(
                     )
                 record_run_result(span, result)
             except BaseException as exc:
-                # A provider or MCP-connection stall (httpx ReadTimeout/ConnectError, often
+                # A provider or MCP-connection stall (httpx2 ReadTimeout/ConnectError, often
                 # wrapped in an anyio TaskGroup BaseExceptionGroup whose leaf is a background
                 # CancelledError) can escape the agent loop's own guard, OR kill the session
                 # mid-judge. Don't let it vanish the run with rc=1 and NO result.json — which

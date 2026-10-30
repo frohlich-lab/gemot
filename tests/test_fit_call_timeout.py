@@ -25,8 +25,8 @@ from gemot.agent import circuit_breaker as B
 
 pytest.importorskip("mcp", reason="harness-only dependency")
 
-from mcp.shared.exceptions import McpError  # noqa: E402
-from mcp.types import ErrorData  # noqa: E402
+from mcp import MCPError  # noqa: E402
+from mcp.types import REQUEST_TIMEOUT  # noqa: E402
 
 # What mcp raised in the sweep (logs/sw55big.61134771_0.out).
 _TIMEOUT = "Timed out while waiting for response to ClientRequest. Waited 7560.0 seconds."
@@ -34,7 +34,7 @@ _STILL_RUNNING = "fit_in_progress: a 150-start fit is still running on this sess
 
 
 def _timeout():
-    return McpError(ErrorData(code=408, message=_TIMEOUT))
+    return MCPError(code=REQUEST_TIMEOUT, message=_TIMEOUT)
 
 
 def _text(text):
@@ -79,10 +79,10 @@ def test_a_fit_that_outruns_its_timeout_reaches_the_lead_as_its_result():
     content, artifact = _call(fit, n_starts=150)
 
     assert content == prompts.FIT_CALL_TIMEOUT_TMPL.format(
-        name="make_changes", error=f"McpError: {_TIMEOUT}"
+        name="make_changes", error=f"MCPError: {_TIMEOUT}"
     )
     assert artifact is None
-    assert state["fit_timeout"] == f"make_changes: McpError: {_TIMEOUT}"
+    assert state["fit_timeout"] == f"make_changes: MCPError: {_TIMEOUT}"
     assert B.call_outcomes(state, "make_changes")["by_outcome"] == {"tool_error": 1}
 
 
@@ -105,7 +105,7 @@ def test_a_further_timeout_behind_it_stops_the_run_as_a_wedged_fit(behind):
     evidence = raised.value.evidence
     assert evidence.cause == I.FIT_WEDGED
     assert evidence.text == (
-        f"{behind}: McpError: {_TIMEOUT}; behind make_changes: McpError: {_TIMEOUT}"
+        f"{behind}: MCPError: {_TIMEOUT}; behind make_changes: MCPError: {_TIMEOUT}"
     )
     assert state["infrastructure"]["evidence"] == evidence
     # The rest of the run queues behind the same fit, so it is refused before the server.
@@ -117,7 +117,7 @@ def test_a_further_timeout_behind_it_stops_the_run_as_a_wedged_fit(behind):
 @pytest.mark.parametrize(
     "reply",
     [
-        RuntimeError(f"Error calling tool 'make_changes': {_STILL_RUNNING}"),  # an isError
+        RuntimeError(f"Error calling tool 'make_changes': {_STILL_RUNNING}"),  # an is_error
         (_text(json.dumps({"applied": False, "error": _STILL_RUNNING})), None),  # a rejection
     ],
     ids=["raised", "returned"],
@@ -177,7 +177,7 @@ def test_a_reads_timeout_with_no_fit_timed_out_still_takes_the_resume():
     read = _Tool("get_model", _timeout())
     state = _wrap(read)
 
-    with pytest.raises(McpError):
+    with pytest.raises(MCPError):
         _call(read)
     assert state["fit_timeout"] is None
 
