@@ -1,8 +1,9 @@
 """Configure one native Claude Code print session for a complete gemot run.
 
 Claude owns the conversation, prompt caching, compaction and MCP tool loop. This module checks
-its CLI capabilities, connects the run's gemot gateway, and recognizes the calls Claude denied
-(:func:`claude_refusal`), without a LangChain chat-model adapter or structured-output shim.
+its CLI capabilities, connects the run's gemot gateway, recognizes the calls Claude denied
+(:func:`claude_refusal`) and where its run budget is checked (:func:`claude_response_started`),
+without a LangChain chat-model adapter or structured-output shim.
 Authentication stays with the installed official CLI. Native JSON events, including partial messages, are observed by gemot's tracing layer.
 """
 
@@ -124,3 +125,18 @@ def claude_refusal(event: dict) -> str | None:
         return None
     tools = sorted({str(d.get("tool_name")) for d in denials if isinstance(d, dict)})
     return f"Claude denied {len(denials)} call(s) to {', '.join(tools) or 'unnamed tools'}"
+
+
+def claude_response_started(event: dict) -> bool:
+    """Whether ``event`` opens a model response, the point to check Claude's run budget.
+
+    ``--include-partial-messages`` streams each response's usage as it starts, so the budget is
+    counted in reported tokens. Every tool call the previous response asked for has returned by
+    then, so stopping here interrupts no fit and no commit.
+    """
+    inner = event.get("event")
+    return (
+        event.get("type") == "stream_event"
+        and isinstance(inner, dict)
+        and inner.get("type") == "message_start"
+    )

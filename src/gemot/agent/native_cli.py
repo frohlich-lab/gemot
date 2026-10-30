@@ -11,6 +11,14 @@ that directory. Process errors retain partial accounting so the runner can judge
 work; cancellation propagates after the process, gateway and spans have been closed. A tool
 call the CLI refused itself ends the session at once as an infrastructure stop
 (:data:`gemot.infrastructure.CLI_REFUSED`), which the runner does not judge.
+
+The run's token budget is the panel's (``max_run_tokens``), checked between model calls while
+no tool call is in flight; once it is spent the process ends (``token_budget_exceeded``).
+Claude streams each response's usage, so its budget is counted in reported tokens; Codex
+reports none until its turn ends, so its budget is counted in gateway calls
+(:data:`gemot.agent.codex.CODEX_TOKENS_PER_TOOL_CALL`). A failed CLI's ``cli_error`` is the
+last error it reported, not its stderr, which held a stale-temp-dir warning while the event
+stream said the workspace was out of credits (gemot#75).
 """
 
 from __future__ import annotations
@@ -20,6 +28,12 @@ import math
 from pathlib import Path
 import tempfile
 from typing import Any
+
+from .driver import _MAX_RUN_TOKENS
+
+
+class _BudgetSpent(Exception):
+    """Raised from the event callback, so the CLI process ends where its budget was found spent."""
 
 
 async def run_native_cli(
@@ -36,19 +50,26 @@ async def run_native_cli(
     parent_span: Any = None,
     biology_blinded: bool = False,
     tool_timeout: float = 600.0,
+    max_run_tokens: int | None = _MAX_RUN_TOKENS,
 ) -> dict:
     """Drive the whole task once and return native observations for the existing judge.
 
     ``timeout`` bounds the complete session. The runner supplies the remaining wall budget,
     where applicable; MCP fitting timeouts are separate and can be much longer than ordinary
-    HTTP defaults. Success requires the CLI's terminal success event, not just exit status zero.
+    HTTP defaults. ``max_run_tokens`` bounds what it spends, as it bounds a deepagents run.
+    Success requires the CLI's terminal success event, not just exit status zero.
     """
     from .. import infrastructure, prompts
-    from .claude import claude_command, claude_refusal
+    from .claude import claude_command, claude_refusal, claude_response_started
     from .cli_mcp import serve_cli_tools
     from .cli_process import CLIProcessError, diagnostic, run_cli
     from .cli_tracing import NativeCLIRecorder
-    from .codex import codex_command, codex_refusal
+    from .codex import (
+        CODEX_TOKENS_PER_TOOL_CALL,
+        codex_call_returned,
+        codex_command,
+        codex_refusal,
+    )
 
     builders = {"codex": codex_command, "claude": claude_command}
     refusals = {"codex": codex_refusal, "claude": claude_refusal}
@@ -66,11 +87,21 @@ async def run_native_cli(
     event_path.write_bytes(b"")
     recorder = NativeCLIRecorder(driver, model, tracing=tracing, parent_span=parent_span)
     recorder.start(prompt)
-    event_count, terminal_success = 0, False
+    event_count, terminal_success, codex_calls = 0, False, 0
     error = evidence = None
     stop_reason = "completed"
     returncode = None
     gateway = None
+
+    def spent(event: dict) -> int | None:
+        """What the run has spent, if ``event`` is where its budget is checked, else ``None``."""
+        nonlocal codex_calls
+        if driver == "claude":
+            return recorder.usage()["total_tokens"] if claude_response_started(event) else None
+        if not codex_call_returned(event):
+            return None
+        codex_calls += 1
+        return codex_calls * CODEX_TOKENS_PER_TOOL_CALL
 
     def observe(event: dict) -> None:
         nonlocal event_count, terminal_success
@@ -88,6 +119,10 @@ async def run_native_cli(
             raise infrastructure.InfrastructureError(
                 infrastructure.Evidence(infrastructure.CLI_REFUSED, refusal)
             )
+        if max_run_tokens is not None:
+            used = spent(event)
+            if used is not None and used >= max_run_tokens:
+                raise _BudgetSpent
 
     try:
         # Include tools/list and gateway startup: a server stalled before the first model
@@ -127,14 +162,18 @@ async def run_native_cli(
         error = f"Native CLI session exceeded its {timeout:g}s timeout."
         stop_reason = "wall_time_budget_exceeded"
     except CLIProcessError as exc:
-        error = diagnostic(str(exc))
         returncode = exc.returncode
+        # A CLI that exits on an error says why in its event stream; stderr is what it logged.
+        reported = recorder.error if returncode else None
+        error = diagnostic(reported or str(exc))
         stop_reason = (
             "wall_time_budget_exceeded" if isinstance(exc.__cause__, TimeoutError) else "cli_error"
         )
     except infrastructure.InfrastructureError as exc:
         error = evidence = diagnostic(exc.evidence.text)
         stop_reason = infrastructure.stop_reason(exc.evidence.cause)
+    except _BudgetSpent:
+        stop_reason = "token_budget_exceeded"
     except asyncio.CancelledError:
         error = "Native CLI session cancelled."
         raise

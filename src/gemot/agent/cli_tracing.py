@@ -227,7 +227,11 @@ class NativeCLIRecorder:
                     for key, value in counts.items()
                 }
         elif kind in ("error", "turn.failed"):
-            self.error = str(event.get("error") or event.get("message") or kind)
+            detail = event.get("error")
+            # ``turn.failed`` nests the provider's message: {"error": {"message": ...}}.
+            if isinstance(detail, dict):
+                detail = detail.get("message")
+            self.error = str(detail or event.get("message") or kind)
             self._note(f"Codex reported {kind}: {self.error}")
         elif kind in ("item.started", "item.updated", "item.completed"):
             item = event.get("item")
@@ -428,14 +432,40 @@ class NativeCLIRecorder:
             self.error = str(event.get("error") or event.get("message") or kind)
             self._note(f"Claude reported error: {self.error}")
 
-    def usage(self) -> dict[str, Any]:
-        """Return reported aggregate counts, never estimate tokens or internal API calls."""
+    def _response_usage(self) -> dict[str, int | None] | None:
+        """Sum each Claude response's own counts; ``None`` where no response reported one."""
+        reported = [
+            counts
+            for state in self._messages.values()
+            if (counts := _tokens(state.data.get("usage"), "claude"))
+        ]
+        if not reported:
+            return None
         return {
-            **(self._aggregate or dict.fromkeys(_TOKEN_KEYS)),
+            key: sum(counts[key] for counts in reported if counts[key] is not None)
+            if any(counts[key] is not None for counts in reported)
+            else None
+            for key in _TOKEN_KEYS
+        }
+
+    def usage(self) -> dict[str, Any]:
+        """Return reported counts, never estimate tokens or internal API calls.
+
+        Without the CLI's session total (a failed turn, a crash, a stopped process), the counts
+        are its responses' own, a lower bound marked ``usage_source: "partial"``, or none at all,
+        ``"unavailable"``: Codex reports nothing before its turn completes. A run that spent
+        nothing is then not mistaken for one that was not counted (gemot#75).
+        """
+        counts, source = self._aggregate, self._usage_source
+        if source is None:
+            counts = self._response_usage()
+            source = "partial" if counts else "unavailable"
+        return {
+            **(counts or dict.fromkeys(_TOKEN_KEYS)),
             "n_llm_calls": len(self._messages)
             if self.provider == "claude" and self._messages and not self._missing_message_ids
             else None,
-            "usage_source": self._usage_source,
+            "usage_source": source,
             "reported_cost_usd": self._cost,
             "cost_source": "claude_cli_estimate" if self._cost is not None else None,
         }

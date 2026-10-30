@@ -23,6 +23,7 @@ from gemot.agent import native_cli as N
 from gemot import infrastructure, prompts
 from gemot.agent import cli_mcp, cli_process
 from gemot.agent.cli_process import CLIProcessError, CLIProcessResult
+from gemot.agent.codex import CODEX_TOKENS_PER_TOOL_CALL
 
 
 _TASK = "Build a model for this measured time course. Native session test task."
@@ -435,3 +436,171 @@ asyncio.run(run())
                 await http.get(args["gateway"])
 
     asyncio.run(run())
+
+
+def _native(session, driver, work, **kwargs):
+    return asyncio.run(
+        N.run_native_cli(
+            session,
+            driver=driver,
+            model="raw-native-model",
+            task=_TASK,
+            work=work,
+            executable="native-executable",
+            reasoning_effort="high",
+            tool_timeout=1234.0,
+            **kwargs,
+        )
+    )
+
+
+def _claude_response(message_id, *content):
+    """One streamed Claude response: 100 prompt tokens at its start, 50 output by its end."""
+    usage = {"input_tokens": 100, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+    return [
+        {
+            "type": "stream_event",
+            "event": {
+                "type": "message_start",
+                "message": {"id": message_id, "usage": {**usage, "output_tokens": 1}},
+            },
+        },
+        {
+            "type": "stream_event",
+            "event": {"type": "message_delta", "usage": {"output_tokens": 50}},
+        },
+        {"type": "assistant", "message": {"id": message_id, "content": list(content)}},
+    ]
+
+
+def _codex_tool_call(call_id):
+    return {
+        "type": "item.completed",
+        "item": {
+            "id": call_id,
+            "type": "mcp_tool_call",
+            "server": "gemot",
+            "tool": "get_fit_summary",
+            "arguments": {},
+            "result": {"content": [], "isError": False},
+            "error": None,
+            "status": "completed",
+        },
+    }
+
+
+#: Claude: the second response starts with 150 + 101 tokens reported. Codex: its second gateway
+#: call returns with two calls' worth of budget counted.
+_BUDGET_RUNS = {
+    "claude": (
+        [
+            _events("claude")[0],
+            *_claude_response("m1", {"type": "tool_use", "id": "call1", "name": "x", "input": {}}),
+            {
+                "type": "user",
+                "message": {
+                    "content": [{"type": "tool_result", "tool_use_id": "call1", "content": "ok"}]
+                },
+            },
+            *_claude_response("m2", {"type": "text", "text": "done"}),
+            _events("claude")[-1],
+        ],
+        5,
+        251,
+    ),
+    "codex": (
+        [
+            _events("codex")[0],
+            _codex_tool_call("call1"),
+            _codex_tool_call("call2"),
+            *_events("codex")[1:],
+        ],
+        2,
+        2 * CODEX_TOKENS_PER_TOOL_CALL,
+    ),
+}
+
+
+@pytest.mark.parametrize("driver", ["codex", "claude"])
+@pytest.mark.parametrize("budget", ["spent", "left", "none"])
+def test_run_token_budget_stops_the_cli_between_model_calls(monkeypatch, tmp_path, driver, budget):
+    """gemot#75: the native driver enforced only a wall-clock timeout, and three perica_egf Codex
+    runs finished at 29.6-43.0M tokens against the panel's 20M ``max_run_tokens``. The budget now
+    ends the process where it is spent, at the start of a model call, and nothing after it runs."""
+    events, trip, spent = _BUDGET_RUNS[driver]
+    session, _, state, seen = _stub_boundaries(monkeypatch, driver, events=events)
+    result = _native(
+        session,
+        driver,
+        tmp_path,
+        max_run_tokens={"spent": spent, "left": spent + 1, "none": None}[budget],
+    )
+    assert seen[-1] == "gateway-close" and not state.cwd.exists()
+    if budget != "spent":
+        assert result["stop_reason"] == "completed"
+        assert result["native_event_count"] == len(events)
+        return
+    assert result["stop_reason"] == "token_budget_exceeded"
+    assert result["cli_error"] is None and result["cli_returncode"] is None
+    assert result["native_event_count"] == trip + 1
+    usage = result["token_usage"]
+    if driver == "claude":
+        # The responses' own counts, reported as they streamed: the session total never came.
+        assert usage["usage_source"] == "partial"
+        assert usage["total_tokens"] == spent and usage["n_llm_calls"] == 2
+    else:
+        # Codex reports usage only when its turn completes, and a stopped turn never does.
+        assert usage["usage_source"] == "unavailable" and usage["total_tokens"] is None
+
+
+#: What three perica_egf Codex runs (sweeps 61679135/61679136, gemot 2db3d16) ended with after
+#: ~6 h, and the stderr warning that was recorded as their ``cli_error`` instead.
+_OUT_OF_CREDITS = "Your workspace is out of credits. Add credits to continue."
+_STDERR = "WARNING: failed to clean up stale arg0 temp dirs: Not a directory (os error 20)"
+_STDERR_EXIT = f"Native CLI exited with status 1: {_STDERR}"
+
+
+@pytest.mark.parametrize("reported", [True, False])
+def test_failed_codex_turn_records_the_providers_error_and_no_usage(
+    monkeypatch, tmp_path, reported
+):
+    """gemot#75: a failed turn recorded the stderr warning as its ``cli_error`` and all-``None``
+    usage that read like a run that spent nothing. The provider's error is the cause; stderr is
+    the fallback only when the event stream gave none."""
+    events = [_events("codex")[0], _codex_tool_call("call1")]
+    if reported:
+        events += [
+            {"type": "error", "message": _OUT_OF_CREDITS},
+            {"type": "turn.failed", "error": {"message": _OUT_OF_CREDITS}},
+        ]
+    session, _, _, seen = _stub_boundaries(
+        monkeypatch,
+        "codex",
+        events=events,
+        process_error=CLIProcessError(_STDERR_EXIT, returncode=1, stderr=_STDERR),
+    )
+    result = _native(session, "codex", tmp_path)
+    assert seen[-1] == "gateway-close"
+    assert result["stop_reason"] == "cli_error" and result["cli_returncode"] == 1
+    assert result["cli_error"] == (_OUT_OF_CREDITS if reported else _STDERR_EXIT)
+    assert result["token_usage"]["usage_source"] == "unavailable"
+    assert result["token_usage"]["prompt_tokens"] is None
+
+
+def test_crashed_claude_session_keeps_the_usage_its_responses_reported(monkeypatch, tmp_path):
+    """gemot#75: usage came only from the session's final event, so a crashed run recorded none.
+    Claude's responses report their own, which are kept and marked a lower bound."""
+    events = [
+        _events("claude")[0],
+        *_claude_response("m1", {"type": "tool_use", "id": "call1", "name": "x", "input": {}}),
+    ]
+    session, _, _, _ = _stub_boundaries(
+        monkeypatch,
+        "claude",
+        events=events,
+        process_error=CLIProcessError("Native CLI exited with status 1: ", returncode=1),
+    )
+    usage = _native(session, "claude", tmp_path)["token_usage"]
+    assert usage["usage_source"] == "partial"
+    assert usage["prompt_tokens"] == 100 and usage["completion_tokens"] == 50
+    assert usage["total_tokens"] == 150 and usage["n_llm_calls"] == 1

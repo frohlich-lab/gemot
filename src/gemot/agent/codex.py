@@ -1,8 +1,9 @@
 """Configure one native Codex CLI session for a complete gemot run.
 
 Codex owns its agent loop, history, prompt caching and MCP calls. This module only checks
-its documented command-line capabilities, points it at the run's gemot MCP gateway, and
-recognizes a gateway call Codex refused to send (:func:`codex_refusal`).
+its documented command-line capabilities, points it at the run's gemot MCP gateway,
+recognizes a gateway call Codex refused to send (:func:`codex_refusal`), and says where and in
+what its run budget is counted (:func:`codex_call_returned`).
 There is no LangChain model adapter, serialized transcript protocol, or per-turn subprocess.
 Authentication stays in the official CLI and administrator-managed policy remains effective.
 """
@@ -35,6 +36,20 @@ _EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 #: one it refused to send (``notify_mcp_tool_call_skip``). A tool error is a result: the gateway
 #: returns every upstream failure as one.
 _SENT_CALL_ERROR = "tool call error:"
+
+#: What one gateway call counts for against Codex's run budget, the stand-in for
+#: ``max_run_tokens``. ``exec --json`` reports usage only when its one turn completes: Codex
+#: counts every model call internally (``ThreadTokenUsageUpdated``) but emits none of it, nor
+#: anything on ``turn.failed`` or an interrupt. The perica_egf runs it left unbounded finished at
+#: 29.6-43.0M tokens against the panel's 20M (gemot#75). Deliberately NOT a resumed "continue"
+#: turn checked between turns: the model, not gemot, ends a turn, so a run spends its budget
+#: inside the one turn, and ``--ephemeral`` keeps no session to resume. The gateway is not marked
+#: ``supports_parallel_tool_calls``, so Codex sends one call at a time and calls the model with
+#: the whole conversation after each. The figure is the panel's largest legitimate run, 13.2M
+#: tokens in 155 model calls (:data:`gemot.agent.driver._MAX_RUN_TOKENS`): 20M allows 235 calls.
+#: It is not fitted to Codex yet; its completed runs record ``native_tool_calls`` beside
+#: ``prompt_tokens`` to fit it from.
+CODEX_TOKENS_PER_TOOL_CALL = 13_200_000 // 155
 
 
 def check_codex_cli(executable: str = "codex") -> str:
@@ -138,3 +153,17 @@ def codex_refusal(event: dict) -> str | None:
     if message.startswith(_SENT_CALL_ERROR):
         return None
     return f"Codex refused {item.get('server')}/{item.get('tool')}: {message}"
+
+
+def codex_call_returned(event: dict) -> bool:
+    """Whether ``event`` completes a gateway call, the point to check Codex's run budget.
+
+    Codex calls the model next, and with one call at a time none is in flight, so stopping here
+    interrupts no fit and no commit (:data:`CODEX_TOKENS_PER_TOOL_CALL`).
+    """
+    item = event.get("item")
+    return (
+        event.get("type") == "item.completed"
+        and isinstance(item, dict)
+        and item.get("type") == "mcp_tool_call"
+    )
