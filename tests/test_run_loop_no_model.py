@@ -568,6 +568,13 @@ class _ScriptedAgent(_FakeAgent):
                 raise StreamChunkTimeoutError(120.0, model_name="z-ai/glm-5.3-flash")
             if what == "timeout":
                 raise TimeoutError("a call inside the step timed out")
+            if what == "credit":
+                import httpx
+                import openai
+
+                request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+                text = "You requested up to 131072 tokens, but can only afford 91509."
+                raise openai.APIError(text, request, body={"code": 402, "message": text})
             if what == "hang":
                 await asyncio.Event().wait()
             yield {"messages": [{"role": "user", "content": "x"}] * (2 * n)}
@@ -659,6 +666,20 @@ def test_an_outage_past_the_budget_ends_the_run(monkeypatch):
     assert result["stop_reason"].startswith("stream: StreamChunkTimeoutError")
     assert result["provider_outage_retries"] == budget
     assert len(agent.inputs) == 1 + budget
+
+
+@requires_harness
+def test_a_402_ends_the_run_as_provider_credit_without_a_retry(monkeypatch):
+    """gemot#76: a mid-stream 402 is the bare APIError the outage path waits out; the same request
+    is refused until the account is topped up, so the run ends at once with a countable label."""
+    mod = _load_agent_module()
+    result, agent = _run(
+        mod, monkeypatch, _Probe(model_authored=True), agent=_ScriptedAgent("credit")
+    )
+
+    assert result["stop_reason"] == mod.driver.PROVIDER_CREDIT
+    assert result["provider_outage_retries"] == 0
+    assert len(agent.inputs) == 1
 
 
 @requires_harness

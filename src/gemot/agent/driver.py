@@ -464,12 +464,14 @@ def _chat_model_class():
     It also copies a stream's usage chunk onto ``response_metadata["token_usage"]``, where a
     non-streamed response already carries it.
 
-    And it carries each turn's REASONING back to the provider. ``langchain_openai`` drops
+    And it carries REASONING back to a provider that needs it. ``langchain_openai`` drops
     OpenRouter's ``reasoning_details`` both ways, so every request after the first sent the
     assistant's tool-call turns without the thinking that produced them; Anthropic then runs the
     next call without thinking at all (Haiku 4.5 reasoned on 0 of 1,466 calls after a tool result).
-    The details ride the AIMessage's ``additional_kwargs`` and are put back, untouched (their
-    signatures are verified), on that assistant message of every later request.
+    The details ride the AIMessage's ``additional_kwargs`` and, for a model in
+    :func:`models.returns_reasoning`, are put back untouched (their signatures are verified) on
+    the assistant messages of the tool-use turn in progress (:func:`_return_reasoning`). Every
+    other model gets none back (gemot#76).
 
     ``lru_cache``d, and the caller passes ``name="ChatOpenAI"`` -- both for reasons that bite
     silently. LangChain derives a run's name (and openinference the SPAN name) from the class name,
@@ -486,8 +488,9 @@ def _chat_model_class():
     class _ChatOpenAIRecordingProvider(ChatOpenAI):
         def _get_request_payload(self, input_, *, stop=None, **kwargs):
             payload = super()._get_request_payload(input_, stop=stop, **kwargs)
-            _return_reasoning(self._convert_input(input_).to_messages(), payload)
-            config = models.caching_config(payload.get("model") or self.model_name)
+            model = payload.get("model") or self.model_name
+            _return_reasoning(self._convert_input(input_).to_messages(), payload, model)
+            config = models.caching_config(model)
             if config is not None:
                 _apply_cache_breakpoints(payload, config)
             return payload
@@ -554,13 +557,37 @@ def _keep_reasoning(response, result) -> None:
         pass
 
 
-def _return_reasoning(messages, payload) -> None:
-    """Put each AIMessage's ``reasoning_details`` back on its assistant message in ``payload``.
+def _turn_start(messages) -> int:
+    """Index of the first message of the tool-use turn in progress: the one after the last plain
+    user message, or 0.
+
+    A user message right after tool results is not plain. The provider merges it into the user
+    message that returns them, so the turn goes on: the subagent turn limit's notice
+    (``guards._subagent_turn_limit``) lands there, and ending the turn at it would strip an
+    analyst's thinking for its last calls. The task, a nudge after a text-only turn and the
+    thinking hand-off's instruction do end it."""
+    start = 0
+    for i, message in enumerate(messages):
+        before = getattr(messages[i - 1], "type", None) if i else None
+        if getattr(message, "type", None) == "human" and before not in ("tool", "human"):
+            start = i + 1
+    return start
+
+
+def _return_reasoning(messages, payload, model: str) -> None:
+    """Put the ``reasoning_details`` of each AIMessage in the tool-use turn in progress
+    (:func:`_turn_start`) back on its assistant message in ``payload``, if ``model`` takes
+    reasoning back (:func:`models.returns_reasoning`). Earlier turns' reasoning stays on their
+    AIMessages, in the run's own record, and is not sent.
+
     The payload's messages are the input's, one for one; when they are not, nothing is touched."""
+    if not models.returns_reasoning(model):
+        return
     sent = payload.get("messages")
     if not isinstance(sent, list) or len(sent) != len(messages):
         return
-    for message, out in zip(messages, sent):
+    start = _turn_start(messages)
+    for message, out in zip(messages[start:], sent[start:]):
         details = (getattr(message, "additional_kwargs", None) or {}).get("reasoning_details")
         if details and isinstance(out, dict) and out.get("role") == "assistant":
             out["reasoning_details"] = details
@@ -607,6 +634,35 @@ def _transient_provider_reason(exc: BaseException) -> str | None:
     if not m or not 500 <= int(m.group(1)) <= 599:
         return None
     return f"provider {m.group(1)}: {type(exc).__name__}: {str(exc)[:120]}"
+
+
+#: The stop_reason of a run OpenRouter refused for credit (:func:`_is_provider_credit`). Bare, like
+#: the budget stops: the provider's text, with a count unique to each run ("can only afford
+#: 91509"), goes to the log.
+PROVIDER_CREDIT = "provider_credit"
+
+
+def _is_provider_credit(exc: BaseException) -> bool:
+    """Whether ``exc`` is OpenRouter's 402: the key's credit cannot cover the request.
+
+    OpenRouter reserves a request's whole ``max_tokens`` against the key's credit before running
+    it, so this ends runs with credit still left ("You requested up to 131072 tokens, but can only
+    afford 91509", perica_egf, gemot#76), which ended as the raw exception text, unique per run.
+    It is terminal, not an outage: the same request is refused until the account is topped up, so
+    it must be checked before :func:`_transient_provider_reason`, which waits a bare ``APIError``
+    out as one.
+
+    Read by its CODE, wherever the client puts it: ``status_code`` on the ``APIStatusError`` an
+    HTTP 402 raises, ``body["code"]`` on the bare ``APIError`` of a mid-stream error event, and the
+    quoted ``'code': 402`` of an HTTP-200 error body (:func:`_transient_provider_reason`).
+    """
+    body = getattr(exc, "body", None)
+    if getattr(exc, "status_code", None) == 402 or (
+        isinstance(body, dict) and body.get("code") == 402
+    ):
+        return True
+    m = _PROVIDER_CODE_RE.search(str(exc))
+    return m is not None and m.group(1) == "402"
 
 
 # NOTE: the lead used to run a ContextEditingMiddleware (ClearToolUsesEdit) that cleared old
@@ -1473,6 +1529,9 @@ async def run_deepagents(
             # full filesystem. The check after this try ends the run on it.
             if (hit := infrastructure.find_in_error(exc)) is not None:
                 infra["evidence"] = infra["evidence"] or hit
+            elif _is_provider_credit(exc):
+                stop_reason = PROVIDER_CREDIT  # terminal: a resume is refused the same way
+                print(f"[agent] {PROVIDER_CREDIT}: {str(exc)[:300]} — stopping, no resume.")
             elif (filtered := _content_filter_stop_reason(exc)) is not None:
                 stop_reason = filtered
             elif _is_call_timeout(exc):
