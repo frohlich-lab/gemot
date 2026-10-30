@@ -183,15 +183,21 @@ harness = [
     # Traces every LLM + MCP tool call the agent makes as OpenTelemetry spans viewable in the
     # Phoenix UI. The `tracing` extra EXPORTS the spans; the full `arize-phoenix` package
     # provides the local in-process UI the runner launches when no PHOENIX_COLLECTOR_ENDPOINT is
-    # set, and >=19 provides the run_experiment / Datasets / Prompt-registry API that
+    # set, and it provides the run_experiment / Datasets / Prompt-registry API that
     # gemot_iclr_2026's scripts/run_experiments.py uses.
-    # Resolves to 21.x (20.7 onwards needs fastmcp 4, so mcp 2, as `mcp` above now is). 21.0's
-    # MIGRATION.md changes how a SERVER starts, not what this package calls: `phoenix serve
-    # --host` is gone (PHOENIX_HOST instead), and a server bound to a non-loopback address -- the
-    # shared sweep collector, gemot_iclr_2026's slurm/phoenix_server.sh -- turns authentication on
-    # unless PHOENIX_ENABLE_AUTH=false, after which every exporter needs PHOENIX_API_KEY. The
-    # in-process `launch_app` binds loopback, so it stays unauthenticated.
-    "arize-phoenix>=19.13",
+    # Floored at 21.0: nothing older installs beside mcp 2 (below 20.7 it needs fastmcp 3, so
+    # mcp 1.x), and 21.0 is what the span stripping (see `tracing`) and the shared collector's
+    # start (gemot_iclr_2026#386) were checked against. 21.0's MIGRATION.md changes how a SERVER
+    # starts, not what this package calls: `phoenix serve --host` is gone (PHOENIX_HOST instead),
+    # and a server bound to a non-loopback address -- the shared sweep collector,
+    # gemot_iclr_2026's slurm/phoenix_server.sh -- turns authentication on unless
+    # PHOENIX_ENABLE_AUTH=false, after which every exporter needs PHOENIX_API_KEY. The in-process
+    # `launch_app` binds loopback, so it stays unauthenticated.
+    # Capped below 22 for that reason: a major release changed the collector's defaults, and a
+    # sweep would have seen it only as a 401 on every span export, which array_task.sh's probe
+    # counts as a live collector. Revisit when 22 ships: read its MIGRATION.md against
+    # slurm/phoenix_server.sh and this package's exporter (tracing.py).
+    "arize-phoenix>=21.0,<22",
     "gemot[tracing]",
     # Weights & Biases metrics logging for the model x temperature sweep (opt-in via run.py
     # --wandb). Cluster-friendly alternative analysis UI to Phoenix Experiments; logs one
