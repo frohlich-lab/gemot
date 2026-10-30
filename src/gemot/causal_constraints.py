@@ -24,7 +24,18 @@ judged version is built again from its statements record with the two added as `
 (``petab_mcp.operations.statements_to_antimony``), so each is read exactly as a readout reads it,
 and its species are found in the stored model by their PySB pattern, which both models carry as
 the species' name. The stored model is what is simulated, through :mod:`gemot.simulate`, over each
-of the problem's experiments that a PEtab v1 condition can state (one period, from time 0).
+of the problem's experiments that PEtab v1 can state: one period from time 0, or a pre-equilibration
+at ``-inf`` followed by one (#74: perica_egf's every experiment is pre-equilibrated, so the check
+had read none of them).
+
+In a pre-equilibrated experiment the subject is perturbed across both periods, deliberately not in
+the main one alone. Its starting amount is where the pre-equilibration starts, so the cell rests in
+the perturbed state and is stimulated from there, as an over-expression would be; raising a species
+at time 0 instead is a pulse no experiment gives, and one PEtab v1 cannot state, since a condition
+sets a species to a value and not to a multiple of the steady state it reached. Both periods are
+reported: the gain norms over the main period, and the gain where the pre-equilibration left the
+object, beside the subject's own there (near 1 where the model's turnover returned it to its steady
+state, which no perturbation of a start can move).
 
 Report-only: nothing here gates a run, and a constraint whose behaviour cannot be read records why
 instead. Import-light at module scope, like the analysis it reads the store with.
@@ -60,6 +71,10 @@ NO_EFFECT = 1e-6
 
 #: The two norms, as ``result.json`` keys them.
 NORMS = ("linf", "l1_logt")
+
+#: Why a constraint's behaviour is not read on a problem none of whose experiments PEtab v1 can
+#: state: a fact about the problem, which a sweep must tell apart from a check that crashed.
+NO_EXPERIMENT = "no supported experiment"
 
 #: Each experiment is simulated at time 0 and at points log-spaced over its measured span's last
 #: three decades, so the L∞ norm sees the start and the L1 norm over log-time the whole span.
@@ -150,11 +165,12 @@ def gains(baseline: list, perturbed: list) -> dict[str, float]:
                 l1 += float(np.trapezoid(y[later], np.log(t[later])))
         return top, l1
 
-    def ratio(p: float, b: float) -> float:
-        return p / b if b > 0 else (math.inf if p > 0 else 1.0)
-
     (b_inf, b_l1), (p_inf, p_l1) = norms(baseline), norms(perturbed)
-    return {"linf": ratio(p_inf, b_inf), "l1_logt": ratio(p_l1, b_l1)}
+    return {"linf": _ratio(p_inf, b_inf), "l1_logt": _ratio(p_l1, b_l1)}
+
+
+def _ratio(perturbed: float, baseline: float) -> float:
+    return perturbed / baseline if baseline > 0 else (math.inf if perturbed > 0 else 1.0)
 
 
 def verdict(gain: float) -> str:
@@ -176,8 +192,10 @@ def behaviour(
 ) -> dict[str, dict]:
     """Each constraint's behaviour on stored ``version`` of the run whose working copy is
     ``run_dir``: for a signed indirect one, its two gains (:func:`gains`), each with its
-    :func:`verdict`, how its subject was perturbed and on which experiments; for any other, or one
-    that could not be read, ``{"skipped": why}``.
+    :func:`verdict`, how its subject was perturbed and on which experiments, and on a
+    pre-equilibrated problem its ``pre_equilibration`` gain as well; for any other, or one that
+    could not be read, ``{"skipped": why}`` (:data:`NO_EXPERIMENT` where no experiment can be
+    simulated, with the ones skipped).
 
     ``entity_map`` is the one the server was started with, which the rebuild reads the rows'
     agents against; ``build_dir`` holds the compiled model."""
@@ -312,14 +330,20 @@ class _Judged:
         import libsbml
         import numpy as np
         import pandas as pd
-        from petab.v1.C import OBSERVABLE_ID, SIMULATION, SIMULATION_CONDITION_ID, TIME
+        from petab.v1.C import (
+            OBSERVABLE_ID,
+            PREEQUILIBRATION_CONDITION_ID,
+            SIMULATION,
+            SIMULATION_CONDITION_ID,
+            TIME,
+        )
         from petab.v1.models.sbml_model import SbmlModel
 
         from .simulate import measurement_skeleton, simulate_true
 
         experiments, skipped = self.experiments()
         if not experiments:
-            raise ValueError(f"no experiment is one period from time 0 (skipped: {skipped})")
+            return {cid: {"skipped": NO_EXPERIMENT, "experiments_skipped": skipped} for cid in plan}
         values = _fitted(self.vdir, self.sbml)
         seed = SEED_FRACTION * max(
             [1.0, *(v for k, v in values.items() if k.endswith("_init") and math.isfinite(v))]
@@ -338,11 +362,18 @@ class _Judged:
                 *sbml.getListOfCompartments(),
             )
         }
-        experiments = {
-            eid: {t: v for t, v in targets.items() if t in known}
-            for eid, targets in experiments.items()
+        for eid, (pre, main) in experiments.items():
+            main = {t: v for t, v in main.items() if t in known}
+            if pre is not None:
+                pre = {t: v for t, v in pre.items() if t in known}
+                # A v1 condition states every target, and v2's changes persist, so the main period
+                # restates what the pre-equilibration set; but not a species, which v1 would then
+                # reset rather than carry on from the steady state.
+                main = {t: v for t, v in pre.items() if sbml.getSpecies(t) is None} | main
+            experiments[eid] = (pre, main)
+        set_by_conditions = {
+            t for periods in experiments.values() for p in periods for t in p or {}
         }
-        set_by_conditions = {t for targets in experiments.values() for t in targets}
         observables, rule_held = {}, {}
         for i, (cid, p) in enumerate(plan.items()):
             scale, offset = f"{_PREFIX}scale{i}", f"{_PREFIX}seed{i}"
@@ -363,24 +394,40 @@ class _Judged:
             rule_held[cid] = any(sbml.getAssignmentRuleByVariable(s) for s in p["subject"])
             observables[f"{_PREFIX}y{i}"] = p["object"]
             observables[f"{_PREFIX}x{i}"] = " + ".join(p["subject"])
-        conditions, times = {}, {}
-        for eid, base in experiments.items():
-            grid = _grid(self.span(eid))
-            conditions[f"{eid}{_PREFIX}base"], times[f"{eid}{_PREFIX}base"] = dict(base), grid
-            for i, (cid, p) in enumerate(plan.items()):
-                held = [s for s in p["subject"] if s in base]
-                share = 1.0 / len(p["seeded"])
-                conditions[f"{eid}{_PREFIX}raise{i}"] = {
-                    **base,
+
+        def perturbed(targets: dict, kind: str, i: int, p: dict) -> dict:
+            # A period's targets with constraint i's subject raised or seeded: its parameter set,
+            # and each species of it that the period sets moved too.
+            held = [s for s in p["subject"] if s in targets]
+            if kind == "raise":
+                return {
+                    **targets,
                     f"{_PREFIX}scale{i}": RAISE,
-                    **{s: RAISE * base[s] for s in held},
+                    **{s: RAISE * targets[s] for s in held},
                 }
-                conditions[f"{eid}{_PREFIX}seed{i}"] = {
-                    **base,
-                    f"{_PREFIX}seed{i}": seed,
-                    **{s: base[s] or share * seed for s in held if s in p["seeded"]},
-                }
-                times[f"{eid}{_PREFIX}raise{i}"] = times[f"{eid}{_PREFIX}seed{i}"] = grid
+            share = 1.0 / len(p["seeded"])
+            return {
+                **targets,
+                f"{_PREFIX}seed{i}": seed,
+                **{s: targets[s] or share * seed for s in held if s in p["seeded"]},
+            }
+
+        conditions, times, preequilibration = {}, {}, {}
+        for eid, (pre, main) in experiments.items():
+            grid = _grid(self.span(eid))
+            variants = {"base": (pre, main)}
+            for i, p in enumerate(plan.values()):
+                for kind in ("raise", "seed"):
+                    variants[f"{kind}{i}"] = tuple(
+                        None if period is None else perturbed(period, kind, i, p)
+                        for period in (pre, main)
+                    )
+            for variant, (first, last) in variants.items():
+                name = f"{eid}{_PREFIX}{variant}"
+                conditions[name], times[name] = last, grid
+                if first is not None:
+                    preequilibration[name] = f"{name}_pre"
+                    conditions[f"{name}_pre"] = first
         columns = sorted({k for c in conditions.values() for k in c})
 
         def own(target: str) -> float:
@@ -418,12 +465,20 @@ class _Judged:
                 if k not in columns
             ]
         )
+        skeleton = measurement_skeleton(times, list(observables))
+        if preequilibration:
+            # "" on a row that is not, which petab's lint reads as none; a NaN it counts as a
+            # time-point-specific mapping. (AMICI's v1 import still fails on that mix where a
+            # condition sets a species: no problem here mixes them.)
+            skeleton[PREEQUILIBRATION_CONDITION_ID] = (
+                skeleton[SIMULATION_CONDITION_ID].map(preequilibration).fillna("")
+            )
         sim = simulate_true(
             SbmlModel(sbml_model=sbml).to_antimony(),
             parameter_df,
             condition_df,
             observable_df,
-            measurement_skeleton(times, list(observables)),
+            skeleton,
             build_dir=build_dir / f"v{self.version}",
             model_name=f"gemot_constraints_v{self.version}",
         )
@@ -434,15 +489,25 @@ class _Judged:
             ].sort_values(TIME)
             return rows[TIME].tolist(), rows[SIMULATION].tolist()
 
+        def at_start(condition: str, observable: str) -> tuple[list, list]:
+            times, amounts = trajectory(condition, observable)
+            return times[:1], amounts[:1]
+
         out = {}
         for i, (cid, p) in enumerate(plan.items()):
-            base_y, pert_y, how = [], [], set()
-            for eid in experiments:
-                at_start = trajectory(f"{eid}{_PREFIX}base", f"{_PREFIX}x{i}")[1][0]
-                variant = "raise" if rule_held[cid] or at_start > 0 else "seed"
+            x, y = f"{_PREFIX}x{i}", f"{_PREFIX}y{i}"
+            base_y, pert_y, rested, how = [], [], [], set()
+            for eid, (pre, _) in experiments.items():
+                base = f"{eid}{_PREFIX}base"
+                # Raised, unless that leaves the subject as it was at time 0: one starting at 0.
+                raised = gains([at_start(base, x)], [at_start(f"{eid}{_PREFIX}raise{i}", x)])
+                variant = "raise" if rule_held[cid] or verdict(raised["linf"]) != "none" else "seed"
                 how.add({"raise": "raised", "seed": "seeded"}[variant])
-                base_y.append(trajectory(f"{eid}{_PREFIX}base", f"{_PREFIX}y{i}"))
-                pert_y.append(trajectory(f"{eid}{_PREFIX}{variant}{i}", f"{_PREFIX}y{i}"))
+                perturbed_run = f"{eid}{_PREFIX}{variant}{i}"
+                base_y.append(trajectory(base, y))
+                pert_y.append(trajectory(perturbed_run, y))
+                if pre is not None:
+                    rested.append((base, perturbed_run))
             g = gains(base_y, pert_y)
             out[cid] = {
                 "claim": p["claim"],
@@ -454,14 +519,30 @@ class _Judged:
                 "experiments": sorted(experiments),
                 "experiments_skipped": skipped,
             }
+            if rested:
+                # Where the pre-equilibration left the object, and the subject: time 0's L∞ gain.
+                obj, subject = (
+                    gains([at_start(b, o) for b, _ in rested], [at_start(q, o) for _, q in rested])
+                    for o in (y, x)
+                )
+                out[cid]["pre_equilibration"] = {
+                    "gain": obj["linf"],
+                    "verdict": verdict(obj["linf"]),
+                    "subject_gain": subject["linf"],
+                }
         return out
 
-    def experiments(self) -> tuple[dict[str, dict[str, float]], list[str]]:
-        """``({experiment: {target: value}}, skipped)``: each measured experiment that is one
-        period from time 0, with the targets its conditions set, which is what a PEtab v1
-        condition states; the rest by id (pre-equilibrated, several periods, a value that is an
-        expression). Measurements with no experiment are the experiment ``""``, which sets
+    def experiments(
+        self,
+    ) -> tuple[dict[str, tuple[dict[str, float] | None, dict[str, float]]], list[str]]:
+        """``({experiment: (pre, main)}, skipped)``: each measured experiment PEtab v1 can state,
+        with the targets each period's conditions set, all of a period's rows together. That is one
+        period from time 0 (``pre`` is ``None``), or one at ``-inf`` and one at 0, which is v1's
+        pre-equilibration. The rest are skipped, by id (another start, a later period, a value that
+        is an expression). Measurements with no experiment are the experiment ``""``, which sets
         nothing."""
+        from petab.v2.C import TIME_PREEQUILIBRATION
+
         edf, cdf = self.problem.experiment_df, self.problem.condition_df
         changes = {}
         if cdf is not None and len(cdf):
@@ -471,18 +552,22 @@ class _Judged:
             }
         out, skipped = {}, []
         for eid in sorted(set(self.problem.measurement_df["experimentId"])):
-            periods = edf[edf["experimentId"] == eid] if eid and edf is not None else None
-            if periods is not None and (len(periods) != 1 or float(periods["time"].iloc[0]) != 0):
+            if not eid or edf is None:
+                out[eid] = (None, {})
+                continue
+            periods = {}
+            for t, rows in edf[edf["experimentId"] == eid].groupby("time"):
+                periods[float(t)] = targets = {}
+                for cids in rows["conditionId"].dropna():
+                    for c in str(cids).split(";"):
+                        targets |= changes.get(c.strip(), {})
+            if list(periods) not in ([0.0], [TIME_PREEQUILIBRATION, 0.0]) or not all(
+                _number(v) for targets in periods.values() for v in targets.values()
+            ):
                 skipped.append(eid)
                 continue
-            targets = {}
-            if periods is not None:
-                for c in str(periods["conditionId"].iloc[0]).split(";"):
-                    targets |= changes.get(c.strip(), {})
-            if not all(_number(v) for v in targets.values()):
-                skipped.append(eid)
-                continue
-            out[eid] = {str(t): float(v) for t, v in targets.items()}
+            *pre, main = ({str(t): float(v) for t, v in p.items()} for p in periods.values())
+            out[eid] = (pre[0] if pre else None, main)
         return out, skipped
 
     def span(self, experiment: str) -> float:
