@@ -66,11 +66,12 @@ dependencies = [
     # extra pins need the 1.x SDK. The adapters will not get mcp 2.0 support: the repository was
     # archived in 2026-09, its last release (0.3.2) caps `mcp<2`, and its successor is LangChain's
     # own `langchain.mcp` (`langchain[mcp]`), which needs fastmcp >= 4.0.11 and so mcp >= 2.3.
-    # petab-mcp's `fastmcp<4` is therefore what holds this now (arize-phoenix 20.7+ needs fastmcp
-    # 4 as well, see `harness`). mcp 2.0 also reworks the client API used here
-    # (streamablehttp_client -> streamable_http_client; CallToolResult/Tool fields went
-    # snake_case; httpx -> httpx2). Revisit once the petab-mcp pin allows fastmcp 4: move
-    # `load_mcp_tools` to `langchain.mcp`, port the client code, then lift this.
+    # petab-mcp's `fastmcp<4` is therefore what holds this now; frohlich-lab/PEtab-MCP#181 lifts
+    # it to `<5` (arize-phoenix 20.7+ needs fastmcp 4 as well, see `harness`). mcp 2.0 also
+    # reworks the client API used here (streamablehttp_client -> streamable_http_client;
+    # CallToolResult/Tool fields went snake_case; httpx -> httpx2). Revisit once the petab-mcp
+    # pin is past #181: move `load_mcp_tools` to `langchain.mcp`, port the client code, then lift
+    # this.
     "mcp<2",
     # Imported directly here too (judge, simulate, the neural route), or promised to the
     # barebones agent's sandbox (pyPESTO, which its prompt tells the agent to fit with), so named
