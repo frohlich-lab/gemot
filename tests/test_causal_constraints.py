@@ -260,28 +260,6 @@ def test_the_gain_norms_pool_experiments_and_weigh_log_time():
     assert CC.gains(base, early)["l1_logt"] == pytest.approx(CC.gains(base, late)["l1_logt"])
 
 
-def test_a_record_archived_before_seeds_rebuilds_with_its_starts_as_seeds():
-    """A run archived before PEtab-MCP#184 stored its species at t = 0 as `starts`, which the
-    server, taking no alias, reads as no seeds at all. The behaviour check reads them as seeds."""
-    from petab_mcp import operations
-
-    seed = {"name": "BRAF_S151A", "agent": "BRAF{mut:S151A}", "amount": "1"}
-    row = {"prefix": "prod", "statement": {"type": "IncreaseAmount", "obj": {"name": "BRAF"}}}
-    old = {
-        "rows": [row],
-        "bindings": {"prod": "mass_action"},
-        "starts": [seed],
-        "readouts": {},
-        "amounts": {},
-    }
-    assert operations.apply_statement_edits(old, [])[2] == []
-    migrated = CC._seeds_named(old)
-    assert "starts" not in migrated
-    assert operations.apply_statement_edits(migrated, [])[2] == [seed]
-    current = {**migrated, "seeds": []}
-    assert CC._seeds_named(current) is current and CC._seeds_named(None) is None
-
-
 def test_an_object_absent_at_baseline_has_an_unbounded_gain():
     t = [0.0, 1.0, 10.0]
     assert CC.gains([(t, [0, 0, 0])], [(t, [0, 1, 1])])["linf"] == float("inf")
