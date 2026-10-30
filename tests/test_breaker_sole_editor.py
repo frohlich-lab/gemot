@@ -92,7 +92,8 @@ def test_a_repeated_sole_editor_failure_escalates_the_message():
 def test_a_sole_editor_failure_is_returned_to_the_model_never_raised():
     """The failure that cost 3 of minimax-m3's 5 sneyd runs (0 fits each).
 
-    langchain-mcp-adapters installs `_handle_mcp_tool_error` as these tools' `handle_tool_error`,
+    The tool bridge (`langchain.mcp`, as langchain-mcp-adapters before it) installs
+    `_handle_mcp_tool_error` as these tools' `handle_tool_error`,
     and it converts an error into a ToolMessage for `_MCPToolExecutionError` ONLY — every other
     exception hits its `raise error` branch and aborts the run. So raising anything here (the old
     escalation raised a plain ToolException) killed the run instead of teaching the model. Client
@@ -191,7 +192,8 @@ def test_the_wrapper_hands_the_coerced_value_to_the_tool():
 
 
 def test_escalation_survives_an_exception_that_is_not_string_constructible():
-    """The real exception here is langchain-mcp-adapters' `_MCPToolExecutionError`, whose
+    """The real exception here is `langchain.mcp`'s `_MCPToolExecutionError` (the name it kept
+    from langchain-mcp-adapters), whose
     __init__ takes a list of content blocks. Rebuilding `type(exc)(str)` yielded an object whose
     message was "string indices must be integers" — losing the escalation AND the original."""
 

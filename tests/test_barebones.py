@@ -609,7 +609,7 @@ def test_the_null_arms_sandbox_and_scoring_time_is_compute_not_llm(tmp_path):
 
     class _Session:
         async def call_tool(self, name, arguments=None, read_timeout_seconds=None, **_):
-            return SimpleNamespace(structuredContent=canned.get(name, {}))
+            return SimpleNamespace(structured_content=canned.get(name, {}))
 
     async def _no_fix(call, n_starts):  # pragma: no cover - never driven here
         return None
@@ -737,10 +737,10 @@ def test_bio_tool_discovery_is_the_panels_allowlist(monkeypatch):
     """Both arms hold the same lookups because both call `discover_bio_tools`: the curated
     allowlist resolves, a literature tool only under the ablation, a petab-name collision and a
     duplicate are dropped, and a server whose discovery raises costs only its own tools."""
-    pytest.importorskip("langchain_mcp_adapters")
+    pytest.importorskip("langchain.mcp")
     import asyncio
     from langchain_core.tools import StructuredTool
-    import langchain_mcp_adapters.tools as lmt
+    from gemot.agent import mcp_tools as lmt
     from gemot.agent import biocurator as B
 
     def _tool(name):
@@ -856,3 +856,48 @@ def test_the_null_arm_waits_out_a_provider_outage_without_spending_a_resume(monk
     assert out["stop_reason"] == "completed"
     assert out["provider_outage_retries"] == B._RUN_RESUME_ATTEMPTS + 1
     assert len(inputs) == B._RUN_RESUME_ATTEMPTS + 2
+
+
+def test_the_null_arm_ends_on_a_402_as_provider_credit(monkeypatch, tmp_path):
+    """gemot#76 in the barebones loop: OpenRouter's 402 is terminal and gets the panel's label,
+    not the raw exception text or a resume."""
+    pytest.importorskip("deepagents")
+    import deepagents
+    import httpx
+    import openai
+
+    from gemot.agent import barebones as B
+
+    inputs = []
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    response = httpx.Response(402, request=request, json={"error": {"code": 402}})
+    credit = openai.OpenAI(api_key="x", base_url="http://x")._make_status_error_from_response(
+        response
+    )
+
+    class _Agent:
+        def astream(self, stream_input, config=None, stream_mode=None):
+            inputs.append(stream_input)
+
+            async def _gen():
+                raise credit
+                yield  # pragma: no cover - unreachable, present to make this an async generator
+
+            return _gen()
+
+    monkeypatch.setattr(deepagents, "create_deep_agent", lambda **kw: _Agent())
+    out = asyncio.run(
+        B.run_barebones(
+            tmp_path,
+            model="fake/model",
+            base_url="http://x",
+            api_key="sk-test",
+            system_prompt="sp",
+            task="t",
+            recursion_limit=10,
+            execute_timeout_s=60.0,
+        )
+    )
+
+    assert out["stop_reason"] == B.PROVIDER_CREDIT
+    assert len(inputs) == 1

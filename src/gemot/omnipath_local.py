@@ -199,11 +199,12 @@ TOOL_DESCRIPTION = (
 class LocalOmniPathSession:
     """An in-process stand-in for the hosted OmniPath MCP session.
 
-    Implements only what `langchain_mcp_adapters.load_mcp_tools` uses — `list_tools(cursor=...)`
-    and `call_tool(name, arguments, ...)` — returning genuine `mcp.types` objects, so nothing
+    Implements only what the tool bridge (`agent.mcp_tools.load_mcp_tools`) uses —
+    `list_tools(params=...)` and `call_tool(name, arguments, ...)` — returning genuine `mcp.types`
+    objects, so nothing
     downstream can tell it apart from a network session. That matters: the biocurator, the circuit
     breaker, the bio-session supervisor and the response cache all handle these objects, and a
-    hand-rolled duck type would work until one of them read `isError`.
+    hand-rolled duck type would work until one of them read `is_error`.
 
     No process, no port, no network. A real MCP server would need spawning, a free port and a
     readiness wait per run (the petab server already pays that cost); none of it buys anything here,
@@ -213,16 +214,16 @@ class LocalOmniPathSession:
     def __init__(self, directory: "Path | None" = None) -> None:
         self._dir = directory
 
-    async def list_tools(self, cursor=None):
+    async def list_tools(self, *, params=None):
         from mcp.types import ListToolsResult, Tool
 
         return ListToolsResult(
-            nextCursor=None,
+            next_cursor=None,
             tools=[
                 Tool(
                     name="execute_sql_query_on_omnipath_db",
                     description=TOOL_DESCRIPTION,
-                    inputSchema={
+                    input_schema={
                         "type": "object",
                         "properties": {
                             "sqlQuery": {
@@ -241,7 +242,7 @@ class LocalOmniPathSession:
 
         if name != "execute_sql_query_on_omnipath_db":
             return CallToolResult(
-                isError=True,
+                is_error=True,
                 content=[
                     TextContent(
                         type="text",
@@ -252,10 +253,10 @@ class LocalOmniPathSession:
             )
         sql = (arguments or {}).get("sqlQuery") if isinstance(arguments, dict) else None
         out = run_sql(sql if isinstance(sql, str) else "", directory=self._dir)
-        # `isError` mirrors the hosted service so the breaker and the cache treat a bad query the
+        # `is_error` mirrors the hosted service so the breaker and the cache treat a bad query the
         # same way they always have — in particular the cache must NOT store it.
         return CallToolResult(
-            isError=bool(out.get("error")),
+            is_error=bool(out.get("error")),
             content=[TextContent(type="text", text=json.dumps(out, default=str))],
         )
 

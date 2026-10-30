@@ -13,7 +13,9 @@ passes a full id through unchanged.
 Three per-model request tables live here, each keyed by OpenRouter id and omitted from the request
 when a model has no entry: ``_ROUTING`` (:func:`provider_routing`) pins the endpoint,
 ``_REASONING`` (:func:`reasoning_config`) turns thinking on where it ships off, and ``_CACHING``
-(:func:`caching_config`) asks for prompt caching where the provider does not do it implicitly.
+(:func:`caching_config`) asks for prompt caching where the provider does not do it implicitly. A
+fourth, ``_RETURNS_REASONING`` (:func:`returns_reasoning`), names the models whose earlier
+reasoning goes back to them at all.
 """
 
 from __future__ import annotations
@@ -239,6 +241,34 @@ def caching_config(model_id: str) -> dict | None:
     own — which is not "do not cache". Do not add an entry for one of those: Gemini bills cache
     writes only against explicit breakpoints, so it would start charging for what is free."""
     return _CACHING.get(model_id)
+
+
+#: Models whose earlier reasoning a request carries back (``driver._return_reasoning``): the
+#: ``reasoning_details`` of each assistant message since the last plain user message, the tool-call
+#: loop in progress. Anthropic counts that loop as one assistant turn and requires its thinking back
+#: ("Required: within a tool-use turn, pass thinking blocks back", Claude docs, Preserving thinking
+#: blocks); without it Haiku 4.5 reasoned on 0 of 1,466 calls after a tool result. In a gemot run
+#: the lead's turn ends only at a bounce nudge or a thinking hand-off, so these keep nearly all of it,
+#: append-only, which leaves their prompt cache intact.
+#:
+#: Every other model gets NONE back, deliberately. Carrying it to all of them was gemot#76: GLM 5.3
+#: Flash at effort max thought up to 75k tokens a call, and earlier turns' reasoning was 25-37% of
+#: every prompt on perica_egf (31-65 calls a run). No other provider asks for it: OpenRouter calls it
+#: useful for tool calling, its own Gemini 3 tool-calling example sends the tool-call turn back bare,
+#: and Gemini ran that way here from 2026-08-10 until the carry-back landed on 2026-10-17. Opt a
+#: model in only on a measured gain.
+_RETURNS_REASONING: frozenset[str] = frozenset(
+    {
+        "anthropic/claude-sonnet-5.5",
+        "anthropic/claude-opus-5.5",
+        "anthropic/claude-haiku-5.5",
+    }
+)
+
+
+def returns_reasoning(model_id: str) -> bool:
+    """Whether ``model_id``'s requests carry back the reasoning of the tool-use turn in progress."""
+    return model_id in _RETURNS_REASONING
 
 
 # ---------------------------------------------------------------- why gemini-2.5-flash-lite is out

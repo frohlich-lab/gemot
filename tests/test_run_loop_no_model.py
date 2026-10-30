@@ -10,7 +10,7 @@ The same fake-driven run also pins the artifact contract: everything the driver 
 written to result.json, checked against the real return of a real run rather than against
 runner/drive.py's source text.
 
-Heavy examples-harness deps (deepagents, langchain_openai, langchain_mcp_adapters, openai) are
+Heavy examples-harness deps (deepagents, langchain_openai, langchain.mcp, openai) are
 monkeypatched/needed; skip cleanly where absent.
 """
 
@@ -31,7 +31,7 @@ def _have(mod: str) -> bool:
 requires_harness = pytest.mark.skipif(
     not all(
         _have(m)
-        for m in ("deepagents", "langchain_openai", "langchain_mcp_adapters", "openai", "langgraph")
+        for m in ("deepagents", "langchain_openai", "langchain.mcp", "openai", "langgraph")
     ),
     reason="examples-harness deps (deepagents/langchain/openai) not installed",
 )
@@ -55,7 +55,7 @@ class _Probe:
             if tool == "describe_problem"
             else {"should_stop": False}
         )
-        return type("R", (), {"structuredContent": payload})()
+        return type("R", (), {"structured_content": payload})()
 
 
 class _FakeAgent:
@@ -84,7 +84,7 @@ class _FakeAgent:
 
 class _TimeoutAgent:
     """Graph stub whose every astream raises the per-call fit timeout mcp really raises — a bare
-    ``McpError(408)``, the shape pinned by tests/test_judge_call_timeout.py."""
+    ``MCPError(REQUEST_TIMEOUT)``, the shape pinned by tests/test_judge_call_timeout.py."""
 
     def __init__(self):
         self.inputs = []
@@ -95,10 +95,10 @@ class _TimeoutAgent:
         self.inputs.append(stream_input)
 
         async def _gen():
-            from mcp.shared.exceptions import McpError
-            from mcp.types import ErrorData
+            from mcp import MCPError
+            from mcp.types import REQUEST_TIMEOUT
 
-            raise McpError(ErrorData(code=408, message="Timed out waiting for response"))
+            raise MCPError(code=REQUEST_TIMEOUT, message="Timed out waiting for response")
             yield  # pragma: no cover - unreachable, present to make this an async generator
 
         return _gen()
@@ -160,7 +160,7 @@ def _run(
         return fake_agent
 
     import deepagents
-    import langchain_mcp_adapters.tools as lmt
+    from gemot.agent import mcp_tools as lmt
 
     monkeypatch.setattr(lmt, "load_mcp_tools", _fake_load_mcp_tools)
     monkeypatch.setattr(deepagents, "create_deep_agent", _fake_create_deep_agent)
@@ -299,12 +299,12 @@ def _timing_out_fit(n_timeouts):
     """A `make_changes` whose first ``n_timeouts`` calls time out the way mcp reports it."""
 
     async def _make_changes(runtime=None, **kw):
-        from mcp.shared.exceptions import McpError
-        from mcp.types import ErrorData
+        from mcp import MCPError
+        from mcp.types import REQUEST_TIMEOUT
 
         _make_changes.calls += 1
         if _make_changes.calls <= n_timeouts:
-            raise McpError(ErrorData(code=408, message="Timed out. Waited 7560.0 seconds."))
+            raise MCPError(code=REQUEST_TIMEOUT, message="Timed out. Waited 7560.0 seconds.")
         return ([{"type": "text", "text": '{"applied": true}'}], None)
 
     _make_changes.calls = 0
@@ -365,8 +365,8 @@ def test_a_second_fit_timeout_ends_the_run_as_a_wedged_fit(monkeypatch):
 
     assert result["stop_reason"] == "infrastructure_error: fit_wedged"
     assert len(agent.inputs) == 1  # no resume
-    assert result["infrastructure_evidence"].startswith("make_changes: McpError: Timed out.")
-    assert "behind make_changes: McpError" in result["infrastructure_evidence"]
+    assert result["infrastructure_evidence"].startswith("make_changes: MCPError: Timed out.")
+    assert "behind make_changes: MCPError" in result["infrastructure_evidence"]
     assert result["make_changes_calls"]["by_outcome"] == {
         "tool_error": 1,
         "infrastructure_error": 1,
@@ -568,6 +568,13 @@ class _ScriptedAgent(_FakeAgent):
                 raise StreamChunkTimeoutError(120.0, model_name="z-ai/glm-5.3-flash")
             if what == "timeout":
                 raise TimeoutError("a call inside the step timed out")
+            if what == "credit":
+                import httpx
+                import openai
+
+                request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+                text = "You requested up to 131072 tokens, but can only afford 91509."
+                raise openai.APIError(text, request, body={"code": 402, "message": text})
             if what == "hang":
                 await asyncio.Event().wait()
             yield {"messages": [{"role": "user", "content": "x"}] * (2 * n)}
@@ -659,6 +666,20 @@ def test_an_outage_past_the_budget_ends_the_run(monkeypatch):
     assert result["stop_reason"].startswith("stream: StreamChunkTimeoutError")
     assert result["provider_outage_retries"] == budget
     assert len(agent.inputs) == 1 + budget
+
+
+@requires_harness
+def test_a_402_ends_the_run_as_provider_credit_without_a_retry(monkeypatch):
+    """gemot#76: a mid-stream 402 is the bare APIError the outage path waits out; the same request
+    is refused until the account is topped up, so the run ends at once with a countable label."""
+    mod = _load_agent_module()
+    result, agent = _run(
+        mod, monkeypatch, _Probe(model_authored=True), agent=_ScriptedAgent("credit")
+    )
+
+    assert result["stop_reason"] == mod.driver.PROVIDER_CREDIT
+    assert result["provider_outage_retries"] == 0
+    assert len(agent.inputs) == 1
 
 
 @requires_harness
