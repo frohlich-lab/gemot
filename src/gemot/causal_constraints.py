@@ -215,6 +215,15 @@ def behaviour(
     return dict(sorted(out.items()))
 
 
+def _seeds_named(record: dict | None) -> dict | None:
+    """``record`` with the ``starts`` of one stored before PEtab-MCP#184 read as its ``seeds``.
+    The server takes no alias, so an archived run's version would otherwise rebuild with none of
+    the seeds it declared."""
+    if not record or "seeds" in record or "starts" not in record:
+        return record
+    return {**{k: v for k, v in record.items() if k != "starts"}, "seeds": record["starts"]}
+
+
 class _Judged:
     """The judged version: its stored model, its fitted values, and the problem it was fitted to."""
 
@@ -228,8 +237,11 @@ class _Judged:
         self.run_dir, self.version, self.entity_map = run_dir, version, entity_map
         self.vdir = store_dir(run_dir) / "versions" / f"v{version}"
         # As the server reads it now: a record stored before rows and their bindings were given
-        # apart (PEtab-MCP#135) reads as the same rows and bindings.
-        self.record = statements_record(read_version_json(self.vdir, "statements.json"))
+        # apart (PEtab-MCP#135) reads as the same rows and bindings, and one stored before the
+        # species at t = 0 were named seeds (PEtab-MCP#184) reads its `starts` as its seeds.
+        self.record = _seeds_named(
+            statements_record(read_version_json(self.vdir, "statements.json"))
+        )
         if not self.record:
             raise ValueError(f"version {version} was not built from statements")
         self.sbml = SbmlModel.from_antimony(
@@ -247,7 +259,7 @@ class _Judged:
         from petab.v1.models.sbml_model import SbmlModel
         from petab_mcp import operations, protocols, seeding
 
-        rows, bindings, starts, readouts, given, _ = operations.apply_statement_edits(
+        rows, bindings, seeds, readouts, given, _ = operations.apply_statement_edits(
             self.record,
             [{"op": "set_amount", "name": name, "agent": agent} for name, agent in amounts.items()],
         )
@@ -263,7 +275,7 @@ class _Judged:
             shipped_parameter_df=self.problem.parameter_df.copy(deep=True),
         )
         antimony, *_ = operations.statements_to_antimony(
-            session, rows, bindings, None, starts, readouts, given
+            session, rows, bindings, None, seeds, readouts, given
         )
         return SbmlModel.from_antimony(antimony).sbml_model
 

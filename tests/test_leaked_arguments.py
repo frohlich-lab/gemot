@@ -23,7 +23,7 @@ _LEAKED = {
     "]\n"
     '<parameter name="bindings">{"prod": "indra_default kf=k_prod", '
     '"clear": "indra_default kf=k_clear"}',
-    "starts": [{"agent": "virions", "amount": "V_0"}],
+    "seeds": [{"agent": "virions", "amount": "V_0"}],
     "readouts": {"readout_viral_load": "amount(virions())"},
 }
 
@@ -37,7 +37,7 @@ def test_the_leaked_rows_are_moved_back_to_their_argument():
     assert args["statements"][0].startswith("prod: infected_cells()")
     assert len(args["statements"]) == 2
     assert args["bindings"] == {"prod": "indra_default kf=k_prod", "clear": "indra_default kf=k_clear"}
-    assert args["starts"] == _LEAKED["starts"] and args["readouts"] == _LEAKED["readouts"]
+    assert args["seeds"] == _LEAKED["seeds"] and args["readouts"] == _LEAKED["readouts"]
 
 
 def test_a_closed_tag_and_a_second_leak_are_read_too():
