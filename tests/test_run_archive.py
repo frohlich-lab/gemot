@@ -13,8 +13,6 @@ from __future__ import annotations
 import gzip
 import json
 
-import pytest
-
 from gemot.analysis import read_version_json
 from gemot.explorer import bundle as B
 from gemot.explorer.archive import archive_run
@@ -46,12 +44,13 @@ _STATEMENTS = {
     "amounts": {},
 }
 
-#: What lands in an archived version by default: the plain files, and optimization.json gzipped.
+#: What lands in an archived version: the plain files, and optimization.json gzipped.
 _ARCHIVED = {
     "meta.json",
     "model.ant",
     "model_source.ant",
     "parameters.tsv",
+    "pypesto_result.hdf5",
     "simulations.json",
     "statements.json",
     "validation_simulations.json",
@@ -91,8 +90,8 @@ def _work(tmp_path):
     )
     (v0 / "statements.json").write_text(json.dumps(_STATEMENTS, indent=2), encoding="utf-8")
     (v0 / "optimization.json").write_text(json.dumps(_OPTIMIZATION, indent=2), encoding="utf-8")
-    # Deliberately NOT copied by default: the HDF5 is opt-in, the TSV duplicates simulations.json.
     (v0 / "pypesto_result.hdf5").write_bytes(b"\x89HDF\r\n\x1a\n" + b"\x00" * 32)
+    # Deliberately NOT copied: the TSV duplicates simulations.json.
     (v0 / "simulations.tsv").write_text("observableId\tsimulation\n", encoding="utf-8")
     return work
 
@@ -146,33 +145,19 @@ def test_the_version_source_is_archived(tmp_path):
     assert "r1: A => B; k*A;" in src.read_text()
 
 
-def test_a_version_keeps_its_statements_and_multistart_but_not_the_hdf5(tmp_path, monkeypatch):
+def test_a_version_keeps_its_statements_multistart_and_hdf5(tmp_path):
     """The fontaine_sag INDRA sweep (#62) lost every version's `statements.json`, which was simply
     missing from the list, and its `optimization.json`, which was skipped on purpose; the sweep
     task then removed work/, so the model the agent wrote and the multistart behind each score
-    survived nowhere on disk. Both are archived now, the multistart gzipped. The HDF5 (pyPESTO's
-    copy of the same fit) and simulations.tsv (simulations.json's table again) stay out."""
-    monkeypatch.delenv("GEMOT_ARCHIVE_PYPESTO_HDF5", raising=False)
+    survived nowhere on disk. Both are archived now, the multistart gzipped, beside pyPESTO's HDF5
+    byte for byte. simulations.tsv (simulations.json's table again) stays out."""
     v0 = _archived_v0(tmp_path)
     assert {p.name for p in v0.iterdir()} == _ARCHIVED
     assert json.loads((v0 / "statements.json").read_text()) == _STATEMENTS
     with gzip.open(v0 / "optimization.json.gz", "rt", encoding="utf-8") as fh:
         assert json.load(fh) == _OPTIMIZATION
-
-
-@pytest.mark.parametrize(
-    ("setting", "kept"), [("1", True), ("true", True), ("0", False), ("", False)]
-)
-def test_the_pypesto_hdf5_is_archived_only_on_request(tmp_path, monkeypatch, setting, kept):
-    """`GEMOT_ARCHIVE_PYPESTO_HDF5=1` adds the HDF5, byte for byte, and changes nothing else. An
-    empty value is how a submit script leaves a knob alone, so it must not switch this on."""
-    monkeypatch.setenv("GEMOT_ARCHIVE_PYPESTO_HDF5", setting)
-    v0 = _archived_v0(tmp_path)
-    expected = _ARCHIVED | {"pypesto_result.hdf5"} if kept else _ARCHIVED
-    assert {p.name for p in v0.iterdir()} == expected
-    if kept:
-        live = tmp_path / "work" / ".petab_mcp" / "versions" / "v0" / "pypesto_result.hdf5"
-        assert (v0 / "pypesto_result.hdf5").read_bytes() == live.read_bytes()
+    live = tmp_path / "work" / ".petab_mcp" / "versions" / "v0" / "pypesto_result.hdf5"
+    assert (v0 / "pypesto_result.hdf5").read_bytes() == live.read_bytes()
 
 
 def test_a_version_without_held_out_simulations_still_archives(tmp_path):

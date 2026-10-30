@@ -129,8 +129,6 @@ _NOT_ABLATIONS = {
     "AMICI_LOG": "AMICI log level, not a behavioural switch",
     "BENCHMARK_MODELS_PETAB": "path to the benchmark collection",
     "BENCHMARK_MODELS_PETAB_CACHE": "path to the benchmark download cache",
-    "GEMOT_ARCHIVE_PYPESTO_HDF5": "whether the run archive also keeps each version's pyPESTO HDF5; "
-    "read once the run is over, so it decides what is kept, never what the run does",
     "OPENROUTER_API_KEY": "credential",
     "OTEL_EXPORTER_OTLP_ENDPOINT": "telemetry endpoint",
     "PATH": "the shell's own",
