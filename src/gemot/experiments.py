@@ -469,7 +469,8 @@ _ROW_FIELDS = (
 # modeling OUTCOMES and are never treated as infrastructure aborts (a recursion-limit run with no
 # commits genuinely failed to build anything — it is a modeling failure, not scoring noise).
 _INFRA_ABORT_MARKERS = (
-    "402",  # OpenRouter payment-required (out of credits)
+    "402",  # OpenRouter payment-required (out of credits), as the raw error recorded it
+    "provider_credit",  # the same 402 as the drivers label it since gemot#76 (driver.PROVIDER_CREDIT)
     "apistatuserror",
     "apiconnectionerror",
     "apitimeouterror",

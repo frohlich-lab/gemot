@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from .driver import (
+    PROVIDER_CREDIT,
     _LLM_MAX_RETRIES,
     _LLM_TIMEOUT_S,
     _MAX_RUN_TOKENS,
@@ -40,6 +41,7 @@ from .driver import (
     _content_filter_stop_reason,
     _env_token_limit,
     _extra_body,
+    _is_provider_credit,
     _next_step,
     _outage_backoff,
     _state_message_count,
@@ -292,7 +294,10 @@ async def run_barebones(
             retriable = f"{type(exc).__name__}: {exc}"
             outage = True
         except Exception as exc:
-            if (filtered := _content_filter_stop_reason(exc)) is not None:
+            if _is_provider_credit(exc):
+                stop_reason = PROVIDER_CREDIT
+                print(f"[null] {PROVIDER_CREDIT}: {str(exc)[:300]} — stopping, no resume.")
+            elif (filtered := _content_filter_stop_reason(exc)) is not None:
                 stop_reason = filtered
             elif (transient := _transient_provider_reason(exc)) is not None:
                 retriable = transient
