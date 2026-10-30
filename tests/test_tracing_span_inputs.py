@@ -1,24 +1,20 @@
-"""The wrapper-span input stripping in ``tracing.py``.
+"""The span input stripping in ``tracing.py``.
 
-Two halves. The first pins the span *names* against the installed LangChain / deepagents /
-our own guard: the stripping is name-based, so a rename upstream would silently stop the
-saving and let the collector DB go back to storing the agent transcript four times per step.
-The second checks the strip itself removes only ``input.*``, and only on those spans.
+Three parts. The first pins the wrapper span *names* against the installed LangChain /
+deepagents / our own guards: that stripping is name-based, so a rename upstream would silently
+stop the saving and let the collector DB go back to storing the agent transcript once per hook
+per step. The second checks the strip itself removes only ``input.*``, and only on those spans
+and on LLM spans. The third checks it is installed at all on the Phoenix provider ``register``
+returns.
+
+No ``importorskip``: ``dev`` installs the ``tracing`` extra. While these tests skipped in CI the
+third part could not fail, and it was the one that broke.
 """
 
-import pytest
+from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace.export import SpanExportResult
 
-# Phoenix/OTel live in the `harness` extra, NOT in `dev` (pyproject: dev -> petab-mcp[agent]),
-# and the packaging comment is explicit that no test may require them. Skip, don't error.
-# Guard the SUBMODULE, not the top-level name: `opentelemetry` is a namespace package that
-# imports cleanly even when nothing is installed under it, so importorskip("opentelemetry")
-# passes and the real import then fails at collection -- which is how CI broke.
-pytest.importorskip("opentelemetry.sdk.trace", reason="harness-only dependency")
-
-from opentelemetry.sdk.trace import ReadableSpan  # noqa: E402
-from opentelemetry.sdk.trace.export import SpanExportResult  # noqa: E402
-
-from gemot.tracing import (  # noqa: E402
+from gemot.tracing import (
     _STRIPPED_INPUT_SPANS,
     _make_stripping_exporter,
     _strip_span_inputs,
@@ -29,23 +25,26 @@ from gemot.tracing import (  # noqa: E402
 
 
 def _real_graph_nodes():
-    """Nodes of the graph the DRIVER builds — `create_deep_agent`, not bare `create_agent`.
+    """Nodes of the graphs the DRIVER builds — `create_deep_agent`, not bare `create_agent` —
+    with the lead's middleware and an analyst's.
 
     Building the wrong constructor was the flaw in the first version of these tests: they
     asserted against a graph that nothing in production runs, so `create_deep_agent`'s own
-    middleware could add an unstripped per-step wrapper and every test would still pass.
+    middleware could add an unstripped per-step wrapper and every test would still pass. Leaving
+    out the analysts' middleware was the second: `_SubagentTurnLimit.after_model` carried every
+    analyst transcript, unstripped, for as long as only the lead's graph was checked here.
     """
     from deepagents import create_deep_agent
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
-    from gemot.agent.guards import _tool_dispatch_guard
+    from gemot.agent.guards import _subagent_turn_limit, _tool_dispatch_guard
 
     import inspect
 
     params = inspect.signature(create_deep_agent).parameters
     kwargs = {"model": GenericFakeChatModel(messages=iter([])), "tools": []}
     if "middleware" in params:
-        kwargs["middleware"] = [_tool_dispatch_guard({})]
+        kwargs["middleware"] = [_tool_dispatch_guard({}), _subagent_turn_limit(3)]
     agent = create_deep_agent(**kwargs)
     return set(agent.get_graph().nodes)
 
@@ -129,10 +128,54 @@ def test_preserves_span_identity_and_timings():
 
 def test_leaves_other_spans_untouched():
     """The spans both extract scripts and the explorer actually read."""
-    for name in ("ChatOpenAI", "set_model", "task", "model_build_run", "biocurator"):
-        span = _span(name, {"input.value": "keep me", "input.mime_type": "application/json"})
+    for name, kind in (
+        ("make_changes", "TOOL"),
+        ("task", "TOOL"),
+        ("model_build_run", "CHAIN"),
+        ("biocurator", "CHAIN"),
+    ):
+        span = _span(
+            name,
+            {
+                "openinference.span.kind": kind,
+                "input.value": "keep me",
+                "input.mime_type": "application/json",
+            },
+        )
         assert _strip_span_inputs(span) is span, f"{name} must not be stripped"
         assert span.attributes["input.value"] == "keep me"
+
+
+def test_an_llm_span_keeps_its_messages_and_loses_their_serialized_copy():
+    """`llm.input_messages` is the transcript the explorer and the Phoenix UI read; the
+    `input.value` beside it was a second, larger copy (97 of 131 MB on the 2026-10-25 raimundez
+    run's LLM spans), so only that goes."""
+    span = _span(
+        "ChatOpenAI",
+        {
+            "openinference.span.kind": "LLM",
+            "input.value": '{"messages": [[...]]}',
+            "input.mime_type": "application/json",
+            "llm.input_messages.0.message.role": "system",
+            "llm.input_messages.0.message.content": "You are the MODELING LEAD",
+            "llm.output_messages.0.message.content": "done",
+            "output.value": '{"generations": [[...]]}',
+            "llm.token_count.prompt": 457970,
+        },
+    )
+    stripped = _strip_span_inputs(span)
+
+    assert "input.value" not in stripped.attributes
+    assert "input.mime_type" not in stripped.attributes
+    for key in (
+        "openinference.span.kind",
+        "llm.input_messages.0.message.role",
+        "llm.input_messages.0.message.content",
+        "llm.output_messages.0.message.content",
+        "output.value",
+        "llm.token_count.prompt",
+    ):
+        assert stripped.attributes[key] == span.attributes[key], key
 
 
 def test_exporter_strips_in_flight_and_delegates():
@@ -175,9 +218,13 @@ def test_install_replaces_the_default_processor_rather_than_adding_to_it():
     `_install_stripping_processor` relies on Phoenix's `add_span_processor` dropping the
     default processor it installed. If a release stops doing that, ours is appended instead
     and every span exports twice -- one copy unstripped, strictly worse than not stripping.
-    That behaviour hangs off a private `_default_processor` flag, so pin it here.
+    That behaviour hangs off a private `_default_processor`, so pin it here.
+
+    The `True` half matters as much: arize-phoenix-otel 0.17 turned that attribute from a flag
+    into the processor, the install refused every provider from then on, and every October
+    indra sweep traced its transcripts in full. This test saw it only once `dev` installed
+    phoenix-otel; it had been skipping in CI.
     """
-    pytest.importorskip("phoenix.otel", reason="harness-only dependency")
     from phoenix.otel import TracerProvider
 
     from gemot.tracing import _install_stripping_processor
