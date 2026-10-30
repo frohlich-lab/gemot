@@ -33,6 +33,7 @@ from pathlib import Path
 
 from .. import ablations
 from ..agent.circuit_breaker import _is_call_timeout
+from ..fit_budget import fit_time_budget_for
 from .clock import HELD_OUT_TOOL, _ToolClock
 from ..paths import validation_measurements_path
 from .provenance import _bic_reference, _judge_mode, _now_iso, _reference_score
@@ -65,8 +66,13 @@ class MixedVersionsError(RuntimeError):
     (gemot#73; see :func:`_scored_version_mismatch`)."""
 
 
-async def _wait_for_running_fit(call) -> "float | None":
-    """Wait until no change is being fitted on the session; return the seconds that took.
+#: Seconds one ``wait_for_fit`` call waits on the server: the server's own cap (PEtab-MCP's
+#: ``WAIT_FOR_FIT_MAX_S``), well inside the read budget the harness gives the call.
+_WAIT_FOR_FIT_S = 540
+
+
+async def _wait_for_running_fit(call, n_starts) -> "tuple[str, float]":
+    """Wait until no change is being fitted on the session; return ``(status, seconds)``.
 
     The agent can stop while its last ``make_changes`` is still fitting, and the server finishes
     that fit and commits its version whenever it ends. perica_egf (gemot#73, a Codex CLI out of
@@ -74,22 +80,47 @@ async def _wait_for_running_fit(call) -> "float | None":
     ``get_parameters``, and result.json carried v5's nll with v6's k — a BIC no version has, on a
     run whose true best was v6.
 
-    No tool is named for the wait; ``get_progress`` keeps it. The server reads the progress under
-    the session lock, which ``make_changes`` holds for a change and its whole fit (petab_mcp's
-    ``PetabSession.change``), so the call answers only once that fit has committed or failed.
-    ``None`` when the call failed (a fit outlasting the read's budget, say): the judge goes on,
-    and :func:`_scored_version_mismatch` still catches a version landing during its reads.
+    ``wait_for_fit`` (PEtab-MCP#177) waits on the server, and is called again while the fit runs
+    for as long as the harness would have waited on that fit's own call: the
+    :func:`fit_budget.fit_time_budget_for` of its start count (the run's ``n_starts`` until the
+    fit reports one) against the time since its change began. Not ``get_progress``, which waits
+    too, but only because it reads under the lock a change holds for its whole fit: #177 reports
+    that block as a problem for agents, so it need not last.
+
+    ``status`` is the last answer's: how the session's last change ended (``committed``,
+    ``no_version``, ``idle``), ``still_running`` when the judge stopped waiting on a fit past its
+    budget, or ``error`` when the call failed. Either way the judge goes on, and
+    :func:`_scored_version_mismatch` still fails the judgement if a version lands during its reads.
     """
     asked = time.monotonic()
-    try:
-        await call("get_progress")
-    except Exception as exc:  # noqa: BLE001 - the version check after the reads still guards them
-        print(f"[judge] could not wait for a fit still running ({type(exc).__name__}: {exc})")
-        return None
+    while True:
+        try:
+            answer = await call("wait_for_fit", timeout_s=_WAIT_FOR_FIT_S)
+        except Exception as exc:  # noqa: BLE001 - the version check after the reads still guards them
+            answer = f"{type(exc).__name__}: {exc}"
+        if not (isinstance(answer, dict) and answer.get("status")):
+            print(f"[judge] could not wait for a fit still running ({str(answer)[:200]})")
+            return "error", time.monotonic() - asked
+        if answer["status"] != "still_running":
+            break
+        fit_starts = answer.get("n_starts") or None  # 0 while the model compiles
+        budget = fit_time_budget_for(fit_starts, n_starts or fit_starts or 1)
+        if (answer.get("elapsed_s") or 0) >= budget:
+            print(
+                f"[judge] stopped waiting on a fit {answer.get('elapsed_s')}s in, past its "
+                f"{budget:.0f}s budget ({answer.get('starts_done')} of {answer.get('n_starts')} "
+                "starts done); scoring the versions committed so far"
+            )
+            break
     waited = time.monotonic() - asked
-    if waited >= 1.0:  # a bare read answers in milliseconds; a second or more was a fit
-        print(f"[judge] waited {waited:.0f}s for the fit still running when the agent stopped")
-    return waited
+    if waited >= 1.0 and answer["status"] != "still_running":
+        # A wait with nothing running answers in milliseconds; a second or more was a fit.
+        print(
+            f"[judge] waited {waited:.0f}s for the fit still running when the agent stopped "
+            f"({answer['status']}"
+            + (f" v{answer['version']})" if answer.get("version") is not None else ")")
+        )
+    return answer["status"], waited
 
 
 def _estimated_ids(rows) -> "set[str]":
@@ -103,7 +134,7 @@ def _estimated_ids(rows) -> "set[str]":
     }
 
 
-def _scored_version_mismatch(version, head, stored, final, params) -> "str | None":
+def _scored_version_mismatch(version, head, stored, final, params, k=None) -> "str | None":
     """Why the judge's reads are not all ``version``'s, or ``None`` when nothing says so.
 
     The verdict is assembled from working-state reads (``get_fit_summary`` for nll and n,
@@ -114,10 +145,11 @@ def _scored_version_mismatch(version, head, stored, final, params) -> "str | Non
     gemot#73 was the first: v5's nll beside v6's parameter table.
 
     Deliberately a check on the working reads, not a score read off the stored record instead: the
-    record carries the nll, n and estimated rows, but not the hardcoded constants that k also
-    charges, and the structure, residual and held-out reads have no stored counterpart at all. The
-    working state has to be the scored version either way; this is what says it was. A record that
-    does not say it is ``version`` (an error payload, a fake) is not compared, nor a field it lacks.
+    record carries the nll, n, k (since PEtab-MCP#175) and estimated rows, but the structure,
+    residual and held-out reads have no stored counterpart at all. The working state has to be the
+    scored version either way; this is what says it was. ``k`` is the judge's own (None for the
+    null arm, whose k counts the reconcile's rows rather than the table's). A record that does not
+    say it is ``version`` (an error payload, a fake) is not compared, nor a field it lacks.
     """
     if version is None:
         return None
@@ -140,6 +172,9 @@ def _scored_version_mismatch(version, head, stored, final, params) -> "str | Non
     n, stored_n = final.get("n_data_points"), simulation.get("n_data_points")
     if isinstance(stored_n, int) and n != stored_n:
         return f"get_fit_summary reports n {n}, v{version} stored {stored_n}"
+    stored_k = stored.get("k")
+    if k is not None and isinstance(stored_k, int) and k != stored_k:
+        return f"the reads give k {k}, v{version} stored {stored_k}"
     rows = stored.get("parameters")
     if isinstance(rows, list) and isinstance(params, list):
         if differ := _estimated_ids(rows) ^ _estimated_ids(params):
@@ -401,7 +436,8 @@ async def _sigma_flagged(call, version: int, reference) -> "bool | None":
     old store rather than mis-rank it.
     """
     try:
-        stored = await call("get_version", version=version)
+        # The simulation carries the report; PEtab-MCP#175 leaves it out unless asked.
+        stored = await call("get_version", version=version, include=["simulation"])
     except Exception:  # pragma: no cover - unreadable version: no verdict
         return None
     simulation = stored.get("simulation") if isinstance(stored, dict) else None
@@ -491,14 +527,15 @@ async def _judge(
 
     # First let a fit the agent left running commit, so the scan sees its version and nothing
     # moves under the reads below (gemot#73).
-    fit_wait = await _wait_for_running_fit(call)
+    fit_wait_status, fit_wait_s = await _wait_for_running_fit(call, meta.get("n_starts"))
     # Restore + score the best model this judge can legitimately score — not whatever was committed
     # last, and not a lower-scoring version whose noise model the gate below would reject while a
     # clean one sits unscored (see the helper). Handed the reference so the scan asks the SAME sigma
     # question the gate does.
     scored_version = await _restore_best_checkpoint(call, scenario.reference())
 
-    structure = await call("get_model_structure")
+    # `reactions=""` lists every reaction: the default answer leaves them out (PEtab-MCP#175).
+    structure = await call("get_model_structure", reactions="")
     reactions = structure.get("reactions", []) or []
     current_species = set(structure.get("species", []) or [])
     new_species = sorted(current_species - baseline.species)
@@ -567,7 +604,11 @@ async def _judge(
     # deriving it needs the built objective. Report-only: a store without it records None.
     k_eff = stored = None
     try:
-        stored = await call("get_version", version=head) if head is not None else None
+        stored = (
+            await call("get_version", version=head, include=["simulation"])
+            if head is not None
+            else None
+        )
         sim = stored.get("simulation") if isinstance(stored, dict) else None
         k_eff = sim.get("k_eff") if isinstance(sim, dict) else None
     except Exception:  # noqa: BLE001 - report-only
@@ -575,7 +616,9 @@ async def _judge(
     # Every read above is the scored version's, or there is no score: nll, n and k off two
     # versions make a number no version has (gemot#73). Raised, so the run is written as degraded
     # with this message rather than judged.
-    if why := _scored_version_mismatch(scored_version, head, stored, final, params):
+    if why := _scored_version_mismatch(
+        scored_version, head, stored, final, params, k=k if estimated is None else None
+    ):
         raise MixedVersionsError(f"judge: the reads are not all v{scored_version}'s: {why}")
     if scored_version is None:
         scored_version = head
@@ -1037,9 +1080,12 @@ async def _judge(
         # `head_version` in any result that exists; named apart because `head_version` only says
         # where HEAD was when read. -1 when nothing was fitted, as there.
         "scored_version": scored_version,
-        # Seconds the judge waited for a fit still running when the agent stopped (a few ms when
-        # none was); None when it could not wait.
-        "fit_wait_seconds": None if fit_wait is None else round(fit_wait, 1),
+        # The judge's wait for a fit still running when the agent stopped (`wait_for_fit`): how
+        # the last change ended (`committed`, `no_version`, `idle`), `still_running` when the
+        # judge gave up on a fit past its budget, `error` when it could not wait; and the seconds
+        # it took, a few ms when no fit was running.
+        "fit_wait_status": fit_wait_status,
+        "fit_wait_seconds": round(fit_wait_s, 1),
         "n_errors": len(errors) if isinstance(errors, list) else 0,
         "wall_seconds": round(wall, 1),
         "compute_seconds": round(compute_s, 1),

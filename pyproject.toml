@@ -61,7 +61,14 @@ dependencies = [
     # the `statements` route or the text routes, never both; an entity map implies the former, and
     # `statements_only` is gone. #163: an offset in an observable formula is solved as an inner
     # offset, not a second scaling, so a problem with both fits them hierarchically again.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@a32a1f6f400459bb4c1df1dd58f320f7568bb92a",
+    # Then c0248a9, the head of frohlich-lab/PEtab-MCP#177, NOT YET MERGED: `wait_for_fit`, which
+    # the judge calls before scoring so a fit the agent left running commits first (gemot#73).
+    # Move to #177's merge commit on main once it lands. It sits on main c567b64: #175: the read
+    # tools answer small unless asked (`get_version(include=["simulation"])`,
+    # `get_model_structure(reactions="")`), and a version's meta records its `k`. #170: fitted
+    # values are stored only in the version's `parameters.tsv`. #173/#174: a constraint on a
+    # species the model lacks says what adds it; an unnamed start is named after its form.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@c0248a92376774d7790a39b0854fd64b372d0e8f",
     # The MCP *client* (runner/*, bio_sessions) and the langchain-mcp-adapters bridge the `agent`
     # extra pins need the 1.x SDK. The adapters will not get mcp 2.0 support: the repository was
     # archived in 2026-09, its last release (0.3.2) caps `mcp<2`, and its successor is LangChain's
