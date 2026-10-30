@@ -94,8 +94,10 @@ dependencies = [
 # scripted fake chat model -- no network, no MCP server), and every one of them is guarded by an
 # importorskip. Without these, `pip install -e '.[dev]' && pytest` silently SKIPS ~20 tests and
 # reports green, which is how a broken _trim_europepmc_search and an uncurated `general-purpose`
-# subagent (issue frohlich-lab/petab_mcp#112) each stayed invisible. Phoenix and W&B are
-# deliberately NOT pulled in -- no test touches them, and they are much heavier than the driver.
+# subagent (issue frohlich-lab/petab_mcp#112) each stayed invisible. The Phoenix UI/server and
+# W&B are deliberately NOT pulled in -- no test touches them, and they are much heavier than the
+# driver. The span exporter (`tracing`) is: the same skip hid that arize-phoenix-otel 0.17 had
+# turned the trace-size stripping off for every run.
 dev = [
     "pytest>=7", "pytest-asyncio>=0.23", "pytest-xdist>=3",
     # The linter CI runs (`ruff check .`, config in [tool.ruff] below). Floored at 0.6 -- the
@@ -112,6 +114,7 @@ dev = [
     "fastmcp>=3",
     "gemot[agent]",
     "gemot[neural]",
+    "gemot[tracing]",
 ]
 
 # The deepagents driver stack: what the analyst panel actually runs on, and the only part of the
@@ -162,13 +165,12 @@ harness = [
     "gemot[agent]",
     # Arize Phoenix agent tracing (ON by default; disable at runtime with --no-phoenix).
     # Traces every LLM + MCP tool call the agent makes as OpenTelemetry spans viewable in the
-    # Phoenix UI. arize-phoenix-otel + the LangChain instrumentor EXPORT the spans; the full
-    # `arize-phoenix` package provides the local in-process UI the runner launches when no
-    # PHOENIX_COLLECTOR_ENDPOINT is set, and >=19 provides the run_experiment / Datasets /
-    # Prompt-registry API that gemot_iclr_2026's scripts/run_experiments.py uses.
+    # Phoenix UI. The `tracing` extra EXPORTS the spans; the full `arize-phoenix` package
+    # provides the local in-process UI the runner launches when no PHOENIX_COLLECTOR_ENDPOINT is
+    # set, and >=19 provides the run_experiment / Datasets / Prompt-registry API that
+    # gemot_iclr_2026's scripts/run_experiments.py uses.
     "arize-phoenix>=19.13",
-    "arize-phoenix-otel>=0.16",
-    "openinference-instrumentation-langchain>=0.1",
+    "gemot[tracing]",
     # Weights & Biases metrics logging for the model x temperature sweep (opt-in via run.py
     # --wandb). Cluster-friendly alternative analysis UI to Phoenix Experiments; logs one
     # small W&B run per (example x model x temperature x repeat) with the judge outcome.
@@ -176,6 +178,18 @@ harness = [
     # an egress-restricted cluster.
     "wandb>=0.18",
 ]
+
+# What `gemot.tracing` exports spans with: Phoenix's OTel provider and the LangChain
+# instrumentor, without the Phoenix server. Split out from `harness` so `dev` can depend on
+# exactly this much, and so the pins have ONE home. arize-phoenix-otel's floor is the oldest
+# release the input stripping was checked against (0.16.1, the flag form of the provider's
+# `_default_processor`; 0.17 holds the processor there, which tests/test_tracing_span_inputs.py
+# runs against in CI).
+tracing = [
+    "arize-phoenix-otel>=0.16",
+    "openinference-instrumentation-langchain>=0.1",
+]
+
 # The blinded bio-knowledge analyst (`biocurator`) needs NO extra dependency here: it reaches
 # the hardcoded bio-knowledge MCP endpoints (gemot.runner.endpoints.BIO_MCP_URLS) over
 # streamable-HTTP with the langchain-mcp-adapters / mcp client already pinned above.

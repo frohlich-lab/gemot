@@ -104,21 +104,19 @@ def phoenix_base_url(url: str) -> str:
 # ------------------------------------------------------------------ span input stripping
 # The LangChain instrumentor turns every LangGraph node and every middleware hook into a
 # CHAIN span whose ``input.value`` is the serialized graph state -- which embeds the whole
-# ``messages`` list. Three such hooks fire per agent step, so the transcript is stored four
-# times per step (these three plus the ``ChatOpenAI`` LLM span that legitimately holds it),
-# and since the transcript grows with every step the total scales as O(steps^2). Measured on
-# the July sweep collector DB: 27.1 GB of its 37.6 GB was these three spans' ``input.value``,
-# against 4 KB of genuinely-theirs ``output.value``.
+# ``messages`` list. Such hooks fire on every agent step, so the transcript is stored once per
+# hook per step, and since the transcript grows with every step the total scales as
+# O(steps^2). Measured on the July sweep collector DB: 27.1 GB of its 37.6 GB was these spans'
+# ``input.value``, against 4 KB of genuinely-theirs ``output.value``.
 #
 # Stripping is by span name rather than by a size threshold so it can never touch a span we
-# read: the ``ChatOpenAI`` LLM span, any TOOL span (whose ``input.value`` is the tool
-# arguments), the ``model_build_run`` root span (whose ``input.value`` is this module's own
-# ``petab.*`` run metadata), or a subagent's delegation prompt. The cost is that a rename
-# upstream silently stops the saving -- ``tests/test_tracing_span_inputs.py`` pins these
-# against the node names a real LangChain agent graph produces, so that shows up as a test
-# failure. Note the names are LangChain graph node names, not class names: the middleware
-# ones come from ``AgentMiddleware.name``, an overridable property that merely *defaults*
-# to the class name.
+# read: any TOOL span (whose ``input.value`` is the tool arguments), the ``model_build_run``
+# root span (whose ``input.value`` is this module's own ``petab.*`` run metadata), or a
+# subagent's delegation prompt. The cost is that a rename upstream silently stops the saving --
+# ``tests/test_tracing_span_inputs.py`` pins these against the node names a real LangChain
+# agent graph produces, so that shows up as a test failure. Note the names are LangChain graph
+# node names, not class names: the middleware ones come from ``AgentMiddleware.name``, an
+# overridable property that merely *defaults* to the class name.
 #
 # The graph's other per-step node, ``tools``, is deliberately absent: its ``input.value`` is
 # the tool call being dispatched, ~0.5 KB, not a transcript copy.
@@ -126,9 +124,19 @@ _STRIPPED_INPUT_SPANS = frozenset(
     {
         "model",  # LangChain's model node
         "TodoListMiddleware.after_model",  # deepagents
-        "_ToolDispatchGuard.after_model",  # ours, see gemot.agent.guards
+        "_ToolDispatchGuard.after_model",  # ours, the lead's, see gemot.agent.guards
+        "_SubagentTurnLimit.after_model",  # ours, every analyst's, see gemot.agent.guards
     }
 )
+
+# LLM spans are stripped of ``input.value`` too, by kind rather than by name (a span's name is
+# its chat-model class). Their transcript is ``llm.input_messages``, which the explorer and the
+# Phoenix UI read; ``input.value`` is a second copy of it as LangChain-serialized messages, and
+# that copy also carries what no reader wants: every MCP result twice (the ToolMessage
+# ``artifact`` keeps the full structured result even after deepagents evicted a large one to
+# its filesystem) and every earlier turn's ``reasoning_details`` (already in that turn's own
+# ``output.value``). On the 2026-10-25 raimundez run it was 97 MB of the LLM spans' 131 MB.
+_STRIPPED_INPUT_KINDS = frozenset({"LLM"})
 
 # Only the payload goes; the span, its parentage and its timings stay, so the trace tree is
 # unchanged. Dropping these spans outright is NOT an option -- ``ChatOpenAI`` is their child
@@ -138,12 +146,13 @@ _STRIPPED_INPUT_KEYS = ("input.value", "input.mime_type")
 
 def _strip_span_inputs(span: Any) -> Any:
     """Return ``span`` with the bulky ``input.*`` attributes removed, or unchanged if it
-    isn't one of the wrapper spans.
+    is neither one of the wrapper spans nor an LLM span.
 
-    Name check FIRST: this runs for every span in every export batch, and the large majority
-    return here unchanged, so nothing more expensive than a set lookup belongs above it.
+    These checks FIRST: this runs for every span in every export batch, and the large majority
+    return here unchanged, so nothing more expensive than a set lookup belongs above them.
     """
-    if span.name not in _STRIPPED_INPUT_SPANS:
+    kind = (span.attributes or {}).get("openinference.span.kind")
+    if span.name not in _STRIPPED_INPUT_SPANS and kind not in _STRIPPED_INPUT_KINDS:
         return span
     from opentelemetry.sdk.trace import ReadableSpan
 
@@ -207,12 +216,16 @@ def _install_stripping_processor(tracer_provider: Any, traces_endpoint: str) -> 
 
         if not isinstance(tracer_provider, PhoenixTracerProvider):
             return False
-        # `add_span_processor` only drops the default processor while this private flag is
-        # set (phoenix.otel sets it at the end of `register`). If a future release stops
-        # setting it, ours would be *appended* instead and every span would export twice --
-        # one copy unstripped. Refuse rather than risk that; the count is asserted in
-        # tests/test_tracing_span_inputs.py.
-        if getattr(tracer_provider, "_default_processor", False) is not True:
+        # `add_span_processor` only drops the default processor while the provider holds one,
+        # which it records in the private `_default_processor`: `True` up to arize-phoenix-otel
+        # 0.16, the processor itself (else None) from 0.17. If it holds none, ours would be
+        # *appended* and every span would export twice -- one copy unstripped. Refuse rather than
+        # risk that; the count is asserted in tests/test_tracing_span_inputs.py.
+        #
+        # Truthiness, NOT `is True`: that check was written against 0.16, and from 0.17 it refused
+        # every provider, so every run of the October indra sweeps exported its transcript in full
+        # (238 of the 2026-10-25 raimundez run's 389 MB were the stripped spans' inputs).
+        if not getattr(tracer_provider, "_default_processor", None):
             return False
         exporter = _make_stripping_exporter(HTTPSpanExporter(traces_endpoint))
         tracer_provider.add_span_processor(BatchSpanProcessor(span_exporter=exporter))
