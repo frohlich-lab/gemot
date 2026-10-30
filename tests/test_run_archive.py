@@ -31,15 +31,15 @@ _OPTIMIZATION = {
     "exitflag_counts": {"ExitFlag.FTOL": 2, "ExitFlag.MAXTIME": 1},
 }
 
-# A record in the shape stored before frohlich-lab/PEtab-MCP#135 gave each row's binding apart
-# (`policy` on the row, no `bindings`): kept so, since the archive copies statements.json whatever
-# its shape, and the server still reads one of these (`provenance.statements_record`).
+# A record in the shape the server stores now: each row's binding apart, by prefix
+# (frohlich-lab/PEtab-MCP#135), and the species at t = 0 as `seeds` (#184).
 _STATEMENTS = {
     "rows": [
-        {"statement": {"type": "IncreaseAmount", "obj": {"name": "GliA"}}, "policy": "mass_action"}
+        {"prefix": "gli", "statement": {"type": "IncreaseAmount", "obj": {"name": "GliA"}}}
     ],
-    "mechanisms": {},
-    "starts": {"GliA": 0.0},
+    "bindings": {"gli": {"policy": "mass_action"}},
+    "mechanisms": [],
+    "seeds": [{"name": "GliA", "agent": "GliA", "amount": "0"}],
     "readouts": {"obs_gli": "GliA"},
     "amounts": {},
 }
