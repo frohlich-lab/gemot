@@ -61,16 +61,18 @@ dependencies = [
     # the `statements` route or the text routes, never both; an entity map implies the former, and
     # `statements_only` is gone. #163: an offset in an observable formula is solved as an inner
     # offset, not a second scaling, so a problem with both fits them hierarchically again.
-    # Then 54661b4, main: #170: a provenance store keeps each fit's values once, in compact JSON.
+    # Then 0da8743, main: #170: a provenance store keeps each fit's values once, in compact JSON.
     # #181: fastmcp 4, so the mcp 2.0 SDK, which `mcp` below moves with. #183: python-dateutil < 3.
     # #175: the read tools answer small unless asked (`get_version(include=["simulation"])`,
     # `get_model_structure(reactions="")`), and a version's meta records its `k`. #173/#174: a
     # constraint on a species the model lacks says what adds it; an unnamed start is named after
-    # its form. NOT YET frohlich-lab/PEtab-MCP#177 (open): `wait_for_fit`, which the judge calls
-    # before scoring so a fit the agent left running commits first (gemot#73). Until this pin
+    # its form. #184: the statements route's species at t = 0 are `seeds` (`set_seed`,
+    # `remove_seed`, a record's `"seeds"`), not `starts`, with no alias. #186: amici >= 1.2.0 and
+    # petab >= 0.10.0 instead of git pins, which the floors below and the `neural` extra follow.
+    # NOT YET frohlich-lab/PEtab-MCP#177 (open): `wait_for_fit` (gemot#73, #79). Until the pin
     # reaches #177's merge commit the server refuses that call as an unknown tool, the judge says
     # it could not wait, and only the version check after its reads guards the score.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@54661b4f1167cc473279ed20b94e809afaec5e53",
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@0da8743c036c3cc1443a655b873fc99ece47e756",
     # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
     # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
     # is built on it; 2.3 is the first release fastmcp 4.1 accepts. What 2.0 changed for the code
@@ -86,7 +88,7 @@ dependencies = [
     # Imported directly here too (judge, simulate, the neural route), or promised to the
     # barebones agent's sandbox (pyPESTO, which its prompt tells the agent to fit with), so named
     # rather than left to arrive through petab-mcp, whose pyproject says why each floor.
-    "petab>=0.9",
+    "petab>=0.10.0",
     "python-libsbml>=5.19",
     "antimony>=3.2",
     "pandas>=1.5",
@@ -94,7 +96,7 @@ dependencies = [
     "duckdb>=0.9",
     "sympy>=1.10",
     "scipy>=1.10",
-    "amici>=1.1",
+    "amici>=1.2.0",
     "pypesto[petab]>=0.5",
     "fides>=0.8.1",
     # Promised to the barebones agent's sandbox by name (BAREBONES_SYSTEM_PROMPT_TMPL), and
@@ -140,11 +142,10 @@ dev = [
 # loop runs; petab-sciml writes the network definition and its initial weights in the standard's
 # own formats. None of this is imported by the server or the panel.
 neural = [
-    # The AMICI commit petab-mcp pins, by the same URL: pip refuses an `amici[jax]` from the index
-    # beside the direct reference petab-mcp brings (ResolutionImpossible), so the extra has to
-    # name the identical one. Move it with petab-mcp's pin; back to `amici[jax]>=...` once that
-    # pin is a release.
-    "amici[jax] @ git+https://github.com/AMICI-dev/AMICI.git@a4dbb08da4d3c782ba3a2bab47c92586467ea5bc#subdirectory=python/sdist",
+    # petab-mcp's floor (PEtab-MCP#186), from the index: 1.2.0 holds the AMICI#3408 commit
+    # (a4dbb08) this extra used to pin by URL, whose JAX code compiles for `And`/`Or`. An sdist,
+    # so it is built from source.
+    "amici[jax]>=1.2.0",
     "optax>=0.2",
     # The curriculum multiple shooting rewrite (`petab_sciml.training`) is unreleased,
     # PEtab-dev/petab_sciml#92. Pinned to GitHub's test-merge commit of that PR, because the
