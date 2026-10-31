@@ -48,7 +48,7 @@ class _Tool:
     def __init__(self, name, *answers):
         self.name, self.answers, self.calls = name, list(answers), 0
 
-        async def _coro(runtime=None, **kw):
+        async def _coro(**kw):
             self.calls += 1
             answer = self.answers.pop(0)
             if isinstance(answer, BaseException):
@@ -65,7 +65,7 @@ def _wrap(*tools):
 
 
 def _call(tool, **kw):
-    return asyncio.run(tool.coroutine(runtime=None, **kw))
+    return asyncio.run(tool.coroutine(**kw))
 
 
 _FIT_OK = (_text(json.dumps({"applied": True, "version": 3})), None)

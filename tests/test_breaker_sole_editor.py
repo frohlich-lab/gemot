@@ -33,7 +33,7 @@ class _FakeTool:
         self._fail_with = fail_with
         self._record = record if record is not None else []
 
-        async def _run(runtime=None, **arguments):
+        async def _run(**arguments):
             self._record.append(arguments)
             if self._fail_with is not None:
                 raise self._fail_with
@@ -77,7 +77,7 @@ def test_a_repeated_sole_editor_failure_escalates_the_message():
     _wrap_tools_with_circuit_breaker([tool], state)
 
     async def _call():
-        return await tool.coroutine(runtime=None, justification="j")
+        return await tool.coroutine(justification="j")
 
     for i in range(_TOOL_ERROR_DISABLE_THRESHOLD - 1):
         content, _ = asyncio.run(_call())
@@ -109,7 +109,7 @@ def test_a_sole_editor_failure_is_returned_to_the_model_never_raised():
         tool = _FakeTool("make_changes", fail_with=exc)
         _wrap_tools_with_circuit_breaker([tool], state)
         for _ in range(_TOOL_ERROR_DISABLE_THRESHOLD + 2):
-            result = asyncio.run(tool.coroutine(runtime=None, justification="j"))
+            result = asyncio.run(tool.coroutine(justification="j"))
             assert isinstance(result, tuple) and len(result) == 2, (
                 "must be (content, artifact) — the shape these tools already declare"
             )
@@ -185,9 +185,7 @@ def test_the_wrapper_hands_the_coerced_value_to_the_tool():
     state = _new_breaker_state()
     tool = _FakeTool("make_changes", args=_ARGS_SCHEMA)
     _wrap_tools_with_circuit_breaker([tool], state)
-    asyncio.run(
-        tool.coroutine(runtime=None, justification="j", parameters='[{"parameter_id": "k1"}]')
-    )
+    asyncio.run(tool.coroutine(justification="j", parameters='[{"parameter_id": "k1"}]'))
     assert tool.calls[-1]["parameters"] == [{"parameter_id": "k1"}]
 
 
@@ -209,7 +207,7 @@ def test_escalation_survives_an_exception_that_is_not_string_constructible():
     _wrap_tools_with_circuit_breaker([tool], state)
 
     async def _call():
-        return await tool.coroutine(runtime=None, justification="j")
+        return await tool.coroutine(justification="j")
 
     for _ in range(_TOOL_ERROR_DISABLE_THRESHOLD - 1):
         asyncio.run(_call())
@@ -248,7 +246,7 @@ def test_a_repeated_identical_rejection_eventually_escalates():
     tool = _FakeTool("make_changes")
     tool.coroutine = lambda *_a, **_k: None  # replaced below
 
-    async def _run(runtime=None, **arguments):
+    async def _run(**arguments):
         return _rejection()
 
     tool.coroutine = _run
@@ -256,7 +254,7 @@ def test_a_repeated_identical_rejection_eventually_escalates():
 
     texts = []
     for _ in range(_REJECTION_ESCALATE_AT):
-        content, _ = asyncio.run(tool.coroutine(runtime=None, justification="j"))
+        content, _ = asyncio.run(tool.coroutine(justification="j"))
         texts.append("".join(b["text"] for b in content))
 
     assert all("th time this call was rejected" not in x for x in texts[:-1])
@@ -340,7 +338,7 @@ def test_the_wrapper_records_each_outcome_class():
     state = _new_breaker_state()
     ok = _FakeTool("make_changes", args=_ARGS_SCHEMA)
     _wrap_tools_with_circuit_breaker([ok], state)
-    asyncio.run(ok.coroutine(runtime=None, justification="j"))
+    asyncio.run(ok.coroutine(justification="j"))
     assert call_outcomes(state, "make_changes")["by_outcome"] == {"ok": 1}
 
     state2 = _new_breaker_state()
@@ -348,7 +346,7 @@ def test_the_wrapper_records_each_outcome_class():
     _wrap_tools_with_circuit_breaker([bad], state2)
     # Returns the error as tool content rather than raising (see the sole-editor note in
     # circuit_breaker) — the outcome must still be RECORDED as a failure for triage.
-    content, _ = asyncio.run(bad.coroutine(runtime=None, justification="j"))
+    content, _ = asyncio.run(bad.coroutine(justification="j"))
     assert "boom" in content
     out = call_outcomes(state2, "make_changes")
     assert out["attempted"] == 1 and out["fail_rate"] == 1.0
@@ -372,7 +370,7 @@ def test_a_transport_error_on_the_sole_editor_is_not_swallowed():
         tool = _FakeTool("make_changes", fail_with=exc)
         _wrap_tools_with_circuit_breaker([tool], state)
         with pytest.raises(type(exc)):
-            asyncio.run(tool.coroutine(runtime=None, justification="j"))
+            asyncio.run(tool.coroutine(justification="j"))
         # Never disabled either — the sole editor must survive a transport blip for a resumed run.
         assert "make_changes" not in state["disabled"]
 
@@ -383,7 +381,7 @@ def test_a_non_transport_failure_on_the_sole_editor_is_still_returned():
     state = _new_breaker_state()
     tool = _FakeTool("make_changes", fail_with=RuntimeError("bad argument shape"))
     _wrap_tools_with_circuit_breaker([tool], state)
-    result = asyncio.run(tool.coroutine(runtime=None, justification="j"))
+    result = asyncio.run(tool.coroutine(justification="j"))
     assert isinstance(result, tuple) and "bad argument shape" in result[0]
 
 
@@ -431,15 +429,14 @@ def test_a_never_disabled_tool_still_escalates_on_the_RESULT_path():
     payload = _j.dumps({"ok": False, "error": "make_changes: `old_string` not found"})
     tool = _FakeTool("make_changes", args=_ARGS_SCHEMA, record=None, fail_with=None)
 
-    async def _always_error(runtime=None, **kw):
+    async def _always_error(**kw):
         return ([{"type": "text", "text": payload}], {"structured_content": _j.loads(payload)})
 
     tool.coroutine = _always_error
     state = _new_breaker_state()
     _wrap_tools_with_circuit_breaker([tool], state)
     outs = [
-        asyncio.run(tool.coroutine(runtime=None, justification="j"))
-        for _ in range(_TOOL_ERROR_DISABLE_THRESHOLD)
+        asyncio.run(tool.coroutine(justification="j")) for _ in range(_TOOL_ERROR_DISABLE_THRESHOLD)
     ]
     assert "make_changes" not in state["disabled"]  # never cut...
     text = "".join(b["text"] for b in outs[-1][0] if isinstance(b, dict))

@@ -374,7 +374,7 @@ def _wrap_tools_with_circuit_breaker(
             ours = name not in transport_disable  # a tool of the run's own server
 
             @wraps(orig)
-            async def _breaker(runtime=None, **arguments):
+            async def _breaker(**arguments):
                 if state["infrastructure"]["tool_calls"]:
                     # Another call already met the failure and the run is stopping; a call still
                     # in flight beside it must not reach the server either.
@@ -385,7 +385,7 @@ def _wrap_tools_with_circuit_breaker(
                     return (_breaker_message(name, hint), None)  # short-circuit, no server hit
                 arguments = _coerce_json_string_args(arguments, containers)
                 try:
-                    result = await orig(runtime=runtime, **arguments)
+                    result = await orig(**arguments)
                 except Exception as exc:  # a raised tool error (e.g. MCP isError -> ToolException)
                     # The server's own report arrives here: an `isError` result, which the
                     # adapter raises and its `handle_tool_error` would hand the model as a result.
@@ -510,7 +510,7 @@ def _wrap_tools_with_circuit_breaker(
                         return (content + note, artifact)
                 return result
 
-            try:  # keep the original signature so langchain still injects `runtime` correctly
+            try:  # keep the original signature: StructuredTool reads it for `callbacks` and `config`
                 _breaker.__signature__ = inspect.signature(orig)
             except (ValueError, TypeError):  # pragma: no cover - defensive
                 pass
