@@ -56,7 +56,7 @@ def test_breaker_degrades_a_transport_error_without_raising_or_3_strikes():
     mod = _breaker
     calls = {"n": 0}
 
-    async def _coro(runtime=None, **kw):
+    async def _coro(**kw):
         calls["n"] += 1
         raise anyio.ClosedResourceError()
 
@@ -66,12 +66,12 @@ def test_breaker_degrades_a_transport_error_without_raising_or_3_strikes():
         [tool], state, transport_disable_names={"get_reactome_info_by_identifier"}
     )
 
-    result = asyncio.run(tool.coroutine(runtime=None))  # must NOT raise
+    result = asyncio.run(tool.coroutine())  # must NOT raise
     assert "TOOL DISABLED" in _degraded_text(result)
     assert "get_reactome_info_by_identifier" in state["disabled"]
     assert calls["n"] == 1  # called once, then degraded
     # A later call short-circuits on the disabled set (still no server hit, still no raise).
-    assert "TOOL DISABLED" in _degraded_text(asyncio.run(tool.coroutine(runtime=None)))
+    assert "TOOL DISABLED" in _degraded_text(asyncio.run(tool.coroutine()))
     assert calls["n"] == 1
 
 
@@ -81,7 +81,7 @@ def test_transport_error_on_a_core_tool_is_not_auto_disabled():
     blip must not silently strip `fit` / `set_model` for the rest of the run."""
     mod = _breaker
 
-    async def _coro(runtime=None, **kw):
+    async def _coro(**kw):
         raise anyio.ClosedResourceError()
 
     state = mod._new_breaker_state()
@@ -90,7 +90,7 @@ def test_transport_error_on_a_core_tool_is_not_auto_disabled():
         [tool], state, transport_disable_names={"get_reactome_info_by_identifier"}
     )
     with pytest.raises(anyio.ClosedResourceError):
-        asyncio.run(tool.coroutine(runtime=None))
+        asyncio.run(tool.coroutine())
     assert "fit" not in state["disabled"]
 
 
@@ -99,12 +99,12 @@ def test_breaker_still_reraises_a_normal_tool_error():
     path) and does not disable the tool on the first failure."""
     mod = _breaker
 
-    async def _coro(runtime=None, **kw):
+    async def _coro(**kw):
         raise ValueError("bad args")
 
     state = mod._new_breaker_state()
     tool = _Tool("some_tool", _coro)
     mod._wrap_tools_with_circuit_breaker([tool], state)
     with pytest.raises(ValueError):
-        asyncio.run(tool.coroutine(runtime=None))
+        asyncio.run(tool.coroutine())
     assert "some_tool" not in state["disabled"]

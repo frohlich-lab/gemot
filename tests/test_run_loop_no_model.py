@@ -298,7 +298,7 @@ def test_no_liveness_signal_does_not_end_the_run(monkeypatch):
 def _timing_out_fit(n_timeouts):
     """A `make_changes` whose first ``n_timeouts`` calls time out the way mcp reports it."""
 
-    async def _make_changes(runtime=None, **kw):
+    async def _make_changes(**kw):
         from mcp import MCPError
         from mcp.types import REQUEST_TIMEOUT
 
@@ -326,7 +326,7 @@ class _FitAgent(_TimeoutAgent):
         async def _gen():
             make_changes = next(t for t in captured["tools"] if t.name == "make_changes")
             for _ in range(fits):
-                results.append(await make_changes.coroutine(runtime=None, n_starts=150))
+                results.append(await make_changes.coroutine(n_starts=150))
                 yield {"messages": [None] * len(results)}
             captured["fs"]["confirmed"] = True
 
