@@ -35,7 +35,7 @@ _VERSION_FILES = (
     # exists for (`child.source == parent.source + ops`) dies with work/ on the
     # next run of the same example — the identical hole errors.jsonl had.
     "model_source.ant",
-    # The INDRA arm's model as the agent wrote it: rows, mechanisms, starts, amounts, readouts.
+    # The INDRA arm's model as the agent wrote it: rows, mechanisms, seeds, amounts, readouts.
     # model.ant is only its BioNetGen expansion (species `__s0`, reactions `r0`...), so without
     # this the statements of a finished run survived only in its Phoenix trace, and could be
     # neither rendered, nor resubmitted, nor counted (#62, the fontaine_sag sweep). 2-17 kB.

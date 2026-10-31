@@ -308,7 +308,8 @@ async def _sigma_flagged(call, version: int, reference) -> "bool | None":
     old store rather than mis-rank it.
     """
     try:
-        stored = await call("get_version", version=version)
+        # The simulation carries the report; PEtab-MCP#175 leaves it out unless asked.
+        stored = await call("get_version", version=version, include=["simulation"])
     except Exception:  # pragma: no cover - unreadable version: no verdict
         return None
     simulation = stored.get("simulation") if isinstance(stored, dict) else None
@@ -401,7 +402,8 @@ async def _judge(
     # question the gate does.
     await _restore_best_checkpoint(call, scenario.reference())
 
-    structure = await call("get_model_structure")
+    # `reactions=""` lists every reaction: the default answer leaves them out (PEtab-MCP#175).
+    structure = await call("get_model_structure", reactions="")
     reactions = structure.get("reactions", []) or []
     current_species = set(structure.get("species", []) or [])
     new_species = sorted(current_species - baseline.species)
@@ -470,7 +472,11 @@ async def _judge(
     # deriving it needs the built objective. Report-only: a store without it records None.
     k_eff = None
     try:
-        stored = await call("get_version", version=head) if head is not None else None
+        stored = (
+            await call("get_version", version=head, include=["simulation"])
+            if head is not None
+            else None
+        )
         sim = stored.get("simulation") if isinstance(stored, dict) else None
         k_eff = sim.get("k_eff") if isinstance(sim, dict) else None
     except Exception:  # noqa: BLE001 - report-only

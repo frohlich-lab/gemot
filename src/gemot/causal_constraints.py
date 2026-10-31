@@ -247,7 +247,7 @@ class _Judged:
         from petab.v1.models.sbml_model import SbmlModel
         from petab_mcp import operations, protocols, seeding
 
-        rows, bindings, starts, readouts, given, _ = operations.apply_statement_edits(
+        rows, bindings, seeds, readouts, given, _ = operations.apply_statement_edits(
             self.record,
             [{"op": "set_amount", "name": name, "agent": agent} for name, agent in amounts.items()],
         )
@@ -263,7 +263,7 @@ class _Judged:
             shipped_parameter_df=self.problem.parameter_df.copy(deep=True),
         )
         antimony, *_ = operations.statements_to_antimony(
-            session, rows, bindings, None, starts, readouts, given
+            session, rows, bindings, None, seeds, readouts, given
         )
         return SbmlModel.from_antimony(antimony).sbml_model
 

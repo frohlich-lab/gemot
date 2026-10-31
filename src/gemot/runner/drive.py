@@ -114,7 +114,9 @@ async def _drive(
 
         # Record the initial species set so the judge can reject "repairs" that invent a new,
         # unobserved species to bend the curve rather than fixing the mechanism.
-        baseline_structure = await call("get_model_structure")
+        # `reactions=""` lists every reaction, for the scenario hooks that read them off the
+        # baseline: the default answer leaves them out (PEtab-MCP#175).
+        baseline_structure = await call("get_model_structure", reactions="")
         baseline_species = set(baseline_structure.get("species", []) or [])
 
         if desc.get("model_authored", True):

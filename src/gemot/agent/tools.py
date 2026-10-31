@@ -30,7 +30,7 @@ from ..prompts import (
 # Mathematician: structural capability + estimation numerics. The reaction network (rate
 # laws) + the parameter search space + the fit metrics + — uniquely — the pyPESTO/Fides log.
 MATHEMATICIAN_TOOLS = [
-    "get_model_structure",  # species, reactions, rate laws (empty until a model is built)
+    "get_model_structure",  # species; reactions and rate laws when asked (empty until built)
     "get_measurements",  # the DATA — dynamics/shape to reason about candidate structure
     "list_observables",  # what is measured
     "get_parameters",  # scales, bounds — identifiability / conditioning
