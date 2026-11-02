@@ -232,20 +232,33 @@ def test_exporter_strips_in_flight_and_delegates():
     assert exported[-1] == "shutdown"
 
 
-def _node(span_id, name, kind="CHAIN", parent=None):
-    """A span with a payload of its own, under ``parent``."""
+def _node(span_id, name, kind="CHAIN", parent=None, *, output=True, value=None):
+    """A span with a payload of its own, under ``parent``: ``value`` as its input, and an output
+    unless it failed."""
+    attributes = {
+        "openinference.span.kind": kind,
+        "input.value": f"{name} in" if value is None else value,
+        "input.mime_type": "application/json",
+    }
+    if output:
+        attributes.update({"output.value": f"{name} out", "output.mime_type": "application/json"})
     return ReadableSpan(
         name=name,
         context=SpanContext(trace_id=1, span_id=span_id, is_remote=False),
         parent=None if parent is None else SpanContext(trace_id=1, span_id=parent, is_remote=False),
-        attributes={
-            "openinference.span.kind": kind,
-            "input.value": f"{name} in",
-            "input.mime_type": "application/json",
-            "output.value": f"{name} out",
-            "output.mime_type": "application/json",
-        },
+        attributes=attributes,
     )
+
+
+def _calls(n):
+    """A `tools` node's input: the tool calls LangGraph sent it."""
+    return json.dumps(
+        [{"name": "fit", "args": {}, "id": f"c{i}", "type": "tool_call"} for i in range(n)]
+    )
+
+
+def _tools_node(span_id, calls=1):
+    return _node(span_id, "tools", value=_calls(calls))
 
 
 def _exported(*batches, results=()):
@@ -261,12 +274,51 @@ def test_a_tools_node_keeps_its_output_only_without_a_tool_child():
     """A `tools` node's output is its TOOL child's result as a LangGraph update, byte for byte
     (2.8 MB of the 2026-10-31 raimundez run, gemot#92). A call to a tool that does not exist, or one
     a guard rejected before dispatch, has no TOOL span: its ToolMessage is on the node only."""
-    spans = _exported([_node(2, "fit", "TOOL", parent=1), _node(1, "tools"), _node(3, "tools")])
+    spans = _exported([_node(2, "fit", "TOOL", parent=1), _tools_node(1), _tools_node(3)])
 
     assert spans[2]["output.value"] == "fit out"
     assert "output.value" not in spans[1] and "output.mime_type" not in spans[1]
-    assert spans[1]["input.value"] == "tools in", "the tool call being dispatched stays"
+    assert spans[1]["input.value"] == _calls(1), "the tool call being dispatched stays"
     assert spans[3]["output.value"] == "tools out"
+
+
+def test_a_child_without_an_output_holds_nothing():
+    """A call whose arguments did not validate has a TOOL span without an output: LangChain turns
+    the error into the ToolMessage at the `tools` node, which holds the only copy (Copilot on
+    gemot#98). An LLM call that failed holds no reply either."""
+    spans = _exported(
+        [
+            _node(2, "fit", "TOOL", parent=1, output=False),
+            _tools_node(1),
+            _node(4, "ChatOpenAI", "LLM", parent=3, output=False),
+            _node(3, "model"),
+        ]
+    )
+
+    assert spans[1]["output.value"] == "tools out"
+    assert spans[3]["output.value"] == "model out"
+
+
+def test_a_tools_node_goes_only_with_a_tool_child_for_each_call():
+    """LangChain sends each tool call to a `tools` node of its own, but a middleware's
+    `jump_to: "tools"` runs them all in one, whose input is the graph state. A node with a call no
+    child holds -- one rejected, or for a tool that does not exist -- keeps every result (Copilot on
+    gemot#98)."""
+    spans = _exported(
+        [
+            _node(2, "fit", "TOOL", parent=1),
+            _tools_node(1, calls=2),
+            _node(4, "fit", "TOOL", parent=3),
+            _node(5, "fit", "TOOL", parent=3),
+            _tools_node(3, calls=2),
+            _node(7, "fit", "TOOL", parent=6),
+            _node(6, "tools", value=json.dumps({"messages": []})),
+        ]
+    )
+
+    assert spans[1]["output.value"] == "tools out"
+    assert "output.value" not in spans[3]
+    assert spans[6]["output.value"] == "tools out"
 
 
 def test_a_model_node_loses_its_output_to_its_llm_child():
@@ -310,9 +362,9 @@ def test_a_child_counts_once_exported_and_not_after_a_failed_export():
     A child in a failed batch never reached the collector, so its node keeps the output."""
     spans = _exported(
         [_node(2, "fit", "TOOL", parent=1)],
-        [_node(1, "tools")],
+        [_tools_node(1)],
         [_node(4, "fit", "TOOL", parent=3)],
-        [_node(3, "tools")],
+        [_tools_node(3)],
         results=(SpanExportResult.SUCCESS, SpanExportResult.SUCCESS, SpanExportResult.FAILURE),
     )
 
@@ -711,6 +763,7 @@ def _traced_run():
             todo("refine", copies=2),
             *[todo(f"step {i}") for i in range(5)],
             trip,
+            turn("ls", {"path": ["/"]}),  # arguments that do not validate
             *[todo(f"step {i}") for i in range(5, 10)],
             AIMessage("done"),
         ],
@@ -866,22 +919,25 @@ def test_what_a_child_span_holds_goes_from_its_parent_on_the_real_graph():
             children.setdefault(format(span.parent.span_id, "016x"), []).append(span)
 
     nodes = [s for s in recorded if s.name == "tools"]
+    tools = {_id(n): [c for c in children.get(_id(n), []) if _kind(c) == "TOOL"] for n in nodes}
     held = {
-        _id(n): [
-            c.attributes["output.value"] for c in children.get(_id(n), []) if _kind(c) == "TOOL"
-        ]
-        for n in nodes
+        sid: [c.attributes["output.value"] for c in spans if "output.value" in c.attributes]
+        for sid, spans in tools.items()
     }
-    assert any(held.values()) and not all(held.values())
+    unheld = {}
     for node in nodes:
         output = node.attributes["output.value"]
         if held[_id(node)]:
             assert _tool_results(output) == [r for o in held[_id(node)] for r in _tool_results(o)]
             assert "output.value" not in stored[_id(node)]
         else:
-            assert "is not a valid tool" in _tool_results(output)[0]
+            unheld[_id(node)] = _tool_results(output)[0]
             assert stored[_id(node)]["output.value"] == output
         assert stored[_id(node)]["input.value"] == node.attributes["input.value"]
+    assert any(held.values())
+    assert {"is not a valid tool" in r for r in unheld.values()} == {True, False}
+    (failed,) = [sid for sid in unheld if tools[sid]]
+    assert unheld[failed].startswith("Error invoking tool 'ls'"), "a TOOL child without an output"
 
     models = [s for s in recorded if s.name == "model"]
     assert all(any(_kind(c) == "LLM" for c in children[_id(m)]) for m in models)

@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 import threading
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -154,14 +155,20 @@ _STRIPPED_INPUT_KEYS = ("input.value", "input.mime_type")
 # state, ``{"messages": [...]}`` (3.2-5.3 MB; one signal_engineer span was 687 KB out and 149 KB
 # in), which its own LLM and TOOL spans and the lead's ``task`` call hold.
 #
-# So each goes once the exporter has seen the child that holds it: a node's output with the child
-# below, and an agent's input and output with a ``model`` node child. An agent is told by that
-# child, not by its name, so a new analyst needs no entry here. A node without the child keeps its
-# output: a call to a tool that does not exist, or one a guard rejected before dispatch
-# (``_statements_only_guard``, ``_task_arg_guard``), has no TOOL span, and its ToolMessage is on the
-# ``tools`` node and in the next call's input only. What a hook rewrites after the tool or the model
-# returned -- the empty-report marker, deepagents' eviction of a large result, a deduplicated tool
-# call -- is in the next call's input too.
+# So each goes once the exporter has seen the children that hold it: a ``model`` node's output with
+# an LLM child, a ``tools`` node's with a TOOL child for each tool call it was sent, and an agent's
+# input and output with a ``model`` node child. An agent is told by that child, not by its name, so
+# a new analyst needs no entry here. A TOOL or LLM child counts only if it recorded an output.
+#
+# Anything else keeps its output, because the node holds the only ToolMessage. A call to a tool that
+# does not exist, or one a guard rejected before dispatch (``_statements_only_guard``,
+# ``_task_arg_guard``), has no TOOL span. A call whose arguments did not validate has one, without
+# an output: LangChain turns the error into the ToolMessage at the node (Copilot on gemot#98).
+# LangChain sends each tool call to a ``tools`` node of its own, but a middleware's
+# ``jump_to: "tools"`` runs them all in one, whose input is then the graph state, not the calls.
+#
+# What a hook rewrites after the tool or the model returned -- the empty-report marker, deepagents'
+# eviction of a large result, a deduplicated tool call -- is in the next call's input.
 #
 # A span ends after its children, so they reach the exporter in an earlier batch or the same one. A
 # failed export forgets every child seen so far: a node keeps its output when the child holding it
@@ -172,12 +179,29 @@ _STRIPPED_OUTPUT_KEYS = ("output.value", "output.mime_type")
 
 
 def _child_mark(span: Any) -> str | None:
-    """What ``span`` tells the exporter about its parent: ``TOOL`` or ``LLM`` (the parent's output
-    is held here) or ``model`` (the parent is an agent), else None."""
+    """What ``span`` tells the exporter about its parent: ``TOOL`` or ``LLM`` (it holds an output
+    of the parent's) or ``model`` (the parent is an agent), else None."""
     if span.name == _AGENT_CHILD:
         return _AGENT_CHILD
-    kind = (span.attributes or {}).get("openinference.span.kind")
-    return kind if kind in _HELD_BY_CHILD.values() else None
+    attributes = span.attributes or {}
+    kind = attributes.get("openinference.span.kind")
+    if kind in _HELD_BY_CHILD.values() and "output.value" in attributes:
+        return kind
+    return None
+
+
+def _held_by_children(span: Any, children: Mapping[str, int]) -> bool:
+    """Whether ``span`` is a node whose whole output its children hold (see above)."""
+    holder = _HELD_BY_CHILD.get(span.name)
+    if holder is None or not children.get(holder):
+        return False
+    if holder != "TOOL":
+        return True
+    try:
+        calls = json.loads((span.attributes or {}).get("input.value"))
+    except (TypeError, ValueError):
+        return False
+    return isinstance(calls, list) and children[holder] >= len(calls)
 
 
 # ---------------------------------------------------------------------- LLM input deltas
@@ -473,23 +497,24 @@ def _gemot(row: Any, *keys: str) -> tuple[Any, ...]:
 
 
 def _strip_span(
-    span: Any, deltas: _InputDeltas | None = None, children: frozenset[str] = frozenset()
+    span: Any, deltas: _InputDeltas | None = None, children: Mapping[str, int] | None = None
 ) -> Any:
     """Return ``span`` with the bulky payloads removed, or unchanged if it has none. ``children``
-    holds the :func:`_child_mark` of each child span exported so far.
+    counts the child spans exported so far by their :func:`_child_mark`.
 
     The ``input.*`` attributes go from the wrapper spans and the LLM spans, the ``output.*`` ones
-    from a node whose child holds them, both from an agent. An LLM span loses the copy of its
+    from a node whose children hold them, both from an agent. An LLM span loses the copy of its
     tools in ``llm.invocation_parameters``, and with ``deltas`` its input messages are cut down to
     the delta on its conversation's previous call and its tools to a pointer.
 
     These checks FIRST: this runs for every span in every export batch, and the large majority
     return here unchanged, so nothing more expensive than a set lookup belongs above them.
     """
+    children = children or {}
     kind = (span.attributes or {}).get("openinference.span.kind")
     agent = _AGENT_CHILD in children
     inputs = agent or span.name in _STRIPPED_INPUT_SPANS or kind in _STRIPPED_INPUT_KINDS
-    outputs = agent or _HELD_BY_CHILD.get(span.name) in children
+    outputs = agent or _held_by_children(span, children)
     if not (inputs or outputs):
         return span
     from opentelemetry.sdk.trace import ReadableSpan
@@ -533,8 +558,8 @@ def _make_stripping_exporter(inner: Any) -> Any:
         def __init__(self, wrapped: Any) -> None:
             self._wrapped = wrapped
             self._deltas = _InputDeltas()
-            # span id -> the marks of its children exported so far, until it is exported itself
-            self._children: dict[int, set[str]] = {}
+            # span id -> its children exported so far, counted by mark, until it is exported itself
+            self._children: dict[int, Counter[str]] = {}
             self._lock = threading.Lock()
 
         def _reset(self) -> None:
@@ -542,8 +567,8 @@ def _make_stripping_exporter(inner: Any) -> Any:
             self._children.clear()
 
         def _stripped(self, span: Any) -> Any:
-            children = self._children.pop(span.context.span_id, ()) if span.context else ()
-            return _strip_span(span, self._deltas, frozenset(children))
+            children = self._children.pop(span.context.span_id, None) if span.context else None
+            return _strip_span(span, self._deltas, children)
 
         def export(self, spans: Any) -> "SpanExportResult":
             # Encoding and exporting under one lock: a batch encoded against spans whose own export
@@ -553,7 +578,7 @@ def _make_stripping_exporter(inner: Any) -> Any:
                 for span in spans:
                     mark = _child_mark(span)
                     if mark is not None and span.parent is not None:
-                        self._children.setdefault(span.parent.span_id, set()).add(mark)
+                        self._children.setdefault(span.parent.span_id, Counter())[mark] += 1
                 try:
                     result = self._wrapped.export([self._stripped(s) for s in spans])
                 except Exception:
