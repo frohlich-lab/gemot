@@ -48,7 +48,7 @@ _FRAGMENTS = {
     "_DSCORE_SIGN",
     "_MERGE_RULE",
     "_MERGE_HINTS_WHERE",
-    "_ADEQUATE_IS_NOT_DONE",
+    "_RESIDUALS_DO_NOT_DECIDE_DONE",
     "_MODEL_EDIT_OPS",
     # Read by the statements lead and the null arm (the barebones template).
     "_FREE_LITERALS",
