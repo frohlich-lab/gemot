@@ -51,35 +51,15 @@ _MAX_SIGMA_FINISH_REFUSALS = 3
 # simplification menu); the specific fix is the agent's to reason out, not the gate's to hand over.
 _MAX_PARSIMONY_FINISH_REFUSALS = 3
 
-# A finish on a model the REPLICATE LACK-OF-FIT arm condemns is REFUSED. This carries what the
-# sigma-ratio arm used to: a fitted sigma several-fold above the pure-error floor was an averaged,
-# thresholded proxy for "the predictions miss design points by more than their own replicate scatter
-# allows", which this arm measures directly and per point. Without it here that whole class of run
-# loses its refusal — the arm's verdict would only be DISPLAYED at arm time, which a second finish
-# call clears (blasi's dBIC +437 run: Holm p 1.5e-18, sigma under the data-std cap, FIM full rank at
-# k=6, so neither of the gates above sees it).
-#
-# The replicate arm ONLY. The sign/runs tests share `flagged_observables` with it but are advisory by
-# design (residual_tests: low power at these sample sizes, so a flag is weak evidence), and gating on
-# them would refuse far beyond what this replaces. What this gate reads is the arm's FLAG, which is
-# the part with power at any lack-of-fit df: Holm-adjusted at REPLICATE_LOF_ALPHA against each point's
-# own replicate scatter, and reported as NO EVIDENCE (available False) rather than as a flag wherever
-# the floor is thin, the family too small, or the pooled df <= 0 — so it FAILS OPEN on its own. Its
-# PASS is the qualified half (`weak`, `lof_df`: constants.REPLICATE_LOF_MIN_LOF_DF), and nothing here
-# reads that — a weak pass clears this gate exactly as a powered one does, deliberately; it reaches
-# the lead as prose, in the armed message's `residual_structure.summary`. Bounded and reset exactly
-# like the two gates above.
-_MAX_STRUCTURE_FINISH_REFUSALS = 3
-
-
-def _render_lof_points(points, *, max_points: int = 4) -> str:
-    """The condemned design points rendered for the refusal text, as ``label (z, Holm p)`` — the
-    server already caps this list (REPLICATE_LOF_MAX_REPORTED_POINTS) and orders it worst-first, so
-    the agent sees WHERE the form fails, not just that it does."""
-    named = [p for p in (points or []) if isinstance(p, dict)][:max_points]
-    if not named:
-        return "(see get_fit_diagnosis for the condemned points)"
-    return ", ".join(f"{p.get('label')} (z={p.get('z')}, Holm p={p.get('p_holm')})" for p in named)
+# Deliberately NO refusal on a residual flag, the replicate lack-of-fit arm's included (gemot#97).
+# One refused a finish up to three times on the strength of that arm, and sweep round 3 showed the
+# flags do not tell a passing run from a failing one: at the scored version 58 of 146 passing runs
+# and 14 of 24 failing runs were flagged; every lucarelli finish was refused, the best run's
+# (dBIC -545) at 33 condemned points; sneyd's `open_probability` was flagged at every fitted version
+# of every run, down to dBIC -146. The published models fail the same tests at their optimum. blasi
+# was the only problem where flags lined up with failure (both of its 2 failures, none of 6 passes;
+# its +437 run is why the refusal existed). Do not add a flag-keyed refusal back without showing,
+# on runs, that it separates; the flags reach the lead as the ARM text's residual verdict.
 
 
 def _render_flat_directions(flat_directions, *, max_dirs: int = 4, max_parts: int = 4) -> str:
@@ -111,8 +91,9 @@ def _render_flat_directions(flat_directions, *, max_dirs: int = 4, max_parts: in
 def _render_merge(hints) -> str:
     """The OUTSTANDING MERGES line for the ARM text, or ``""`` when there is no tie to report.
 
-    Read off ``get_fit_summary``, which now carries the same ``merge_hints`` the fit result does, so
-    the gate names the pairs the lead was already shown. Fails OPEN like every other diagnosis read
+    Read off ``get_fit_summary``, which carries every tie that still stands, where a fit result
+    lists only those new since its parent (frohlich-lab/PEtab-MCP#211), so the gate names the pairs
+    the lead was shown on that fit or an earlier one. Fails OPEN like every other diagnosis read
     here: a missing field or an odd shape means "no merge to report", never a raised finish — and one
     unreadable row does not silence the readable ones.
 
@@ -215,7 +196,6 @@ def _finish_tool(session, finish_state=None, probe=None):
         "no_fit_refusals": 0,
         "sigma_refusals": 0,
         "parsimony_refusals": 0,
-        "structure_refusals": 0,
     }
 
     def _finite(x):
@@ -312,34 +292,6 @@ def _finish_tool(session, finish_state=None, probe=None):
             )
         else:
             state["sigma_refusals"] = 0
-        # HARD STOP on a REPLICATE LACK-OF-FIT: the predictions miss design points by more than
-        # those points' OWN replicate scatter allows, which no parameter value can fix — missing
-        # STRUCTURE, and the class of run the deleted sigma-ratio arm used to catch by proxy.
-        # Keys on the replicate arm alone (never the advisory sign/runs tests) and on its own
-        # `available`, so a vacuous / too-thin / untestable verdict never refuses. See
-        # _MAX_STRUCTURE_FINISH_REFUSALS.
-        lof = (fit.get("residual_structure") or {}).get("replicate_lack_of_fit") or {}
-        if lof.get("available") and lof.get("n_flagged"):
-            if state["structure_refusals"] < _MAX_STRUCTURE_FINISH_REFUSALS:
-                state["armed_token"] = None
-                state["structure_refusals"] += 1
-                print(
-                    f"[finish BLOCKED {state['structure_refusals']}/"
-                    f"{_MAX_STRUCTURE_FINISH_REFUSALS}] replicate lack-of-fit at "
-                    f"{lof.get('n_flagged')} design point(s) — refusing finish on a model the "
-                    "data's own replicates rule out"
-                )
-                return prompts.FINISH_REFUSED_REPLICATE_LOF_TMPL.format(
-                    n_flagged=lof.get("n_flagged"),
-                    n_points=lof.get("n_points"),
-                    points=_render_lof_points(lof.get("points")),
-                )
-            print(
-                f"[finish RELENTED] replicate lack-of-fit still flagged after "
-                f"{state['structure_refusals']} refusals — allowing finish at its honest score"
-            )
-        else:
-            state["structure_refusals"] = 0
         # HARD STOP on an OVER-parameterised model: a finish whose good-looking bic rests on
         # parameters the data cannot constrain — a RANK-DEFICIENT Fisher-information matrix (a
         # non-identifiable parameter COMBINATION the diagnosis surfaces as a near-flat
@@ -401,11 +353,10 @@ def _finish_tool(session, finish_state=None, probe=None):
                 )
             else:
                 state["parsimony_refusals"] = 0
-        # Valid, fitted model. First finish call ARMS: show the residual diagnosis and
-        # require a confirming second finish. This forces the finish to be a considered call
-        # on the fit's residual STRUCTURE (the sign/runs tests plus the replicate lack-of-fit
-        # test — the signals that survive
-        # estimated sigmas) rather than a reflex. The token identifies THIS fit (bic+nll, plus
+        # Valid, fitted model. First finish call ARMS: show the bic and the residual diagnosis
+        # and require a confirming second finish, so a finish is a considered call rather than a
+        # reflex. The residual verdict is shown as WHERE the fit is off, not as grounds to refuse
+        # or to keep going (see the note at the top). The token identifies THIS fit (bic+nll, plus
         # version as a tiebreak) so an edit + refit between the two calls re-arms rather than
         # confirming a stale diagnosis.
         token = (bic, nll, version)
@@ -445,8 +396,9 @@ def _finish_tool(session, finish_state=None, probe=None):
             )
             # The PARAMETER counterpart of the residual verdict: the pairs the data cannot separate
             # whose merges BIC would pay for. Like the residual verdict they ride on the SCORE read
-            # (petab_mcp.fitting.fit_summary carries the same `merge_hints` the fit result does), so
-            # the gate names the ties the lead already saw instead of projecting new ones.
+            # (petab_mcp.fitting.fit_summary carries every standing `merge_hints` tie, of which a fit
+            # result lists only the new), so the gate names the ties the lead already saw instead of
+            # projecting new ones.
             merge_line = _render_merge(fit.get("merge_hints"))
             print(
                 f"[finish ARMED v={version}] bic={bic:.6g} — presented diagnosis, "

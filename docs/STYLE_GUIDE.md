@@ -46,7 +46,7 @@ rules keep one fact from being written down twice:
 
 - **A rule read on more than one surface is ONE constant**, at the top of `prompts.py`, composed
   into every prompt that states it (`_SIGMA_CAP_ADVISORY`, `_MERGE_RULE`,
-  `_ADEQUATE_IS_NOT_DONE`, `_DSCORE_SIGN`, `_PARAMETER_HALF`, `_MODEL_EDIT_OPS`). Never re-worded
+  `_RESIDUALS_DO_NOT_DECIDE_DONE`, `_DSCORE_SIGN`, `_PARAMETER_HALF`, `_MODEL_EDIT_OPS`). Never re-worded
   per surface: two paraphrases of one rule are two things to keep in sync, and the one the reader
   acts on is whichever they happened to read. A rule with one home is written where it lives.
 - **No argument lists.** The JSON schema is the signature and is sent alongside the description,

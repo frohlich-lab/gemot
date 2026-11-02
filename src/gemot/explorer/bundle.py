@@ -477,8 +477,10 @@ def _charged_k(bic: float | None, nll, n: int | None) -> int | None:
 
 
 #: How close to the best fval a start must end to count as having reached it: the margin of the
-#: server's own ``converged~N`` in its fit log (``petab_mcp.fitting``), so the two counts agree.
-_AT_BEST_TOL = 1e-3
+#: server's own ``converged~N`` in its fit log and ``starts_at_best`` on its fit result
+#: (``petab_mcp.fitting.AT_BEST_NLL_TOL``, frohlich-lab/PEtab-MCP#215), so the counts agree.
+#: Retyped rather than imported: this module stays light enough to import without the server.
+_AT_BEST_TOL = 1.0
 
 
 def _multistart(opt: dict | None) -> dict | None:

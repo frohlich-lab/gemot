@@ -8,9 +8,10 @@ gateway (gemot#69) EVERY fit past the CLI's 600 s tool timeout is abandoned by a
 so losing this would stop all of them.
 
 Against a real server over streamable HTTP, through the session ``runner.main`` opens. Each test
-keeps its session open past the fit's end, as the runner keeps its own for the whole run: closing a
-session ends it on the server, which stops whatever it still runs, cancel or no cancel. The control
-shows a plain mcp 2 session does cancel, so these tests can tell the two apart.
+keeps its session open until the server records how the fit ended, as the runner keeps its own for
+the whole run: closing a session ends it on the server, which stops whatever it still runs, cancel
+or no cancel. The control shows a plain mcp 2 session does cancel, so these tests can tell the two
+apart.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ srv = FastMCP("slow")
 
 @srv.tool()
 async def fit(tag: str, seconds: float = 1.5) -> str:
+    (marker / f"{tag}.started").write_text("1")
     try:
         await anyio.sleep(seconds)
     except anyio.get_cancelled_exc_class():
@@ -66,18 +68,28 @@ def server(tmp_path_factory):
         proc.wait(timeout=10)
 
 
-def _outcome(marker, tag, wait_s=10.0):
-    deadline = time.monotonic() + wait_s
+#: How long a test waits for the server to record a fit's start or end. Far past the fit's 1.5 s:
+#: on a loaded machine a server that has just started can be slow to begin it.
+_WAIT_S = 30.0
+
+
+async def _recorded(marker, tag, *events):
+    """Which of ``events`` the server has recorded for the fit tagged ``tag``; None if none came
+    within ``_WAIT_S``."""
+    deadline = time.monotonic() + _WAIT_S
     while time.monotonic() < deadline:
-        for outcome in ("finished", "cancelled"):
-            if (marker / f"{tag}.{outcome}").exists():
-                return outcome
-        time.sleep(0.05)
+        for event in events:
+            if (marker / f"{tag}.{event}").exists():
+                return event
+        await asyncio.sleep(0.05)
     return None
 
 
-#: Longer than the fit (1.5 s): how long a session stays open after it gave up on the call.
-_HOLD_S = 2.5
+async def _outcome(marker, tag):
+    """How the fit tagged ``tag`` ended, awaited with the session still open. A fixed hold before
+    closing it raced a server slow to start the fit: on a loaded machine the session closed first
+    and the fit was recorded as cancelled, though no cancel was sent."""
+    return await _recorded(marker, tag, "finished", "cancelled")
 
 
 def _open(url):
@@ -94,11 +106,11 @@ def test_a_fit_call_that_times_out_still_finishes_on_the_server(server):
         async with _open(url) as session:
             with pytest.raises(MCPError) as raised:
                 await session.call_tool("fit", {"tag": "timeout"}, read_timeout_seconds=0.3)
-            await asyncio.sleep(_HOLD_S)
-            return raised.value
+            return raised.value, await _outcome(marker, "timeout")
 
-    assert asyncio.run(go()).code == REQUEST_TIMEOUT
-    assert _outcome(marker, "timeout") == "finished"
+    error, outcome = asyncio.run(go())
+    assert error.code == REQUEST_TIMEOUT
+    assert outcome == "finished"
 
 
 def test_a_fit_call_whose_caller_is_cancelled_still_finishes(server):
@@ -109,14 +121,15 @@ def test_a_fit_call_whose_caller_is_cancelled_still_finishes(server):
     async def go():
         async with _open(url) as session:
             call = asyncio.create_task(session.call_tool("fit", {"tag": "caller"}))
-            await asyncio.sleep(0.3)
+            # Cancel while the fit runs, as the gateway does: after a fixed wait the call may not
+            # have reached the server yet.
+            assert await _recorded(marker, "caller", "started") == "started"
             call.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await call
-            await asyncio.sleep(_HOLD_S)
+            return await _outcome(marker, "caller")
 
-    asyncio.run(go())
-    assert _outcome(marker, "caller") == "finished"
+    assert asyncio.run(go()) == "finished"
 
 
 def test_the_control_a_plain_mcp_2_session_cancels_the_fit(server):
@@ -133,7 +146,6 @@ def test_the_control_a_plain_mcp_2_session_cancels_the_fit(server):
                     await session.initialize()
                     with pytest.raises(MCPError):
                         await session.call_tool("fit", {"tag": "plain"}, read_timeout_seconds=0.3)
-                    await asyncio.sleep(_HOLD_S)
+                    return await _outcome(marker, "plain")
 
-    asyncio.run(go())
-    assert _outcome(marker, "plain") == "cancelled"
+    assert asyncio.run(go()) == "cancelled"
