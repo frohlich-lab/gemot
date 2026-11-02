@@ -1031,8 +1031,9 @@ FIT_CALL_TIMEOUT_TMPL = (
 # with the values named in their fields; everything else is sent verbatim.
 
 FINISH_DESCRIPTION = (
-    "Ends the run on your BEST version, the one the run is scored on: whatever HEAD is, the gate "
-    "restores that version and judges it, so you never roll back to finish. You do NOT "
+    "Ends the run on the version it is scored on, your best-scoring one (passing over any whose "
+    "noise sigma is implausible where another's is not): whatever HEAD is, the gate restores that "
+    "version and judges it, so you never roll back to finish. You do NOT "
     "call this to keep iterating — to iterate, just make the next make_changes call — and a change "
     "that did not help needs no call either: the harness keeps your best-bic version regardless of "
     "where you end, so just try a genuinely different structure. Call this ONLY when the residuals "
@@ -1137,8 +1138,9 @@ FINISH_REFUSED_PARSIMONY_TMPL = (
 # keeps working knows where it now stands. The gate used to judge HEAD while the run is scored on its
 # best version, and lucarelli runs (gemot#94) spent fits rebuilding a clean model at HEAD to finish.
 FINISH_RESTORED_BEST_TMPL = (
-    "The finish gate judges your BEST version, v{best}, the one the run is scored on, and has "
-    "restored it as HEAD (HEAD was v{head}): what follows is about v{best}. "
+    "The finish gate judges v{best}, the version the run is scored on (your best-scoring one, "
+    "passing over any whose noise sigma is implausible where another's is not), and has restored "
+    "it as HEAD (HEAD was v{head}): what follows is about v{best}. "
 )
 
 FINISH_ARMED_TMPL = (

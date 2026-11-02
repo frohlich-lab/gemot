@@ -124,8 +124,30 @@ def best_first(rows) -> list[int]:
     return [num for _, num in scored]
 
 
+async def _sigma_flagged(call_tool, version: int) -> "bool | None":
+    """Does the server flag ``version``'s ESTIMATED noise sigma as implausible? ``None`` when
+    unassessable.
+
+    Read off the version's stored meta (``get_version`` without ``include``), which carries the
+    ``noise_sigma_inflated`` / ``noise_sigma_collapsed`` the server computed at that fit: the same
+    flags the gate refuses HEAD on through ``get_fit_summary``, so the two cannot disagree, and no
+    server predicate has to be imported into this import-light package. Unreadable, or a meta with
+    neither flag, is ``None``: like the judge's scan, an unassessable version is not passed over in
+    favour of a worse one."""
+    try:
+        meta = _structured(await call_tool("get_version", {"version": version}))
+    except Exception:  # pragma: no cover - never let the check break the run
+        return None
+    if not isinstance(meta, dict) or meta.get("ok") is False:
+        return None
+    flags = [meta.get(k) for k in ("noise_sigma_inflated", "noise_sigma_collapsed")]
+    if not any(isinstance(f, bool) for f in flags):
+        return None
+    return any(f is True for f in flags)
+
+
 async def _restore_best(call_tool) -> "tuple[int, int] | None":
-    """Make the run's best version (:func:`best_first`) HEAD, and return ``(best, previous HEAD)``
+    """Make the version the run is scored on HEAD, and return ``(that version, previous HEAD)``
     when that moved HEAD; ``None`` when HEAD already was it or nothing could say otherwise.
 
     The finish gate judges the version the run is SCORED on, which is not HEAD wherever the lead
@@ -133,23 +155,37 @@ async def _restore_best(call_tool) -> "tuple[int, int] | None":
     fits rebuilding a clean model there ("I need HEAD on a clean model") while the version they
     would have been scored on sat in the store. A restore rather than a read of the stored version
     because every gate read (``get_fit_summary``, ``get_fit_diagnosis``) is of HEAD, and because
-    the judge restores the same version before it scores. Fails OPEN to HEAD: an unreadable store,
-    an unknown HEAD or a refused restore leaves the gate judging HEAD, as it did before."""
+    the judge restores the same version before it scores.
+
+    Which version is the judge's scan without its reference: the best-scoring one (:func:`best_first`)
+    whose noise sigma the server does not flag (:func:`_sigma_flagged`), else the plain best-scoring
+    one when every version is flagged. Restoring the best-scoring version regardless would put a
+    gamed noise model back over the repaired, slightly worse HEAD the lead had just fitted, refuse
+    the finish on its sigma, and undo the repair on every attempt, while the judge would score the
+    repaired version anyway. The reference sigmas the judge also checks stay hidden: they would
+    tell the run something about the true model.
+
+    Fails OPEN to HEAD: an unreadable store, an unknown HEAD or a refused restore leaves the gate
+    judging HEAD, as it did before."""
     try:
         ranked = best_first(_structured(await call_tool("list_versions", {})))
         if not ranked:
             return None
+        chosen = ranked[0]
+        for version in ranked:
+            if await _sigma_flagged(call_tool, version) is not True:
+                chosen = version
+                break
         desc = _structured(await call_tool("describe_problem", {}))
         head = desc.get("current_version") if isinstance(desc, dict) else None
-        if not isinstance(head, int) or head == ranked[0]:
+        if not isinstance(head, int) or head == chosen:
             return None
         restored = _structured(
             await call_tool(
                 "restore_version",
                 {
-                    "version": ranked[0],
-                    "justification": "finish gate: judge the best version, the one the run is "
-                    "scored on",
+                    "version": chosen,
+                    "justification": "finish gate: judge the version the run is scored on",
                 },
             )
         )
@@ -157,4 +193,4 @@ async def _restore_best(call_tool) -> "tuple[int, int] | None":
         return None
     if not isinstance(restored, dict) or restored.get("ok") is False or restored.get("error"):
         return None
-    return ranked[0], head
+    return chosen, head

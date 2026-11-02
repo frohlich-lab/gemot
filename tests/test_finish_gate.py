@@ -58,9 +58,10 @@ class _FakeSession:
     assertion failure: the gate must not reach for one that no longer exists.
 
     ``versions`` are the `list_versions` rows the gate ranks to find the version the run is scored
-    on, ``head`` the version `describe_problem` reports, and ``summaries`` the fit summary each
-    version restores (`restore_version` swaps it in and moves HEAD). With no versions, the gate has
-    nothing to restore and judges HEAD."""
+    on, ``metas`` the stored meta `get_version` returns for a version (its noise-sigma flags),
+    ``head`` the version `describe_problem` reports, and ``summaries`` the fit summary each version
+    restores (`restore_version` swaps it in and moves HEAD). With no versions, the gate has nothing
+    to restore and judges HEAD."""
 
     def __init__(
         self,
@@ -70,6 +71,7 @@ class _FakeSession:
         versions=(),
         head=None,
         summaries=None,
+        metas=None,
     ):
         self.fit_summary = fit_summary
         self.diagnosis = diagnosis or {"per_observable": []}
@@ -78,6 +80,7 @@ class _FakeSession:
         self.versions = list(versions)
         self.head = head
         self.summaries = summaries or {}
+        self.metas = metas or {}
         self.calls: list[str] = []
         self.restored: list[int] = []
 
@@ -91,6 +94,8 @@ class _FakeSession:
             return _FakeResult({"result": self.versions})
         if name == "describe_problem":
             return _FakeResult({"current_version": self.head})
+        if name == "get_version":
+            return _FakeResult({"version": args["version"], **self.metas.get(args["version"], {})})
         if name == "restore_version":
             if args["version"] not in self.summaries:
                 return _FakeResult({"ok": False, "error": "no such version"})
@@ -874,3 +879,62 @@ async def test_a_refused_restore_leaves_the_gate_judging_head():
     session = _FakeSession(_fit(version=5, bic=260.0), versions=_ROWS, head=5, summaries={})
     armed = await _finish(mod._finish_tool(session))
     assert "FINISH ARMED" in armed and "bic=260" in armed and "restored" not in armed
+
+
+_INFLATED = {"noise_sigma_inflated": True, "noise_sigma_collapsed": False}
+_PLAUSIBLE = {"noise_sigma_inflated": False, "noise_sigma_collapsed": False}
+
+
+@pytest.mark.asyncio
+async def test_a_repaired_head_is_not_traded_back_for_a_gamed_best():
+    """REGRESSION (review of #96): the best-scoring v4 has an inflated sigma, and the lead has just
+    fitted v5, slightly worse but with a plausible one. Restoring v4 would refuse the finish on its
+    sigma and undo the repair on every attempt, while the judge would score v5 anyway. The gate
+    takes the judge's pick without its hidden reference: the best version the server's own sigma
+    flags pass."""
+    mod = _agent
+    gamed = _fit(version=4, bic=205.0, noise_sigma_inflated=True, noise_sigma_advice="x")
+    session = _FakeSession(
+        _fit(version=5, bic=260.0),
+        versions=_ROWS,
+        head=5,
+        summaries={4: gamed},
+        metas={4: _INFLATED, 5: _PLAUSIBLE},
+    )
+    armed = await _finish(mod._finish_tool(session))
+    assert session.restored == []
+    assert "FINISH ARMED" in armed and "bic=260" in armed and "restored" not in armed
+
+
+@pytest.mark.asyncio
+async def test_a_gamed_best_is_passed_over_for_the_next_plausible_version():
+    mod = _agent
+    rows = [*_ROWS, {"version": 6, "criterion_value": 400.0, "bic": 400.0}]
+    session = _FakeSession(
+        _fit(version=6, bic=400.0),
+        versions=rows,
+        head=6,
+        summaries={5: _fit(version=5, bic=260.0)},
+        metas={4: _INFLATED, 5: _PLAUSIBLE},
+    )
+    armed = await _finish(mod._finish_tool(session))
+    assert session.restored == [5]
+    assert armed.startswith(prompts.FINISH_RESTORED_BEST_TMPL.format(best=5, head=6))
+
+
+@pytest.mark.asyncio
+async def test_when_every_version_is_gamed_the_best_scoring_one_is_judged():
+    """As the judge does: with no plausible version to prefer, the run is reported on its own best
+    score, and the gate's sigma refusal speaks to it."""
+    mod = _agent
+    gamed = _fit(version=4, bic=205.0, noise_sigma_inflated=True, noise_sigma_advice="x")
+    session = _FakeSession(
+        _fit(version=5, bic=260.0, noise_sigma_inflated=True, noise_sigma_advice="x"),
+        versions=_ROWS,
+        head=5,
+        summaries={4: gamed},
+        metas={3: _INFLATED, 4: _INFLATED, 5: _INFLATED},
+    )
+    out = await _finish(mod._finish_tool(session))
+    assert session.restored == [4]
+    assert "FINISH REFUSED" in out and "implausible noise model" in out

@@ -2,9 +2,9 @@
 
 Plain iteration needs no call here; the tool exists to GATE a finish. A finish must rest on a
 fitted model with a plausible noise sigma, and takes a two-call ARM→CONFIRM handshake so a
-diagnosis is always shown before a run is allowed to end. The model it judges is the run's BEST
-version, the one the judge scores, which the gate first restores as HEAD where the lead explored
-past it. A silent stop is bounced back into this gate by the driver, so it cannot be sidestepped.
+diagnosis is always shown before a run is allowed to end. The model it judges is the version the
+run is scored on (its best-scoring one with a plausible noise sigma, as the judge picks it), which
+the gate first restores as HEAD where the lead explored past it. A silent stop is bounced back into this gate by the driver, so it cannot be sidestepped.
 
 Every string this returns to the model lives in :mod:`gemot.prompts`; the counters and
 the relent rules are here.
@@ -171,9 +171,9 @@ def _finish_tool(session, finish_state=None, probe=None):
     Plain iteration needs no call — to keep going the lead simply makes the next ``make_changes``
     edit — so the tool exists only to gate a finish.
 
-    Every call first makes the run's best version HEAD (:func:`probe._restore_best`): the gate
-    judges the model the run is scored on, not wherever the lead's last experiment left HEAD, and
-    the reply says so where that moved HEAD.
+    Every call first makes the version the run is scored on HEAD (:func:`probe._restore_best`): the
+    gate judges that model, not wherever the lead's last experiment left HEAD, and the reply says so
+    where that moved HEAD.
 
     ``finish`` is the ONLY legitimate way to end a run: a run that silently stops (a no-tool
     turn) is bounced back into this gate by the driver (see run_deepagents), so the gate cannot
