@@ -77,9 +77,10 @@ ORCHESTRATOR_TOOLS = [
     "list_experiments",  # when each condition applies: the periods of every experiment
     # score / diagnose (both COMPACT + bounded) / history
     # NOTE: get_fit_summary is deliberately NOT here. `make_changes` already returns
-    # the whole fit block — metrics, bic, parameters_at_bound, the noise-sigma verdict + advice,
-    # and the residual_structure verdict — so for the LEAD, which is the only agent that fits, a
-    # summary call reads back what it was just handed. Trace analysis of sweep 50751606 measured 9
+    # the fit block — metrics, bic, the noise-sigma verdict + advice, and the residual_structure
+    # verdict, with only the new pins, the flagged sigmas and the new merge_hints (get_fit_summary
+    # has them all; frohlich-lab/PEtab-MCP#200, #211) — so for the LEAD, which is the only agent
+    # that fits, a summary call reads back what it was just handed. Trace analysis of sweep 50751606 measured 9
     # such calls against 451 fits: near-zero benefit for a tool schema re-sent every turn. The tool
     # stays on the server: the analysts (who never fit) and the harness's own finish gate and
     # final scoring all read the score through it. `describe_problem` covers has_unfit_edits.
