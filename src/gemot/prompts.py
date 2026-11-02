@@ -133,15 +133,21 @@ _MERGE_RULE = (
     "settled — finish on the unmerged model instead of re-arguing it."
 )
 
-#: Clean residual tests are a weak stopping rule, and the actionable consequence in ops rather
-#: than in evidence a run does not have.
-_ADEQUATE_IS_NOT_DONE = (
-    "ADEQUATE IS NOT DONE — the residual tests are a WEAK stopping rule and you must not treat "
-    "them as a strong one. They have real power only while the model is badly wrong; they go "
+#: The residual tests decide neither way when a run is done, and the actionable consequence in ops
+#: rather than in evidence a run does not have. A clean verdict is a weak stopping rule; a flag is
+#: no reason to go on either: in sweep round 3 the flags at the scored version did not separate
+#: passing runs from failing ones, and sneyd's stood at every version of every run (gemot#97).
+_RESIDUALS_DO_NOT_DECIDE_DONE = (
+    "THE RESIDUAL TESTS DO NOT DECIDE WHEN YOU ARE DONE, in either direction. A CLEAN verdict is "
+    "a WEAK stopping rule: the tests have real power only while the model is badly wrong; they go "
     "SILENT well before bic bottoms out, and on a steady-state design (one measured point per "
     "condition, few or no replicates) they have little power at all. So 'nothing flagged' says "
     "the form is not visibly wrong — NOT that a lower bic is out of reach, and it is usually "
-    "still reachable by tens of bic. Bic has bottomed out only once SEVERAL consecutive "
+    "still reachable by tens of bic. A FLAG is no reason to go on either: on real data the tests "
+    "also flag models as good as any found (replicates tighter than the spread between "
+    "experiments, an offset per experiment, a cumulative series), and some flags no model clears. "
+    "Read a flag for WHERE the fit is off — a place worth a structural try — not as proof that a "
+    "better model exists. Bic has bottomed out only once SEVERAL consecutive "
     "`make_changes` calls (three or more) have EACH failed to lower it; until then keep going "
     "while you have budget — genuinely different structures, re-parameterisations, drops, and "
     "the priced merges you judge sound. This costs you nothing to be wrong about — every fitted "
@@ -358,9 +364,10 @@ DEFAULT_SYSTEM_PROMPT = (
     "above is for pricing what you keep at the end, not for talking yourself out of a mechanism "
     "the data is asking for." + _FREE_EXPONENTS_GUIDANCE + _DIFF_EDITS_GUIDANCE + "\n"
     "3. Read the CURRENT HEAD's metrics (never an earlier version's) after each `make_changes` and decide "
-    "what to do next. The DEFAULT is to KEEP ITERATING while the model is still mis-specified — "
-    "bic is still improving fit-over-fit by more than a few units, OR get_fit_diagnosis shows a "
-    "systematic per-observable bias / a residual time-trend: just make the next justified "
+    "what to do next. The DEFAULT is to KEEP ITERATING while bic is still improving fit-over-fit "
+    "by more than a few units, or while a genuinely different structure is still untried — "
+    "get_fit_diagnosis's systematic per-observable bias / residual time-trend says where one is "
+    "likeliest to pay: just make the next justified "
     "`make_changes` call (iterating needs NO control call). "
     "STRUCTURE BEFORE POLISH — while the residuals still show systematic structure, the MECHANISM is "
     "what is wrong, so spend the call on the mechanism: a rate-law form, a topology, a species, a "
@@ -397,13 +404,12 @@ DEFAULT_SYSTEM_PROMPT = (
     "your BEST-bic one regardless of where you end (`list_versions` shows it), so never re-author "
     "a version you already have — just make a genuinely DIFFERENT change from here (a different "
     "rate-law form or topology).\n"
-    "Call `finish` — the ONE control call — when the residuals show NO systematic structure "
-    "(get_fit_diagnosis bias ≈ 0, no time-trend) AND bic has bottomed out: you cannot lower it "
+    "Call `finish` — the ONE control call — when bic has bottomed out: you cannot lower it "
     "further by adding, dropping or re-forming mechanism, or by a merge you judge sound. "
     "`merge_hints` on your last fit name pairs the data cannot tell apart and what tying each "
     "would buy. " + _MERGE_RULE + " The hints price IDENTIFIABILITY, not biology, so you supply "
     "the biology: merge ONLY parameters that plausibly ARE the same physical quantity. Finish "
-    "on the LOWEST-bic such model.\n" + _ADEQUATE_IS_NOT_DONE + "\n"
+    "on the LOWEST-bic such model.\n" + _RESIDUALS_DO_NOT_DECIDE_DONE + "\n"
     "Repeat until you call `finish`. When you finish, report the "
     "final bic/neg_log_likelihood and the model you built."
 )
@@ -502,16 +508,17 @@ INDRA_SYSTEM_PROMPT = (
     "residuals are already clean. When bic stalls for a few calls, call "
     "`get_fit_diagnosis(sections='all')` and try a genuinely different structure. Every fitted version is kept and the run is scored on the best, so a change that "
     "did not help costs nothing.\n"
-    "5. FINISH when the residuals show no systematic structure AND bic has bottomed out: nothing "
+    "5. FINISH when bic has bottomed out: nothing "
     "you add, drop or re-form lowers it, nor a merge you judge sound. `merge_hints` on your last "
     "fit name pairs the data cannot tell apart. "
     + _MERGE_RULE
     + " Merge only parameters that plausibly ARE the same physical quantity.\n"
-    # The arm's own stopping rule, in place of _ADEQUATE_IS_NOT_DONE's "three failed calls and bic
-    # has bottomed out": Claude Haiku finished after 12-21 minutes of a two-hour budget, on models
-    # the fit itself flagged, calling `finish` again after each refusal until the gate relented.
-    "NEVER FINISH ON A MODEL THAT IS NOT ADEQUATE: systematic residuals, a noise sigma inflated "
-    "past its cap, a rank-deficient FIM or a replicate lack-of-fit each say the MECHANISM is "
+    # The arm's own stopping rule, in place of _RESIDUALS_DO_NOT_DECIDE_DONE's "three failed calls
+    # and bic has bottomed out": Claude Haiku finished after 12-21 minutes of a two-hour budget, on
+    # models the fit itself flagged, calling `finish` again after each refusal until the gate
+    # relented. Residual flags left this list with the gate's replicate refusal (gemot#97).
+    "NEVER FINISH ON A MODEL THE GATE REFUSES: a noise sigma inflated past its cap or a "
+    "rank-deficient FIM each say the MECHANISM is "
     "wrong, and a refused `finish` names which. Fix that; never just call `finish` again. And "
     "an adequate model is not done either: KEEP GOING UNTIL YOU HAVE EXHAUSTED THE OPTIONS. "
     "Every fitted version is kept and the run is scored on the best one wherever you end, so a "
@@ -541,8 +548,8 @@ DEFAULT_TASK = (
     "This PEtab problem ships WITHOUT a model — you have the measured data, the observables, "
     "and the conditions, but no reactions yet (describe_problem reports "
     "model_authored: false). Build a mechanistic ODE model that explains the data, working "
-    "the loop above until you reach the lowest-bic model whose residuals show no systematic "
-    "structure, then report the model you built and its fit."
+    "the loop above until you reach the lowest-bic model you can find, then report the model you "
+    "built and its fit."
     "\n\nSCORING: the run is scored on your BEST-bic fitted version AUTOMATICALLY, wherever HEAD "
     "ends up. Every fitted version is kept; you never need to roll back to, re-commit, or end on "
     "a good version — a worse attempt after it costs nothing."
@@ -613,7 +620,7 @@ BAREBONES_SYSTEM_PROMPT_TMPL = (
     "ITERATE. Do not stop at the first model that fits: a first fit is where the work starts. "
     "Compare simulation against data per observable and condition, look for systematic misfit, "
     "and revise the mechanism — rate-law forms, added or removed processes — refitting each time, "
-    "until the residuals show no systematic structure and further changes stop lowering the BIC. "
+    "until further changes stop lowering the BIC. "
     "You have a wall-clock budget of hours; use it, and deliver the best model you found.\n\n"
     "SCORING. Your delivered problem is scored EXACTLY AS DELIVERED: the model is simulated with "
     "AMICI at the `nominalValue`s in `parameters.tsv` — no refit — and the score is "
@@ -689,8 +696,7 @@ BAREBONES_PETAB_FORMATS = {
 BAREBONES_TASK = (
     "This PEtab problem ships WITHOUT a model — you have the measured data, the observables and "
     "the conditions, but no reactions yet. Build a mechanistic ODE model that explains the data, "
-    "fit it, and deliver it as described: the lowest-BIC model you can find whose residuals show "
-    "no systematic structure."
+    "fit it, and deliver it as described: the lowest-BIC model you can find."
     "\n\nREADOUTS: a `readout_<name>` symbol in an observable formula is a MEASUREMENT "
     "MAPPING, not a species. The observable table states WHAT the assay measured "
     "(observableName); YOUR model says what that quantity is in terms of its own states, with "
@@ -1036,14 +1042,14 @@ FINISH_DESCRIPTION = (
     "version and judges it, so you never roll back to finish. You do NOT "
     "call this to keep iterating — to iterate, just make the next make_changes call — and a change "
     "that did not help needs no call either: the harness keeps your best-bic version regardless of "
-    "where you end, so just try a genuinely different structure. Call this ONLY when the residuals "
-    "show no systematic structure AND bic has bottomed out — and note which half does the work. "
-    + _ADEQUATE_IS_NOT_DONE
-    + " Judge that structure with the residual_structure verdict "
-    "the fit already returned, not with chi2: its sign_test / runs_test read residual SIGNS, and "
+    "where you end, so just try a genuinely different structure. Call this ONLY when bic has "
+    "bottomed out. "
+    + _RESIDUALS_DO_NOT_DECIDE_DONE
+    + " Read where the fit is off from the residual_structure verdict "
+    "the fit already returned, not from chi2: its sign_test / runs_test read residual SIGNS, and "
     "where design points REPEAT its replicate_lack_of_fit measures each prediction against that "
-    "point's own replicate scatter — a flagged point there means no parameter value in your current "
-    "form can reach it, so the form is what has to change. Its PASS is worth only its lof_df "
+    "point's own replicate scatter — a flagged point there is one your current form does not "
+    "reach. Its PASS is worth only its lof_df "
     "(replicated points minus your estimated structural parameters): a pass carrying weak: true, or "
     "carrying no lof_df at all, does not show the form is right. `merge_hints` on your last fit "
     "(the ARM message lists them as PRICED MERGES) are pairs of parameters the data cannot tell "
@@ -1097,23 +1103,6 @@ FINISH_REFUSED_SIGMA_TMPL = (
 
 FINISH_SIGMA_FALLBACK_ADVICE = "the estimated noise sigma is implausible."
 
-# The REPLICATE LACK-OF-FIT gate. `points` renders the condemned design points as
-# `label (z, Holm p)` (see finish_gate._render_lof_points), so the agent sees WHICH observables the
-# model cannot reach. Deliberately states the evidence is model-free and parameter-independent: the
-# scale is the point's own replicate scatter, so unlike a chi2 or a sigma-based score there is no
-# refitting or re-noising that can make it go away — only a change of FORM.
-FINISH_REFUSED_REPLICATE_LOF_TMPL = (
-    "FINISH REFUSED — the data's own REPLICATES rule this model out. At "
-    "{n_flagged} of {n_points} repeatedly-measured design points the prediction "
-    "sits further from the replicate mean than that point's OWN measurement "
-    "scatter allows: {points}. That scale comes from repeated measurements, not "
-    "from the fitted sigma, so no parameter value and no noise level can close "
-    "the gap — the model's FORM is missing something at those observables. "
-    "Change the mechanism and refit; a finish on a fit the replicates contradict "
-    "is not accepted. (the fit result's residual_structure has the full "
-    "replicate_lack_of_fit verdict.)"
-)
-
 # The PARSIMONY / identifiability gate. `directions` renders the actual near-flat FIM
 # eigen-directions as `id·weight` groups (see finish_gate._render_flat_directions), so the agent
 # sees WHICH parameters trade off TOGETHER — the collinear structure, not just a list of names —
@@ -1146,12 +1135,8 @@ FINISH_RESTORED_BEST_TMPL = (
 FINISH_ARMED_TMPL = (
     "FINISH ARMED — review before confirming. Current fit: bic={bic:.6g}, "
     "neg_log_likelihood={nll:.6g}. Residual structure: {struct}{worst_line}"
-    "{merge_line}{invalid_line} "
-    "If systematic structure is flagged, the model's FORM is still missing "
-    "something — keep improving BIC instead of finishing. A CLEAN verdict is not the "
-    "other half of that argument. " + _ADEQUATE_IS_NOT_DONE + " If you have genuinely "
-    "bottomed out BIC and are satisfied with the residuals, call finish AGAIN to "
-    "confirm and end the run."
+    "{merge_line}{invalid_line} " + _RESIDUALS_DO_NOT_DECIDE_DONE + " If you have genuinely "
+    "bottomed out BIC, call finish AGAIN to confirm and end the run."
 )
 
 FINISH_ARMED_WORST_TMPL = (
@@ -1362,7 +1347,7 @@ BIOLOGY_BLIND_SYSTEM_PROMPT = (
     )
     + _SIGMA_CAP_ADVISORY
     + " "
-    + _ADEQUATE_IS_NOT_DONE
+    + _RESIDUALS_DO_NOT_DECIDE_DONE
     + " "
     "Call finish when the search is complete; the judge selects your best fitted version "
     "automatically. " + BIOLOGY_BLIND_SEMANTICS
@@ -1534,7 +1519,6 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "gave_up_no_fit": FINISH_GAVE_UP_NO_FIT_TMPL,
             "refused_sigma": FINISH_REFUSED_SIGMA_TMPL,
             "sigma_fallback_advice": FINISH_SIGMA_FALLBACK_ADVICE,
-            "refused_replicate_lof": FINISH_REFUSED_REPLICATE_LOF_TMPL,
             "refused_parsimony": FINISH_REFUSED_PARSIMONY_TMPL,
             "restored_best": FINISH_RESTORED_BEST_TMPL,
             "armed": FINISH_ARMED_TMPL,
