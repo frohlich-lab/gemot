@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 import threading
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -122,7 +123,7 @@ def phoenix_base_url(url: str) -> str:
 # overridable property that merely *defaults* to the class name.
 #
 # The graph's other per-step node, ``tools``, is deliberately absent: its ``input.value`` is
-# the tool call being dispatched, ~0.5 KB, not a transcript copy.
+# the tool call being dispatched, ~0.5 KB, not a transcript copy. Its output goes (below).
 _STRIPPED_INPUT_SPANS = frozenset(
     {
         "model",  # LangChain's model node
@@ -145,6 +146,63 @@ _STRIPPED_INPUT_KINDS = frozenset({"LLM"})
 # unchanged. Dropping these spans outright is NOT an option -- ``ChatOpenAI`` is their child
 # and would be orphaned.
 _STRIPPED_INPUT_KEYS = ("input.value", "input.mime_type")
+
+# ----------------------------------------------------------------- span output stripping
+# Three kinds of span store as their payload what their child spans hold already (gemot#92, on the
+# 2026-10-31 round-3 runs): a ``tools`` node's output is its TOOL child's result as a LangGraph
+# update (2.8 MB on raimundez); a ``model`` node's is its LLM child's reply, ``reasoning_details``
+# included (1.3-2.2 MB); and an agent's -- the lead's, or one analyst delegation's -- is its whole
+# state, ``{"messages": [...]}`` (3.2-5.3 MB; one signal_engineer span was 687 KB out and 149 KB
+# in), which its own LLM and TOOL spans and the lead's ``task`` call hold.
+#
+# So each goes once the exporter has seen the children that hold it: a ``model`` node's output with
+# an LLM child, a ``tools`` node's with a TOOL child for each tool call it was sent, and an agent's
+# input and output with a ``model`` node child. An agent is told by that child, not by its name, so
+# a new analyst needs no entry here. A TOOL or LLM child counts only if it recorded an output.
+#
+# Anything else keeps its output, because the node holds the only ToolMessage. A call to a tool that
+# does not exist, or one a guard rejected before dispatch (``_statements_only_guard``,
+# ``_task_arg_guard``), has no TOOL span. A call whose arguments did not validate has one, without
+# an output: LangChain turns the error into the ToolMessage at the node (Copilot on gemot#98).
+# LangChain sends each tool call to a ``tools`` node of its own, but a middleware's
+# ``jump_to: "tools"`` runs them all in one, whose input is then the graph state, not the calls.
+#
+# What a hook rewrites after the tool or the model returned -- the empty-report marker, deepagents'
+# eviction of a large result, a deduplicated tool call -- is in the next call's input.
+#
+# A span ends after its children, so they reach the exporter in an earlier batch or the same one. A
+# failed export forgets every child seen so far: a node keeps its output when the child holding it
+# may not have reached the collector.
+_HELD_BY_CHILD = {"tools": "TOOL", "model": "LLM"}
+_AGENT_CHILD = "model"
+_STRIPPED_OUTPUT_KEYS = ("output.value", "output.mime_type")
+
+
+def _child_mark(span: Any) -> str | None:
+    """What ``span`` tells the exporter about its parent: ``TOOL`` or ``LLM`` (it holds an output
+    of the parent's) or ``model`` (the parent is an agent), else None."""
+    if span.name == _AGENT_CHILD:
+        return _AGENT_CHILD
+    attributes = span.attributes or {}
+    kind = attributes.get("openinference.span.kind")
+    if kind in _HELD_BY_CHILD.values() and "output.value" in attributes:
+        return kind
+    return None
+
+
+def _held_by_children(span: Any, children: Mapping[str, int]) -> bool:
+    """Whether ``span`` is a node whose whole output its children hold (see above)."""
+    holder = _HELD_BY_CHILD.get(span.name)
+    if holder is None or not children.get(holder):
+        return False
+    if holder != "TOOL":
+        return True
+    try:
+        calls = json.loads((span.attributes or {}).get("input.value"))
+    except (TypeError, ValueError):
+        return False
+    return isinstance(calls, list) and children[holder] >= len(calls)
+
 
 # ---------------------------------------------------------------------- LLM input deltas
 # What the strip leaves on an LLM span is ``llm.input_messages``: the whole request, which repeats
@@ -188,13 +246,80 @@ _PREFIX_SPAN = "gemot.input_prefix_span"
 # in checkpoints on top of ~1x in deltas, against ~50x written in full.
 _FULL_INPUT_EVERY = 20
 
+# ----------------------------------------------------------------------- LLM tool schemas
+# The tools a call was offered are on its span twice: as ``llm.tools.<i>.tool.json_schema``, and
+# as ``tools`` inside ``llm.invocation_parameters``, the list OpenInference writes the first from.
+# The lead's ~15 schemas are ~42 KB, so on the 2026-10-31 round-3 runs the two were 22-30% of the
+# trace (gemot#92). The copy in ``llm.invocation_parameters`` goes from every span. ``llm.tools``
+# is written where the input is written in full (a conversation's first call, a checkpoint), and
+# again where the tools changed since (``_disabled_tool_filter`` hides a tool the breaker disabled);
+# every other call of the conversation stores in its place
+#
+#   gemot.tools_span   the span that holds its tools
+#
+# and :func:`rebuild_tools` reads them from there. A call outside a conversation (no system
+# message) keeps its own.
+_TOOLS = "llm.tools."
+_TOOLS_SPAN = "gemot.tools_span"
+_INVOCATION_PARAMETERS = "llm.invocation_parameters"
 
-def _message_digest(message: dict[str, Any]) -> bytes:
+
+def _digest(value: Any) -> bytes:
     """A message's identity for the prefix comparison: all of its attributes, not just its text,
-    so two messages with the same content and different tool calls are different."""
+    so two messages with the same content and different tool calls are different. Or the identity
+    of the tools a call was offered."""
     return hashlib.blake2b(
-        json.dumps(message, sort_keys=True, default=str).encode(), digest_size=16
+        json.dumps(value, sort_keys=True, default=str).encode(), digest_size=16
     ).digest()
+
+
+def _grouped(
+    attributes: dict[str, Any], prefix: str
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
+    """The ``<prefix><i>.<field>`` attributes as a list, one dict of fields per index, and the
+    attributes left. The list is None if its indices are not an unbroken 0..m-1: only such a list
+    re-indexes and comes back as it was."""
+    grouped: dict[int, dict[str, Any]] = {}
+    rest: dict[str, Any] = {}
+    for key, value in attributes.items():
+        if not key.startswith(prefix):
+            rest[key] = value
+            continue
+        index, _, field = key[len(prefix) :].partition(".")
+        if not index.isdigit():
+            return None, attributes
+        grouped.setdefault(int(index), {})[field] = value
+    if grouped and max(grouped) != len(grouped) - 1:
+        return None, attributes
+    return [grouped[i] for i in range(len(grouped))], rest
+
+
+def _flattened(prefix: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    """The inverse of :func:`_grouped`."""
+    return {
+        f"{prefix}{i}.{field}": value
+        for i, item in enumerate(items)
+        for field, value in item.items()
+    }
+
+
+def _without_tools_copy(attributes: dict[str, Any]) -> dict[str, Any]:
+    """``attributes`` with ``tools`` dropped from ``llm.invocation_parameters`` where it is a copy
+    of ``llm.tools``. Only there: past the span attribute limit ``llm.tools`` can be cut short."""
+    try:
+        parameters = json.loads(attributes[_INVOCATION_PARAMETERS])
+        tools, _ = _grouped(attributes, _TOOLS)
+        schemas = [json.loads(tool["tool.json_schema"]) for tool in tools or ()]
+    except (KeyError, TypeError, ValueError):
+        return attributes
+    if not isinstance(parameters, dict) or not tools or parameters.get("tools") != schemas:
+        return attributes
+    del parameters["tools"]
+    # As OpenInference writes it (``safe_json_dumps``).
+    return {
+        **attributes,
+        _INVOCATION_PARAMETERS: json.dumps(parameters, default=str, ensure_ascii=False),
+    }
 
 
 def _conversation_key(span: Any, attributes: dict[str, Any], system: dict[str, Any]) -> Any:
@@ -211,60 +336,58 @@ def _conversation_key(span: Any, attributes: dict[str, Any], system: dict[str, A
         span.context.trace_id,
         metadata.get("lc_agent_name"),
         namespace if namespace.startswith("tools:") else "",
-        _message_digest(system),
+        _digest(system),
     )
 
 
 class _InputDeltas:
     """Rewrites each LLM span's ``llm.input_messages`` as a delta on its conversation's previous
-    call. Holds one digest per message of each conversation's last input, not the messages, so a
+    call, and its ``llm.tools`` as a pointer to the span that holds them. Holds one digest per
+    message of each conversation's last input, not the messages, and one of its tools, so a
     finished conversation costs a few KB for the rest of the process."""
 
     def __init__(self) -> None:
         # conversation -> (its last call's span id, that call's message digests, calls in the
         # chain since its last full input)
         self._last: dict[Any, tuple[str, list[bytes], int]] = {}
+        # conversation -> (the span its tools were last written on, their digest)
+        self._tools: dict[Any, tuple[str, bytes]] = {}
 
     def reset(self) -> None:
-        """Make every conversation's next call write its full input."""
+        """Make every conversation's next call write its full input and its tools."""
         self._last.clear()
+        self._tools.clear()
 
     def encode(self, span: Any, attributes: dict[str, Any]) -> dict[str, Any]:
         if span.context is None:
             return attributes
-        messages: dict[int, dict[str, Any]] = {}
-        rest: dict[str, Any] = {}
-        for key, value in attributes.items():
-            if not key.startswith(_INPUT_MESSAGES):
-                rest[key] = value
-                continue
-            index, _, field = key[len(_INPUT_MESSAGES) :].partition(".")
-            if not index.isdigit():
-                return attributes
-            messages.setdefault(int(index), {})[field] = value
-        # Only an unbroken 0..m-1 list re-indexes and comes back as it was.
-        if not messages or max(messages) != len(messages) - 1:
+        messages, rest = _grouped(attributes, _INPUT_MESSAGES)
+        if not messages:
             return attributes
-        ordered = [messages[i] for i in range(len(messages))]
-        key = _conversation_key(span, attributes, ordered[0])
+        key = _conversation_key(span, attributes, messages[0])
         if key is None:
             return attributes
-        digests = [_message_digest(m) for m in ordered]
+        span_id = format(span.context.span_id, "016x")
+        digests = [_digest(m) for m in messages]
         last = self._last.get(key)
         n = 0
         if last is not None and last[2] < _FULL_INPUT_EVERY:
             # At least 1: the system prompt is part of the key.
             while n < min(len(last[1]), len(digests)) and last[1][n] == digests[n]:
                 n += 1
-        self._last[key] = (format(span.context.span_id, "016x"), digests, last[2] + 1 if n else 1)
+        self._last[key] = (span_id, digests, last[2] + 1 if n else 1)
+        tools, without_tools = _grouped(rest, _TOOLS)
+        if tools:
+            held, digest = self._tools.get(key), _digest(tools)
+            if n and held is not None and held[1] == digest:
+                rest = {**without_tools, _TOOLS_SPAN: held[0]}
+            else:
+                self._tools[key] = (span_id, digest)
         if not n:
             return attributes
         rest[_PREFIX_LEN] = n
         rest[_PREFIX_SPAN] = last[0]
-        for i, message in enumerate(ordered[n:]):
-            for field, value in message.items():
-                rest[f"{_INPUT_MESSAGES}{i}.{field}"] = value
-        return rest
+        return {**rest, **_flattened(_INPUT_MESSAGES, messages[n:])}
 
 
 def rebuild_input_messages(
@@ -307,46 +430,103 @@ def rebuild_input_messages_from_dataframe(df: Any) -> dict[str, list | None]:
     """:func:`rebuild_input_messages` for the LLM spans of a Phoenix spans dataframe, as
     ``Client().spans.get_spans_dataframe`` returns it (indexed by span id).
 
-    Phoenix flattens only OpenInference's own attributes into columns, so the two ``gemot.*`` ones
-    come back nested, as one ``attributes.gemot`` dict (arize-phoenix 20.6). Looked for as flat
-    columns they are missing, every span seems to hold its full input, and the deltas come back as
-    if they were the inputs. So both shapes are read.
+    Phoenix flattens only OpenInference's own attributes into columns, so the ``gemot.*`` ones
+    come back nested, as one ``attributes.gemot`` dict (arize-phoenix 20.6 and 21). Looked for as
+    flat columns they are missing, every span seems to hold its full input, and the deltas come
+    back as if they were the inputs. So both shapes are read.
     """
-    spans: dict[str, tuple[Any, Any, Any]] = {}
+    return rebuild_input_messages(
+        {
+            span_id: (
+                row.get("attributes.llm.input_messages"),
+                *_gemot(row, _PREFIX_LEN, _PREFIX_SPAN),
+            )
+            for span_id, row in _llm_rows(df)
+        }
+    )
+
+
+def rebuild_tools(spans: Mapping[str, tuple[Any, Any]]) -> dict[str, list | None]:
+    """Every span's ``llm.tools``, read from where the exporter wrote them (see ``_InputDeltas``).
+
+    ``spans`` maps a span id to what that span stores: its tools as a list, in whichever form the
+    reader has them, and its ``gemot.tools_span``, absent (``None``, or NaN from a dataframe) on a
+    span that holds its own. A span whose tools are on a span not in ``spans`` maps to ``None``.
+    """
+
+    def own(span_id: str) -> list:
+        tools = spans[span_id][0]
+        return list(tools) if isinstance(tools, (list, tuple)) else []
+
+    tools: dict[str, list | None] = {}
+    for span_id, (_, holder) in spans.items():
+        if not isinstance(holder, str):
+            tools[span_id] = own(span_id)
+        else:
+            tools[span_id] = own(holder) if holder in spans else None
+    return tools
+
+
+def rebuild_tools_from_dataframe(df: Any) -> dict[str, list | None]:
+    """:func:`rebuild_tools` for the LLM spans of a Phoenix spans dataframe, read as
+    :func:`rebuild_input_messages_from_dataframe` reads it."""
+    return rebuild_tools(
+        {
+            span_id: (row.get("attributes.llm.tools"), *_gemot(row, _TOOLS_SPAN))
+            for span_id, row in _llm_rows(df)
+        }
+    )
+
+
+def _llm_rows(df: Any) -> Any:
+    """``(span id, row)`` for each LLM span of a Phoenix spans dataframe."""
     for span_id, row in df.iterrows():
-        if row.get("attributes.openinference.span.kind") != "LLM":
-            continue
-        nested = row.get("attributes.gemot")
-        n, previous = (
-            nested.get(key.removeprefix("gemot."))
-            if isinstance(nested, dict)
-            else row.get(f"attributes.{key}")
-            for key in (_PREFIX_LEN, _PREFIX_SPAN)
-        )
-        spans[str(span_id)] = (row.get("attributes.llm.input_messages"), n, previous)
-    return rebuild_input_messages(spans)
+        if row.get("attributes.openinference.span.kind") == "LLM":
+            yield str(span_id), row
 
 
-def _strip_span_inputs(span: Any, deltas: _InputDeltas | None = None) -> Any:
-    """Return ``span`` with the bulky ``input.*`` attributes removed, or unchanged if it
-    is neither one of the wrapper spans nor an LLM span. With ``deltas``, an LLM span's input
-    messages are also cut down to the delta on its conversation's previous call.
+def _gemot(row: Any, *keys: str) -> tuple[Any, ...]:
+    """The ``gemot.*`` attributes ``keys`` of a spans dataframe row, nested or flat."""
+    nested = row.get("attributes.gemot")
+    return tuple(
+        nested.get(key.removeprefix("gemot."))
+        if isinstance(nested, dict)
+        else row.get(f"attributes.{key}")
+        for key in keys
+    )
+
+
+def _strip_span(
+    span: Any, deltas: _InputDeltas | None = None, children: Mapping[str, int] | None = None
+) -> Any:
+    """Return ``span`` with the bulky payloads removed, or unchanged if it has none. ``children``
+    counts the child spans exported so far by their :func:`_child_mark`.
+
+    The ``input.*`` attributes go from the wrapper spans and the LLM spans, the ``output.*`` ones
+    from a node whose children hold them, both from an agent. An LLM span loses the copy of its
+    tools in ``llm.invocation_parameters``, and with ``deltas`` its input messages are cut down to
+    the delta on its conversation's previous call and its tools to a pointer.
 
     These checks FIRST: this runs for every span in every export batch, and the large majority
     return here unchanged, so nothing more expensive than a set lookup belongs above them.
     """
+    children = children or {}
     kind = (span.attributes or {}).get("openinference.span.kind")
-    if span.name not in _STRIPPED_INPUT_SPANS and kind not in _STRIPPED_INPUT_KINDS:
+    agent = _AGENT_CHILD in children
+    inputs = agent or span.name in _STRIPPED_INPUT_SPANS or kind in _STRIPPED_INPUT_KINDS
+    outputs = agent or _held_by_children(span, children)
+    if not (inputs or outputs):
         return span
     from opentelemetry.sdk.trace import ReadableSpan
 
+    stripped = (_STRIPPED_INPUT_KEYS if inputs else ()) + (_STRIPPED_OUTPUT_KEYS if outputs else ())
     attributes = {
-        key: value
-        for key, value in (span.attributes or {}).items()
-        if key not in _STRIPPED_INPUT_KEYS
+        key: value for key, value in (span.attributes or {}).items() if key not in stripped
     }
-    if deltas is not None and kind == "LLM":
-        attributes = deltas.encode(span, attributes)
+    if kind == "LLM":
+        attributes = _without_tools_copy(attributes)
+        if deltas is not None:
+            attributes = deltas.encode(span, attributes)
     return ReadableSpan(
         name=span.name,
         context=span.context,
@@ -364,13 +544,13 @@ def _strip_span_inputs(span: Any, deltas: _InputDeltas | None = None) -> Any:
 
 
 def _make_stripping_exporter(inner: Any) -> Any:
-    """Wrap a ``SpanExporter`` so wrapper-span inputs are dropped, and LLM inputs cut to their
-    deltas, on the way out.
+    """Wrap a ``SpanExporter`` so wrapper-span inputs and the payloads a child span holds are
+    dropped, and LLM inputs cut to their deltas, on the way out.
 
     Filtering at the exporter, not in a second ``SpanProcessor``: a processor added after the
     default one would have to mutate the span while the batch processor's exporter thread may
     already be serializing it. The exporter is also the one place that knows whether a span
-    reached the collector, which the delta chains depend on.
+    reached the collector, which the delta chains and the children depend on.
     """
     from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
@@ -378,21 +558,34 @@ def _make_stripping_exporter(inner: Any) -> Any:
         def __init__(self, wrapped: Any) -> None:
             self._wrapped = wrapped
             self._deltas = _InputDeltas()
+            # span id -> its children exported so far, counted by mark, until it is exported itself
+            self._children: dict[int, Counter[str]] = {}
             self._lock = threading.Lock()
+
+        def _reset(self) -> None:
+            self._deltas.reset()
+            self._children.clear()
+
+        def _stripped(self, span: Any) -> Any:
+            children = self._children.pop(span.context.span_id, None) if span.context else None
+            return _strip_span(span, self._deltas, children)
 
         def export(self, spans: Any) -> "SpanExportResult":
             # Encoding and exporting under one lock: a batch encoded against spans whose own export
             # then failed would point at spans the collector never got.
             with self._lock:
+                # Every child before any parent: a span and its children can share a batch.
+                for span in spans:
+                    mark = _child_mark(span)
+                    if mark is not None and span.parent is not None:
+                        self._children.setdefault(span.parent.span_id, Counter())[mark] += 1
                 try:
-                    result = self._wrapped.export(
-                        [_strip_span_inputs(s, self._deltas) for s in spans]
-                    )
+                    result = self._wrapped.export([self._stripped(s) for s in spans])
                 except Exception:
-                    self._deltas.reset()
+                    self._reset()
                     raise
                 if result != SpanExportResult.SUCCESS:
-                    self._deltas.reset()
+                    self._reset()
                 return result
 
         def shutdown(self) -> None:
