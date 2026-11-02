@@ -55,14 +55,34 @@ class _FakeSession:
     The rolled-up residual verdict lives on the fit summary (the server reports it nowhere else) and
     the parameter geometry is a section of the one diagnosis call, so `identifiability` is spliced
     into the diagnosis payload rather than served as a second tool. Any other tool name is an
-    assertion failure: the gate must not reach for one that no longer exists."""
+    assertion failure: the gate must not reach for one that no longer exists.
 
-    def __init__(self, fit_summary, diagnosis=None, identifiability=None):
+    ``versions`` are the `list_versions` rows the gate ranks to find the version the run is scored
+    on, ``metas`` the stored meta `get_version` returns for a version (its noise-sigma flags),
+    ``head`` the version `describe_problem` reports, and ``summaries`` the fit summary each version
+    restores (`restore_version` swaps it in and moves HEAD). With no versions, the gate has nothing
+    to restore and judges HEAD."""
+
+    def __init__(
+        self,
+        fit_summary,
+        diagnosis=None,
+        identifiability=None,
+        versions=(),
+        head=None,
+        summaries=None,
+        metas=None,
+    ):
         self.fit_summary = fit_summary
         self.diagnosis = diagnosis or {"per_observable": []}
         # Default CLEAN so a test that doesn't care about parsimony is unaffected by the gate.
         self.identifiability = identifiability if identifiability is not None else _IDENTIFIABLE
+        self.versions = list(versions)
+        self.head = head
+        self.summaries = summaries or {}
+        self.metas = metas or {}
         self.calls: list[str] = []
+        self.restored: list[int] = []
 
     async def call_tool(self, name, args):
         self.calls.append(name)
@@ -70,6 +90,19 @@ class _FakeSession:
             return _FakeResult(self.fit_summary)
         if name == "get_fit_diagnosis":
             return _FakeResult({**self.diagnosis, "identifiability": self.identifiability})
+        if name == "list_versions":
+            return _FakeResult({"result": self.versions})
+        if name == "describe_problem":
+            return _FakeResult({"current_version": self.head})
+        if name == "get_version":
+            return _FakeResult({"version": args["version"], **self.metas.get(args["version"], {})})
+        if name == "restore_version":
+            if args["version"] not in self.summaries:
+                return _FakeResult({"ok": False, "error": "no such version"})
+            self.restored.append(args["version"])
+            self.head = args["version"]
+            self.fit_summary = self.summaries[args["version"]]
+            return _FakeResult({"version": args["version"]})
         raise AssertionError(f"unexpected tool {name}")
 
 
@@ -525,7 +558,7 @@ async def test_one_diagnosis_call_serves_both_the_parsimony_gate_and_the_arm():
     tool = mod._finish_tool(session)
     assert "FINISH ARMED" in await _finish(tool)
     assert session.calls.count("get_fit_diagnosis") == 1
-    assert set(session.calls) == {"get_fit_summary", "get_fit_diagnosis"}
+    assert set(session.calls) == {"list_versions", "get_fit_summary", "get_fit_diagnosis"}
 
 
 #: A `merge_hints` row as the server puts it on a fit result AND on get_fit_summary.
@@ -539,23 +572,23 @@ _HINTS = [
 
 
 @pytest.mark.asyncio
-async def test_the_armed_finish_names_an_outstanding_merge():
+async def test_the_armed_finish_names_a_priced_merge():
     """The ties are read off the SCORE, which is the gate's only view of HEAD: `get_fit_summary` now
     carries the same `merge_hints` the fit result does, so the gate names the pairs the lead was
     already shown instead of projecting new ones out of the diagnosis (which needed
     `petab_mcp` imported into an import-light module to do)."""
     mod = _agent
     armed = await _finish(_tool_for(mod, _fit(merge_hints=[_HINT])))
-    assert "FINISH ARMED" in armed and "OUTSTANDING MERGE" in armed
+    assert "FINISH ARMED" in armed and "PRICED MERGES" in armed
     assert "ac16 == ac8" in armed and "5.528" in armed  # ...and stated as a score DECREASE
     assert "lowers the score" in armed.lower() and "-5.528" not in armed
     assert "0.002" in armed  # the move the panel must sanity-check
     # a clean fit says nothing: the line is absent, not "no merge found"
-    assert "OUTSTANDING MERGE" not in await _finish(_tool_for(mod, _fit()))
+    assert "PRICED MERGES" not in await _finish(_tool_for(mod, _fit()))
 
 
 @pytest.mark.asyncio
-async def test_the_armed_finish_names_every_outstanding_tie_not_just_the_cheapest():
+async def test_the_armed_finish_names_every_priced_tie_not_just_the_cheapest():
     """One named tie per arm is what taught the lead to merge PIECEMEAL — take the cheapest, refit,
     be shown the next member of the same redundant group, refit again. The arm names all of them, and
     licenses only the edits that were PRICED: independent pairs together in one call, an overlapping
@@ -569,19 +602,22 @@ async def test_the_armed_finish_names_every_outstanding_tie_not_just_the_cheapes
     armed = await _finish(_tool_for(mod, _fit(merge_hints=_HINTS)))
     for hint in _HINTS:
         assert " == ".join(hint["parameters"]) in armed
-    # Against the CONSTANT, not a hand-copied phrase: the take-rule is one string composed into
-    # every surface that states it (prompts._MERGE_TAKE_RULE), so quoting a fragment of it here
-    # would be one more copy to keep in step with the text.
-    assert prompts._MERGE_TAKE_RULE in armed
+    # Against the CONSTANT, not a hand-copied phrase: the rule is one string composed into every
+    # surface that states it (prompts._MERGE_RULE), so quoting a fragment of it here would be one
+    # more copy to keep in step with the text.
+    assert prompts._MERGE_RULE in armed
     # ...and it really is the rule this test is about: independent pairs together, an overlapping
-    # group one pair at a time, and the unpriced collapse named and refused.
+    # group one pair at a time, the unpriced collapse named and refused — and every one of them an
+    # option, never a condition for finishing (gemot#94: told a bottomed-out bic with merges
+    # outstanding was "NOT a finished model", runs tied a closing rate to a Ca2+ midpoint).
     for claim in (
         "ONE `make_changes` call",
         "PRICED",
         "PAIR alone",
         "Do NOT collapse three symbols",
+        "OPTION, not a condition for finishing",
     ):
-        assert claim in prompts._MERGE_TAKE_RULE, claim
+        assert claim in prompts._MERGE_RULE, claim
     assert "multi-way tie" not in armed
     assert "  " not in armed  # the tie lines carry their own leading space
 
@@ -600,7 +636,7 @@ async def test_a_broken_merge_template_costs_the_line_not_the_finish():
         state = {}
         tool = _tool_for(mod, _fit(merge_hints=_HINTS), finish_state=state)
         armed = await _finish(tool)
-        assert "FINISH ARMED" in armed and "OUTSTANDING MERGE" not in armed
+        assert "FINISH ARMED" in armed and "PRICED MERGES" not in armed
         assert (await _finish(tool)).startswith("Recorded: finish")
         assert state["confirmed"] is True
     finally:
@@ -621,7 +657,7 @@ async def test_a_broken_merge_template_costs_the_line_not_the_finish():
 async def test_the_armed_merge_never_advertises_a_zero_payoff(hint):
     mod = _agent
     armed = await _finish(_tool_for(mod, _fit(merge_hints=[hint])))
-    assert "OUTSTANDING MERGE" in armed
+    assert "PRICED MERGES" in armed
     assert "lowers bic by 0.0" not in armed.lower()
 
 
@@ -636,7 +672,7 @@ async def test_a_malformed_merge_hints_payload_never_raises_a_finish(hints):
     state = {}
     tool = _tool_for(mod, _fit(merge_hints=hints), finish_state=state)
     armed = await _finish(tool)
-    assert "FINISH ARMED" in armed and "OUTSTANDING MERGE" not in armed
+    assert "FINISH ARMED" in armed and "PRICED MERGES" not in armed
     assert (await _finish(tool)).startswith("Recorded: finish")
     assert state["confirmed"] is True
 
@@ -784,3 +820,121 @@ async def test_arm_is_silent_when_no_invalid_comparison_is_outstanding():
     mod = _agent
     armed = await _finish(_tool_for(mod, _fit()))
     assert "FINISH ARMED" in armed and "INVALID" not in armed
+
+
+# --- the gate judges the BEST version, the one the run is scored on (gemot#94) -------------------
+# lucarelli runs were refused on a worse HEAD and spent fits rebuilding a clean model there ("The
+# finish gate checks the current HEAD (v31)"; "I need HEAD on a clean model") while the version the
+# judge would score sat in the store.
+_ROWS = [
+    {"version": 3, "criterion_value": 300.0, "bic": 300.0},
+    {"version": 4, "criterion_value": 205.0, "bic": 205.0},
+    {"version": 5, "criterion_value": 260.0, "bic": 260.0},
+]
+
+
+@pytest.mark.asyncio
+async def test_the_gate_restores_and_judges_the_best_version_not_head():
+    mod = _agent
+    worse_head = _fit(version=5, bic=260.0, noise_sigma_inflated=True, noise_sigma_advice="x")
+    best = _fit(version=4, bic=205.0, neg_log_likelihood=90.0)
+    session = _FakeSession(worse_head, versions=_ROWS, head=5, summaries={4: best})
+    tool = mod._finish_tool(session)
+    armed = await _finish(tool)
+    # HEAD's implausible sigma refuses nothing: the version judged is v4, and the lead is told so
+    assert session.restored == [4]
+    assert armed.startswith(prompts.FINISH_RESTORED_BEST_TMPL.format(best=4, head=5))
+    assert "FINISH ARMED" in armed and "bic=205" in armed
+    # ...and HEAD is now that version, so the confirming call restores nothing and confirms it
+    confirmed = await _finish(tool)
+    assert confirmed.startswith("Recorded: finish") and "bic=205" in confirmed
+    assert session.restored == [4]
+
+
+@pytest.mark.asyncio
+async def test_the_gate_restores_nothing_when_head_is_the_best():
+    mod = _agent
+    session = _FakeSession(_fit(version=4), versions=_ROWS, head=4, summaries={4: _fit()})
+    armed = await _finish(mod._finish_tool(session))
+    assert "FINISH ARMED" in armed and "restored" not in armed
+    assert "restore_version" not in session.calls
+
+
+@pytest.mark.asyncio
+async def test_a_version_the_constraints_now_break_is_never_the_one_judged():
+    """The server says such a version cannot be restored and is not the best; ranking it first would
+    leave the gate judging HEAD on a refused restore while a restorable best sits beside it."""
+    mod = _agent
+    rows = [{**_ROWS[1], "violates": ["c1"]}, _ROWS[0], _ROWS[2]]
+    session = _FakeSession(_fit(version=3), versions=rows, head=3, summaries={5: _fit(version=5)})
+    await _finish(mod._finish_tool(session))
+    assert session.restored == [5]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_restore_leaves_the_gate_judging_head():
+    """Fail OPEN to the old behaviour: a restore the server refuses must not block or mislabel the
+    finish."""
+    mod = _agent
+    session = _FakeSession(_fit(version=5, bic=260.0), versions=_ROWS, head=5, summaries={})
+    armed = await _finish(mod._finish_tool(session))
+    assert "FINISH ARMED" in armed and "bic=260" in armed and "restored" not in armed
+
+
+_INFLATED = {"noise_sigma_inflated": True, "noise_sigma_collapsed": False}
+_PLAUSIBLE = {"noise_sigma_inflated": False, "noise_sigma_collapsed": False}
+
+
+@pytest.mark.asyncio
+async def test_a_repaired_head_is_not_traded_back_for_a_gamed_best():
+    """REGRESSION (review of #96): the best-scoring v4 has an inflated sigma, and the lead has just
+    fitted v5, slightly worse but with a plausible one. Restoring v4 would refuse the finish on its
+    sigma and undo the repair on every attempt, while the judge would score v5 anyway. The gate
+    takes the judge's pick without its hidden reference: the best version the server's own sigma
+    flags pass."""
+    mod = _agent
+    gamed = _fit(version=4, bic=205.0, noise_sigma_inflated=True, noise_sigma_advice="x")
+    session = _FakeSession(
+        _fit(version=5, bic=260.0),
+        versions=_ROWS,
+        head=5,
+        summaries={4: gamed},
+        metas={4: _INFLATED, 5: _PLAUSIBLE},
+    )
+    armed = await _finish(mod._finish_tool(session))
+    assert session.restored == []
+    assert "FINISH ARMED" in armed and "bic=260" in armed and "restored" not in armed
+
+
+@pytest.mark.asyncio
+async def test_a_gamed_best_is_passed_over_for_the_next_plausible_version():
+    mod = _agent
+    rows = [*_ROWS, {"version": 6, "criterion_value": 400.0, "bic": 400.0}]
+    session = _FakeSession(
+        _fit(version=6, bic=400.0),
+        versions=rows,
+        head=6,
+        summaries={5: _fit(version=5, bic=260.0)},
+        metas={4: _INFLATED, 5: _PLAUSIBLE},
+    )
+    armed = await _finish(mod._finish_tool(session))
+    assert session.restored == [5]
+    assert armed.startswith(prompts.FINISH_RESTORED_BEST_TMPL.format(best=5, head=6))
+
+
+@pytest.mark.asyncio
+async def test_when_every_version_is_gamed_the_best_scoring_one_is_judged():
+    """As the judge does: with no plausible version to prefer, the run is reported on its own best
+    score, and the gate's sigma refusal speaks to it."""
+    mod = _agent
+    gamed = _fit(version=4, bic=205.0, noise_sigma_inflated=True, noise_sigma_advice="x")
+    session = _FakeSession(
+        _fit(version=5, bic=260.0, noise_sigma_inflated=True, noise_sigma_advice="x"),
+        versions=_ROWS,
+        head=5,
+        summaries={4: gamed},
+        metas={3: _INFLATED, 4: _INFLATED, 5: _INFLATED},
+    )
+    out = await _finish(mod._finish_tool(session))
+    assert session.restored == [4]
+    assert "FINISH REFUSED" in out and "implausible noise model" in out
