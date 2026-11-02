@@ -32,6 +32,7 @@ from pathlib import Path
 
 from .. import ablations
 from ..agent.circuit_breaker import _is_call_timeout
+from ..agent.probe import best_first
 from .clock import HELD_OUT_TOOL, _ToolClock
 from ..paths import validation_measurements_path
 from .provenance import _bic_reference, _judge_mode, _now_iso, _reference_score
@@ -248,49 +249,20 @@ def _stored_k_and_n(stored) -> "tuple[int | None, int | None]":
 
 
 async def _scoreable_versions(call) -> "list[int]":
-    """Every FITTED version, best first UNDER THE RUN'S OWN CRITERION — the candidate set for
-    the scoring scan.
+    """Every FITTED version, best first under the run's own criterion (:func:`best_first`, which
+    the finish gate shares, so the gate judges a finish on the version this scan starts from) — the
+    candidate set for the scoring scan.
 
     Read off ``list_versions`` rather than ``get_progress`` so a version the checkpoint's
     minimum-improvement threshold skipped is still a candidate (see :func:`_restore_best_checkpoint`).
-    A version with no finite score was never scored and cannot be scored now, so it is dropped.
-
-    Ordered by ``criterion_value`` (identical to ``bic`` under the default BIC), NOT by canonical
-    bic: this scan complements the session's own best-score checkpoint, so its notion of "best
-    first" has to be the same one the run used to build that checkpoint — otherwise, under a
-    non-BIC criterion, the scan would start from a model the run itself never preferred. The same
-    criterion then GRADES the chosen version in :func:`_judge`, with canonical BIC recorded
-    alongside (see :mod:`petab_mcp.criteria`). ``bic`` is the fallback when ANY version predates
-    the recorded criterion, applied to the WHOLE set rather than per-version so one ordering never
-    mixes two scales.
+    The criterion that orders them then GRADES the chosen version in :func:`_judge`, with canonical
+    BIC recorded alongside (see :mod:`petab_mcp.criteria`).
     """
     try:
         versions = await call("list_versions")
     except Exception:  # pragma: no cover - older server: caller falls back to the checkpoint
         return []
-    rows = [v for v in versions if isinstance(v, dict)] if isinstance(versions, list) else []
-    # Rows that could be ranked AT ALL. One carrying neither score is dropped by the loop below
-    # either way, so it must not get a vote on which key the rest are sorted by.
-    rows = [v for v in rows if "criterion_value" in v or "bic" in v]
-    # ONE scale for the WHOLE ordering: `criterion_value` only when every candidate carries it,
-    # else canonical `bic` for all of them. Falling back per-version instead would sort a store
-    # that spans this upgrade on two scales at once — an early version's BIC against a later
-    # one's AICc — leaving the candidate order arbitrary between the two groups. A row whose
-    # `criterion_value` is present but NULL still counts as carrying it: that fit is unscoreable
-    # under this criterion and is meant to be dropped, not to trigger a fallback.
-    key = "criterion_value" if all("criterion_value" in v for v in rows) else "bic"
-    scored = []
-    for v in rows:
-        score, num = v.get(key), v.get("version")
-        if (
-            isinstance(score, (int, float))
-            and not isinstance(score, bool)
-            and math.isfinite(score)
-            and isinstance(num, int)
-        ):
-            scored.append((float(score), num))
-    scored.sort()
-    return [num for _, num in scored]
+    return best_first(versions)
 
 
 async def _sigma_flagged(call, version: int, reference) -> "bool | None":

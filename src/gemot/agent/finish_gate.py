@@ -1,9 +1,10 @@
 """``finish`` — the lead-only control tool, and the only legitimate way to end a run.
 
 Plain iteration needs no call here; the tool exists to GATE a finish. A finish must rest on a
-current, fitted model with a plausible noise sigma, and takes a two-call ARM→CONFIRM handshake so
-a diagnosis is always shown before a run is allowed to end. A silent stop is bounced back into
-this gate by the driver, so it cannot be sidestepped.
+fitted model with a plausible noise sigma, and takes a two-call ARM→CONFIRM handshake so a
+diagnosis is always shown before a run is allowed to end. The model it judges is the run's BEST
+version, the one the judge scores, which the gate first restores as HEAD where the lead explored
+past it. A silent stop is bounced back into this gate by the driver, so it cannot be sidestepped.
 
 Every string this returns to the model lives in :mod:`gemot.prompts`; the counters and
 the relent rules are here.
@@ -14,7 +15,7 @@ from __future__ import annotations
 import math
 
 from .. import prompts
-from .probe import _current_diagnosis, _current_fit
+from .probe import _current_diagnosis, _current_fit, _restore_best
 
 # After this many CONSECUTIVE finish attempts with no valid fit, the gate gives up: it flags the
 # run (finish_state["gave_up"]) so the driver ends it promptly as no-model-built, rather than
@@ -170,6 +171,10 @@ def _finish_tool(session, finish_state=None, probe=None):
     Plain iteration needs no call — to keep going the lead simply makes the next ``make_changes``
     edit — so the tool exists only to gate a finish.
 
+    Every call first makes the run's best version HEAD (:func:`probe._restore_best`): the gate
+    judges the model the run is scored on, not wherever the lead's last experiment left HEAD, and
+    the reply says so where that moved HEAD.
+
     ``finish`` is the ONLY legitimate way to end a run: a run that silently stops (a no-tool
     turn) is bounced back into this gate by the driver (see run_deepagents), so the gate cannot
     be sidestepped. To finish, the model MUST have a fitted model — a finish with no valid fit,
@@ -220,6 +225,14 @@ def _finish_tool(session, finish_state=None, probe=None):
     # deliberate argument the old `action` string used to be. An argless call is a schema error the
     # model is handed back, not a first half of the arm->confirm handshake.
     async def finish(rationale: str) -> str:
+        moved = await _restore_best(reader)
+        if moved is None:
+            return await _decide(rationale)
+        print(f"[finish] restored the best version v{moved[0]} as HEAD (was v{moved[1]})")
+        note = prompts.FINISH_RESTORED_BEST_TMPL.format(best=moved[0], head=moved[1])
+        return note + await _decide(rationale)
+
+    async def _decide(rationale: str) -> str:
         print(f"[lead finish] {rationale}")
         fit = await _current_fit(reader)
         nll = fit.get("neg_log_likelihood")

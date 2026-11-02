@@ -116,16 +116,21 @@ _FREE_LITERALS = "0, ±1, 2, 3, 4, 6, 100 and their reciprocals"
 #: a dscore of −5.2, as raising it by 5.2.
 _DSCORE_SIGN = "a NEGATIVE `dscore` is the win: it is how much the merge LOWERS bic"
 
-#: What a priced merge hint does and does not license. Each price is for ONE PAIR, and the edit
-#: that is priced by nothing — collapsing three symbols into a single value — is the expensive one.
-_MERGE_TAKE_RULE = (
-    "Take the ones that were PRICED and let the refit adjudicate. Each price is for that PAIR "
-    "alone, so hints sharing NO parameter are independent edits — put them in ONE `make_changes` "
-    "call rather than one per refit — while hints SHARING a parameter are not: tie the cheapest "
-    "of them, refit, and the next fit prices what is left. Do NOT collapse three symbols into "
-    "one value; nothing priced that, and it can cost hundreds of bic and reintroduce "
-    "lack-of-fit. A merge you already refit that came back WORSE is settled — finish on the "
-    "unmerged model instead of re-arguing it."
+#: What a priced merge hint does and does not license. It is an OPTION, never a condition for
+#: finishing: told that a bottomed-out bic with merges outstanding "is NOT a finished model", runs
+#: tied a closing rate to a Ca2+ midpoint and a feedback threshold to a rate against their own
+#: reading of the model, and merges took 10-13 of ~45 fits per sneyd run (gemot#94). Each price is
+#: for ONE PAIR, and the edit that is priced by nothing — collapsing three symbols into a single
+#: value — is the expensive one.
+_MERGE_RULE = (
+    "A priced merge is an OPTION, not a condition for finishing: a model with hints standing can "
+    "be done. Take one where the two parameters could be ONE quantity, and only a PRICED pair. "
+    "Each price is for that PAIR alone, so hints sharing NO parameter are independent edits — put "
+    "the ones you take in ONE `make_changes` call rather than one per refit — while hints SHARING "
+    "a parameter are not: tie the cheapest of them, refit, and the next fit prices what is left. "
+    "Do NOT collapse three symbols into one value; nothing priced that, and it can cost hundreds "
+    "of bic and reintroduce lack-of-fit. A merge you already refit that came back WORSE is "
+    "settled — finish on the unmerged model instead of re-arguing it."
 )
 
 #: Clean residual tests are a weak stopping rule, and the actionable consequence in ops rather
@@ -139,10 +144,10 @@ _ADEQUATE_IS_NOT_DONE = (
     "still reachable by tens of bic. Bic has bottomed out only once SEVERAL consecutive "
     "`make_changes` calls (three or more) have EACH failed to lower it; until then keep going "
     "while you have budget — genuinely different structures, re-parameterisations, drops, and "
-    "the priced merges. This costs you nothing to be wrong about — every fitted version is kept "
-    "and you are scored on your BEST bic wherever you end — while finishing on the first "
-    "adequate model forfeits every bic you had budget left to find. An unspent step budget is "
-    "not thrift."
+    "the priced merges you judge sound. This costs you nothing to be wrong about — every fitted "
+    "version is kept and you are scored on your BEST bic wherever you end — while finishing on the "
+    "first adequate model forfeits every bic you had budget left to find. An unspent step budget "
+    "is not thrift."
 )
 
 #: The `model_edits` operation vocabulary, with one example each. The lead reads it in its own
@@ -347,7 +352,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "parameter that buys LESS than ln(n) of 2·nll makes the model WORSE even though the fit got "
     "better, so 'nll improved' is not a reason to keep a parameter; (b) dropping a parameter that "
     "costs you nothing in nll is a FREE ln(n) of bic, which is why the merges and pinned "
-    "parameters your fit already names are worth taking; and (c) the failure is TWO-SIDED — too "
+    "parameters your fit already names are worth weighing; and (c) the failure is TWO-SIDED — too "
     "few parameters underfits and too many is charged for nothing, and both lose. Note which side "
     "you are on: while the residuals are still structured you are underfitting, and the arithmetic "
     "above is for pricing what you keep at the end, not for talking yourself out of a mechanism "
@@ -369,9 +374,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "fixing. What that tells you depends on the residuals. While they are still systematically "
     "structured, small gains are a WRONG structure being polished — 'bic is still improving' is then "
     "no reason to keep going in that direction, so change the mechanism instead. Once they are CLEAN, "
-    "small gains are the legitimate endgame: keep taking them — the merges your fit names, a dropped "
-    "parameter, a tighter form — until they run out, because the last few bic are often exactly what "
-    "puts a model at the bar. Either way, when bic has NOT "
+    "small gains are the legitimate endgame: keep taking them — a sound merge your fit names, a "
+    "dropped parameter, a tighter form — until they run out, because the last few bic are often "
+    "exactly what puts a model at the bar. Either way, when bic has NOT "
     "improved over the last few "
     "iterations, STOP tweaking the same structure or piling on parameters: (a) call "
     "`get_fit_diagnosis(sections='all')`, which answers both halves of 'why is it stuck' in one "
@@ -394,12 +399,10 @@ DEFAULT_SYSTEM_PROMPT = (
     "rate-law form or topology).\n"
     "Call `finish` — the ONE control call — when the residuals show NO systematic structure "
     "(get_fit_diagnosis bias ≈ 0, no time-trend) AND bic has bottomed out: you cannot lower it "
-    "further by adding, dropping, re-forming, or MERGING mechanism. `merge_hints` on your last "
-    "fit name pairs the data cannot tell apart, so bic has not bottomed out. "
-    + _MERGE_TAKE_RULE
-    + " Merge ONLY parameters that plausibly ARE the same "
-    "physical quantity; the hints price IDENTIFIABILITY, not biology, so you supply the biology "
-    "(the `finish` description states the rule and what declining one requires of you). Finish "
+    "further by adding, dropping or re-forming mechanism, or by a merge you judge sound. "
+    "`merge_hints` on your last fit name pairs the data cannot tell apart and what tying each "
+    "would buy. " + _MERGE_RULE + " The hints price IDENTIFIABILITY, not biology, so you supply "
+    "the biology: merge ONLY parameters that plausibly ARE the same physical quantity. Finish "
     "on the LOWEST-bic such model.\n" + _ADEQUATE_IS_NOT_DONE + "\n"
     "Repeat until you call `finish`. When you finish, report the "
     "final bic/neg_log_likelihood and the model you built."
@@ -500,9 +503,9 @@ INDRA_SYSTEM_PROMPT = (
     "`get_fit_diagnosis(sections='all')` and try a genuinely different structure. Every fitted version is kept and the run is scored on the best, so a change that "
     "did not help costs nothing.\n"
     "5. FINISH when the residuals show no systematic structure AND bic has bottomed out: nothing "
-    "you add, drop, re-form or MERGE lowers it. `merge_hints` on your last fit name pairs the "
-    "data cannot tell apart, so bic has not bottomed out while they stand. "
-    + _MERGE_TAKE_RULE
+    "you add, drop or re-form lowers it, nor a merge you judge sound. `merge_hints` on your last "
+    "fit name pairs the data cannot tell apart. "
+    + _MERGE_RULE
     + " Merge only parameters that plausibly ARE the same physical quantity.\n"
     # The arm's own stopping rule, in place of _ADEQUATE_IS_NOT_DONE's "three failed calls and bic
     # has bottomed out": Claude Haiku finished after 12-21 minutes of a two-hour budget, on models
@@ -515,7 +518,8 @@ INDRA_SYSTEM_PROMPT = (
     "worse attempt costs nothing and time left unspent is bic forfeited. Before you finish, have "
     "tried each kind of change: other mechanisms for what each observable measures (an "
     "unmeasured intermediate or complex, a feedback or regulation, another policy or a `scheme` "
-    "of your own), dropping what the data does not need, every merge the fit names, and from "
+    "of your own), dropping what the data does not need, the merges the fit names that tie one "
+    "quantity, and from "
     "the best version (`base_version`) the next idea."
     "\nWhen you finish, report the final bic and the model."
 )
@@ -1027,8 +1031,8 @@ FIT_CALL_TIMEOUT_TMPL = (
 # with the values named in their fields; everything else is sent verbatim.
 
 FINISH_DESCRIPTION = (
-    "Ends the run. Call it only after reading the CURRENT HEAD's fit metrics "
-    "(bic / neg_log_likelihood / is_new_best — never an earlier version's). You do NOT "
+    "Ends the run on your BEST version, the one the run is scored on: whatever HEAD is, the gate "
+    "restores that version and judges it, so you never roll back to finish. You do NOT "
     "call this to keep iterating — to iterate, just make the next make_changes call — and a change "
     "that did not help needs no call either: the harness keeps your best-bic version regardless of "
     "where you end, so just try a genuinely different structure. Call this ONLY when the residuals "
@@ -1040,30 +1044,22 @@ FINISH_DESCRIPTION = (
     "point's own replicate scatter — a flagged point there means no parameter value in your current "
     "form can reach it, so the form is what has to change. Its PASS is worth only its lof_df "
     "(replicated points minus your estimated structural parameters): a pass carrying weak: true, or "
-    "carrying no lof_df at all, does not show the form is right. And bic bottoming out does NOT "
-    "mean finished while `merge_hints` stand on your last fit (or the ARM message names "
-    "OUTSTANDING MERGES): each is a pair of parameters the data cannot tell apart, and tying them "
-    "into one symbol costs `dnll` in fit and changes the score by its `dscore` — "
+    "carrying no lof_df at all, does not show the form is right. `merge_hints` on your last fit "
+    "(the ARM message lists them as PRICED MERGES) are pairs of parameters the data cannot tell "
+    "apart: tying one into one symbol costs `dnll` in fit and changes the score by its `dscore` — "
     + _DSCORE_SIGN
     + ". "
-    + _MERGE_TAKE_RULE
-    + " One more thing answers a standing hint besides taking it: a `move_scaled` of many decades, "
-    "which is a flat direction rather than an edit that survives a refit. "
+    + _MERGE_RULE
+    + " A `move_scaled` of many decades is a flat direction rather than an edit that survives a "
+    "refit. "
     + (
-        "Declining a merge needs a mathematical reason: name the parameters and the distinct "
-        "roles the measured design can distinguish. "
+        "Take a merge only where the measured design gives the two parameters no distinct role. "
         if BIOLOGY_BLIND_ENABLED
-        else "And a last one, which is a real answer and not an excuse: the pair is not biologically the "
-        "same quantity. The "
-        "hints price IDENTIFIABILITY, not biology — tying A's synthesis rate to B's deactivation "
-        "rate, or the gain on a dose D to an off-rate, buys the bic penalty while making the model "
-        "assert something false. Merge only what could plausibly BE one physical quantity "
-        "(dephosphorylation of A at S10 and at T20, B binding two equivalent sites of A). This is "
-        "NOT a blanket exemption, and declining every "
-        "hint on it is not credible: for EACH hint you decline, name the two parameters and the "
-        "distinct physical processes they measure, in the rationale. Where a hint's priced `dscore` is "
-        "large, take it and let the refit adjudicate rather than arguing it away — a large priced "
-        "gain means the distinction you are defending is not in the data. "
+        else "The hints price IDENTIFIABILITY, not biology — tying A's synthesis rate to B's "
+        "deactivation rate, or the gain on a dose D to an off-rate, buys the bic penalty while "
+        "making the model assert something false, however large its `dscore`. Merge only what "
+        "could plausibly BE one physical quantity (dephosphorylation of A at S10 and at T20, B "
+        "binding two equivalent sites of A). "
     )
     + "Finishing takes TWO calls: the "
     "first ARMS it and shows you the "
@@ -1137,6 +1133,14 @@ FINISH_REFUSED_PARSIMONY_TMPL = (
     "the full flat_directions and ranked candidates; the tool's default section does NOT.)"
 )
 
+# Put before whatever the gate returns when it made the run's best version HEAD first, so a lead that
+# keeps working knows where it now stands. The gate used to judge HEAD while the run is scored on its
+# best version, and lucarelli runs (gemot#94) spent fits rebuilding a clean model at HEAD to finish.
+FINISH_RESTORED_BEST_TMPL = (
+    "The finish gate judges your BEST version, v{best}, the one the run is scored on, and has "
+    "restored it as HEAD (HEAD was v{head}): what follows is about v{best}. "
+)
+
 FINISH_ARMED_TMPL = (
     "FINISH ARMED — review before confirming. Current fit: bic={bic:.6g}, "
     "neg_log_likelihood={nll:.6g}. Residual structure: {struct}{worst_line}"
@@ -1165,9 +1169,14 @@ FINISH_ARMED_WORST_TMPL = (
 # the lead collapsed three near-free pairs into a single symbol — an edit the FIM never priced. It
 # cost +186 bic, reintroduced lack-of-fit, and the run then spent four finish attempts re-arguing it
 # and ended 13 bic short of the two runs that never tried it. Only the PAIR is priced.
+#
+# Nor may it make a merge a condition of finishing. It used to add "a bic that has bottomed out with
+# merges like these outstanding is NOT a finished model", and in sweep round 3 (gemot#94) runs took
+# ties that tie a rate to a concentration, deferred to the gate against their own reading ("per the
+# tooling, a large priced gain means the distinction I'm defending is not resolvable"), and spent
+# 10-13 of ~45 sneyd fits on merges. The line names the options; whether to take one is the lead's.
 FINISH_ARMED_MERGE_TMPL = (
-    " OUTSTANDING MERGES — the data cannot tell these pairs apart:{ties} A bic that has bottomed out "
-    "with merges like these outstanding is NOT a finished model. " + _MERGE_TAKE_RULE
+    " PRICED MERGES — the data cannot tell these pairs apart:{ties} " + _MERGE_RULE
 )
 
 #: One tie inside :data:`FINISH_ARMED_MERGE_TMPL`.
@@ -1525,6 +1534,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "sigma_fallback_advice": FINISH_SIGMA_FALLBACK_ADVICE,
             "refused_replicate_lof": FINISH_REFUSED_REPLICATE_LOF_TMPL,
             "refused_parsimony": FINISH_REFUSED_PARSIMONY_TMPL,
+            "restored_best": FINISH_RESTORED_BEST_TMPL,
             "armed": FINISH_ARMED_TMPL,
             "armed_worst": FINISH_ARMED_WORST_TMPL,
             "armed_merge": FINISH_ARMED_MERGE_TMPL,

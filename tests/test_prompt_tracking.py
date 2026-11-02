@@ -46,7 +46,7 @@ _FRAGMENTS = {
     "_PARAMETER_HALF",
     "_SIGMA_CAP_ADVISORY",
     "_DSCORE_SIGN",
-    "_MERGE_TAKE_RULE",
+    "_MERGE_RULE",
     "_ADEQUATE_IS_NOT_DONE",
     "_MODEL_EDIT_OPS",
     # Read by the statements lead and the null arm (the barebones template).
