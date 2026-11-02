@@ -91,8 +91,9 @@ def _render_flat_directions(flat_directions, *, max_dirs: int = 4, max_parts: in
 def _render_merge(hints) -> str:
     """The OUTSTANDING MERGES line for the ARM text, or ``""`` when there is no tie to report.
 
-    Read off ``get_fit_summary``, which now carries the same ``merge_hints`` the fit result does, so
-    the gate names the pairs the lead was already shown. Fails OPEN like every other diagnosis read
+    Read off ``get_fit_summary``, which carries every tie that still stands, where a fit result
+    lists only those new since its parent (frohlich-lab/PEtab-MCP#211), so the gate names the pairs
+    the lead was shown on that fit or an earlier one. Fails OPEN like every other diagnosis read
     here: a missing field or an odd shape means "no merge to report", never a raised finish — and one
     unreadable row does not silence the readable ones.
 
@@ -395,8 +396,9 @@ def _finish_tool(session, finish_state=None, probe=None):
             )
             # The PARAMETER counterpart of the residual verdict: the pairs the data cannot separate
             # whose merges BIC would pay for. Like the residual verdict they ride on the SCORE read
-            # (petab_mcp.fitting.fit_summary carries the same `merge_hints` the fit result does), so
-            # the gate names the ties the lead already saw instead of projecting new ones.
+            # (petab_mcp.fitting.fit_summary carries every standing `merge_hints` tie, of which a fit
+            # result lists only the new), so the gate names the ties the lead already saw instead of
+            # projecting new ones.
             merge_line = _render_merge(fit.get("merge_hints"))
             print(
                 f"[finish ARMED v={version}] bic={bic:.6g} — presented diagnosis, "

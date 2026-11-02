@@ -47,6 +47,7 @@ _FRAGMENTS = {
     "_SIGMA_CAP_ADVISORY",
     "_DSCORE_SIGN",
     "_MERGE_RULE",
+    "_MERGE_HINTS_WHERE",
     "_RESIDUALS_DO_NOT_DECIDE_DONE",
     "_MODEL_EDIT_OPS",
     # Read by the statements lead and the null arm (the barebones template).
@@ -273,6 +274,11 @@ def test_skills_are_tracked_like_prompts(tmp_path):
     assert "get_skill" in ORCHESTRATOR_TOOLS
     assert "list_skills" not in ORCHESTRATOR_TOOLS
     assert "get_skill('petab-model-building')" in P.DEFAULT_SYSTEM_PROMPT
+    # A server lists `statements-grammar` only on the statements route and `antimony-authoring`
+    # only on the text routes (frohlich-lab/PEtab-MCP#204, #209), so each lead names its own.
+    assert "get_skill('statements-grammar')" in P.INDRA_SYSTEM_PROMPT
+    assert "get_skill('statements-grammar')" not in P.DEFAULT_SYSTEM_PROMPT
+    assert "antimony-authoring" not in P.INDRA_SYSTEM_PROMPT
     # The `independence-audit` pointer rode with the retired data_regimes arm, which was never on
     # in practice: the lead must not be told to read a skill about a tool it does not hold.
     assert "get_skill('independence-audit')" not in P.DEFAULT_SYSTEM_PROMPT
@@ -284,6 +290,7 @@ def test_skills_are_tracked_like_prompts(tmp_path):
         "petab-skill-antimony-authoring",
         "petab-skill-independence-audit",
         "petab-skill-reading-fits",
+        "petab-skill-statements-grammar",
     }
     assert all(text.strip() for text in skills.values())
 

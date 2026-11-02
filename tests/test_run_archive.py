@@ -22,8 +22,10 @@ from gemot.explorer.archive import archive_run
 _OPTIMIZATION = {
     "n_starts": 3,
     "starts": [
+        # 4.6 counts as at best only within the server's 1-nll margin (PEtab-MCP#215), so the
+        # explorer's `n_at_best` below agrees with the fit result's `starts_at_best`.
         {"start": i, "id": str(i), "fval": f, "time": 1.5, "n_fval": 9, "x": [0.1 * i, 2.0]}
-        for i, f in enumerate([4.0, 4.0005, 9.0])
+        for i, f in enumerate([4.0, 4.6, 9.0])
     ],
     "trace": [{"start": 0, "iteration": 0, "fval": 50.0, "time": 0.1}],
     "x_names": ["k1", "sigma"],

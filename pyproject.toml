@@ -61,7 +61,7 @@ dependencies = [
     # the `statements` route or the text routes, never both; an entity map implies the former, and
     # `statements_only` is gone. #163: an offset in an observable formula is solved as an inner
     # offset, not a second scaling, so a problem with both fits them hierarchically again.
-    # Then 0da8743, main: #170: a provenance store keeps each fit's values once, in compact JSON.
+    # Then 0da8743: #170: a provenance store keeps each fit's values once, in compact JSON.
     # #181: fastmcp 4, so the mcp 2.0 SDK, which `mcp` below moves with. #183: python-dateutil < 3.
     # #175: the read tools answer small unless asked (`get_version(include=["simulation"])`,
     # `get_model_structure(reactions="")`), and a version's meta records its `k`. #173/#174: a
@@ -69,8 +69,23 @@ dependencies = [
     # its form. #184: the statements route's species at t = 0 are `seeds` (`set_seed`,
     # `remove_seed`, a record's `"seeds"`), not `starts`, with no alias. #186: amici >= 1.2.0 and
     # petab >= 0.10.0 instead of git pins, which the floors below and the `neural` extra follow.
+    # Then a576b52: #198: the fixed tables are listed as TSV, conditions one row per
+    # condition and one column per target, and `list_mechanisms` without `statement_types` is an
+    # index. #199: a seed at a condition target's id alone makes its agent that input, and an input
+    # read only at the start warns. #200, #211: a `make_changes` result carries only what is flagged
+    # or new since the parent (pins, flagged sigmas, `merge_hints` beside `n_merge_hints`) and the
+    # moving part of `improvement` and `progress`; `get_fit_summary` keeps all of it. #197: an
+    # estimated-sigma model is never adequate for the plateau stop, so it ends at the streak cap.
+    # #202: `parameters` or `n_starts` alone refit a version. #203, #212: `get_fit_diagnosis` ranks
+    # where an estimated sigma absorbed a misfit, and the fit result names the sigmas a
+    # heterogeneity test points at. #204, #209, #210: a statements refusal names its fix, and the
+    # `statements-grammar` skill is listed only on the statements route, `antimony-authoring` only
+    # on the text routes.
+    # Then 26e5b76, main: #215: a fit result carries `starts_at_best` (within 1 nll, the margin
+    # the explorer's `n_at_best` follows), and warns when most starts run out of the per-start time
+    # limit. #214: an edit names the species it prunes, and a condition target nothing reads warns.
     # NOT YET frohlich-lab/PEtab-MCP#177 (open): `wait_for_fit` (gemot#73, #79).
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@0da8743c036c3cc1443a655b873fc99ece47e756",
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@26e5b761cdcf461464e45e9a19f893a7c62e62e1",
     # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
     # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
     # is built on it; 2.3 is the first release fastmcp 4.1 accepts. What 2.0 changed for the code

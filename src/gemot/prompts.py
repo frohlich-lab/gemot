@@ -133,6 +133,14 @@ _MERGE_RULE = (
     "settled — finish on the unmerged model instead of re-arguing it."
 )
 
+#: Where the priced ties are. A fit result lists only the ties new since its parent version
+#: (frohlich-lab/PEtab-MCP#211), so one first listed on an earlier version shows on a later fit only
+#: as ``merge_hints: []`` beside ``n_merge_hints``.
+_MERGE_HINTS_WHERE = (
+    "`merge_hints` on your last fit, or on the earlier fit where they first appeared "
+    "(`n_merge_hints` counts every tie that still stands),"
+)
+
 #: The residual tests decide neither way when a run is done, and the actionable consequence in ops
 #: rather than in evidence a run does not have. A clean verdict is a weak stopping rule; a flag is
 #: no reason to go on either: in sweep round 3 the flags at the scored version did not separate
@@ -305,7 +313,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "scored as ONE version. "
     "Give `antimony` to author the FIRST model, `model_edits` (structured operations) to "
     "change it thereafter, `parameters` to retune the search space, or a model route AND "
-    "`parameters` when a structural change needs bounds; at least one is required. "
+    "`parameters` when a structural change needs bounds. "
     "Your step "
     "budget is the scarce resource, so put a whole coherent change in one call rather than "
     "dribbling it out. The result IS the fit (`bic`, `neg_log_likelihood`, `k` = `n_estimated` + "
@@ -406,8 +414,10 @@ DEFAULT_SYSTEM_PROMPT = (
     "rate-law form or topology).\n"
     "Call `finish` — the ONE control call — when bic has bottomed out: you cannot lower it "
     "further by adding, dropping or re-forming mechanism, or by a merge you judge sound. "
-    "`merge_hints` on your last fit name pairs the data cannot tell apart and what tying each "
-    "would buy. " + _MERGE_RULE + " The hints price IDENTIFIABILITY, not biology, so you supply "
+    + _MERGE_HINTS_WHERE
+    + " name pairs the data cannot tell apart and what tying each would buy. "
+    + _MERGE_RULE
+    + " The hints price IDENTIFIABILITY, not biology, so you supply "
     "the biology: merge ONLY parameters that plausibly ARE the same physical quantity. Finish "
     "on the LOWEST-bic such model.\n" + _RESIDUALS_DO_NOT_DECIDE_DONE + "\n"
     "Repeat until you call `finish`. When you finish, report the "
@@ -440,7 +450,9 @@ INDRA_SYSTEM_PROMPT = (
     + ", ".join(LEAD_SELF_READ_TOOLS)
     + ".\n\n"
     "1. ORIENT in at most ~3 rounds: describe_problem, list_observables, list_conditions, "
-    "list_experiments; read `get_skill('petab-model-building')` and `list_mechanisms` once.\n"
+    "list_experiments; read `get_skill('petab-model-building')` and "
+    "`get_skill('statements-grammar')` once, and `list_mechanisms`: its index first, then in ONE "
+    "call the rules of the types your rows use (`statement_types=[...]`).\n"
     "2. BUILD the WHOLE model in ONE `make_changes(statements=[...], bindings={...})` call. A row "
     "is the claim, one line, `prefix: <statement>`, e.g. `b_p: A{!L} phosphorylates B at S10`; "
     "its binding, under the same prefix in `bindings`, is the maths: `<policy> <parameter "
@@ -468,8 +480,10 @@ INDRA_SYSTEM_PROMPT = (
     "readout_* symbol an observable formula reads is yours to "
     "define in `readouts`: a formula over `amounts` (each the amount of an agent pattern, "
     "`{\"pB\": \"B{pS10}\"}`, or written in place as `amount(B{pS10})`) and "
-    "parameter ids; a readout reads at least one amount. Every target the condition table sets is a "
-    "parameter id your rows read, through a rate binding (`kf=\"k*dose\"`) or a seed. "
+    "parameter ids; a readout reads at least one amount. Every target the condition table sets is "
+    "an input your rows read: in a binding (`kf=\"k*dose\"`), or as the agent seeded at its id "
+    "alone (`{\"agent\": \"D\", \"amount\": \"dose\"}`). A seed whose amount is any other "
+    "expression of it (`2*dose`) takes only the first period's value. "
     "`seeds` declares what is present at time zero (an amount, or an expression over parameter "
     "ids); a species no rule makes and no seed declares starts at an ESTIMATED `<name>_init`, a "
     "free parameter the data may not pin. A seed costs nothing at 0 (empty), at 1 (a unit pool) "
@@ -499,9 +513,7 @@ INDRA_SYSTEM_PROMPT = (
     "yourself (`b_phos`, not `r7`). One call is one fit and one version: put a whole change in "
     "it. To go back AND change, add `base_version=N` to the `statement_edits`: they apply to "
     "version N's rows and the fit starts from version N's best fit. `base_version` is a "
-    "MODIFIER, never an action: without a change to the rows (alone, with only `parameters`, or "
-    "to refit with more `n_starts`) it is REJECTED, since a version refitted unchanged reproduces "
-    "a result you already have, and every fitted version is kept and the best one scored. "
+    "MODIFIER, never an action: sent on its own it is REJECTED. "
     "`get_model(format='statements')` shows the current rows, `version=N` an earlier one's.\n"
     "STRUCTURE BEFORE POLISH: while the residuals are systematic, change the mechanism (a "
     "statement, a policy, a species); bounds, merges and pinned initials finish a model whose "
@@ -509,8 +521,9 @@ INDRA_SYSTEM_PROMPT = (
     "`get_fit_diagnosis(sections='all')` and try a genuinely different structure. Every fitted version is kept and the run is scored on the best, so a change that "
     "did not help costs nothing.\n"
     "5. FINISH when bic has bottomed out: nothing "
-    "you add, drop or re-form lowers it, nor a merge you judge sound. `merge_hints` on your last "
-    "fit name pairs the data cannot tell apart. "
+    "you add, drop or re-form lowers it, nor a merge you judge sound. "
+    + _MERGE_HINTS_WHERE
+    + " name pairs the data cannot tell apart. "
     + _MERGE_RULE
     + " Merge only parameters that plausibly ARE the same physical quantity.\n"
     # The arm's own stopping rule, in place of _RESIDUALS_DO_NOT_DECIDE_DONE's "three failed calls
@@ -1051,9 +1064,11 @@ FINISH_DESCRIPTION = (
     "point's own replicate scatter — a flagged point there is one your current form does not "
     "reach. Its PASS is worth only its lof_df "
     "(replicated points minus your estimated structural parameters): a pass carrying weak: true, or "
-    "carrying no lof_df at all, does not show the form is right. `merge_hints` on your last fit "
-    "(the ARM message lists them as PRICED MERGES) are pairs of parameters the data cannot tell "
-    "apart: tying one into one symbol costs `dnll` in fit and changes the score by its `dscore` — "
+    "carrying no lof_df at all, does not show the form is right. "
+    + _MERGE_HINTS_WHERE
+    + " which the ARM message lists as PRICED MERGES, are pairs of parameters the data cannot "
+    "tell apart: tying one into one symbol costs `dnll` in fit and changes the score by its "
+    "`dscore` — "
     + _DSCORE_SIGN
     + ". "
     + _MERGE_RULE
@@ -1143,9 +1158,10 @@ FINISH_ARMED_WORST_TMPL = (
     " Worst observable {observable_id}: sign-test p={sign_p}, runs-test p={runs_p}."
 )
 
-# Appended to the ARM text when the fit's FIM still holds merges BIC would pay for. The same
-# verdict rides on every fit RESULT as `merge_hints`, but a rollback ran no fit and so carries none,
-# and this is where the finish is actually decided. The failure it addresses (blasi, run 1075fdf1):
+# Appended to the ARM text when the fit's FIM still holds merges BIC would pay for. A fit RESULT
+# carries only the `merge_hints` new since its parent (frohlich-lab/PEtab-MCP#211) and a rollback ran
+# no fit, while `get_fit_summary`, which the gate reads, has every tie that still stands, and this is
+# where the finish is actually decided. The failure it addresses (blasi, run 1075fdf1):
 # the run that came CLOSEST to the bar — +11.6 against <=10 — finished on a model whose own FIM
 # held a merge costing 0.001 nll against a 5.53 BIC charge, and never asked for it. ALL the ties the
 # charge covers (petab_mcp.identifiability.MERGE_HINT_LIMIT of them), not the cheapest alone: naming
@@ -1307,8 +1323,9 @@ BIOLOGY_BLIND_SEMANTICS = (
     "The problem is supplied through structured MCP tools. There are no problem files in your "
     "filesystem. All identifiers are anonymous: they encode no domain meaning. Use only the "
     "numerical measurements, input design, parameter constraints and mathematical consistency. "
-    "A condition sets each of its inputs (targetId) to a value (targetValue), and an experiment "
-    "applies conditions from given times on. Declare every input as the identically named model "
+    "A condition sets each of its inputs to a value (`list_conditions`: one row per condition, "
+    "one column per input it sets), and an experiment applies conditions from given times on. "
+    "Declare every input as the identically named model "
     "quantity and use it in the equations; do not estimate it. Condition-set initial values are "
     "inputs. "
     "A readout_* symbol is an output mapping: define it by an assignment rule, "
@@ -1425,8 +1442,8 @@ BIOLOGY_BLIND_TOOL_DESCRIPTIONS = {
     "describe_problem": "Inspect problem dimensions, anonymous identifiers, model state and fit budget.",
     "get_model_structure": "Read model entities, equations and initial-value rules.",
     "list_observables": "Read anonymous observable formulas, transformations and noise models.",
-    "list_conditions": "Read input settings: each row sets targetId, a model quantity, to targetValue.",
-    "list_experiments": "Read the design: from each time on, an experiment applies a condition.",
+    "list_conditions": "Read input settings: one row per condition, one column per model quantity it sets.",
+    "list_experiments": "Read the design: from each time on, an experiment applies the conditions its row lists.",
     "get_parameters": "Read parameter values, bounds, estimation scales, fixed flags and roles.",
     "get_measurements": "Read a page of numerical measurements by observable and experiment.",
     "list_data_tables": "List queryable numerical tables and their columns.",
