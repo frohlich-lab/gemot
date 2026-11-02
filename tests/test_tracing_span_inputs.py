@@ -1,18 +1,20 @@
-"""The span input stripping in ``tracing.py``.
+"""The span stripping in ``tracing.py``.
 
 Four parts. The first pins the wrapper span *names* against the installed LangChain /
 deepagents / our own guards: that stripping is name-based, so a rename upstream would silently
 stop the saving and let the collector DB go back to storing the agent transcript once per hook
 per step. The second checks the strip itself removes only ``input.*``, and only on those spans
-and on LLM spans. The third checks it is installed at all on the Phoenix provider ``register``
-returns. The fourth checks that an LLM span's input, written as a delta on its conversation's
-previous call, is rebuilt exactly, on the real graph and through everything that rewrites a
+and on LLM spans, and ``output.*`` only where a child span holds it. The third checks it is
+installed at all on the Phoenix provider ``register`` returns. The fourth checks that an LLM
+span's input, written as a delta on its conversation's previous call, and its tools, written once
+per conversation, are rebuilt exactly, on the real graph and through everything that rewrites a
 request.
 
 No ``importorskip``: ``dev`` installs the ``tracing`` extra. While these tests skipped in CI the
 third part could not fail, and it was the one that broke.
 """
 
+import functools
 import json
 import re
 
@@ -25,10 +27,13 @@ from gemot.tracing import (
     _PREFIX_LEN,
     _PREFIX_SPAN,
     _STRIPPED_INPUT_SPANS,
+    _TOOLS_SPAN,
     _make_stripping_exporter,
-    _strip_span_inputs,
+    _strip_span,
     rebuild_input_messages,
     rebuild_input_messages_from_dataframe,
+    rebuild_tools,
+    rebuild_tools_from_dataframe,
 )
 
 
@@ -61,7 +66,8 @@ def _real_graph_nodes():
 
 
 # Per-step nodes deliberately NOT stripped, each for its own reason:
-#   tools                              -- input.value is the tool call being dispatched (~0.5 KB)
+#   tools                              -- input.value is the tool call being dispatched (~0.5 KB);
+#       its output goes when it has a TOOL child, which holds it
 #   PatchToolCallsMiddleware.before_agent -- a `before_agent` hook: fires once per agent
 #       invocation, not once per step, so it cannot grow as O(steps^2). Measured at 87 KB
 #       average / 0.12 GB across the whole July corpus, against 27.1 GB for the three stripped.
@@ -118,7 +124,7 @@ def test_strips_only_the_input_attributes():
             "llm.token_count.prompt": 1234,
         },
     )
-    stripped = _strip_span_inputs(span)
+    stripped = _strip_span(span)
 
     assert "input.value" not in stripped.attributes
     assert "input.mime_type" not in stripped.attributes
@@ -136,7 +142,7 @@ def test_preserves_span_identity_and_timings():
         start_time=111,
         end_time=222,
     )
-    stripped = _strip_span_inputs(span)
+    stripped = _strip_span(span)
 
     assert stripped.parent == span.parent
     assert stripped.context == span.context
@@ -150,7 +156,6 @@ def test_leaves_other_spans_untouched():
         ("make_changes", "TOOL"),
         ("task", "TOOL"),
         ("model_build_run", "CHAIN"),
-        ("biocurator", "CHAIN"),
     ):
         span = _span(
             name,
@@ -160,7 +165,7 @@ def test_leaves_other_spans_untouched():
                 "input.mime_type": "application/json",
             },
         )
-        assert _strip_span_inputs(span) is span, f"{name} must not be stripped"
+        assert _strip_span(span) is span, f"{name} must not be stripped"
         assert span.attributes["input.value"] == "keep me"
 
 
@@ -181,7 +186,7 @@ def test_an_llm_span_keeps_its_messages_and_loses_their_serialized_copy():
             "llm.token_count.prompt": 457970,
         },
     )
-    stripped = _strip_span_inputs(span)
+    stripped = _strip_span(span)
 
     assert "input.value" not in stripped.attributes
     assert "input.mime_type" not in stripped.attributes
@@ -225,6 +230,146 @@ def test_exporter_strips_in_flight_and_delegates():
 
     exporter.shutdown()
     assert exported[-1] == "shutdown"
+
+
+def _node(span_id, name, kind="CHAIN", parent=None, *, output=True, value=None):
+    """A span with a payload of its own, under ``parent``: ``value`` as its input, and an output
+    unless it failed."""
+    attributes = {
+        "openinference.span.kind": kind,
+        "input.value": f"{name} in" if value is None else value,
+        "input.mime_type": "application/json",
+    }
+    if output:
+        attributes.update({"output.value": f"{name} out", "output.mime_type": "application/json"})
+    return ReadableSpan(
+        name=name,
+        context=SpanContext(trace_id=1, span_id=span_id, is_remote=False),
+        parent=None if parent is None else SpanContext(trace_id=1, span_id=parent, is_remote=False),
+        attributes=attributes,
+    )
+
+
+def _calls(n):
+    """A `tools` node's input: the tool calls LangGraph sent it."""
+    return json.dumps(
+        [{"name": "fit", "args": {}, "id": f"c{i}", "type": "tool_call"} for i in range(n)]
+    )
+
+
+def _tools_node(span_id, calls=1):
+    return _node(span_id, "tools", value=_calls(calls))
+
+
+def _exported(*batches, results=()):
+    """What reached the collector of a stripping exporter sent ``batches`` in turn, by span id."""
+    collector = _Collector(*results)
+    exporter = _make_stripping_exporter(collector)
+    for batch in batches:
+        exporter.export(batch)
+    return {s.context.span_id: s.attributes for s in collector.spans}
+
+
+def test_a_tools_node_keeps_its_output_only_without_a_tool_child():
+    """A `tools` node's output is its TOOL child's result as a LangGraph update, byte for byte
+    (2.8 MB of the 2026-10-31 raimundez run, gemot#92). A call to a tool that does not exist, or one
+    a guard rejected before dispatch, has no TOOL span: its ToolMessage is on the node only."""
+    spans = _exported([_node(2, "fit", "TOOL", parent=1), _tools_node(1), _tools_node(3)])
+
+    assert spans[2]["output.value"] == "fit out"
+    assert "output.value" not in spans[1] and "output.mime_type" not in spans[1]
+    assert spans[1]["input.value"] == _calls(1), "the tool call being dispatched stays"
+    assert spans[3]["output.value"] == "tools out"
+
+
+def test_a_child_without_an_output_holds_nothing():
+    """A call whose arguments did not validate has a TOOL span without an output: LangChain turns
+    the error into the ToolMessage at the `tools` node, which holds the only copy (Copilot on
+    gemot#98). An LLM call that failed holds no reply either."""
+    spans = _exported(
+        [
+            _node(2, "fit", "TOOL", parent=1, output=False),
+            _tools_node(1),
+            _node(4, "ChatOpenAI", "LLM", parent=3, output=False),
+            _node(3, "model"),
+        ]
+    )
+
+    assert spans[1]["output.value"] == "tools out"
+    assert spans[3]["output.value"] == "model out"
+
+
+def test_a_tools_node_goes_only_with_a_tool_child_for_each_call():
+    """LangChain sends each tool call to a `tools` node of its own, but a middleware's
+    `jump_to: "tools"` runs them all in one, whose input is the graph state. A node with a call no
+    child holds -- one rejected, or for a tool that does not exist -- keeps every result (Copilot on
+    gemot#98)."""
+    spans = _exported(
+        [
+            _node(2, "fit", "TOOL", parent=1),
+            _tools_node(1, calls=2),
+            _node(4, "fit", "TOOL", parent=3),
+            _node(5, "fit", "TOOL", parent=3),
+            _tools_node(3, calls=2),
+            _node(7, "fit", "TOOL", parent=6),
+            _node(6, "tools", value=json.dumps({"messages": []})),
+        ]
+    )
+
+    assert spans[1]["output.value"] == "tools out"
+    assert "output.value" not in spans[3]
+    assert spans[6]["output.value"] == "tools out"
+
+
+def test_a_model_node_loses_its_output_to_its_llm_child():
+    """A `model` node's output is its LLM child's reply as a LangGraph update, reasoning included
+    (1.3-2.2 MB on the round-3 runs). Its input was already going."""
+    spans = _exported(
+        [_node(2, "ChatOpenAI", "LLM", parent=1), _node(1, "model"), _node(3, "model")]
+    )
+
+    assert spans[2]["output.value"] == "ChatOpenAI out", "the LLM span keeps the reply"
+    assert not {"input.value", "output.value"} & set(spans[1])
+    assert spans[3]["output.value"] == "model out", "a node keeps what no child holds"
+
+
+def test_an_agent_loses_its_state_to_its_model_node():
+    """An agent's span -- the lead's, an analyst delegation's -- holds its whole state in and out
+    (one signal_engineer span: 149 KB in, 687 KB out), which its own LLM and TOOL spans and the
+    lead's `task` call hold. It is told by its `model` child, not by its name; the `task` call that
+    delegated it and the run span keep theirs."""
+    spans = _exported(
+        [
+            _node(4, "model", parent=3),
+            _node(3, "signal_engineer", parent=2),
+            _node(2, "task", "TOOL", parent=1),
+            _node(1, "model_build_run"),
+        ]
+    )
+
+    assert not {"input.value", "output.value", "input.mime_type", "output.mime_type"} & set(
+        spans[3]
+    )
+    for span_id, name in ((2, "task"), (1, "model_build_run")):
+        assert (spans[span_id]["input.value"], spans[span_id]["output.value"]) == (
+            f"{name} in",
+            f"{name} out",
+        )
+
+
+def test_a_child_counts_once_exported_and_not_after_a_failed_export():
+    """A span ends after its children, so they reach the exporter in an earlier batch or its own.
+    A child in a failed batch never reached the collector, so its node keeps the output."""
+    spans = _exported(
+        [_node(2, "fit", "TOOL", parent=1)],
+        [_tools_node(1)],
+        [_node(4, "fit", "TOOL", parent=3)],
+        [_tools_node(3)],
+        results=(SpanExportResult.SUCCESS, SpanExportResult.SUCCESS, SpanExportResult.FAILURE),
+    )
+
+    assert "output.value" not in spans[1]
+    assert 4 not in spans and spans[3]["output.value"] == "tools out"
 
 
 # ---------------------------------------------------------------------------- wiring
@@ -272,17 +417,27 @@ def test_install_declines_on_a_provider_it_cannot_replace_the_default_on():
 # --------------------------------------------------------------------------- input deltas
 
 _INPUT_KEY = re.compile(r"llm\.input_messages\.(\d+)\.(.+)")
+_TOOL_KEY = re.compile(r"llm\.tools\.(\d+)\.(.+)")
 _SYSTEM, _TASK = ("system", "You are the MODELING LEAD"), ("user", "build a model")
+_FIT, _LS = (
+    json.dumps({"type": "function", "function": {"name": name, "parameters": {}}})
+    for name in ("fit", "ls")
+)
 
 
-def _messages(attributes):
+def _messages(attributes, key=_INPUT_KEY):
     """A span's ``llm.input_messages`` as a list, one dict of attributes per message (OTel keeps
     them as flat keys)."""
     grouped = {}
-    for key, value in attributes.items():
-        if match := _INPUT_KEY.fullmatch(key):
+    for name, value in attributes.items():
+        if match := key.fullmatch(name):
             grouped.setdefault(int(match.group(1)), {})[match.group(2)] = value
     return [grouped[i] for i in sorted(grouped)]
+
+
+def _tools(attributes):
+    """A span's ``llm.tools`` as a list, one dict of attributes per tool."""
+    return _messages(attributes, _TOOL_KEY)
 
 
 def _id(span):
@@ -301,7 +456,9 @@ def _stored(spans):
     }
 
 
-def _llm_span(span_id, messages, *, agent="lead", namespace="model:1"):
+def _llm_span(span_id, messages, *, agent="lead", namespace="model:1", tools=()):
+    """An LLM span, offered ``tools`` the way OpenInference writes them: once as ``llm.tools``, and
+    again inside ``llm.invocation_parameters``."""
     attributes = {
         "openinference.span.kind": "LLM",
         "metadata": json.dumps({"lc_agent_name": agent, "checkpoint_ns": namespace}),
@@ -310,6 +467,11 @@ def _llm_span(span_id, messages, *, agent="lead", namespace="model:1"):
     for i, (role, content) in enumerate(messages):
         attributes[f"llm.input_messages.{i}.message.role"] = role
         attributes[f"llm.input_messages.{i}.message.content"] = content
+    if tools:
+        parameters = {"model": "glm", "tools": [json.loads(t) for t in tools]}
+        attributes["llm.invocation_parameters"] = json.dumps(parameters)
+    for i, schema in enumerate(tools):
+        attributes[f"llm.tools.{i}.tool.json_schema"] = schema
     context = SpanContext(trace_id=1, span_id=span_id, is_remote=False)
     return ReadableSpan(name="ChatOpenAI", context=context, attributes=attributes)
 
@@ -448,9 +610,13 @@ def test_the_full_input_is_written_again_every_few_calls():
 
 
 def test_a_failed_export_makes_every_conversation_start_over():
-    """A span in a failed batch never reached the collector, so the next call must not point at it."""
+    """A span in a failed batch never reached the collector, so the next call must not point at it,
+    for its input or its tools."""
     history = [_SYSTEM, _TASK]
-    calls = [(i, history + [("assistant", f"a{j}") for j in range(i)], {}) for i in range(1, 6)]
+    calls = [
+        (i, history + [("assistant", f"a{j}") for j in range(i)], {"tools": (_FIT,)})
+        for i in range(1, 6)
+    ]
     collector = _Collector(
         SpanExportResult.SUCCESS,
         SpanExportResult.FAILURE,
@@ -461,6 +627,55 @@ def test_a_failed_export_makes_every_conversation_start_over():
 
     assert [int(_id(s), 16) for s in spans] == [1, 3, 5]
     assert [s.attributes.get(_PREFIX_SPAN) for s in spans] == [None, None, None]
+    assert [s.attributes.get(_TOOLS_SPAN) for s in spans] == [None, None, None]
+
+
+def _stored_tools(spans):
+    """What each exported span stores of its tools, in the form `rebuild_tools` takes."""
+    return {_id(s): (_tools(s.attributes), s.attributes.get(_TOOLS_SPAN)) for s in spans}
+
+
+def test_a_conversation_writes_its_tools_where_it_writes_its_input_or_they_change():
+    """The same schemas, ~42 KB for the lead, were on every LLM span twice: 22-30% of a round-3
+    trace (gemot#92). `llm.invocation_parameters` loses its copy everywhere, and `llm.tools` is
+    written with a full input or a new tool list (the breaker hid one) -- and read back on every
+    call."""
+    offered = {1: (_FIT, _LS), 2: (_FIT, _LS), 3: (_FIT,), 4: (_FIT,), 5: (), 6: (_FIT,)}
+    calls, messages = [], [_SYSTEM, _TASK]
+    for i in range(1, _FULL_INPUT_EVERY + 3):
+        messages = [*messages, ("assistant", f"a{i}")]
+        calls.append((i, messages, {"tools": offered.get(i, (_FIT,))}))
+    spans = _export(calls).spans
+
+    written = [i for i, s in enumerate(spans, start=1) if _tools(s.attributes)]
+    assert written == [1, 3, _FULL_INPUT_EVERY + 1]
+    pointers = {i: s.attributes.get(_TOOLS_SPAN) for i, s in enumerate(spans, start=1)}
+    assert (pointers[2], pointers[4], pointers[5], pointers[6]) == (
+        _id(spans[0]),
+        _id(spans[2]),
+        None,
+        _id(spans[2]),
+    )
+    for span in spans:
+        parameters = span.attributes.get("llm.invocation_parameters")
+        assert parameters is None or json.loads(parameters) == {"model": "glm"}
+
+    rebuilt = rebuild_tools(_stored_tools(spans))
+    assert list(rebuilt.values()) == [
+        _tools(_llm_span(0, [], tools=offered.get(i, (_FIT,))).attributes)
+        for i in range(1, len(spans) + 1)
+    ]
+
+
+def test_the_invocation_parameters_keep_their_tools_where_llm_tools_was_cut_short():
+    """Past the span attribute limit the oldest attributes go, and `llm.tools` with them; then the
+    copy in `llm.invocation_parameters` is the only whole one."""
+    span = _llm_span(1, [_SYSTEM, _TASK], tools=(_FIT, _LS))
+    cut = {k: v for k, v in span.attributes.items() if not k.startswith("llm.tools.1.")}
+
+    stripped = _strip_span(ReadableSpan(name=span.name, context=span.context, attributes=cut))
+
+    assert stripped.attributes["llm.invocation_parameters"] == cut["llm.invocation_parameters"]
 
 
 def test_a_chain_with_a_missing_span_rebuilds_to_none_not_to_a_shorter_input():
@@ -489,6 +704,7 @@ def test_an_input_the_span_limit_truncated_is_left_as_it_is():
     assert collector.spans[1].attributes == truncated
 
 
+@functools.cache
 def _traced_run():
     """One run of the graph the driver builds -- ``create_deep_agent``, a lead and an analyst, the
     guards that rewrite a request or its result -- traced by the real OpenInference instrumentor,
@@ -497,12 +713,15 @@ def _traced_run():
     The script makes every case that turns an input into something other than an extension of the
     previous one happen at least once: a reasoning runaway the guard retries with the same input,
     a duplicated tool call the dispatch guard drops from state, the analyst's turn-limit notices,
-    and compaction (the model's profile gives it a window the history overflows).
+    and compaction (the model's profile gives it a window the history overflows). The model binds
+    the tools it is offered, as ``ChatOpenAI`` does, so every call records them, and the breaker
+    hides one from the lead halfway.
     """
     from deepagents import create_deep_agent
     from langchain_core.language_models.chat_models import BaseChatModel
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     from langchain_core.outputs import ChatGeneration, ChatResult
+    from langchain_core.utils.function_calling import convert_to_openai_tool
 
     # OpenInference's provider, which phoenix.otel's subclasses: its 10,000-attribute span limit,
     # not OTel's default 128, which truncates a long input before the exporter sees it.
@@ -511,6 +730,7 @@ def _traced_run():
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+    from gemot.agent.circuit_breaker import _disabled_tool_filter
     from gemot.agent.guards import (
         _reasoning_runaway_guard,
         _subagent_turn_limit,
@@ -519,6 +739,7 @@ def _traced_run():
     )
 
     ids = iter(range(1000))
+    breaker = {"disabled": set()}
 
     def turn(name, args, copies=1):
         call = {"name": name, "args": args, "id": f"c{next(ids)}", "type": "tool_call"}
@@ -528,6 +749,10 @@ def _traced_run():
         todos = [{"content": f"{text} " + "x" * 6000, "status": "pending"}]
         return turn("write_todos", {"todos": todos}, copies)
 
+    def trip():
+        breaker["disabled"].add("ls")
+        return todo("the breaker tripped")
+
     scripts = {
         "PERSONA-LEAD": [
             todo("plan"),
@@ -536,7 +761,10 @@ def _traced_run():
             ),
             AIMessage("", response_metadata={"finish_reason": "length"}),
             todo("refine", copies=2),
-            *[todo(f"step {i}") for i in range(10)],
+            *[todo(f"step {i}") for i in range(5)],
+            trip,
+            turn("ls", {"path": ["/"]}),  # arguments that do not validate
+            *[todo(f"step {i}") for i in range(5, 10)],
             AIMessage("done"),
         ],
         "PERSONA-MATH": [turn("ls", {"path": "/"}) for _ in range(3)] + [AIMessage("report")],
@@ -550,7 +778,7 @@ def _traced_run():
             return "scripted"
 
         def bind_tools(self, tools, **kwargs):
-            return self
+            return self.bind(tools=[convert_to_openai_tool(t) for t in tools], **kwargs)
 
         def _generate(self, messages, stop=None, run_manager=None, **kwargs):
             if not isinstance(messages[0], SystemMessage):
@@ -558,6 +786,7 @@ def _traced_run():
             else:
                 script = next(v for k, v in scripts.items() if k in messages[0].content)
                 reply = script.pop(0) if script else AIMessage("done")
+            reply = reply() if callable(reply) else reply
             return ChatResult(generations=[ChatGeneration(message=reply)])
 
     recorded, exported = InMemorySpanExporter(), InMemorySpanExporter()
@@ -582,7 +811,11 @@ def _traced_run():
                     "middleware": [_subagent_turn_limit(4)],
                 }
             ],
-            middleware=[_reasoning_runaway_guard(stats), _tool_dispatch_guard(stats)],
+            middleware=[
+                _reasoning_runaway_guard(stats),
+                _tool_dispatch_guard(stats),
+                _disabled_tool_filter(breaker),
+            ],
         )
         agent.invoke({"messages": [HumanMessage("build a model")]}, config={"recursion_limit": 100})
     finally:
@@ -591,22 +824,30 @@ def _traced_run():
     return recorded.get_finished_spans(), exported.get_finished_spans()
 
 
+def _kind(span):
+    return span.attributes.get("openinference.span.kind")
+
+
+def _llm(spans):
+    return [s for s in spans if _kind(s) == "LLM"]
+
+
+def _agent(spans, span_id):
+    span = next(s for s in spans if _id(s) == span_id)
+    return json.loads(span.attributes["metadata"])["lc_agent_name"]
+
+
 def test_every_input_is_rebuilt_exactly_on_the_real_graph():
     """The round trip, on spans the real instrumentor recorded from the real graph: every LLM
     span's input is rebuilt exactly from what was exported, and the cases that keep a final
     conversation from being the whole record each occurred and survived."""
-
-    def llm(spans):
-        return [s for s in spans if s.attributes.get("openinference.span.kind") == "LLM"]
-
     recorded, exported = _traced_run()
-    want = {_id(s): _messages(s.attributes) for s in llm(recorded)}
-    stored = _stored(llm(exported))
+    want = {_id(s): _messages(s.attributes) for s in _llm(recorded)}
+    stored = _stored(_llm(exported))
     assert rebuild_input_messages(stored) == want
 
     def agent(span_id):
-        span = next(s for s in recorded if _id(s) == span_id)
-        return json.loads(span.attributes["metadata"])["lc_agent_name"]
+        return _agent(recorded, span_id)
 
     deltas = {sid: (n, prev) for sid, (_, n, prev) in stored.items() if prev is not None}
     assert deltas, "no span was written as a delta"
@@ -621,6 +862,95 @@ def test_every_input_is_rebuilt_exactly_on_the_real_graph():
         return len(json.dumps(messages))
 
     assert sum(size(m) for m, _, _ in stored.values()) < 0.5 * sum(size(m) for m in want.values())
+
+
+def test_every_call_gets_its_tools_back_on_the_real_graph():
+    """`llm.tools` read back for every call of the run, lead and analyst, from the span that holds
+    them: written by each conversation once, and by the lead again when the breaker hid a tool.
+    deepagents' summarizer is offered none."""
+    recorded, exported = _traced_run()
+    want = {_id(s): _tools(s.attributes) for s in _llm(recorded)}
+    stored = _stored_tools(_llm(exported))
+    assert rebuild_tools(stored) == want
+
+    summarizer = {
+        _id(s) for s in _llm(recorded) if _messages(s.attributes)[0]["message.role"] != "system"
+    }
+    assert summarizer and {sid for sid, tools in want.items() if tools} == set(want) - summarizer
+    written = [sid for sid, (tools, _) in stored.items() if tools]
+    lead = [len(want[sid]) for sid in written if _agent(recorded, sid) == "lead"]
+    assert lead == [lead[0], lead[0] - 1], "the lead's first call, and its first after the breaker"
+    assert [_agent(recorded, sid) for sid in written if _agent(recorded, sid) != "lead"] == [
+        "mathematician"
+    ]
+    for span in _llm(exported):
+        assert "tools" not in json.loads(span.attributes.get("llm.invocation_parameters", "{}"))
+
+
+def _tool_results(output):
+    """The contents of the ToolMessages in a serialized output, wherever they sit in it."""
+    found = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            if value.get("type") == "tool" and isinstance(value.get("data"), dict):
+                found.append(value["data"]["content"])
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(json.loads(output))
+    return found
+
+
+def test_what_a_child_span_holds_goes_from_its_parent_on_the_real_graph():
+    """The structure the output stripping reads, on the real graph: a TOOL span's parent is a
+    `tools` node, an LLM span's is a `model` node, and a `model` node's is its agent's span. A
+    `tools` node's result is its TOOL child's; a call to a tool that does not exist (`write_todos`,
+    which this graph does not install) has no TOOL span, and keeps its result on the node. The reply
+    stays on the LLM span, and what the lead got back from its analyst on the `task` call."""
+    recorded, exported = _traced_run()
+    stored = {_id(s): s.attributes for s in exported}
+    children = {}
+    for span in recorded:
+        if span.parent is not None:
+            children.setdefault(format(span.parent.span_id, "016x"), []).append(span)
+
+    nodes = [s for s in recorded if s.name == "tools"]
+    tools = {_id(n): [c for c in children.get(_id(n), []) if _kind(c) == "TOOL"] for n in nodes}
+    held = {
+        sid: [c.attributes["output.value"] for c in spans if "output.value" in c.attributes]
+        for sid, spans in tools.items()
+    }
+    unheld = {}
+    for node in nodes:
+        output = node.attributes["output.value"]
+        if held[_id(node)]:
+            assert _tool_results(output) == [r for o in held[_id(node)] for r in _tool_results(o)]
+            assert "output.value" not in stored[_id(node)]
+        else:
+            unheld[_id(node)] = _tool_results(output)[0]
+            assert stored[_id(node)]["output.value"] == output
+        assert stored[_id(node)]["input.value"] == node.attributes["input.value"]
+    assert any(held.values())
+    assert {"is not a valid tool" in r for r in unheld.values()} == {True, False}
+    (failed,) = [sid for sid in unheld if tools[sid]]
+    assert unheld[failed].startswith("Error invoking tool 'ls'"), "a TOOL child without an output"
+
+    models = [s for s in recorded if s.name == "model"]
+    assert all(any(_kind(c) == "LLM" for c in children[_id(m)]) for m in models)
+    assert not any("output.value" in stored[_id(m)] for m in models)
+    assert all(stored[_id(s)]["output.value"] for s in _llm(recorded))
+
+    agents = {s.name for s in recorded if any(c.name == "model" for c in children.get(_id(s), []))}
+    assert agents == {"lead", "mathematician"}
+    for span in recorded:
+        if span.name in agents:
+            assert not {"input.value", "output.value"} & set(stored[_id(span)])
+    (task,) = [s for s in exported if s.name == "task"]
+    assert _tool_results(task.attributes["output.value"]) == ["report"]
 
 
 def test_a_phoenix_dataframe_is_read_with_its_prefix_nested_or_flat():
@@ -663,3 +993,37 @@ def test_a_phoenix_dataframe_is_read_with_its_prefix_nested_or_flat():
     want = {"a": [system, task], "b": [system, task, a1], "c": [system, task, a1]}
     assert rebuild_input_messages_from_dataframe(nested) == want
     assert rebuild_input_messages_from_dataframe(flat) == want
+
+
+def test_a_phoenix_dataframe_is_read_with_its_tools_pointer_nested_or_flat():
+    """``gemot.tools_span`` comes back nested in ``attributes.gemot`` too, beside the prefix. A span
+    pointing at one the dataframe does not hold has no tools to give, not an empty list."""
+    import pandas as pd
+
+    fit, ls = ({"tool.json_schema": schema} for schema in (_FIT, _LS))
+    rows = [
+        ("a", [fit, ls], None),
+        ("b", float("nan"), "a"),
+        ("c", [fit], None),
+        ("d", float("nan"), "c"),
+        ("e", float("nan"), "gone"),
+    ]
+    nested = pd.DataFrame(
+        [
+            {
+                "context.span_id": span_id,
+                "attributes.openinference.span.kind": "LLM",
+                "attributes.llm.tools": tools,
+                "attributes.gemot": None if holder is None else {"tools_span": holder},
+            }
+            for span_id, tools, holder in rows
+        ]
+        + [{"context.span_id": "t", "attributes.openinference.span.kind": "TOOL"}]
+    ).set_index("context.span_id")
+    flat = nested.drop(columns="attributes.gemot").assign(
+        **{"attributes.gemot.tools_span": [holder for _, _, holder in rows] + [None]}
+    )
+
+    want = {"a": [fit, ls], "b": [fit, ls], "c": [fit], "d": [fit], "e": None}
+    assert rebuild_tools_from_dataframe(nested) == want
+    assert rebuild_tools_from_dataframe(flat) == want

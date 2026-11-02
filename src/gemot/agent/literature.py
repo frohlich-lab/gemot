@@ -121,8 +121,8 @@ def _wrap_literature_recorder(tools: list, log: list) -> list:
 
         def _make(name, orig):
             @wraps(orig)
-            async def _record(runtime=None, **arguments):
-                result = await orig(runtime=runtime, **arguments)
+            async def _record(**arguments):
+                result = await orig(**arguments)
                 try:
                     content = result[0] if isinstance(result, tuple) else result
                     text = _content_to_text(content)
@@ -156,7 +156,7 @@ def _wrap_literature_recorder(tools: list, log: list) -> list:
                     pass
                 return result
 
-            try:  # keep the original signature so langchain still injects `runtime` correctly
+            try:  # keep the original signature: StructuredTool reads it for `callbacks` and `config`
                 _record.__signature__ = inspect.signature(orig)
             except (ValueError, TypeError):  # pragma: no cover - defensive
                 pass

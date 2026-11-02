@@ -76,6 +76,40 @@ def test_a_shadow_installed_after_the_tools_were_built_sees_every_call():
     assert message.artifact == {"structured_content": {"n_starts": 3, "nll": 1.5}}
 
 
+def test_a_wrapped_tool_sends_the_server_only_its_own_arguments():
+    """gemot#90: the circuit breaker and the literature recorder passed `runtime=None` on to the
+    coroutine they wrap. langchain-mcp-adapters' coroutine took `runtime` as a parameter of its
+    own; `langchain.mcp`'s takes `**arguments`, so `runtime` went to the server, which refused
+    every call of every tool, and runs built no model. The tests that wrap fake coroutines could
+    not see it. Both wrappers are layered here as the driver layers them."""
+    from gemot.agent.circuit_breaker import _new_breaker_state, _wrap_tools_with_circuit_breaker
+    from gemot.agent.literature import _wrap_literature_recorder
+
+    async def go():
+        async with _session() as s:
+            tools = await load_mcp_tools(s)
+            _wrap_tools_with_circuit_breaker(tools, _new_breaker_state())
+            log: list = []
+            _wrap_literature_recorder(tools, log)
+            fit = {t.name: t for t in tools}["fit"]
+            sent = []
+            original = s.call_tool
+
+            async def shadow(name, arguments, *args, **kwargs):
+                sent.append(arguments)
+                return await original(name, arguments, *args, **kwargs)
+
+            s.call_tool = shadow
+            message = await fit.ainvoke(_call(fit, n_starts=3))
+            return sent, message, log
+
+    sent, message, log = asyncio.run(go())
+    assert sent == [{"n_starts": 3}]
+    assert message.status == "success"
+    assert message.artifact == {"structured_content": {"n_starts": 3, "nll": 1.5}}
+    assert log[0]["query"] == {"n_starts": 3}
+
+
 def test_an_error_result_reaches_the_model_as_a_failed_tool_message():
     """PEtab-MCP#95 reports a full disk as an `is_error` result; the circuit breaker reads it off
     a failed ToolMessage carrying the server's text, as it did through the adapters."""

@@ -141,11 +141,11 @@ def test_a_result_on_a_full_disk_stops_the_run_and_nothing_more_reaches_the_serv
     errors; the model then re-sent them until the dedup guard refused."""
     calls = []
 
-    async def _make_changes(runtime=None, **kw):
+    async def _make_changes(**kw):
         calls.append("make_changes")
         return (_text(json.dumps({"applied": False, "error": _FIT_CRASH})), None)
 
-    async def _get_model(runtime=None, **kw):
+    async def _get_model(**kw):
         calls.append("get_model")
         return (_text('{"ok": true}'), None)
 
@@ -154,9 +154,9 @@ def test_a_result_on_a_full_disk_stops_the_run_and_nothing_more_reaches_the_serv
     B._wrap_tools_with_circuit_breaker(tools, state)
 
     with pytest.raises(I.InfrastructureError, match="Disk quota exceeded"):
-        asyncio.run(tools[0].coroutine(runtime=None))
+        asyncio.run(tools[0].coroutine())
     with pytest.raises(I.InfrastructureError):  # refused before the server, not forwarded
-        asyncio.run(tools[1].coroutine(runtime=None))
+        asyncio.run(tools[1].coroutine())
 
     assert calls == ["make_changes"]
     assert state["infrastructure"]["tool_calls"] == 1
@@ -169,7 +169,7 @@ def test_a_raised_error_on_a_full_disk_stops_the_run_too():
     must not take that path, which hands the model something it cannot fix."""
     original = RuntimeError(_TOOL_ERROR)
 
-    async def _make_changes(runtime=None, **kw):
+    async def _make_changes(**kw):
         raise original
 
     state = B._new_breaker_state()
@@ -177,7 +177,7 @@ def test_a_raised_error_on_a_full_disk_stops_the_run_too():
     B._wrap_tools_with_circuit_breaker([tool], state)
 
     with pytest.raises(I.InfrastructureError) as raised:
-        asyncio.run(tool.coroutine(runtime=None))
+        asyncio.run(tool.coroutine())
     assert raised.value.__cause__ is original
     assert state["infrastructure"]["tool_calls"] == 1
 
@@ -191,7 +191,7 @@ def test_the_servers_report_stops_the_run_instead_of_reaching_the_model():
     from langchain.mcp.tools import _convert_call_tool_result
     from mcp.types import CallToolResult, TextContent
 
-    async def _make_changes(runtime=None, **kw):
+    async def _make_changes(**kw):
         return _convert_call_tool_result(
             CallToolResult(content=[TextContent(type="text", text=_REPORT)], is_error=True)
         )
@@ -201,13 +201,13 @@ def test_the_servers_report_stops_the_run_instead_of_reaching_the_model():
     B._wrap_tools_with_circuit_breaker([tool], state)
 
     with pytest.raises(I.InfrastructureError) as raised:
-        asyncio.run(tool.coroutine(runtime=None))
+        asyncio.run(tool.coroutine())
     assert raised.value.evidence.cause == I.DISK_FULL
     assert raised.value.evidence.text.startswith("make_changes: infrastructure_error: disk_full: ")
 
 
 def test_an_external_tools_full_disk_is_not_this_runs():
-    async def _lookup(runtime=None, **kw):
+    async def _lookup(**kw):
         return (_text("upstream cache: No space left on device"), None)
 
     state = B._new_breaker_state()
@@ -216,7 +216,7 @@ def test_an_external_tools_full_disk_is_not_this_runs():
         [tool], state, transport_disable_names={"get_reactome_info_by_identifier"}
     )
 
-    asyncio.run(tool.coroutine(runtime=None))
+    asyncio.run(tool.coroutine())
     assert state["infrastructure"]["tool_calls"] == 0
 
 

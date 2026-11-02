@@ -118,10 +118,10 @@ def test_wrapper_trims_and_preserves_result_shape():
         def __init__(self, name, coro):
             self.name, self.coroutine = name, coro
 
-    async def _string_coro(runtime=None, **kw):
+    async def _string_coro(**kw):
         return payload  # bare-string content
 
-    async def _tuple_coro(runtime=None, **kw):
+    async def _tuple_coro(**kw):
         return (payload, {"artifact": 1})  # (content, artifact) content
 
     log: list = []
@@ -131,11 +131,11 @@ def test_wrapper_trims_and_preserves_result_shape():
     ]
     mod._wrap_literature_recorder(tools, log)
 
-    out_str = asyncio.run(tools[0].coroutine(runtime=None, query="q"))
+    out_str = asyncio.run(tools[0].coroutine(query="q"))
     assert isinstance(out_str, str) and len(out_str) < len(payload)
     assert "meshHeadingList" not in out_str and "10.1038/s41577-020-0306-5" in out_str
 
-    out_tup = asyncio.run(tools[1].coroutine(runtime=None, query="q"))
+    out_tup = asyncio.run(tools[1].coroutine(query="q"))
     assert isinstance(out_tup, tuple) and out_tup[1] == {"artifact": 1}  # artifact preserved
     assert isinstance(out_tup[0], str) and len(out_tup[0]) < len(payload)
 
