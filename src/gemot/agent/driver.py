@@ -746,7 +746,7 @@ async def run_deepagents(
 
     ``max_wall_seconds`` (optional) is a self-imposed total-runtime budget, checked between
     graph super-steps: once exceeded, the loop stops gracefully (like running out of resume
-    attempts) so ``_judge`` can score whatever is currently committed, INSTEAD of racing an
+    attempts) so ``_judge`` can restore + score the best-scoring checkpoint, INSTEAD of racing an
     outer resource limit (e.g. a Slurm ``--time`` allocation) that would hard-kill the process
     with no chance to write a result at all. A sweep should size this comfortably BELOW its
     Slurm time limit (see ``slurm/make_sweep.py``'s ``--max-wall-seconds`` / ``--time``) so this
@@ -1571,7 +1571,7 @@ async def run_deepagents(
             print(
                 f"[agent] wall-time budget ({max_wall_seconds:.0f}s) reached with less than "
                 f"one step ({step_headroom:.0f}s) of headroom left — stopping at this step "
-                "boundary; the judge scores whatever is currently committed."
+                "boundary; the judge restores + scores the best-scoring checkpoint."
             )
             break
         if token_budget_exceeded:
@@ -1582,7 +1582,7 @@ async def run_deepagents(
                 f"[agent] token budget exceeded: "
                 f"{token_accountant.prompt + token_accountant.completion:,} tokens over "
                 f"{max_run_tokens:,} in {token_accountant.n_calls} LLM calls — stopping at this "
-                "step boundary; the judge scores whatever is currently committed."
+                "step boundary; the judge restores + scores the best-scoring checkpoint."
             )
             break
         if context_budget_exceeded:
