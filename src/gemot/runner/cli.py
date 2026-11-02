@@ -118,8 +118,8 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Self-imposed total-runtime budget (seconds): once exceeded, the agent "
-        "stops at the next clean step boundary and the judge scores whatever is "
-        "currently committed, instead of racing an outer resource limit (e.g. a "
+        "stops at the next clean step boundary and the judge restores + scores the "
+        "best-scoring checkpoint, instead of racing an outer resource limit (e.g. a "
         "Slurm --time allocation) that would hard-kill the process with no "
         "result at all. Default: unlimited (only the stall watchdog + outer "
         "scheduler limit apply). A sweep should set this comfortably below its "
