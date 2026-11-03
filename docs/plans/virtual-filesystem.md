@@ -168,9 +168,9 @@ These run in CI once frohlich-lab/gemot#37 installs bubblewrap there. A cluster 
 1. **PEtab-MCP: `--workspace`, the copy and the archive.**
 2. **gemot:** the sandbox additions, the package tuples, the levelled ablation, the prompts and the
    tests, with the pin bumped to step 1.
-3. **gemot_iclr_2026:** bump the gemot pin and add the levels to the sweep.
 
-PEtabAgentBench does not change.
+PEtabAgentBench does not change, and neither does gemot_iclr_2026: its pins are frozen with the
+paper, so the levels run from the next sweep driver.
 
 ## Open questions
 
