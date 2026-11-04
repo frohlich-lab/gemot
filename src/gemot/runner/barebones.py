@@ -52,7 +52,7 @@ from ..prompts import (
     BAREBONES_TASK,
 )
 from ..scenario import Baseline, Scenario
-from .clock import _held_out_fits, _make_call, _wrap_call_timeout, _wrap_tool_clock
+from .clock import _make_call, _wrap_call_timeout, _wrap_tool_clock
 from .endpoints import BIO_MCP_URLS
 from .failure import _should_reraise, _summarize_exc, _write_degraded_result
 from .judge import _judge
@@ -549,7 +549,7 @@ async def _judge_delivered(
     minus ``compute_seconds``, booked all of that as LLM time (#8)."""
     scoring_s = time.monotonic() - agent_done
     meta = {**meta, "scoring_seconds": round(scoring_s, 1)}
-    _wrap_call_timeout(session, args.n_starts, held_out_fits=_held_out_fits(scenario.example_dir))
+    _wrap_call_timeout(session)
     clock = _wrap_tool_clock(session)
     clock.seconds += meta["workspace_audit"]["shell_busy_seconds"] + scoring_s
     call = _make_call(session)

@@ -261,7 +261,7 @@ def _drive(monkeypatch, tmp_path, run_deepagents):
         raise AssertionError("a run on a failed infrastructure must not be judged")
 
     clock = SimpleNamespace(calls=0, by_tool={}, reject_summary=lambda: {})
-    monkeypatch.setattr(drive, "_wrap_call_timeout", lambda session, n, **_: None)
+    monkeypatch.setattr(drive, "_wrap_call_timeout", lambda session: None)
     monkeypatch.setattr(drive, "_wrap_tool_clock", lambda session: clock)
     monkeypatch.setattr(drive, "_make_call", lambda session: _call)
     monkeypatch.setattr(drive, "_base_meta", lambda *a: {"run_started_at": "t0", "git_sha": "s"})

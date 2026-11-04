@@ -22,10 +22,7 @@ import contextlib
 import pytest
 
 from gemot.agent.circuit_breaker import _is_call_timeout, _is_transport_error
-from gemot.fit_budget import fit_time_budget
-from gemot.runner.clock import NON_FIT_CALL_TIMEOUT_S, _make_call, _wrap_call_timeout
-
-DEFAULT_N_STARTS = 50
+from gemot.runner.clock import _make_call, _wrap_call_timeout
 
 
 def _rosenbrock_multistart(n_starts: int) -> float:
@@ -83,13 +80,13 @@ async def _session():
 
 
 @pytest.mark.parametrize("n_starts", [1, 4])
-def test_a_fit_that_finishes_inside_its_budget_returns_normally(n_starts):
+def test_a_fit_that_finishes_inside_the_window_returns_normally(n_starts):
     """The control. Without this, a test asserting "it times out" also passes when the tool is
     simply broken."""
 
     async def go():
         async with _session() as s:
-            _wrap_call_timeout(s, DEFAULT_N_STARTS)
+            _wrap_call_timeout(s)
             out = await _make_call(s)("make_changes", n_starts=n_starts)
             assert "fitted" in str(out)
 
@@ -118,89 +115,6 @@ def test_an_overrunning_fit_raises_a_BARE_MCPError_that_the_classifier_catches()
     assert exc.code == REQUEST_TIMEOUT
     assert _is_call_timeout(exc)
     assert _is_transport_error(exc)
-
-
-def _budgets_reaching_the_transport(calls):
-    """The `read_timeout_seconds` each of `calls` actually arrives at the transport with.
-
-    The spy goes on BEFORE `_wrap_call_timeout`, so it sees the final value rather than what the
-    caller passed.
-    """
-
-    async def go():
-        async with _session() as s:
-            seen: list[float | None] = []
-            original = s.call_tool
-
-            async def spy(*a, **kw):
-                got = kw.get("read_timeout_seconds")
-                seen.append(got)
-                return await original(*a, **kw)
-
-            s.call_tool = spy
-            _wrap_call_timeout(s, DEFAULT_N_STARTS)
-            for tool, args in calls:
-                await _make_call(s)(tool, **args)
-            return seen
-
-    return asyncio.run(go())
-
-
-def test_a_call_that_cannot_fit_is_not_given_a_fit_budget():
-    """The sizing keyed only on `n_starts`, so every READ inherited the whole fit budget — 4200s
-    at bachmann's settings. That is what let a wedged read cost a multistart's worth of wall clock
-    on a dead server, ten times over.
-
-    Fixed once in `_wrap_call_timeout` rather than per handle, deliberately: an explicit
-    `read_timeout_seconds` sets `override` and DISCARDS the `in_flight` queue term, and two
-    earlier attempts bounded individual handles exactly that way."""
-    read, fit = _budgets_reaching_the_transport(
-        [("get_progress", {}), ("make_changes", {"n_starts": 1})]
-    )
-
-    assert read == NON_FIT_CALL_TIMEOUT_S
-    assert fit == fit_time_budget(DEFAULT_N_STARTS)
-    assert read < fit
-
-
-def test_a_read_queued_behind_a_live_fit_still_gets_to_outwait_it():
-    """The half a flat per-handle bound threw away. `make_changes` is a sync `def` that mcp runs
-    on the event loop under `session.lock`, so a read issued while a fit is in flight cannot be
-    answered until the fit ends — bounding it at NON_FIT_CALL_TIMEOUT_S alone would 408 a
-    perfectly healthy call. The finish gate reads through this path from inside a super-step, and
-    five such refusals relabel a fully fitted run `no_model_built`."""
-
-    def _read_budget_while_fitting(fit_args):
-        async def go():
-            async with _session() as s:
-                seen: list[float] = []
-                original = s.call_tool
-
-                async def spy(*a, **kw):
-                    seen.append(kw["read_timeout_seconds"])
-                    return await original(*a, **kw)
-
-                s.call_tool = spy
-                _wrap_call_timeout(s, DEFAULT_N_STARTS)
-                call = _make_call(s)
-                fit = asyncio.create_task(call("make_changes", **fit_args))
-                await asyncio.sleep(0)  # let the fit arm and register in `in_flight`
-                await call("get_progress")
-                await fit
-                return seen
-
-        return asyncio.run(go())[1]
-
-    assert _read_budget_while_fitting({"n_starts": 4}) > NON_FIT_CALL_TIMEOUT_S, (
-        "a read queued behind a fit must outwait it, not just its own bound"
-    )
-    # The case that actually dominates: the server's docstring tells the model to OMIT n_starts
-    # unless it wants more than the default, so most real fits carry no count. Those were sized
-    # correctly for themselves but never registered in `in_flight`, leaving a concurrent read on
-    # a flat 900s against a server whose event loop was held for thousands of seconds.
-    assert _read_budget_while_fitting({}) > NON_FIT_CALL_TIMEOUT_S, (
-        "a fit that omitted n_starts must still be visible to the queue term"
-    )
 
 
 # --- liveness -------------------------------------------------------------------------------

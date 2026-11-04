@@ -104,11 +104,11 @@ _TRANSPORT_ERROR_NAMES = frozenset(
 def _is_call_timeout(exc: BaseException) -> bool:
     """True for mcp's per-call read timeout — a bare ``MCPError`` carrying ``REQUEST_TIMEOUT``.
 
-    ``runner.clock._wrap_call_timeout`` gives every call a ``read_timeout_seconds`` sized to its
-    own fit, and the session layer turns an expiry into ``MCPError(code=REQUEST_TIMEOUT)``
-    (``mcp/shared/jsonrpc_dispatcher.py``) rather than anything in the httpx2 family. The code is
-    the SDK's constant, -32001 since mcp 2.0; mcp 1.x sent HTTP's 408, and a match on that never
-    fires now (tests/test_judge_call_timeout.py pins the real shape). That distinction matters
+    ``runner.clock._wrap_call_timeout`` cuts a call the server has sent no heartbeat on for
+    ``CALL_IDLE_WINDOW_S`` and raises ``MCPError(code=REQUEST_TIMEOUT)``, as mcp's own session
+    clock does on an expiry (``mcp/shared/jsonrpc_dispatcher.py``), rather than anything in the
+    httpx2 family. The code is the SDK's constant, -32001 since mcp 2.0; mcp 1.x sent HTTP's 408,
+    and a match on that never fires now (tests/test_judge_call_timeout.py pins the real shape). That distinction matters
     here: a timed-out call is NOT a tool error the model should see and retry. The server is
     still running the abandoned multistart: gemot never cancels it, though mcp 2 would by default
     (``runner.main._ToolCallsRunOn``). A fit tool's timeout is handed to

@@ -644,7 +644,7 @@ def _record_windows(mod, monkeypatch) -> list:
     real_next_step = mod.driver._next_step
     windows = []
 
-    async def _recording(agen, timeout):
+    async def _recording(agen, timeout, **_):
         windows.append(timeout)
         return await real_next_step(agen, 0.01)
 
@@ -756,3 +756,25 @@ def test_the_wall_budget_bounds_an_outage_wait(monkeypatch):
     )
     assert result["provider_outage_retries"] == 1
     assert len(agent.inputs) == 2
+
+
+@requires_harness
+def test_time_queued_for_the_fit_pool_is_not_the_runs(monkeypatch):
+    """gemot#106: the run of the test above, but with 100s of it spent queued for a shared fit
+    pool. That wait moves the end of the budget out, so the second outage wait still fits before
+    the last step, and the run goes on to its normal end."""
+    from gemot.runner.clock import _Heartbeats
+
+    mod = _load_agent_module()
+    heartbeats = _Heartbeats()
+    heartbeats.queue_seconds = 100.0
+    result, agent = _run(
+        mod,
+        monkeypatch,
+        _Probe(model_authored=True),
+        agent=_ScriptedAgent("chunk", "chunk"),
+        driver_options={"max_wall_seconds": 100.0, "heartbeats": heartbeats},
+    )
+
+    assert result["stop_reason"] == "silent_stop"
+    assert result["provider_outage_retries"] == 2

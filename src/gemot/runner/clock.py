@@ -1,23 +1,31 @@
-"""The MCP call handle the pipeline uses, and the tool clock wrapped around it.
+"""The MCP call handle the pipeline uses, and the two shadows wrapped around ``call_tool``.
 
 ``_ToolClock`` measures the wall-clock the run actually spent INSIDE tool calls. It tracks the
 UNION of busy intervals rather than their sum, so concurrent analyst calls are not double-counted
 and the reported compute time stays comparable across runs with different panel concurrency.
+
+``_wrap_call_timeout`` cuts a call the server has gone silent on: every call lives on the server's
+heartbeats (PEtab-MCP#224) rather than on a budget sized from its fit, which a fit queued for a
+shared pool outlasts (gemot#106). What the heartbeats say across the run, :class:`_Heartbeats`,
+feeds the driver's stall watchdog and takes the run's queue time out of its wall budget.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import math
+import re
 import time
-from pathlib import Path
+from collections.abc import Callable, Iterator
 
-from mcp import ClientSession
+import anyio
+from mcp import ClientSession, MCPError
+from mcp.types import REQUEST_TIMEOUT
 
 from .. import infrastructure
 from ..causal_constraints import CONSTRAINT_VIOLATED, broken_constraints
-from ..fit_budget import fit_time_budget_for
-from ..paths import validation_measurements_path
+from ..fit_budget import FIT_COMPILE_MARGIN_S
 
 
 # --------------------------------------------------------------------------- MCP glue
@@ -41,58 +49,25 @@ def _unwrap(result):
         return joined
 
 
-#: Per-call budget for a call that CANNOT fit -- every read, plus `restore_version`, which reuses
-#: a stored fit without recompiling or refitting. Applied in `_wrap_call_timeout` (below) so it
-#: reaches EVERY caller: the judge, the driver's probes, and the agent panel's own reads, all of
-#: which used to inherit the whole fit budget because the sizing keyed only on `n_starts`.
-#:
-#: Deliberately NOT a per-caller override. Two earlier attempts bounded individual handles by
-#: passing `read_timeout_seconds` explicitly, which sets `override` below and so DISCARDS the
-#: `in_flight` queue term -- and the queue term is precisely what keeps a read honest when it is
-#: sitting behind a live multistart. The finish gate reads through such a handle from INSIDE a
-#: super-step (`_finish_tool(..., probe=progress_probe)`), so a flat bound there 408s a healthy
-#: read, `_current_fit` comes back empty, the gate refuses the finish, and five refusals relabel a
-#: fully fitted run `no_model_built`. Bounding once here keeps the queue term for reads too.
-NON_FIT_CALL_TIMEOUT_S = 900.0
+#: How long a call may go without a live heartbeat before :func:`_wrap_call_timeout` cuts it. The
+#: server sends one every 30 s while a call runs (PEtab-MCP#224's ``HEARTBEAT_S``), so this is ten
+#: missed in a row: far past the 3 s a GIL-holding AMICI build silenced the server's event loop in
+#: PEtab-MCP#224, and far inside the stall watchdog's floor (``agent.driver._STEP_STALL_TIMEOUT_S``),
+#: so a silent server's fit call returns its timeout to the lead before the watchdog cancels the step.
+CALL_IDLE_WINDOW_S = 300.0
 
-#: The judge's held-out score (:mod:`petab_mcp.validation_data`). A read on a fixed-θ set, but a
-#: transfer set REFITS the model on it, so `_wrap_call_timeout` sizes it by :func:`_held_out_fits`.
+#: The judge's held-out score (:mod:`petab_mcp.validation_data`).
 HELD_OUT_TOOL = "evaluate_validation_data"
-
-
-def _held_out_fits(example_dir: Path) -> int:
-    """How many multistart fits :data:`HELD_OUT_TOOL` runs on the example's held-out set.
-
-    Zero for a fixed-θ set, which is scored at the fitted point; one per refit unit for a transfer
-    set (one when it names no units), since the server refits each unit on its own. Read with the
-    server's own reader, so the two agree on what makes a set a transfer set: a ``parameters.tsv``
-    beside the measurements. lucarelli's has three units, and under the read timeout its score
-    never finished (gemot#57).
-
-    Zero, too, for an absent or unreadable set: the server reads the same files at startup, so it
-    has no refit to run either, and a timeout must never be the thing that fails a run.
-    """
-    measurements = validation_measurements_path(example_dir)
-    if not measurements.is_file():
-        return 0
-    try:
-        from petab_mcp.validation_data import MODE_TRANSFER, read_held_out
-
-        held_out = read_held_out(measurements)
-    except Exception as exc:  # noqa: BLE001 - sizing must never fail a run
-        print(f"[runner] could not read the held-out set ({type(exc).__name__}: {exc})")
-        return 0
-    if held_out.mode != MODE_TRANSFER:
-        return 0
-    return len(set(held_out.units.values())) if held_out.units else 1
 
 
 def _make_call(session: ClientSession):
     """Return an ``await call(tool, **args)`` bound to ``session`` (unwraps the result).
 
-    Carries no timeout of its own: `_wrap_call_timeout` sizes every call, and a read gets
-    `NON_FIT_CALL_TIMEOUT_S` plus whatever is queued ahead of it. An explicit budget here would
-    suppress that queue term -- see the constant.
+    Carries no timeout of its own: every call is cut by `_wrap_call_timeout`, on the server's
+    heartbeats, whoever makes it. Deliberately not an explicit ``read_timeout_seconds`` either:
+    mcp's clock would then cut a read waiting behind a fit the heartbeats keep alive, as the flat
+    per-handle bounds tried before did to the finish gate's reads (see ``run_deepagents``'s
+    ``progress_probe``).
 
     An error result that reports an infrastructure failure (PEtab-MCP#95, or a raw full disk)
     raises :class:`~gemot.infrastructure.InfrastructureError` instead of being returned: unwrapped,
@@ -293,149 +268,133 @@ class _ToolClock:
         }
 
 
-def _wrap_call_timeout(
-    session: ClientSession, default_n_starts: int, *, held_out_fits: int = 0
-) -> None:
-    """Give every ``session.call_tool`` a read timeout sized to THAT CALL's own ``n_starts``.
+#: A heartbeat's ``message`` (PEtab-MCP#224, ``server._Heartbeat``): the session's running change
+#: as ``"<phase> for <s>s, <done> of <n> starts done"``, ``<s>`` its seconds in that phase and the
+#: starts left out before its fit has begun. With no change running there is no message.
+_HEARTBEAT = re.compile(r"(?P<phase>\w+) for (?P<age>\d+)s")
 
-    This is where a fit timeout is actually decided. The transport's read timeout is a
-    per-SESSION httpx2 read timeout, so it cannot know any call's ``n_starts`` — and ``n_starts``
-    is per call: ``make_changes`` (the only fitting tool) takes one that REPLACES the run
-    default, the agent picks it at runtime, and ``build_true_model`` floors it higher still (
-    bruno 400, fujita 300) on a scripted path that has no driver loop at all. So the session
-    timeout is left deliberately non-binding (``runner.main``) and the exact cut is made here.
 
-    Note the layering, which is easy to get backwards: ``read_timeout_seconds`` takes precedence
-    per call, but it is a deadline INSIDE the session — it can only end a call
-    EARLIER than the httpx2 ceiling, never later. Raising a per-call budget above
-    that read timeout would achieve nothing; the ceiling has to be high and this has to be
-    the tight one.
+class _Heartbeats:
+    """What the server's heartbeats have said, across every call of the run.
 
-    Shadowing the instance method is how the runner already reaches every call site (see
-    :func:`_wrap_tool_clock`): the runner's own calls AND the deepagents panel's route through
-    the bound session, so no caller can bypass this — including ``build_true_model``, without
-    ``Scenario`` having to surface its floor to the transport setup.
+    A heartbeat is live unless it shows a change ``compiling`` for longer than
+    ``fit_budget.FIT_COMPILE_MARGIN_S``: the server keeps sending them while a build hangs, so a
+    hung compile would otherwise hold its call for good. Each live one pushes out its own call's
+    cut (:func:`_wrap_call_timeout`) and calls every listener (:meth:`listen`), which is how the
+    driver's stall watchdog is fed.
 
-    A call carrying no ``n_starts`` (every read-only query) falls back to the run default, which
-    is already generous for a SQL read. An explicit caller-supplied ``read_timeout_seconds`` is
-    never overridden. The number itself comes from ``fit_budget.fit_time_budget_for``, shared
-    with the stall watchdog so the two cannot disagree about how long a fit may take.
-
-    ``held_out_fits`` is :func:`_held_out_fits` of the run's held-out set: the judge's
-    :data:`HELD_OUT_TOOL` call fits that many times at the server's default ``n_starts``, and is
-    sized as such a fit is. At 0, a fixed-θ set or none, it is a read like any other.
+    ``queue_seconds`` is the run's time with a change ``queued`` for the shared fit pool, which the
+    driver leaves out of the wall budget. A ``queued`` heartbeat adds the time since the previous
+    heartbeat on any call, but no more than its change has been queued: calls beside each other (a
+    read waiting behind a fit gets the fit's heartbeats) are counted once, and the count begins
+    where the wait did. It ends at the wait's last heartbeat, so it falls short of the server's own
+    ``queue_seconds`` (``get_run_timing``) by less than one heartbeat per wait.
     """
-    original = session.call_tool
-    # n_starts of the fit calls currently in flight. `make_changes` holds `session.lock` for the
-    # whole change-and-fit critical section (petab_mcp/server.py), so batched fit calls SERIALIZE
-    # server-side: the second one waits out the first's entire fit on the lock before its own
-    # starts. Its wait is therefore (everything ahead of it) + (its own fit) -- sizing it at its
-    # own count alone would 408 a perfectly healthy call at roughly half the time it needs.
-    in_flight: list[int] = []
 
-    async def with_timeout(*args, **kwargs):
-        # args[2] is `read_timeout_seconds` in ClientSession.call_tool(name, arguments,
-        # read_timeout_seconds, progress_callback, *, ...), a float of seconds since mcp 2.0. Check the positional slot too:
-        # injecting the keyword on top of a positional one raises "got multiple values for
-        # argument", which would make this wrapper the thing that fails the call.
-        override = "read_timeout_seconds" in kwargs or len(args) > 2
-        name = kwargs.get("name")
-        if name is None and args:
-            name = args[0]
-        asked = None
-        # Parsed for EVERY call, not just the ones being sized: `in_flight` below has to see a
-        # fit whoever set its timeout, or a concurrent read computes queued=0 against a server
-        # that is busy.
-        # Anything unexpected leaves `asked` None and takes the default budget rather than
-        # raising -- a timeout must never be the thing that fails a call.
-        with contextlib.suppress(Exception):
-            # The tool bridge (agent/mcp_tools.py) passes (name, arguments) POSITIONALLY, and so
-            # does `_make_call`; the keyword form is accepted for any caller that uses it.
-            tool_args = kwargs.get("arguments")
-            if tool_args is None and len(args) > 1:
-                tool_args = args[1]
-            asked = (tool_args or {}).get("n_starts")
-        # Could this call fit? The UNION of two signals, because each covers the other's
-        # blind spot. `n_starts` present (whatever the tool) keeps the wrapper open to a
-        # future fitting tool the day it is added rather than the day someone remembers to
-        # list it -- see test_the_transport_wrapper_is_deliberately_tool_agnostic. A known
-        # edit tool WITHOUT the argument is still a fit: `make_changes` takes the server's
-        # default when the agent omits it, and a malformed payload leaves it unreadable, so
-        # keying on presence alone would hand a real multistart a 900s budget. So would the
-        # held-out score of a transfer set, which refits once per unit and carries no count.
-        fits = held_out_fits if name == HELD_OUT_TOOL else 0
-        can_fit = asked is not None or name in _EDIT_TOOLS or fits > 0
-        if not override:
-            # Queued behind whatever is already fitting (see `in_flight`). asyncio is
-            # cooperative and there is no await between reading and appending, so the list is
-            # consistent w.r.t. other calls arming at the same time.
-            queued = sum(in_flight)
-            if not can_fit:
-                # A tool that cannot fit must not inherit a fit budget -- that is what let a
-                # wedged read cost a whole multistart's wall clock, ten times over, on bachmann
-                # 52859568_0. It still has to outwait anything ALREADY fitting, because the
-                # server answers nothing while a sync `make_changes` holds its event loop, so the
-                # queue term stays. (Dropping that term is what made two earlier per-handle
-                # attempts unsafe: the finish gate reads from inside a super-step.)
-                budget = NON_FIT_CALL_TIMEOUT_S + (
-                    fit_time_budget_for(queued, default_n_starts) if queued else 0.0
-                )
-            else:
-                budget = fit_time_budget_for(
-                    None if asked is None else _plus(asked, queued),
-                    default_n_starts,
-                    fits=max(1, fits),
-                )
-            kwargs["read_timeout_seconds"] = budget
-        tracked = None
-        if can_fit:
-            # Gated on `can_fit`, NOT on `asked is not None`. The server's own docstring tells the
-            # model to omit `n_starts` unless it wants more than the default, so most real fits
-            # arrive without one -- and while they were sized correctly for themselves, they were
-            # invisible here, so a read dispatched alongside (langgraph fires a message's tool
-            # calls together, and the finish gate reads from inside a super-step) computed
-            # queued=0 and took a flat 900s against a server whose event loop was held for
-            # thousands of seconds. That is the exact failure the queue term exists to stop.
-            tracked = default_n_starts
-            with contextlib.suppress(Exception):
-                if asked is not None:
-                    tracked = max(1, int(asked))
-            tracked *= max(1, fits)
-            in_flight.append(tracked)
+    def __init__(self) -> None:
+        self.queue_seconds = 0.0
+        self._last: float | None = None
+        self._listeners: list[Callable[[], None]] = []
+
+    def hear(self, message: str | None) -> bool:
+        """Note one heartbeat whose text is ``message``; whether it is live."""
+        now = time.monotonic()
+        match = _HEARTBEAT.match(message or "")
+        phase, age = (match["phase"], float(match["age"])) if match else (None, 0.0)
+        if phase == "queued":
+            self.queue_seconds += age if self._last is None else min(age, now - self._last)
+        self._last = now
+        if phase == "compiling" and age > FIT_COMPILE_MARGIN_S:
+            return False
+        for listener in tuple(self._listeners):
+            with contextlib.suppress(Exception):  # a listener never costs a call its heartbeat
+                listener()
+        return True
+
+    @contextlib.contextmanager
+    def listen(self, listener: Callable[[], None]) -> Iterator[None]:
+        """Call ``listener`` on every live heartbeat while the block is open."""
+        self._listeners.append(listener)
         try:
-            # Pass the caller's args through untouched otherwise: the adapter sends
-            # `progress_callback=` on every single call and relies on it arriving.
-            return await original(*args, **kwargs)
+            yield
         finally:
-            if tracked is not None:
-                with contextlib.suppress(ValueError):
-                    in_flight.remove(tracked)
+            self._listeners.remove(listener)
+
+
+def _wrap_call_timeout(session: ClientSession) -> _Heartbeats:
+    """Cut a ``session.call_tool`` once the server has gone :data:`CALL_IDLE_WINDOW_S` without a
+    live heartbeat on it, and return the run's :class:`_Heartbeats`.
+
+    A call has no budget of its own. On a shared fit pool a fit's wall time includes its wait
+    behind other runs' fits, which no formula bounds, so the waves-times-cap budget this replaced
+    (``fit_budget.fit_time_budget_for``) would cut a fit that is only queued, as would the budget a
+    read got for the fits ahead of it (gemot#106). Each call runs in an anyio cancel scope instead,
+    whose deadline every live heartbeat pushes out. mcp's own per-request clock cannot do this: it
+    pauses only while a request waits on a person (``mcp.shared._request_clock``). So it is set to
+    ``math.inf`` unless the caller set it. A read waiting behind a fit gets the fit's heartbeats,
+    so it lives as long as the fit does.
+
+    A cut call raises ``MCPError(REQUEST_TIMEOUT)``, the error mcp's clock raised. So it takes the
+    path a timed-out fit always took (``agent.circuit_breaker._fit_wedged``), and the server is not
+    told to stop the fit: the cut cancels the call's task, and ``runner.main._ToolCallsRunOn``
+    sends no cancel for a ``tools/call`` abandoned that way either.
+
+    The caller's own ``progress_callback`` is still called with every heartbeat. Shadowing the
+    instance method is how the runner already reaches every call site (see
+    :func:`_wrap_tool_clock`): the runner's own calls and the deepagents panel's route through the
+    bound session, so no caller bypasses this.
+    """
+    heartbeats = _Heartbeats()
+    original = session.call_tool
+
+    async def idle_timeout(*args, **kwargs):
+        # ClientSession.call_tool(name, arguments, read_timeout_seconds, progress_callback, *, ...):
+        # both may arrive positionally, and a keyword on top of a positional one raises "got
+        # multiple values for argument".
+        args = list(args)
+        if len(args) > 2:
+            args[2] = math.inf if args[2] is None else args[2]
+        elif kwargs.get("read_timeout_seconds") is None:
+            kwargs["read_timeout_seconds"] = math.inf
+        theirs = args[3] if len(args) > 3 else kwargs.get("progress_callback")
+        scope = anyio.CancelScope(deadline=anyio.current_time() + CALL_IDLE_WINDOW_S)
+        stuck: str | None = None  # the heartbeat of a compile past its margin, if the last one was
+
+        async def heard(progress: float, total: float | None, message: str | None) -> None:
+            nonlocal stuck
+            stuck = None if heartbeats.hear(message) else message
+            if stuck is None:
+                scope.deadline = anyio.current_time() + CALL_IDLE_WINDOW_S
+            if theirs is not None:
+                await theirs(progress, total, message)
+
+        if len(args) > 3:
+            args[3] = heard
+        else:
+            kwargs["progress_callback"] = heard
+        with scope:
+            return await original(*args, **kwargs)
+        # Reached only when the scope's own deadline passed: it swallowed that cancellation.
+        name = args[0] if args else kwargs.get("name")
+        why = (
+            f"its change has been {stuck} (the compile margin is {FIT_COMPILE_MARGIN_S:g}s)"
+            if stuck is not None
+            else f"no heartbeat from the server in {CALL_IDLE_WINDOW_S:g}s"
+        )
+        raise MCPError(code=REQUEST_TIMEOUT, message=f"Request {name!r} timed out: {why}")
 
     try:
-        session.call_tool = with_timeout  # type: ignore[method-assign]
+        session.call_tool = idle_timeout  # type: ignore[method-assign]
     except Exception as exc:
         # Best-effort like the clock, but say so. Without the shadow every call falls back to the
         # ClientSession-wide read_timeout_seconds `runner.main` sets, which is sized to the run
-        # DEFAULT -- safe, but blind to a call asking for more. Print it so a sweep post-mortem
-        # can tell that apart from a genuinely slow fit.
+        # DEFAULT fit -- safe off a pool, but blind to a fit that queues. Print it so a sweep
+        # post-mortem can tell that apart from a genuinely silent server.
         print(
-            f"[runner] could not install per-call fit timeouts ({type(exc).__name__}: {exc}) — "
+            f"[runner] could not install the heartbeat timeout ({type(exc).__name__}: {exc}) — "
             "tool calls fall back to the session-wide default-sized timeout"
         )
-
-
-def _plus(asked, queued: int):
-    """``asked + queued`` when ``asked`` is a usable count, else ``asked`` untouched.
-
-    Keeps the coercion rules in ONE place (``fit_time_budget_for``): a value this cannot add to
-    is passed through unchanged so that function still decides what to make of it.
-    """
-    if isinstance(asked, bool):
-        return asked
-    try:
-        return max(1, int(asked)) + queued
-    except (TypeError, ValueError, OverflowError):
-        return asked
+    return heartbeats
 
 
 def _wrap_tool_clock(session: ClientSession) -> _ToolClock:

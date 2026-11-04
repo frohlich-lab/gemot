@@ -21,7 +21,7 @@ from mcp import ClientSession
 from .. import ablations, infrastructure
 from .failure import _should_reraise, _summarize_exc, _write_degraded_result
 from .judge import _judge
-from .clock import _held_out_fits, _make_call, _wrap_call_timeout, _wrap_tool_clock
+from .clock import _make_call, _wrap_call_timeout, _wrap_tool_clock
 from .provenance import _agent_meta, _base_meta, _write_live_marker
 from ..scenario import Baseline, Scenario
 
@@ -66,14 +66,14 @@ async def _drive(
     Returns ``(exit_code, result)`` (see :func:`_judge`).
     """
     t0 = time.monotonic()
-    # Per-call read timeouts FIRST, so every later shadow (and `raw_call_tool` below) inherits
-    # them: the session-wide read timeout can only know the run default, but n_starts is a
-    # per-call argument. See _wrap_call_timeout.
-    _wrap_call_timeout(session, args.n_starts, held_out_fits=_held_out_fits(scenario.example_dir))
+    # The heartbeat timeout FIRST, so every later shadow (and `raw_call_tool` below) inherits it:
+    # the session-wide read timeout is sized to the run default's fit, which a fit queued for a
+    # shared pool outlasts. See _wrap_call_timeout.
+    heartbeats = _wrap_call_timeout(session)
     # Capture the un-timed call handle BEFORE the clock wrapper, so the agent's internal
     # early-stop polls (get_progress, once per super-step) don't inflate the tool clock /
-    # tool_calls metric. "Un-timed" means unmeasured, not unbounded — it still carries the
-    # per-call timeout applied above.
+    # tool_calls metric. "Un-timed" means unmeasured, not unbounded — it is still cut on the
+    # server's heartbeats, as above.
     raw_call_tool = session.call_tool
     clock = _wrap_tool_clock(session)  # split server/compute time from LLM time
     call = _make_call(session)
@@ -279,6 +279,7 @@ async def _drive(
                         reasoning_effort=_reasoning_effort(args),
                         n_starts=args.n_starts,
                         max_wall_seconds=args.max_wall_seconds,
+                        heartbeats=heartbeats,
                         progress_probe=raw_call_tool,
                         # The exact liveness signal, not a probe: Popen.poll() cannot confuse
                         # a server busy fitting with one that is gone (see _server_is_alive).

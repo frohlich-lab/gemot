@@ -113,6 +113,30 @@ def test_a_fit_call_that_times_out_still_finishes_on_the_server(server):
     assert outcome == "finished"
 
 
+def test_a_fit_call_cut_on_the_servers_silence_still_finishes_on_the_server(server, monkeypatch):
+    """gemot#106: a call the server sends no heartbeat on is cut by cancelling it, which this
+    session's dispatcher abandons without a cancel, as it does a timed-out one. This test server
+    sends none, so the cut comes at the window."""
+    from mcp import MCPError
+    from mcp.types import REQUEST_TIMEOUT
+
+    from gemot.runner import clock
+
+    monkeypatch.setattr(clock, "CALL_IDLE_WINDOW_S", 0.3)
+    url, marker = server
+
+    async def go():
+        async with _open(url) as session:
+            clock._wrap_call_timeout(session)
+            with pytest.raises(MCPError) as raised:
+                await session.call_tool("fit", {"tag": "silent"})
+            return raised.value, await _outcome(marker, "silent")
+
+    error, outcome = asyncio.run(go())
+    assert error.code == REQUEST_TIMEOUT
+    assert outcome == "finished"
+
+
 def test_a_fit_call_whose_caller_is_cancelled_still_finishes(server):
     """The gateway's shape: the CLI gives up, its handler is cancelled, and with it the task
     awaiting this session's call. Also a sibling tool raising in the same agent step."""
