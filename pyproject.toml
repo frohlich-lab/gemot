@@ -84,7 +84,9 @@ dependencies = [
     # Then 26e5b76, main: #215: a fit result carries `starts_at_best` (within 1 nll, the margin
     # the explorer's `n_at_best` follows), and warns when most starts run out of the per-start time
     # limit. #214: an edit names the species it prunes, and a condition target nothing reads warns.
-    # NOT YET frohlich-lab/PEtab-MCP#177 (open): `wait_for_fit` (gemot#73, #79).
+    # NOT YET frohlich-lab/PEtab-MCP#177 (open): `wait_for_fit` (gemot#73, #79). Until the pin
+    # reaches #177's merge commit the server refuses that call as an unknown tool, the judge says
+    # it could not wait, and only the version check after its reads guards the score.
     "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@26e5b761cdcf461464e45e9a19f893a7c62e62e1",
     # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
     # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
