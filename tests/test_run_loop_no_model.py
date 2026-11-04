@@ -373,6 +373,62 @@ def test_a_second_fit_timeout_ends_the_run_as_a_wedged_fit(monkeypatch):
     }
 
 
+# --- a client-side MCPError (gemot#103) --------------------------------------------------------
+# f2e2b86d ended 15.8 h into a 33 h budget on one `get_version` reply too large for the client to
+# read. The wrapper's half, and the error's real shape, are in tests/test_client_mcp_error.py.
+
+
+class _ReadAgent(_TimeoutAgent):
+    """Graph stub whose first astream calls the lead's `get_version` twice through the real tool
+    wrapper, as the tool node would, records what came back, and finishes."""
+
+    def __init__(self):
+        super().__init__()
+        self.results = []
+
+    def astream(self, stream_input, config=None, stream_mode=None):
+        self.inputs.append(stream_input)
+        captured, results = self.captured, self.results
+
+        async def _gen():
+            get_version = next(t for t in captured["tools"] if t.name == "get_version")
+            for _ in range(2):
+                results.append(await get_version.coroutine(version=23, include=["simulation"]))
+                yield {"messages": [None] * len(results)}
+            captured["fs"]["confirmed"] = True
+
+        return _gen()
+
+
+@requires_harness
+def test_a_reply_the_client_could_not_read_reaches_the_lead_and_the_run_goes_on(monkeypatch):
+    from mcp import MCPError
+    from mcp.types import CONNECTION_CLOSED
+
+    too_large = "SSE stream failed: Server-sent event exceeded the 1048576 byte limit."
+
+    async def _get_version(**kw):
+        _get_version.calls += 1
+        if _get_version.calls == 1:
+            raise MCPError(code=CONNECTION_CLOSED, message=too_large)
+        return ([{"type": "text", "text": '{"version": 23}'}], None)
+
+    _get_version.calls = 0
+    mod = _load_agent_module()
+    result, agent = _run(
+        mod,
+        monkeypatch,
+        _Probe(model_authored=True),
+        agent=_ReadAgent(),
+        coroutines={"get_version": _get_version},
+    )
+
+    assert agent.results[0] == (f"MCPError: {too_large}", None)
+    assert agent.results[1][0][0]["text"] == '{"version": 23}'  # the lead's next call ran
+    assert len(agent.inputs) == 1  # no resume
+    assert result["stop_reason"] == "completed"
+
+
 # --- the context-window stop ------------------------------------------------------------------
 
 

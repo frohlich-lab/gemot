@@ -111,11 +111,21 @@ async def _open_session(
 ) -> AsyncIterator[ClientSession]:
     """An initialized MCP session to the petab server at ``url``: ``read_ceiling_s`` is the
     transport's read timeout, ``call_timeout_s`` the session's fallback per call (see
-    :func:`_petab_server` for how the two are sized)."""
+    :func:`_petab_server` for how the two are sized).
+
+    No limit on the size of one server-sent event. mcp's default, 1 MiB, guards a client against a
+    server it does not trust; this one is the run's own subprocess on localhost, and at the limit
+    a reply is lost rather than shortened: run f2e2b86d stopped on one ``get_version`` reply
+    (gemot#103). Bounding what a tool returns is the server's to do (frohlich-lab/PEtab-MCP#231),
+    and a reply too large for the model's context is offloaded to a file by deepagents. The hosted
+    bio servers keep the default (``bio_sessions``)."""
     # connect/write/pool: mcp's own default for this transport.
     timeout = httpx2.Timeout(30.0, read=read_ceiling_s)
     async with httpx2.AsyncClient(timeout=timeout) as http:
-        async with streamable_http_client(url, http_client=http) as (read, write):
+        async with streamable_http_client(url, http_client=http, max_sse_event_size=None) as (
+            read,
+            write,
+        ):
             dispatcher = _ToolCallsRunOn(read, write)
             async with ClientSession(
                 dispatcher=dispatcher, read_timeout_seconds=call_timeout_s
