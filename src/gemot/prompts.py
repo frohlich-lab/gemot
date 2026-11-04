@@ -1147,16 +1147,40 @@ FINISH_RESTORED_BEST_TMPL = (
     "it as HEAD (HEAD was v{head}): what follows is about v{best}. "
 )
 
+# `{caveat}` is the server's `structure_tests_caveat`, quoted as it states it after the summary it
+# qualifies: present only where nothing is flagged while sigmas or observable scales/offsets are
+# estimated (frohlich-lab/PEtab-MCP#212), so on bachmann and fiedler a clean summary no longer
+# reads as adequacy at the moment of finishing (gemot#111).
 FINISH_ARMED_TMPL = (
     "FINISH ARMED — review before confirming. Current fit: bic={bic:.6g}, "
-    "neg_log_likelihood={nll:.6g}. Residual structure: {struct}{worst_line}"
-    "{merge_line}{invalid_line} " + _RESIDUALS_DO_NOT_DECIDE_DONE + " If you have genuinely "
-    "bottomed out BIC, call finish AGAIN to confirm and end the run."
+    "neg_log_likelihood={nll:.6g}. Residual structure: {struct}{caveat}{worst_line}"
+    "{sigma_line}{merge_line}{invalid_line} " + _RESIDUALS_DO_NOT_DECIDE_DONE + " If you have "
+    "genuinely bottomed out BIC, call finish AGAIN to confirm and end the run."
 )
 
 FINISH_ARMED_WORST_TMPL = (
     " Worst observable {observable_id}: sign-test p={sign_p}, runs-test p={runs_p}."
 )
+
+# Appended to the ARM text when `get_fit_summary`'s residual_structure names `sigma_heterogeneity`:
+# estimated sigmas whose Levene p stays below 0.05 after Holm across the sigmas tested
+# (frohlich-lab/PEtab-MCP#212). A sigma inflated for one badly fitted series is misfit the sign and
+# runs tests cannot see, so this is where a clean summary can still hide bic (gemot#111). It points,
+# like a flag, and refuses nothing: the rule that follows it in the ARM text says how to read one.
+# At most `finish_gate._MAX_SIGMAS_NAMED`, as many as a fit result names, the rest as a count.
+FINISH_ARMED_SIGMA_HETEROGENEITY_TMPL = (
+    " SIGMA HETEROGENEITY — estimated sigmas whose weighted residuals spread unevenly across the "
+    "series they cover, so each was likely inflated for its worst series, where the model misses:"
+    "{sigmas}{more}."
+)
+
+#: One sigma inside :data:`FINISH_ARMED_SIGMA_HETEROGENEITY_TMPL`.
+FINISH_ARMED_SIGMA_TMPL = (
+    " {parameter_id} (p={p}, worst series {worst_series}, fitted_over_data_noise={ratio})"
+)
+
+#: Ends :data:`FINISH_ARMED_SIGMA_HETEROGENEITY_TMPL` where it names fewer sigmas than there are.
+FINISH_ARMED_SIGMA_MORE_TMPL = ", and {n} more in get_fit_summary"
 
 # Appended to the ARM text when the fit's FIM still holds merges BIC would pay for. A fit RESULT
 # carries only the `merge_hints` new since its parent (frohlich-lab/PEtab-MCP#211) and a rollback ran
@@ -1540,6 +1564,9 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "restored_best": FINISH_RESTORED_BEST_TMPL,
             "armed": FINISH_ARMED_TMPL,
             "armed_worst": FINISH_ARMED_WORST_TMPL,
+            "armed_sigma_heterogeneity": FINISH_ARMED_SIGMA_HETEROGENEITY_TMPL,
+            "armed_sigma": FINISH_ARMED_SIGMA_TMPL,
+            "armed_sigma_more": FINISH_ARMED_SIGMA_MORE_TMPL,
             "armed_merge": FINISH_ARMED_MERGE_TMPL,
             "armed_merge_tie": FINISH_ARMED_MERGE_TIE_TMPL,
             "armed_invalid_comparison": FINISH_ARMED_INVALID_COMPARISON_TMPL,
