@@ -103,16 +103,22 @@ def _server_env(scenario: Scenario) -> dict[str, str]:
 
 
 def _build_root(scenario: Scenario) -> Path:
-    """Where the run's server builds its models: ``PETAB_MCP_BUILD_ROOT``, the name the server's
-    own CLI reads, else the example's ``.amici_build``. Either lies outside ``work/``, which every
-    run wipes, and builds are keyed by structure, so a model compiled once is reused.
+    """Where the run's server builds its models: :func:`_shared_build_root`, else the example's
+    ``.amici_build``. Either lies outside ``work/``, which every run wipes, and builds are keyed by
+    structure, so a model compiled once is reused."""
+    return _shared_build_root() or scenario.example_dir / ".amici_build"
+
+
+def _shared_build_root() -> Path | None:
+    """``PETAB_MCP_BUILD_ROOT``, the name the server's own CLI reads, or ``None``.
 
     On a fit pool (``PETAB_MCP_FIT_POOL``) the pool's workers import every module the server
     builds, by the same absolute path. So the sweep task sets the pool's build root, on storage
     the workers share, and the runs of one model compile it once between them. gemot never clears
-    it; the operator does. A pool without one is refused here, as ``petab-mcp --fit-pool`` refuses
-    it: the example's own folder is private to the run's task, and a worker that found no module
-    to import there would end every fit as ``infrastructure_error: fit_pool``.
+    it; the operator does. A pool without one is refused, as ``petab-mcp --fit-pool`` refuses it:
+    the example's own folder is private to the run's task, and a worker that found no module to
+    import there would end every fit as ``infrastructure_error: fit_pool``. ``run_scenario`` asks
+    first, so the refusal comes before anything is wiped or launched.
     """
     root = os.environ.get("PETAB_MCP_BUILD_ROOT")
     if os.environ.get("PETAB_MCP_FIT_POOL") and not root:
@@ -121,7 +127,7 @@ def _build_root(scenario: Scenario) -> Path:
             "the models this run's server builds, so the build root must be the pool's, on "
             "storage they share"
         )
-    return Path(root) if root else scenario.example_dir / ".amici_build"
+    return Path(root) if root else None
 
 
 def _free_port() -> int:
