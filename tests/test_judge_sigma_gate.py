@@ -20,6 +20,7 @@ import pytest
 from gemot.runner import (  # noqa: E402
     _NOISE_SIGMA_COLLAPSE_FRACTION,
     _judge,
+    _noise_sigma_flag,
     _reference_sigma_flag,
     _ToolClock,
 )
@@ -486,3 +487,44 @@ def test_reference_sigma_basis_is_declined_for_a_scale_coupled_sigma():
     )
     assert plain is not None and plain["inflated"] is True
     assert plain["max_ratio"] > 100
+
+
+#: isensee's reference sigma for the microscopy pRII readout, whose noise formula names its scales:
+#: `noiseParameter1_pRII_Microscopy * s_pRII_global * rho_pRII_Microscopy`, the placeholder filled
+#: with the estimated per-dataset `s_pRII_<dataset>`.
+_ISENSEE_REF = {
+    "noise_sigma": {"rho_pRII_Microscopy": 0.06996313044208774},
+    "noise_sigma_effective": {"rho_pRII_Microscopy": 0.06996313044208774},
+    "k": 46,
+    "n": 687,
+}
+
+
+def _isensee_report(rho, scale_coupled):
+    entry = _sigma_entry(rho, 0.15, rho / 0.2)
+    return {
+        "rho_pRII_Microscopy": {
+            **entry,
+            "effective_sigma": rho,
+            "n_points": 627,
+            "scale_coupled": scale_coupled,
+        }
+    }
+
+
+def test_a_sigma_coupled_to_scales_in_its_formula_is_not_compared_raw():
+    """gemot#104, isensee r2: v13-v16 fitted rho_pRII_Microscopy at 0.19-0.33 of the reference, under
+    the band's 1/3, and the judge scored v3 (dBIC +11.6, a FAIL) instead of v15 (-20.7), though their
+    noise in measurement units matched. The server's flag was False there: it read only
+    `noiseParameters`, and isensee writes its scales into the formula. Flagged as PEtab-MCP#243
+    reports it, the raw basis is declined and the data-driven band passes the same sigma. Unflagged,
+    as for a sigma with no estimated parameter beside it, it is still compared raw and refused."""
+    rho = 0.25 * 0.06996313044208774  # v15's raw ratio
+
+    raw = _reference_sigma_flag(_isensee_report(rho, False), _ISENSEE_REF, k=40, n=687)
+    assert raw is not None and raw["collapsed"] is True  # the refusal the issue reports
+
+    coupled = _isensee_report(rho, True)
+    assert _reference_sigma_flag(coupled, _ISENSEE_REF, k=40, n=687) is None
+    flag = _noise_sigma_flag(coupled)  # what `_judge` falls through to
+    assert flag["inflated"] is False and flag["collapsed"] is False

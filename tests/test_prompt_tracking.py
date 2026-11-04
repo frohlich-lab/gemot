@@ -168,6 +168,7 @@ def test_the_surface_covers_every_kind_of_prompt():
         "control",
         "barebones",
         "biology_blind",
+        "native_cli",
     }
     # the previously-untracked ones, named explicitly so a regression is legible
     tracked = P.all_prompts()

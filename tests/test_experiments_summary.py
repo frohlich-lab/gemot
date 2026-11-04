@@ -66,6 +66,9 @@ def _row(**over):
         ("token_usage 20,402,551 then completed early", False),
         ("early_stop: plateau on the server at 4024358", False),
         ("infrastructure_error: disk_full", True),  # gemot#39
+        # gemot#103: f2e2b86d's stop, scored as a modelling failure. The MCP client failed.
+        ("MCPError: SSE stream failed: Server-sent event exceeded the 1048576 byte limit.", True),
+        ("MCPError: Connection closed", True),  # a closed session ends the run on this
     ],
 )
 def test_is_infra_abort(stop_reason, expected):

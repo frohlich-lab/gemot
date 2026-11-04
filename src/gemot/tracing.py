@@ -1,29 +1,24 @@
-"""Arize Phoenix tracing for the deepagents driver.
+"""Arize Phoenix collection for gemot's panel and native CLI drivers.
 
-`Phoenix <https://phoenix.arize.com>`_ is an open-source LLM-observability tool. This
-module wires OpenTelemetry tracing into the LangChain / LangGraph stack that
-``deepagents`` runs on, so every LLM call and every MCP tool call the agent makes is
-captured as a span and is inspectable in the Phoenix UI (prompts, completions, tool
-arguments, token counts, latency, and the full agent trace tree).
+`Phoenix <https://phoenix.arize.com>`_ receives OpenTelemetry spans under the benchmark
+run. OpenRouter's deepagents panel uses LangChain / LangGraph instrumentation for model
+and tool calls. Native Codex and Claude drivers instead observe their CLI event streams
+and trace actual MCP gateway calls; they do not wrap the CLI as a LangChain chat model.
 
-Tracing is **mandatory** — the Phoenix packages are declared dependencies of the deepagents
-driver and there is no flag to turn it off. The function still degrades gracefully (a clear
-message, never a crash) if the tracing packages happen to be missing.
+Native event visibility differs by provider: Codex reports output items and aggregate
+usage, while Claude exposes response usage. Their event recorder preserves those limits
+and uses observed timings without reconstructing hidden prompts or API calls. The raw
+JSONL event logs are archived with each run.
 
-Two ways to collect the spans:
+Tracing is enabled automatically. Missing packages produce a warning without failing the
+scientific run. Configure an existing collector with ``PHOENIX_COLLECTOR_ENDPOINT`` (and,
+for Cloud, ``PHOENIX_API_KEY``), or let this module start a local app at
+http://localhost:6006. An external collector retains traces independently of the run;
+``--phoenix-keep-alive`` holds an automatically started local collector open afterward.
 
-* **A Phoenix collector is already running** (self-hosted ``phoenix serve``, the Docker
-  image, or Phoenix Cloud): set ``PHOENIX_COLLECTOR_ENDPOINT`` (and, for Cloud,
-  ``PHOENIX_API_KEY``) and the spans are exported there. This is the recommended path —
-  the traces outlive the run.
-* **Nothing is running**: a local Phoenix app is launched in-process
-  (http://localhost:6006) for the duration of the run. Because that collector lives
-  inside this process, the traces are only browsable while the run is alive — pass
-  ``run.py --phoenix-keep-alive`` to hold the process open after the run.
-
-Instrumentation is process-global (it patches LangChain's callback manager), so
-``setup_phoenix_tracing`` must be called *before* the agent runs; ``run.py`` does this
-right before handing control to ``deepagents``.
+Call ``setup_phoenix_tracing`` before the driver starts. LangChain instrumentation is
+process-global when requested; native CLI observation uses the returned tracer provider
+without changing the agent's prompt, conversation, or context management.
 """
 
 from __future__ import annotations
@@ -638,8 +633,9 @@ def setup_phoenix_tracing(
     *,
     endpoint: str | None = None,
     launch: bool = True,
+    instrument_langchain: bool = True,
 ) -> TracingHandle | None:
-    """Turn on Phoenix/OpenInference tracing for the LangChain-based agent.
+    """Set up Phoenix collection, optionally instrumenting LangChain-based agents.
 
     Parameters
     ----------
@@ -652,14 +648,19 @@ def setup_phoenix_tracing(
         If ``True`` (the default) and no external collector endpoint is configured, launch
         a local Phoenix app in-process (requires the ``arize-phoenix`` package) so there is
         always somewhere to view the traces.
+    instrument_langchain:
+        If ``True`` (the default), require and enable LangChain instrumentation and strip
+        redundant panel transcript spans. Native CLI drivers pass ``False`` to obtain a
+        tracer provider without importing, requiring, or patching LangChain.
 
     Returns a :class:`TracingHandle` on success, or ``None`` if the tracing packages are
-    missing (a hint is printed) — the caller then simply runs without tracing.
+    missing (a hint is printed). ``PETAB_REQUIRE_COLLECTOR`` instead refuses missing
+    required tracing packages or an absent external collector endpoint in either mode.
     """
     # THE INTERLOCK FIRST, before anything that can `return None`. A batch run must never end
     # up untraced, and there are three ways to get there: no endpoint configured (checked
-    # below), and the two ImportError paths under it — a partial or mid-upgrade environment
-    # where arize-phoenix-otel or the LangChain instrumentor is missing prints a hint and
+    # below), and ImportError paths under it — a partial or mid-upgrade environment where
+    # arize-phoenix-otel or a requested LangChain instrumentor is missing prints a hint and
     # returns None. The slurm gates cannot see that: they check the COLLECTOR, which is alive.
     # So a package gap would reproduce the 2026-08-16 outcome exactly — full budget spent, zero
     # spans — with all three layers reporting success.
@@ -690,17 +691,18 @@ def setup_phoenix_tracing(
             _refuse("`arize-phoenix-otel` is not installed")
         return None
 
-    try:
-        from openinference.instrumentation.langchain import LangChainInstrumentor
-    except ImportError:
-        print(
-            "[phoenix] `openinference-instrumentation-langchain` is not installed; "
-            "running without tracing. Install with:\n"
-            "    pip install openinference-instrumentation-langchain"
-        )
-        if _require:
-            _refuse("`openinference-instrumentation-langchain` is not installed")
-        return None
+    if instrument_langchain:
+        try:
+            from openinference.instrumentation.langchain import LangChainInstrumentor
+        except ImportError:
+            print(
+                "[phoenix] `openinference-instrumentation-langchain` is not installed; "
+                "running without tracing. Install with:\n"
+                "    pip install openinference-instrumentation-langchain"
+            )
+            if _require:
+                _refuse("`openinference-instrumentation-langchain` is not installed")
+            return None
 
     # Only auto-launch a local app when the user didn't point us at an external collector.
     explicit_endpoint = (
@@ -773,18 +775,17 @@ def setup_phoenix_tracing(
         except TypeError:  # very old release without `batch` — accept SimpleSpanProcessor
             tracer_provider = register(project_name=project_name)
 
-    # Swap the default span processor for one that drops the redundant wrapper-span inputs
-    # (see _STRIPPED_INPUT_SPANS). Best-effort: if the provider isn't Phoenix's, tracing
-    # still works, it just exports the full ~4x-duplicated transcript as before.
-    if not _install_stripping_processor(tracer_provider, traces_endpoint):
-        print(
-            "[phoenix] could not install the input-stripping span processor; "
-            "traces will carry duplicated agent transcripts and grow quickly."
-        )
+    if instrument_langchain:
+        # Only the panel emits redundant wrapper-span inputs (see _STRIPPED_INPUT_SPANS).
+        # Best-effort: failure preserves tracing but exports the duplicated transcript.
+        if not _install_stripping_processor(tracer_provider, traces_endpoint):
+            print(
+                "[phoenix] could not install the input-stripping span processor; "
+                "traces will carry duplicated agent transcripts and grow quickly."
+            )
 
-    # Instrument LangChain (deepagents/LangGraph run on it) so LLM calls and tool calls
-    # are captured. Passing the provider explicitly avoids relying on global-lookup order.
-    LangChainInstrumentor().instrument(tracer_provider=tracer_provider, skip_dep_check=True)
+        # Passing the provider explicitly avoids relying on global-lookup order.
+        LangChainInstrumentor().instrument(tracer_provider=tracer_provider, skip_dep_check=True)
 
     ui_url = local_session.url if local_session is not None else base_endpoint
     print(f"[phoenix] tracing enabled (project='{project_name}') -> view traces at {ui_url}")

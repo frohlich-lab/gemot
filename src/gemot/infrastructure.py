@@ -32,9 +32,11 @@ It is read in four places:
   sweep can resubmit the run.
 
 A server wedged on a fit (:data:`FIT_WEDGED`) is stopped the same way, though no text names it:
-the tool wrapper raises it on what the calls after a timed-out fit meet. A server refusing its fit
-pool at startup leaves its report in its log alone, which the runner reads when the server never
-comes up (``runner.main._main_async``).
+the tool wrapper raises it on what the calls after a timed-out fit meet. So is a tool call a native
+CLI refused itself (:data:`CLI_REFUSED`), which the native driver reads from the CLI's own event
+stream (:mod:`gemot.agent.native_cli`). A server refusing its fit pool at startup leaves its
+report in its log alone, which the runner reads when the server never comes up
+(``runner.main._main_async``).
 
 Stdlib only: the agent package imports this (tests/test_import_lightness.py).
 """
@@ -63,6 +65,12 @@ FIT_WEDGED = "fit_wedged"
 #: the pool's, or the pool runs another environment, which the server refuses at startup. It blames
 #: the pool, not the run. A batch that kills its worker stays a failed fit of the run.
 FIT_POOL = "fit_pool"
+
+#: A native CLI refused a gateway tool call itself, so the call never reached the server
+#: (gemot#69). On 2026-10-26 Codex's approval policy refused every ``make_changes`` of seven
+#: fontaine runs, which committed no model and were recorded ``completed``. What the CLI may call
+#: is the harness's configuration, not the model's, and every later call meets the same refusal.
+CLI_REFUSED = "cli_refused"
 
 
 def stop_reason(cause: str) -> str:

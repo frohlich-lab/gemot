@@ -109,6 +109,9 @@ dependencies = [
     # and the circuit breaker and the run loop's resume classify its TransportError. httpx2, not
     # httpx: mcp 2 runs on it, and its errors do not derive from httpx's. 2.10 is mcp 2.3's floor.
     "httpx2>=2.10",
+    # Native Codex/Claude runs connect to an in-process loopback MCP gateway. Import uvicorn
+    # directly for that gateway instead of relying on the MCP server's transitive dependency.
+    "uvicorn>=0.23",
     # Imported directly here too (judge, simulate, the neural route), or promised to the
     # barebones agent's sandbox (pyPESTO, which its prompt tells the agent to fit with), so named
     # rather than left to arrive through petab-mcp, whose pyproject says why each floor.

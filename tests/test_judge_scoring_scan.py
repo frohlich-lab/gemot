@@ -440,3 +440,71 @@ def test_a_failed_restore_says_so_instead_of_naming_a_version_nothing_scored(tmp
     # scored what is actually there (v4, the collapsed one) and failed it — not a phantom v5 pass
     assert result["success"] is False
     assert result["noise_sigma_flag"]["collapsed"] is True
+
+
+#: isensee's reference sigma for the microscopy pRII readout, whose noise formula names its scales
+#: (`noiseParameter1_pRII_Microscopy * s_pRII_global * rho_pRII_Microscopy`; gemot#104).
+_ISENSEE_RHO = 0.06996313044208774
+_ISENSEE_REF = {
+    "nll": 141.889,
+    "k": 22,
+    "n": 43,
+    "noise_sigma": {"rho_pRII_Microscopy": _ISENSEE_RHO},
+    "noise_sigma_effective": {"rho_pRII_Microscopy": _ISENSEE_RHO},
+}
+
+
+class _IsenseeStore(_Store):
+    """The version store of isensee r2, cut to its two versions that matter: v15 beats the bar
+    with `rho_pRII_Microscopy` at 0.25 of the reference, v3 sits at 0.94 and misses it.
+    ``scale_coupled`` is the server's flag on both entries: False at PEtab-MCP 26e5b76, which read
+    only `noiseParameters`, True since PEtab-MCP#243 counts the scales in the formula."""
+
+    def __init__(self, *, scale_coupled):
+        super().__init__(
+            {3: (167.0, 0.94 * _ISENSEE_RHO), 15: (140.117, 0.25 * _ISENSEE_RHO)},
+            head=15,
+            checkpoint=15,
+        )
+        self.scale_coupled = scale_coupled
+
+    def _rho_report(self, rho):
+        return {
+            "rho_pRII_Microscopy": {
+                "fitted": rho,
+                "effective_sigma": rho,
+                "n_points": 30,
+                "upper_bound_cap": 0.15,
+                "data_std": 0.2,
+                "fraction_of_data_std": rho / 0.2,
+                "scale_coupled": self.scale_coupled,
+            }
+        }
+
+    async def __call__(self, name, **kwargs):
+        if name in ("get_version", "get_fit_summary"):
+            out = await super().__call__(name, **kwargs)
+            version = kwargs["version"] if name == "get_version" else self.head
+            report = self._rho_report(self.versions[version][1])
+            (out["simulation"] if name == "get_version" else out)["noise_sigma_report"] = report
+            return out
+        return await super().__call__(name, **kwargs)
+
+
+def test_a_scale_coupled_sigma_no_longer_costs_the_run_its_better_version(tmp_path):
+    """gemot#104, isensee r2: compared raw, v15 (rho at 0.25 of the reference) was refused and the
+    judge scored v3 (+11.6, a FAIL), though v15's noise in measurement units matched v3's. With the
+    sigma flagged scale-coupled the data-driven band decides, v15 is scored and passes, and
+    result.json names the sigma that moved the basis. Unflagged, as the server reported it at
+    26e5b76, the judge reproduces the round-4 failure."""
+    store = _IsenseeStore(scale_coupled=True)
+    code, result = _run(tmp_path, store, _ISENSEE_REF)
+    assert store.head == 15 and result["success"] is True and code == 0
+    assert result["noise_sigma_basis"] == "data_std"
+    assert result["noise_sigma_scale_coupled"] == ["rho_pRII_Microscopy"]
+
+    store = _IsenseeStore(scale_coupled=False)
+    _, result = _run(tmp_path, store, _ISENSEE_REF)
+    assert store.head == 3 and result["success"] is False  # the round-4 failure
+    assert result["noise_sigma_basis"] == "reference"
+    assert result["noise_sigma_scale_coupled"] == []

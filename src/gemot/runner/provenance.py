@@ -335,6 +335,7 @@ def _base_meta(
     from ..prompts import BIOCURATOR_ENABLED, prompt_group_versions, prompt_version
 
     scripted = args.driver == "scripted"
+    cli_driver = args.driver in {"codex", "claude"}
     from ..biology_blinding import read_names
 
     blind_names = (
@@ -346,6 +347,25 @@ def _base_meta(
     return {
         "driver": args.driver,
         "model": None if scripted else args.model,
+        **(
+            {
+                "model_transport": f"{args.driver}_cli",
+                f"{args.driver}_executable": getattr(
+                    args, f"{args.driver}_executable", args.driver
+                ),
+                f"{args.driver}_version": getattr(args, f"{args.driver}_version", None),
+                f"{args.driver}_timeout": getattr(args, f"{args.driver}_timeout", None),
+                "agent_architecture": "native_cli",
+                "native_panel": False,
+                "reasoning_effort": (
+                    None
+                    if getattr(args, "reasoning_effort", None) == "default"
+                    else getattr(args, "reasoning_effort", None)
+                ),
+            }
+            if cli_driver
+            else {}
+        ),
         "git_sha": _git_sha(scenario.example_dir),
         "example_version": scenario.version,
         # On EVERY result, degraded ones included, so an aborted reference-free run is never filed
@@ -387,11 +407,11 @@ def _base_meta(
         "biology_blinding": (
             {"version": 1, "identifiers": blind_names.forward} if blind_names is not None else None
         ),
-        "recursion_limit": None if scripted else args.recursion_limit,
+        "recursion_limit": None if scripted or cli_driver else args.recursion_limit,
         "n_starts": args.n_starts,
         # ...and every other setting that changes what a fit searches; see `_fit_settings`.
         "fit_settings": _fit_settings(scenario),
-        "temperature": None if scripted else args.temperature,
+        "temperature": None if scripted or cli_driver else args.temperature,
         "run_started_at": run_started_at or _now_iso(),
         "phoenix_project": None,
         "phoenix_trace_id": None,

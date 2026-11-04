@@ -52,6 +52,7 @@ def collect_prompts() -> dict[str, str]:
 # what the model receives mid-conversation. Role is a registration detail — it is NOT part of
 # ``prompt_version`` (which hashes prompt text only), so fixing a role does not churn it.
 _PROMPT_ROLES = {
+    "petab-native-cli-instructions": "user",
     "petab-anonymous-semantics": "system",
     "petab-anonymous-lead": "system",
     "petab-anonymous-task": "user",
@@ -491,6 +492,10 @@ _INFRA_ABORT_MARKERS = (
     # event as the "readtimeout" above -- it only stopped being an
     # httpx.ReadTimeout when the timeout moved from the session to
     # the individual call, and it must keep scoring as infra.
+    # An MCP call that raised rather than returning a result: a closed session, or one the tool
+    # wrapper failed to hand the model (gemot#103: "MCPError: SSE stream failed: ..." after
+    # 15.8 h). Either way the client failed, not the model.
+    "mcperror",
     "typeerror",  # e.g. a scoring float() crash before a verdict was reached
     infrastructure.STOP_PREFIX,  # the server's infrastructure failed, e.g. a full disk (gemot#39)
 )

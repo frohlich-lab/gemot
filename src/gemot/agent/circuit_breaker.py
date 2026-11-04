@@ -124,6 +124,46 @@ def _is_call_timeout(exc: BaseException) -> bool:
     return getattr(exc, "code", None) == REQUEST_TIMEOUT
 
 
+#: The message mcp's dispatcher gives every call once the session's connection has closed
+#: (``_CLOSED_OUTCOME`` in ``mcp/shared/jsonrpc_dispatcher.py``, and the same text for a call
+#: sent after the close). Its code, ``CONNECTION_CLOSED``, is not enough on its own: the
+#: transport also uses it for a single reply it could not deliver while the session lives on.
+_SESSION_CLOSED = "Connection closed"
+
+
+def _is_session_closed(exc: BaseException) -> bool:
+    """True for the ``MCPError`` a call raises because its session has closed.
+
+    The calls still waiting when the connection closed get it, and so does every call after
+    (tests/test_client_mcp_error.py pins it on a real session). In mcp 2 that is how a server gone
+    away reaches a session held open in a task of its own, as the bio sessions are: the transport's
+    httpx2 error ends that task, not the call. Nothing the model sends reopens the session, so it
+    is a transport error, unlike the transport's other ``CONNECTION_CLOSED`` errors
+    (:func:`_is_client_mcp_error`).
+    """
+    if not _is_client_mcp_error(exc):
+        return False
+    from mcp.types import CONNECTION_CLOSED
+
+    return exc.code == CONNECTION_CLOSED and exc.message == _SESSION_CLOSED
+
+
+def _is_client_mcp_error(exc: BaseException) -> bool:
+    """True for an ``MCPError`` raised by the call itself, as opposed to an ``is_error`` result.
+
+    The session raises one when the server answers the request with a JSON-RPC error, and when the
+    client gives the request up: a call timeout (:func:`_is_call_timeout`), a closed session
+    (:func:`_is_session_closed`), or one reply the transport could not read. That last one is what
+    ended run f2e2b86d after 15.8 h (gemot#103): ``SSE stream failed: Server-sent event exceeded
+    the 1048576 byte limit``, for one ``get_version`` reply, on a session that went on working.
+    """
+    try:
+        from mcp import MCPError
+    except ImportError:  # pragma: no cover - mcp always present with the agent stack
+        return False
+    return isinstance(exc, MCPError)
+
+
 #: How the server says a fit is still running when another call arrives behind it
 #: (PEtab-MCP#108). Read only while a fit's call timeout is outstanding: before one, it can only
 #: answer a fit batched beside another, and goes to the lead like any other reply.
@@ -155,10 +195,13 @@ def _is_transport_error(exc: BaseException) -> bool:
     RemoteProtocolError/PoolTimeout/WriteTimeout/… ), and mcp's own timeout (see _is_call_timeout)
     — the same surface the run-loop resume backstop matches, so the two never disagree on what is
     'transport'. httpx2, not httpx: mcp 2 runs its transport on it, and httpx2's errors do not
-    derive from httpx's."""
+    derive from httpx's.
+
+    Also a closed session (:func:`_is_session_closed`), which the backstop does not resume: the
+    run ends on it, and is scored as an infrastructure stop."""
     if type(exc).__name__ in _TRANSPORT_ERROR_NAMES or isinstance(exc, ConnectionError):
         return True
-    if _is_call_timeout(exc):
+    if _is_call_timeout(exc) or _is_session_closed(exc):
         return True
     try:
         import httpx2
@@ -423,9 +466,10 @@ def _wrap_tools_with_circuit_breaker(
                         # same error teaches it nothing. Escalate the wording once the streak is
                         # real, and RETURN it as the tool's result rather than raising.
                         #
-                        # Raising here used to END THE RUN. langchain-mcp-adapters installs
-                        # `_handle_mcp_tool_error` as the tools' `handle_tool_error`, and it
-                        # converts the error into a ToolMessage for exactly ONE type:
+                        # Raising here used to END THE RUN. The tool bridge (`langchain.mcp`, as
+                        # langchain-mcp-adapters before it) installs `_handle_mcp_tool_error` as
+                        # the tools' `handle_tool_error`, and it converts the error into a
+                        # ToolMessage for exactly ONE type:
                         #
                         #     if isinstance(error, _MCPToolExecutionError): return ...content
                         #     raise error          # <- everything else propagates
@@ -459,6 +503,13 @@ def _wrap_tools_with_circuit_breaker(
                         return (_transport_breaker_message(name, hint), None)
                     if tripped:
                         return (_breaker_message(name, hint), None)
+                    if _is_client_mcp_error(exc) and not _is_transport_error(exc):
+                        # The same `raise error` as above: an MCPError is no ToolException, so it
+                        # ended the run (gemot#103: f2e2b86d, 15.8 h into a 33 h budget, on one
+                        # reply too large for the client to read). The session is still up, so
+                        # the model gets the error as the result and can ask for less; the
+                        # 3-strike count above still applies.
+                        return (sig, None)
                     raise
                 content, artifact = result if isinstance(result, tuple) else (result, None)
                 # The whole text, not only an error's: before PEtab-MCP#95 a fit that crashed on
