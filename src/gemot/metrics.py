@@ -4,8 +4,8 @@ Two sources of truth per run:
 
 * ``work/result.json`` (written by :func:`runner._judge`) — the **outcome**: chi2, BIC,
   ΔBIC, the verdict, timings, the model, and the git sha it ran at.
-* the **Phoenix trace** — the only place token **usage** lives (summed from the child LLM
-  spans), plus span/tool/agent counts.
+* the **Phoenix trace** — token **usage** from child LLM spans or a native CLI's reported
+  session aggregate, plus span/tool/agent counts. Native usage also lives in ``result.json``.
 
 This module joins the two — preferentially by the ``phoenix_trace_id`` the runner stamps
 into ``result.json`` (falling back to the run's time window, then to the latest trace in
@@ -239,6 +239,8 @@ def phoenix_trace_metrics(
     the most recent one). If a requested ``trace_id`` isn't in the window and other traces are, it
     returns a miss (blank usage) rather than summing the whole window and folding other runs'
     tokens into this row. A frame with no trace-id column at all falls back to summing the window.
+    Native CLI session aggregates take precedence over response spans, avoiding double counting
+    and preserving unknown internal call counts. A Codex output item is not an API call.
     """
     try:
         from phoenix.client import Client
@@ -319,22 +321,51 @@ def phoenix_trace_metrics(
         # (unknown), not 0 — a genuine zero and "never captured" must stay distinguishable.
         return int(vals.sum()) if len(vals) else None
 
+    usage = {
+        "n_llm_calls": _kcount("LLM"),
+        "tokens_prompt": _tok("prompt"),
+        "tokens_completion": _tok("completion"),
+        "tokens_total": _tok("total"),
+    }
+    scope_col = "attributes.gemot.cli.usage_scope"
+    native = sub[sub[scope_col] == "session_aggregate"] if scope_col in sub.columns else None
+    if native is not None and len(native):
+        for output_key, native_key in (
+            ("n_llm_calls", "n_llm_calls"),
+            ("tokens_prompt", "prompt_tokens"),
+            ("tokens_completion", "completion_tokens"),
+            ("tokens_total", "total_tokens"),
+        ):
+            col = f"attributes.gemot.cli.{native_key}"
+            vals = native[col].dropna() if col in native.columns else []
+            # A missing aggregate quantity is unknown, even if response spans contain partial
+            # counts. Sum only when every observed session supplies this quantity.
+            usage[output_key] = int(vals.sum()) if len(vals) == len(native) else None
+    else:
+        observation_col = "attributes.gemot.cli.observation_scope"
+        if observation_col in sub.columns and (sub[observation_col] == "output_item").any():
+            # The session span may not have arrived yet. Never reinterpret visible output items
+            # as underlying API calls while waiting for the authoritative aggregate.
+            usage["n_llm_calls"] = None
+
     model = None
     if "attributes.llm.model_name" in sub.columns:
         seen = sub["attributes.llm.model_name"].dropna().unique().tolist()
         model = seen[0] if seen else None
+    if model is None and native is not None and len(native):
+        model_col = "attributes.gemot.cli.requested_model"
+        if model_col in native.columns:
+            seen = native[model_col].dropna().unique().tolist()
+            model = seen[0] if seen else None
 
     return {
         "n_spans": int(len(sub)),
-        "n_llm_calls": _kcount("LLM"),
+        **usage,
         "n_tool_spans": _kcount("TOOL"),
         "n_agent_spans": _kcount("AGENT"),
         "n_span_errors": int((sub["status_code"] == "ERROR").sum())
         if "status_code" in sub.columns
         else 0,
-        "tokens_prompt": _tok("prompt"),
-        "tokens_completion": _tok("completion"),
-        "tokens_total": _tok("total"),
         "trace_model": model,
         "phoenix_note": note,
     }

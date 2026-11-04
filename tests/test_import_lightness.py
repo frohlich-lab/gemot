@@ -71,6 +71,7 @@ def _assert_light(importline: str) -> None:
         "from gemot.agent import dedup, guards",
         "from gemot.agent import sandbox",
         "from gemot.agent import barebones",
+        "from gemot.agent import codex, claude, native_cli, cli_mcp, cli_process, cli_tracing",
         "from gemot import prompts",
         "from gemot import bio_sessions",
         "from gemot import experiments",

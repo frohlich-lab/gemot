@@ -141,6 +141,14 @@ def archive_run(work: Path, result: dict, archive_root: Path | None = None) -> P
         dest.mkdir(parents=True, exist_ok=True)
         (dest / "result.json").write_text(json.dumps(result, indent=2))
 
+        # Native CLI observations must survive the next run's work/ cleanup, just like the
+        # fitted versions. These are fixed filenames, never paths supplied by model output.
+        for driver in ("codex", "claude"):
+            for suffix in ("events.jsonl", "prompt.txt", "final.txt"):
+                name = f"{driver}_{suffix}"
+                if (work / name).is_file():
+                    shutil.copy2(work / name, dest / name)
+
         store = work / ".petab_mcp"
         dest_store = dest / ".petab_mcp"
         # `errors.jsonl` rides along with the event log because it is the only durable record of

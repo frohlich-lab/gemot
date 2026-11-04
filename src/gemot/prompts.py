@@ -1479,7 +1479,21 @@ INDRA_NO_MODEL_NUDGE = (
 )
 
 
+#: Sent once before a native CLI's task; subsequent history and tool turns belong to the CLI.
+NATIVE_CLI_INSTRUCTIONS = (
+    "Use the gemot MCP server to investigate and model the supplied PEtab problem. "
+    "Choose your own modelling and analysis strategy. Read the experimental design and "
+    "measurements, propose justified changes through make_changes, and inspect the resulting "
+    "fits and diagnostics. The server fits and versions each change; the independent judge "
+    "scores the best version after you finish. Use the tools' descriptions and get_skill "
+    "for their domain conventions. The MCP server is the source of task data; no problem "
+    "files are provided in your working directory. Return a final report of your model and "
+    "its fit when your investigation is complete.\n\n"
+)
+
+
 PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
+    "native_cli": {"petab-native-cli-instructions": NATIVE_CLI_INSTRUCTIONS},
     "biology_blind": {
         "petab-anonymous-semantics": BIOLOGY_BLIND_SEMANTICS,
         "petab-anonymous-lead": BIOLOGY_BLIND_SYSTEM_PROMPT,
