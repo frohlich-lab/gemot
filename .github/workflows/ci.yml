@@ -39,19 +39,19 @@ jobs:
       # scipy-openblas64 wheel. A C/C++ compiler and CMake ship on ubuntu-latest;
       # the Ninja generator AMICI drives CMake with does not, so install it.
       #
-      # HDF5 too: AMICI builds with it only if it finds the headers, and needs it
-      # to pickle a solver, i.e. to send a fit start to a worker. As petab-mcp's
-      # own CI does.
+      # No HDF5: AMICI >= 1.2.0 pickles a solver as a dict of its settings, so a
+      # fit start reaches a worker without it, and petab-mcp's CI dropped it
+      # (PEtab-MCP#222). pyPESTO's result file is written by h5py, whose wheel
+      # brings its own.
       #
       # Deliberately NOT installing the apt `swig`: AMICI is built against the
       # pip `swig`, and a mismatched system SWIG makes compiled models raise
       # "'SwigPyObject' object has no attribute 'module'". The matching SWIG is
       # the pip `swig` package (installed and pinned below).
-      - name: Install build toolchain (Ninja, HDF5)
+      - name: Install build toolchain (Ninja)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build cmake build-essential
-          sudo apt-get install -y libhdf5-dev  # with its recommends, as AMICI's own CI does
 
       # tests/test_sandbox.py runs the barebones agent's shell under bubblewrap and checks what it
       # must not reach (the example directory above the workspace, $HOME, the network, the

@@ -79,6 +79,7 @@ _RESULT_FIELDS = (
     "llm_seconds",
     "compile_seconds",
     "fit_seconds",
+    "queue_seconds",
     "n_compiles",
     "n_fits",
     "git_sha",

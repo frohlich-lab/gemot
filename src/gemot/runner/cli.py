@@ -32,6 +32,7 @@ import os
 
 from .failure import _should_reraise, _summarize_exc
 from .main import _constraints, _main_async
+from .server import _build_root
 from ..scenario import Scenario
 from .. import models
 
@@ -175,8 +176,10 @@ def run_scenario(scenario: Scenario, argv: list[str] | None = None) -> int:
     args = build_parser(scenario).parse_args(argv)
     args.model = models.resolve(args.model)  # go-to alias (e.g. "luna") -> OpenRouter id
     # Before anything is wiped or launched, and outside the catch below, which would file it as a
-    # teardown error: an arm this problem cannot run is refused, not run as something else.
+    # teardown error: an arm this problem cannot run is refused, not run as something else, and so
+    # is a fit pool without its build root.
     _constraints(scenario)
+    _build_root(scenario)
     result: dict = {}
     # The null arm inverts the pipeline (agent first, server after, on what it delivered), so it
     # is a separate main rather than a branch inside the shared one. Resolved lazily: the module

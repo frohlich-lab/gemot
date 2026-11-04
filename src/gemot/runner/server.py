@@ -62,7 +62,11 @@ _SERVER_BOOTSTRAP = (
     "                    score_shipped_model=(score_shipped == '1'),\n"
     "                    entity_map=entity_map or None,\n"
     "                    constraints=constraints or None,\n"
-    "                    constraint_updates='off')\n"
+    "                    constraint_updates='off',\n"
+    # A sweep's fit pool, by its scheduler's address (`petab-mcp-pool`, PEtab-MCP#225), read
+    # under the name the server's own CLI reads. Unset, the fits run on this server's own worker
+    # processes. Read off the environment the run records it from (`provenance._fit_settings`).
+    "                    cluster=os.environ.get('PETAB_MCP_FIT_POOL') or None)\n"
     # fastmcp >=3.4 dropped `srv.settings`; host/port are passed to run() (forwarded to the
     # streamable-http transport's run_http_async(host=, port=)).
     "srv.run(transport='streamable-http', host=host, port=int(port))\n"
@@ -96,6 +100,28 @@ def _server_env(scenario: Scenario) -> dict[str, str]:
         "PETAB_MCP_FIT_N_WORKERS": str(FIT_N_WORKERS),
         **scenario.amici_tolerance_env(),
     }
+
+
+def _build_root(scenario: Scenario) -> Path:
+    """Where the run's server builds its models: ``PETAB_MCP_BUILD_ROOT``, the name the server's
+    own CLI reads, else the example's ``.amici_build``. Either lies outside ``work/``, which every
+    run wipes, and builds are keyed by structure, so a model compiled once is reused.
+
+    On a fit pool (``PETAB_MCP_FIT_POOL``) the pool's workers import every module the server
+    builds, by the same absolute path. So the sweep task sets the pool's build root, on storage
+    the workers share, and the runs of one model compile it once between them. gemot never clears
+    it; the operator does. A pool without one is refused here, as ``petab-mcp --fit-pool`` refuses
+    it: the example's own folder is private to the run's task, and a worker that found no module
+    to import there would end every fit as ``infrastructure_error: fit_pool``.
+    """
+    root = os.environ.get("PETAB_MCP_BUILD_ROOT")
+    if os.environ.get("PETAB_MCP_FIT_POOL") and not root:
+        raise ValueError(
+            "PETAB_MCP_FIT_POOL is set but PETAB_MCP_BUILD_ROOT is not: the pool's workers import "
+            "the models this run's server builds, so the build root must be the pool's, on "
+            "storage they share"
+        )
+    return Path(root) if root else scenario.example_dir / ".amici_build"
 
 
 def _free_port() -> int:

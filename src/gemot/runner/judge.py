@@ -747,16 +747,19 @@ async def _judge(
                 )
             )
     # Server-side breakdown of the heavy compute: how much of the tool time was the one-time
-    # AMICI compile vs the recurring pyPESTO fit (best-effort — a server without the tool, or
-    # a failed call, just leaves these None). Fetched BEFORE the clock snapshot below so this
-    # probe is counted consistently in BOTH compute_seconds and tool_calls (not one but not
-    # the other), keeping the two metrics comparable.
-    compile_s = fit_s = n_compiles = n_fits = None
+    # AMICI compile vs the recurring pyPESTO fit, and of the fit the time its starts waited for a
+    # worker of a sweep's fit pool with none of them running (`queue_seconds`, PEtab-MCP#224; 0
+    # on the server's own workers). Best-effort — a server without the tool, or a failed call,
+    # just leaves these None. Fetched BEFORE the clock snapshot below so this probe is counted
+    # consistently in BOTH compute_seconds and tool_calls (not one but not the other), keeping
+    # the two metrics comparable.
+    compile_s = fit_s = queue_s = n_compiles = n_fits = None
     try:
         timing = await call("get_run_timing")
         if isinstance(timing, dict):
             compile_s = timing.get("compile_seconds")
             fit_s = timing.get("fit_seconds")
+            queue_s = timing.get("queue_seconds")
             n_compiles = timing.get("n_compiles")
             n_fits = timing.get("n_fits")
     except Exception:
@@ -913,6 +916,8 @@ async def _judge(
         # Server-side split of the heavy compute (None if the server didn't report it).
         "compile_seconds": compile_s,
         "fit_seconds": fit_s,
+        # Part of fit_seconds, and so of compute_seconds: what a busy pool cost the run.
+        "queue_seconds": queue_s,
         "n_compiles": n_compiles,
         "n_fits": n_fits,
         "tool_calls": clock.calls,

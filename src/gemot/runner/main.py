@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -15,17 +16,23 @@ import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.jsonrpc_dispatcher import JSONRPCDispatcher
-from .. import ablations, prompts
+from .. import ablations, infrastructure, prompts
 from ..paths import validation_measurements_path
 from ..bio_sessions import open_bio_sessions
 from ..explorer.archive import archive_run
 from ..fit_budget import FIT_BUDGET_CEILING_S, fit_time_budget_for
-from .drive import _drive
+from .drive import _drive, _infrastructure_abort
 from .endpoints import BIO_MCP_URLS
 from .failure import _should_reraise, _summarize_exc, _write_degraded_result
 from .provenance import _base_meta, _now_iso
 from ..scenario import Scenario
-from .server import _SERVER_BOOTSTRAP, _free_port, _server_env, _wait_until_listening
+from .server import (
+    _SERVER_BOOTSTRAP,
+    _build_root,
+    _free_port,
+    _server_env,
+    _wait_until_listening,
+)
 
 
 # --------------------------------------------------------------------------- steps
@@ -57,10 +64,16 @@ def _empty_entity_map(build_root: Path) -> Path:
     """An entity map with no entries: the server offers the `statements` route, and nothing in it
     comes from the reference model (a problem's ``indra/entity_map.json`` binds the reference's
     agents and must never reach an agent). The experiment's inputs (Fujita's EGF ramp) are held
-    from the problem's own ``inputs.tsv``, which the server reads in ``work/``."""
+    from the problem's own ``inputs.tsv``, which the server reads in ``work/``.
+
+    Replaced whole rather than rewritten: on a fit pool every run's server shares the build root
+    (``server._build_root``), and a rewrite empties the file for a moment in which another run's
+    server may be reading it."""
     path = Path(build_root) / "entity_map.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("{}\n")
+    written = path.with_name(f".{path.name}.{os.getpid()}")
+    written.write_text("{}\n")
+    os.replace(written, path)
     return path
 
 
@@ -294,14 +307,11 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
     # re-stamping it at abort time.
     started_at = _now_iso()
 
-    # AMICI builds are keyed by SBML hash and never go stale, so keep them OUTSIDE work/
-    # (wiped each run) to avoid recompiling identical models on repeat runs.
-    build_root = scenario.example_dir / ".amici_build"
     launched: dict = {}
     verdict: tuple[int, dict] | None = None
     try:
         async with _petab_server(
-            work, build_root, args, scenario=scenario, handle_out=launched
+            work, _build_root(scenario), args, scenario=scenario, handle_out=launched
         ) as server:
             proc = server.proc
             session = server.session
@@ -366,11 +376,16 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
             return verdict
         server = launched.get("handle")  # absent only if the subprocess never spawned
         rc = server.proc.poll() if server is not None else None
+        # A server that exits at startup leaves its reason in its logs alone: a pool from another
+        # environment is refused at connect as `infrastructure_error: fit_pool` (PEtab-MCP#226),
+        # which blames the pool, not the run, as a report during the run does.
+        logs = infrastructure.LogWatch(work / "server.log", work / "amici_build.log")
         result = _write_degraded_result(
             work,
             _base_meta(scenario, args, started_at),
             scenario,
             _summarize_exc(exc),
             server_returncode=rc,
+            **_infrastructure_abort(exc, logs),
         )
         return 1, result
