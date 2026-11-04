@@ -20,7 +20,9 @@ import pytest
 from gemot.runner import (  # noqa: E402
     _NOISE_SIGMA_COLLAPSE_FRACTION,
     _judge,
+    _noise_sigma_flag,
     _reference_sigma_flag,
+    _scale_coupled_sigmas,
     _ToolClock,
 )
 
@@ -486,3 +488,91 @@ def test_reference_sigma_basis_is_declined_for_a_scale_coupled_sigma():
     )
     assert plain is not None and plain["inflated"] is True
     assert plain["max_ratio"] > 100
+
+
+#: isensee's microscopy noise as `query_data` hands it to the judge: each dataset's scale fills the
+#: placeholder, and the global scale and the sigma are written into the formula itself.
+_ISENSEE_DATASETS = ("JI09_150302_Drg345_343_CycNuc", "JI09_150330_Drg350_348_CycNuc")
+_ISENSEE_NOISE_ROWS = [
+    {
+        "noise_formula": "noiseParameter1_pRII_Microscopy * s_pRII_global * rho_pRII_Microscopy",
+        "noise_parameters": f"s_pRII_{dataset}",
+    }
+    for dataset in _ISENSEE_DATASETS
+]
+_ISENSEE_SCALES = {"s_pRII_global", *(f"s_pRII_{d}" for d in _ISENSEE_DATASETS)}
+_ISENSEE_REF = {
+    "noise_sigma": {"rho_pRII_Microscopy": 0.06996313044208774},
+    "noise_sigma_effective": {"rho_pRII_Microscopy": 0.06996313044208774},
+    "k": 46,
+    "n": 687,
+}
+
+
+def _isensee_report(rho):
+    """The server's entry for `rho_pRII_Microscopy`: `scale_coupled` False, because neither scale
+    is listed in `noiseParameters` beside the sigma (PEtab-MCP#237)."""
+    entry = _sigma_entry(rho, 0.15, rho / 0.2)
+    return {
+        "rho_pRII_Microscopy": {
+            **entry,
+            "effective_sigma": rho,
+            "n_points": 627,
+            "scale_coupled": False,
+        }
+    }
+
+
+def test_a_sigma_whose_formula_reads_an_estimated_scale_is_not_compared_raw():
+    """gemot#104, isensee r2: v13-v16 fitted rho_pRII_Microscopy at 0.19-0.33 of the reference, under
+    the band's 1/3, so the raw basis refused them and the judge scored v3 (dBIC +11.6, a FAIL)
+    instead of v15 (-20.7). Their noise in measurement units, `s_dataset * rho * s_global`, matched
+    v3's: only the split between scale and sigma had moved. The judge must see that coupling in the
+    formula and leave the verdict to the data-driven band, which passes this sigma."""
+    report = _isensee_report(0.25 * 0.06996313044208774)  # v15's raw ratio
+    estimated = _ISENSEE_SCALES | {"rho_pRII_Microscopy"}
+
+    raw = _reference_sigma_flag(report, _ISENSEE_REF, k=40, n=687)
+    assert raw is not None and raw["collapsed"] is True  # the refusal the issue reports
+
+    coupled = _scale_coupled_sigmas(report, _ISENSEE_NOISE_ROWS, estimated)
+    assert coupled == {"rho_pRII_Microscopy"}
+    assert _reference_sigma_flag(report, _ISENSEE_REF, k=40, n=687, coupled=coupled) is None
+    flag = _noise_sigma_flag(report)  # what `_judge` falls through to
+    assert flag["inflated"] is False and flag["collapsed"] is False
+
+    # Either route alone couples it: the scale written into the formula, or the one filled in
+    # through the placeholder.
+    assert _scale_coupled_sigmas(report, _ISENSEE_NOISE_ROWS, {"s_pRII_global"}) == coupled
+    by_dataset = _ISENSEE_SCALES - {"s_pRII_global"}
+    assert _scale_coupled_sigmas(report, _ISENSEE_NOISE_ROWS, by_dataset) == coupled
+
+
+def test_a_sigma_with_no_estimated_parameter_beside_it_is_still_gated():
+    """The coupling is about an ESTIMATED co-parameter only. With every scale fixed (a constant of
+    the problem, the same on both sides) or with the sigma alone in its formula, the raw value is
+    comparable and the reference basis still refuses a ratio of 0.25, as before gemot#104."""
+    report = _isensee_report(0.25 * 0.06996313044208774)
+
+    fixed_scales = _scale_coupled_sigmas(report, _ISENSEE_NOISE_ROWS, {"rho_pRII_Microscopy"})
+    alone = _scale_coupled_sigmas(
+        report,
+        [{"noise_formula": "rho_pRII_Microscopy", "noise_parameters": None}],
+        _ISENSEE_SCALES | {"rho_pRII_Microscopy"},
+    )
+    for coupled in (fixed_scales, alone):
+        assert coupled == set()
+        flag = _reference_sigma_flag(report, _ISENSEE_REF, k=40, n=687, coupled=coupled)
+        assert flag is not None and flag["collapsed"] is True
+
+
+def test_per_dataset_sigmas_through_one_placeholder_do_not_couple_each_other():
+    """One placeholder filled with `sd_d1` on one dataset and `sd_d2` on another is two independent
+    sigmas. Pooling an observable's rows would couple each to the other and switch the reference
+    basis off on every problem with per-dataset sigmas, so the coupling is resolved per row."""
+    report = {pid: _sigma_entry(0.1, 0.5, 0.3) for pid in ("sd_d1", "sd_d2")}
+    rows = [
+        {"noise_formula": "noiseParameter1_obs", "noise_parameters": "sd_d1"},
+        {"noise_formula": "noiseParameter1_obs", "noise_parameters": "sd_d2"},
+    ]
+    assert _scale_coupled_sigmas(report, rows, {"sd_d1", "sd_d2"}) == set()
