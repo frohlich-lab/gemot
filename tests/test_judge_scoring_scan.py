@@ -442,88 +442,9 @@ def test_a_failed_restore_says_so_instead_of_naming_a_version_nothing_scored(tmp
     assert result["noise_sigma_flag"]["collapsed"] is True
 
 
-#: isensee's reference sigma for the microscopy pRII readout, and its noise as `query_data` hands
-#: it to the judge: the dataset scale fills the placeholder, the global scale and the sigma are
-#: written into the formula itself (gemot#104).
+#: isensee's reference sigma for the microscopy pRII readout, whose noise formula names its scales
+#: (`noiseParameter1_pRII_Microscopy * s_pRII_global * rho_pRII_Microscopy`; gemot#104).
 _ISENSEE_RHO = 0.06996313044208774
-_ISENSEE_NOISE_ROWS = [
-    {
-        "noise_formula": "noiseParameter1_pRII_Microscopy * s_pRII_global * rho_pRII_Microscopy",
-        "noise_parameters": "s_pRII_JI09_150302_Drg345_343_CycNuc",
-    }
-]
-
-
-class _IsenseeStore(_Store):
-    """The version store of isensee r2, cut to its two versions that matter: v15 beats the bar
-    with `rho_pRII_Microscopy` at 0.25 of the reference, v3 sits at 0.94 and misses it. The server
-    reports both entries `scale_coupled: False` (PEtab-MCP#237). ``noise_rows=None`` is a server
-    that cannot answer the judge's noise read; ``scales_estimated=False`` fixes both scales."""
-
-    def __init__(self, *, noise_rows=_ISENSEE_NOISE_ROWS, scales_estimated=True):
-        super().__init__(
-            {3: (167.0, 0.94 * _ISENSEE_RHO), 15: (140.117, 0.25 * _ISENSEE_RHO)},
-            head=15,
-            checkpoint=15,
-        )
-        self.noise_rows = noise_rows
-        scales = ["s_pRII_global", "s_pRII_JI09_150302_Drg345_343_CycNuc"]
-        # k = 12 either way (the BIC _Store ranks by), so the cases differ only in the scales.
-        rates = [f"k{i}" for i in range(9 if scales_estimated else 11)]
-        estimated = ["rho_pRII_Microscopy", *rates, *(scales if scales_estimated else [])]
-        fixed = [] if scales_estimated else scales
-        self.params = [{"parameterId": p, "estimate": 1} for p in estimated] + [
-            {"parameterId": p, "estimate": 0} for p in fixed
-        ]
-
-    @staticmethod
-    def _rho_report(rho):
-        return {
-            "rho_pRII_Microscopy": {
-                "fitted": rho,
-                "effective_sigma": rho,
-                "n_points": 30,
-                "upper_bound_cap": 0.15,
-                "data_std": 0.2,
-                "fraction_of_data_std": rho / 0.2,
-                "scale_coupled": False,
-            }
-        }
-
-    async def __call__(self, name, **kwargs):
-        if name == "query_data":
-            self.calls.append((name, kwargs))
-            if self.noise_rows is None:
-                raise RuntimeError("this server has no query_data")
-            if "LIMIT 0" in kwargs["sql"]:
-                return {"columns": ["observableId", "noiseParameters"], "rows": []}
-            return {"columns": ["noise_formula", "noise_parameters"], "rows": self.noise_rows}
-        if name == "get_parameters":
-            self.calls.append((name, kwargs))
-            return self.params
-        if name == "get_version":
-            self.calls.append((name, kwargs))
-            nll, rho = self.versions[kwargs["version"]]
-            return {
-                "parameters": self.params,
-                "simulation": {
-                    "neg_log_likelihood": nll,
-                    "noise_sigma_report": self._rho_report(rho),
-                },
-            }
-        if name == "get_fit_summary":
-            self.calls.append((name, kwargs))
-            nll, rho = self.versions[self.head]
-            return {
-                "neg_log_likelihood": nll,
-                "n_data_points": 43,
-                "chi2": 40.0,
-                "criterion": "bic",
-                "noise_sigma_report": self._rho_report(rho),
-            }
-        return await super().__call__(name, **kwargs)
-
-
 _ISENSEE_REF = {
     "nll": 141.889,
     "k": 22,
@@ -533,64 +454,57 @@ _ISENSEE_REF = {
 }
 
 
+class _IsenseeStore(_Store):
+    """The version store of isensee r2, cut to its two versions that matter: v15 beats the bar
+    with `rho_pRII_Microscopy` at 0.25 of the reference, v3 sits at 0.94 and misses it.
+    ``scale_coupled`` is the server's flag on both entries: False at PEtab-MCP 26e5b76, which read
+    only `noiseParameters`, True since PEtab-MCP#243 counts the scales in the formula."""
+
+    def __init__(self, *, scale_coupled):
+        super().__init__(
+            {3: (167.0, 0.94 * _ISENSEE_RHO), 15: (140.117, 0.25 * _ISENSEE_RHO)},
+            head=15,
+            checkpoint=15,
+        )
+        self.scale_coupled = scale_coupled
+
+    def _rho_report(self, rho):
+        return {
+            "rho_pRII_Microscopy": {
+                "fitted": rho,
+                "effective_sigma": rho,
+                "n_points": 30,
+                "upper_bound_cap": 0.15,
+                "data_std": 0.2,
+                "fraction_of_data_std": rho / 0.2,
+                "scale_coupled": self.scale_coupled,
+            }
+        }
+
+    async def __call__(self, name, **kwargs):
+        if name in ("get_version", "get_fit_summary"):
+            out = await super().__call__(name, **kwargs)
+            version = kwargs["version"] if name == "get_version" else self.head
+            report = self._rho_report(self.versions[version][1])
+            (out["simulation"] if name == "get_version" else out)["noise_sigma_report"] = report
+            return out
+        return await super().__call__(name, **kwargs)
+
+
 def test_a_scale_coupled_sigma_no_longer_costs_the_run_its_better_version(tmp_path):
-    """gemot#104, isensee r2: the raw basis refused v15 (rho at 0.25 of the reference) and the judge
-    scored v3 (+11.6, a FAIL), though v15's noise in measurement units matched v3's. With the scales
-    read in the noise formula, rho is scale-coupled, the data-driven band decides, and v15 is
-    scored and passes. Without the read, the judge falls back to the server's flag alone and
-    reproduces the failure, which is what pins this test to the coupling."""
-    store = _IsenseeStore()
+    """gemot#104, isensee r2: compared raw, v15 (rho at 0.25 of the reference) was refused and the
+    judge scored v3 (+11.6, a FAIL), though v15's noise in measurement units matched v3's. With the
+    sigma flagged scale-coupled the data-driven band decides, v15 is scored and passes, and
+    result.json names the sigma that moved the basis. Unflagged, as the server reported it at
+    26e5b76, the judge reproduces the round-4 failure."""
+    store = _IsenseeStore(scale_coupled=True)
     code, result = _run(tmp_path, store, _ISENSEE_REF)
     assert store.head == 15 and result["success"] is True and code == 0
     assert result["noise_sigma_basis"] == "data_std"
     assert result["noise_sigma_scale_coupled"] == ["rho_pRII_Microscopy"]
 
-    unread = _IsenseeStore(noise_rows=None)
-    _, result = _run(tmp_path, unread, _ISENSEE_REF)
-    assert unread.head == 3 and result["success"] is False  # the round-4 failure
-    assert result["noise_sigma_scale_coupled"] == []
-
-
-def test_fixed_scales_leave_the_sigma_judged_raw(tmp_path):
-    """With both scales FIXED the raw rho is comparable, so the reference basis still applies and
-    still refuses v15: the fix is scoped to an estimated co-parameter in the formula."""
-    store = _IsenseeStore(scales_estimated=False)
+    store = _IsenseeStore(scale_coupled=False)
     _, result = _run(tmp_path, store, _ISENSEE_REF)
-    assert store.head == 3 and result["noise_sigma_basis"] == "reference"
+    assert store.head == 3 and result["success"] is False  # the round-4 failure
+    assert result["noise_sigma_basis"] == "reference"
     assert result["noise_sigma_scale_coupled"] == []
-
-
-def test_the_noise_read_pages_through_every_row_and_probes_the_column():
-    """A problem with per-row noise placeholders has as many distinct rows as points (armistead), so
-    the read must follow `next_offset` to the end: a dropped page drops the rows that would couple
-    a sigma. A measurement table without `noiseParameters` (v2 allows it) must not be asked for
-    one, since a failed query lands in `get_errors` and counts against the agent's run."""
-    from gemot.runner.judge import _noise_formula_rows
-
-    def fake(columns, pages):
-        asked = []
-
-        async def call(name, **kwargs):
-            asked.append(kwargs)
-            if "LIMIT 0" in kwargs["sql"]:
-                return {"columns": columns, "rows": []}
-            rows, following = pages[kwargs["offset"]]
-            return {
-                "rows": rows,
-                "truncated": following is not None,
-                **({"next_offset": following} if following is not None else {}),
-            }
-
-        return call, asked
-
-    pages = {0: ([{"noise_formula": "a"}], 1), 1: ([{"noise_formula": "b"}], None)}
-    call, asked = fake(["observableId", "noiseParameters"], pages)
-    assert asyncio.run(_noise_formula_rows(call)) == [
-        {"noise_formula": "a"},
-        {"noise_formula": "b"},
-    ]
-    assert "m.noiseParameters" in asked[1]["sql"]
-
-    call, asked = fake(["observableId"], {0: ([], None)})
-    assert asyncio.run(_noise_formula_rows(call)) == []
-    assert "noiseParameters" not in asked[1]["sql"]

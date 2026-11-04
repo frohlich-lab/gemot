@@ -244,50 +244,18 @@ def _residual_structure_fields(diagnosis, rollup=None) -> dict | None:
     return out
 
 
-def _scale_coupled_sigmas(report, noise_rows, estimated) -> set[str]:
-    """The sigmas in ``report`` whose raw value is not comparable across models: those whose noise
-    formula, on some measurement row, also names another ESTIMATED parameter.
-
-    The server marks such an entry ``scale_coupled`` (``reconcile.sigma_scale_coupled``), but looks
-    only for co-parameters filled in through the row's ``noiseParameters``; one written into the
-    ``noiseFormula`` itself, as isensee writes ``s_pRII_global``, goes unseen (PEtab-MCP#237). Both
-    routes count here: a row names every identifier in its observable's formula plus every id in
-    its ``noiseParameters`` cell. ``noise_rows`` are the distinct ``{noise_formula,
-    noise_parameters}`` pairs the measurements are scored under, and ``estimated`` the ids the
-    version fits.
-
-    Resolved PER ROW, not per observable: one placeholder filled with ``sd_d1`` on one dataset and
-    ``sd_d2`` on another makes two independent sigmas, and pooling the rows would couple each to
-    the other and switch the basis off on every problem with per-dataset sigmas. Placeholder names
-    and function names (``noiseParameter1_obs``, ``sqrt``) drop out because they are never estimated
-    ids. A FIXED co-parameter does not couple, as on the server: it is a constant of the problem,
-    the same on both sides. ``noise_rows`` of ``None`` (unread) leaves only the server's flag.
-    """
+def _scale_coupled_sigmas(report) -> list[str]:
+    """The sigmas the server marks ``scale_coupled`` (``reconcile.sigma_scale_coupled``), sorted:
+    those whose raw value is not comparable across models, so :func:`_reference_sigma_flag`
+    declines its basis on any of them."""
     if not isinstance(report, dict):
-        return set()
-    out = {pid for pid, e in report.items() if isinstance(e, dict) and e.get("scale_coupled")}
-    if not noise_rows or not estimated:
-        return out
-    from petab_mcp.reconcile import formula_symbols
-
-    row_names = set()
-    for row in noise_rows:
-        if not isinstance(row, dict):
-            continue
-        names = set(formula_symbols(row.get("noise_formula")))
-        overrides = row.get("noise_parameters")
-        if isinstance(overrides, str):
-            names |= {p.strip() for p in overrides.split(";") if p.strip()}
-        row_names.add(frozenset(names))
-    for pid in report:
-        if any(
-            pid in names and any(o != pid and o in estimated for o in names) for names in row_names
-        ):
-            out.add(pid)
-    return out
+        return []
+    return sorted(
+        str(pid) for pid, e in report.items() if isinstance(e, dict) and e.get("scale_coupled")
+    )
 
 
-def _reference_sigma_flag(report, reference, k=None, n=None, coupled=frozenset()) -> dict | None:
+def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
     """Plausibility of the candidate's ESTIMATED sigmas against the TRUE model's OWN fitted sigmas
     (``reference.json``'s ``noise_sigma``), or ``None`` when the reference doesn't record them.
 
@@ -329,9 +297,7 @@ def _reference_sigma_flag(report, reference, k=None, n=None, coupled=frozenset()
 
     Returns ``{inflated, collapsed, max_ratio, min_ratio, alpha, per_sigma}`` where the ratios are
     ``fitted / reference`` per sigma and ``per_sigma`` carries each one's ratio, df, band and
-    whether it compared effective or raw sigmas. ``None`` too, so the data-driven band decides,
-    when any sigma is scale-coupled: flagged so by the server, or named in ``coupled``
-    (:func:`_scale_coupled_sigmas`).
+    whether it compared effective or raw sigmas.
     """
     if not isinstance(report, dict) or not report:
         return None
@@ -360,17 +326,11 @@ def _reference_sigma_flag(report, reference, k=None, n=None, coupled=frozenset()
     # model. Until then, decline the whole basis as the unpairable-sigma case below does, so `_judge`
     # falls through to the data-driven band -- the test that was right all along here: it never
     # flagged any of the 116 runs scored on it, while this basis silently failed 17 fiedler runs that
-    # had BEATEN the reference bar. See reconcile.sigma_scale_coupled.
-    #
-    # `coupled` is the judge's own reading of the same question (:func:`_scale_coupled_sigmas`),
-    # needed because the server's flag only looks for an estimated co-parameter in
-    # `noiseParameters`. isensee writes its scales into the formula itself
-    # (`noiseParameter1 * s_pRII_global * rho_pRII_Microscopy`), so the flag stayed False and this
-    # basis refused v13-v16 (dBIC -12 to -21) for a raw rho at 0.19-0.33 of the reference, while
-    # their noise in measurement units matched the v3 it scored instead (+11.6, a FAIL; gemot#104).
-    if any(e.get("scale_coupled") for e in report.values() if isinstance(e, dict)) or any(
-        pid in coupled for pid in report
-    ):
+    # had BEATEN the reference bar. See reconcile.sigma_scale_coupled, which since PEtab-MCP#243 also
+    # counts a co-parameter written into the noiseFormula itself: isensee's scales are, and while the
+    # flag read only `noiseParameters` this basis refused isensee r2's v13-v16 (dBIC -12 to -21)
+    # for a raw rho the split between scale and sigma had moved (gemot#104).
+    if _scale_coupled_sigmas(report):
         return None
     # Prefer the EFFECTIVE sd on BOTH sides: for a composite/proportional noiseFormula the raw
     # parameter is not comparable across models (fiedler's sd is per-gel scale * sigma, so a

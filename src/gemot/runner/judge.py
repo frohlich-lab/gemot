@@ -109,10 +109,8 @@ async def _restore_best_checkpoint(call, reference=None) -> None:
     head = await _head_version(call)
     fallback = candidates[0]
     chosen, clean = fallback, False
-    # Which sigmas are scale-coupled: fixed for the session, so read once rather than per version.
-    noise_rows = await _noise_formula_rows(call)
     for version in candidates[:_SCORING_SCAN_LIMIT]:
-        flagged = await _sigma_flagged(call, version, reference, noise_rows)
+        flagged = await _sigma_flagged(call, version, reference)
         # `None` is unassessable — no stored report, or one the gate cannot read. The gate will not
         # fail that version either, so it is scoreable and the scan stops on it exactly as it does
         # on a clean one. (A whole store of them, e.g. a version dir written before the report was
@@ -268,16 +266,14 @@ async def _scoreable_versions(call) -> "list[int]":
     return best_first(versions)
 
 
-async def _sigma_flagged(call, version: int, reference, noise_rows=None) -> "bool | None":
+async def _sigma_flagged(call, version: int, reference) -> "bool | None":
     """Would ``version``'s noise model fail :func:`_judge`'s integrity gate? ``None`` when
     unassessable.
 
     The SAME verdict the gate itself computes — ``_reference_sigma_flag`` against the reference's
     fitted sigmas, falling back to the data-std band — read off the report the FIT stored beside
     that version (:func:`petab_mcp.fitting.build_sim_payload_for_version`). A read, not a rollback:
-    the scan can ask about every version without touching the working state. Which sigmas are
-    scale-coupled is judged on ``noise_rows`` (:func:`_noise_formula_rows`) against THAT version's
-    estimated parameters.
+    the scan can ask about every version without touching the working state.
 
     Anything unreadable is ``None``: an unassessable version must not be silently skipped in favour
     of a worse one, since the gate will not fail it either. A version stored before the report was
@@ -294,68 +290,10 @@ async def _sigma_flagged(call, version: int, reference, noise_rows=None) -> "boo
     if not report:
         return None
     k_v, n_v = _stored_k_and_n(stored)
-    coupled = _scale_coupled_sigmas(report, noise_rows, _estimated_ids(stored.get("parameters")))
-    flag = _reference_sigma_flag(report, reference, k=k_v, n=n_v, coupled=coupled)
-    flag = flag or _noise_sigma_flag(report)
+    flag = _reference_sigma_flag(report, reference, k=k_v, n=n_v) or _noise_sigma_flag(report)
     if not flag:
         return None
     return bool(flag["inflated"] or flag["collapsed"])
-
-
-def _estimated_ids(params) -> "set[str]":
-    """The ids a parameter table ESTIMATES: rows with ``estimate`` truthy, bar the ``in_model:
-    false`` rows ``get_parameters`` appends for parameters the model never declared (those are not
-    in the live table, so nothing fits them). Empty where the read is unusable."""
-    if not isinstance(params, list):
-        return set()
-    return {
-        str(p.get("parameterId"))
-        for p in params
-        if isinstance(p, dict) and p.get("estimate") and p.get("in_model", True)
-    }
-
-
-#: Every distinct noise formula a measurement row is scored under, beside the row's
-#: ``noiseParameters`` (the ids its placeholders resolve to). ``{overrides}`` is ``NULL`` where the
-#: measurement table has no such column, which v2 allows.
-_NOISE_ROWS_SQL = (
-    "SELECT DISTINCT o.noiseFormula AS noise_formula, {overrides} AS noise_parameters "
-    "FROM measurements AS m JOIN observables AS o ON m.observableId = o.observableId "
-    "ORDER BY 1, 2"
-)
-#: The server's own cap on a ``query_data`` page (``data_access.MAX_PAGE_ROWS``).
-_QUERY_PAGE_ROWS = 1000
-
-
-async def _noise_formula_rows(call) -> "list[dict] | None":
-    """The ``{noise_formula, noise_parameters}`` pairs the problem's measurements are scored under,
-    for :func:`scoring._scale_coupled_sigmas`; ``None`` when they cannot be read.
-
-    Both tables are fixed for the session (the server's design is read-only), so one read serves
-    every version. Through ``query_data`` rather than ``get_measurements``: DISTINCT leaves a few
-    rows where the raw table is one per point. The column is probed first, not guessed, because a
-    failed query would be logged to ``get_errors`` and counted against the AGENT's run.
-    """
-    try:
-        probe = await call("query_data", sql="SELECT * FROM measurements LIMIT 0")
-        columns = probe.get("columns") if isinstance(probe, dict) else None
-        if not isinstance(columns, list):
-            return None
-        overrides = "m.noiseParameters" if "noiseParameters" in columns else "NULL"
-        sql = _NOISE_ROWS_SQL.format(overrides=overrides)
-        rows: list[dict] = []
-        offset = 0
-        while True:
-            page = await call("query_data", sql=sql, max_rows=_QUERY_PAGE_ROWS, offset=offset)
-            if not isinstance(page, dict) or not isinstance(page.get("rows"), list):
-                return None
-            rows += page["rows"]
-            following = page.get("next_offset")
-            if not page.get("truncated") or not isinstance(following, int) or following <= offset:
-                return rows
-            offset = following
-    except Exception:  # noqa: BLE001 - unread structure: the gate keeps the server's flag alone
-        return None
 
 
 async def _restore(call, version: int, head: "int | None") -> bool:
@@ -599,19 +537,7 @@ async def _judge(
     # explained and unexplained variance, so no fixed band holds the truth). Falls back to the
     # data-std band for a reference.json written before `noise_sigma` was recorded — regenerate
     # with `python -m petab_agent_bench --refit <example>` to switch an example over.
-    # A sigma whose noise formula also names an estimated scale has no comparable raw value
-    # (gemot#104); the null's estimated set is its own, as in the k above.
-    noise_rows = await _noise_formula_rows(call) if noise_sigma_report else None
-    if noise_sigma_report and noise_rows is None:
-        print("  (noise formulas unavailable: scale coupling read off the server's flag alone)")
-    scale_coupled = _scale_coupled_sigmas(
-        noise_sigma_report,
-        noise_rows,
-        set(estimated) if estimated is not None else _estimated_ids(params),
-    )
-    reference_sigma_flag = _reference_sigma_flag(
-        noise_sigma_report, ref, k=k, n=n, coupled=scale_coupled
-    )
+    reference_sigma_flag = _reference_sigma_flag(noise_sigma_report, ref, k=k, n=n)
     noise_sigma_flag = reference_sigma_flag or _noise_sigma_flag(noise_sigma_report)
     sigma_basis = "reference" if reference_sigma_flag else "data_std"
     sigma_implausible = bool(
@@ -977,7 +903,7 @@ async def _judge(
         "noise_sigma_basis": sigma_basis,
         # The sigmas whose raw value the reference basis would not compare, so a "data_std"
         # basis on a reference that records sigmas says why.
-        "noise_sigma_scale_coupled": sorted(scale_coupled),
+        "noise_sigma_scale_coupled": _scale_coupled_sigmas(noise_sigma_report),
         "reference": ref,
         "reactions": [r.get("id") for r in reactions],
         "species": sorted(current_species),
