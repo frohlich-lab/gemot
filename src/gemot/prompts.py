@@ -1440,17 +1440,19 @@ BIOLOGY_BLIND_ANALYSTS = {
 }
 BIOLOGY_BLIND_TOOL_DESCRIPTIONS = {
     "describe_problem": "Inspect problem dimensions, anonymous identifiers, model state and fit budget.",
-    "get_model_structure": "Read model entities, equations and initial-value rules.",
-    "list_observables": "Read anonymous observable formulas, transformations and noise models.",
+    "get_model_structure": "Read the model's states, parameters, reaction count and readout_* "
+    "definitions; empty until a model is built. Reactions and initial values come only when asked "
+    "for: reactions='' lists every reaction with its rate law, initial_conditions='' every state's "
+    "initial value and what sets it, and either takes a regular expression to list only the ids "
+    "(for reactions, also the rate laws) it matches.",
+    "list_observables": "Read anonymous observable formulas and noise models.",
     "list_conditions": "Read input settings: one row per condition, one column per model quantity it sets.",
     "list_experiments": "Read the design: from each time on, an experiment applies the conditions its row lists.",
     "get_parameters": "Read parameter values, bounds, estimation scales, fixed flags and roles.",
-    "get_measurements": "Read a page of numerical measurements by observable and experiment.",
+    "get_measurements": "Read the numerical measurements, summarized per observable and "
+    "experiment; summarize=False returns the raw points a page at a time.",
     "list_data_tables": "List queryable numerical tables and their columns.",
     "query_data": "Run read-only SQL over numerical data, simulations and fit diagnostics.",
-    # No agent holds this tool since the data_regimes arm retired; the entry stays only because
-    # this dict is hashed into prompt_version, and dropping it would split the biology-blind runs.
-    "get_data_regimes": "Inspect statistical evidence for signal shape and input dependence.",
     "get_fit_summary": "Read the committed fit's objective, complexity, residual and noise diagnostics.",
     "get_fit_diagnosis": "Read compact residual diagnostics; sections='parameters' requests parameter geometry.",
     "get_fitting_log": "Read multistart convergence and numerical optimization diagnostics.",
@@ -1458,9 +1460,9 @@ BIOLOGY_BLIND_TOOL_DESCRIPTIONS = {
     "get_version": "Inspect one recorded model version, its parameters and score.",
     "get_model": "Read the current or a recorded model in Antimony or SBML.",
     "make_changes": "Author or edit the ODE model and parameter search space with a justification. "
-    "Every call fits and records one coherent change. Start with antimony; use "
-    "model_edits for subsequent batches when supported. n_starts replaces the "
-    "default fit budget. " + BIOLOGY_BLIND_SEMANTICS,
+    "Every call fits and records one coherent change. Start with antimony, then edit "
+    "with one batch of model_edits per change; base_version=N applies them to version N's "
+    "stored model. n_starts replaces the default fit budget. " + BIOLOGY_BLIND_SEMANTICS,
 }
 
 
