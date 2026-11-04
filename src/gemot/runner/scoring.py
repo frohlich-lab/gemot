@@ -38,6 +38,7 @@ __all__ = [
     "_reference_free_adequacy",
     "_reference_sigma_flag",
     "_residual_structure_fields",
+    "_scale_coupled_sigmas",
     "_validation_fields",
 ]
 
@@ -243,6 +244,17 @@ def _residual_structure_fields(diagnosis, rollup=None) -> dict | None:
     return out
 
 
+def _scale_coupled_sigmas(report) -> list[str]:
+    """The sigmas the server marks ``scale_coupled`` (``reconcile.sigma_scale_coupled``), sorted:
+    those whose raw value is not comparable across models, so :func:`_reference_sigma_flag`
+    declines its basis on any of them."""
+    if not isinstance(report, dict):
+        return []
+    return sorted(
+        str(pid) for pid, e in report.items() if isinstance(e, dict) and e.get("scale_coupled")
+    )
+
+
 def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
     """Plausibility of the candidate's ESTIMATED sigmas against the TRUE model's OWN fitted sigmas
     (``reference.json``'s ``noise_sigma``), or ``None`` when the reference doesn't record them.
@@ -314,8 +326,11 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
     # model. Until then, decline the whole basis as the unpairable-sigma case below does, so `_judge`
     # falls through to the data-driven band -- the test that was right all along here: it never
     # flagged any of the 116 runs scored on it, while this basis silently failed 17 fiedler runs that
-    # had BEATEN the reference bar. See reconcile.sigma_scale_coupled.
-    if any(e.get("scale_coupled") for e in report.values() if isinstance(e, dict)):
+    # had BEATEN the reference bar. See reconcile.sigma_scale_coupled, which since PEtab-MCP#243 also
+    # counts a co-parameter written into the noiseFormula itself: isensee's scales are, and while the
+    # flag read only `noiseParameters` this basis refused isensee r2's v13-v16 (dBIC -12 to -21)
+    # for a raw rho the split between scale and sigma had moved (gemot#104).
+    if _scale_coupled_sigmas(report):
         return None
     # Prefer the EFFECTIVE sd on BOTH sides: for a composite/proportional noiseFormula the raw
     # parameter is not comparable across models (fiedler's sd is per-gel scale * sigma, so a

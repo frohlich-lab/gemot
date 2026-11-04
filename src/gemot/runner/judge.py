@@ -44,6 +44,7 @@ from .scoring import (
     _reference_free_adequacy,
     _reference_sigma_flag,
     _residual_structure_fields,
+    _scale_coupled_sigmas,
     _validation_fields,
 )
 
@@ -1041,6 +1042,9 @@ async def _judge(
         # which comparison produced the flag: "reference" (vs the true model's own
         # fitted sigma, preferred) or "data_std" (the legacy marginal-std band).
         "noise_sigma_basis": sigma_basis,
+        # The sigmas whose raw value the reference basis would not compare, so a "data_std"
+        # basis on a reference that records sigmas says why.
+        "noise_sigma_scale_coupled": _scale_coupled_sigmas(noise_sigma_report),
         "reference": ref,
         "reactions": [r.get("id") for r in reactions],
         "species": sorted(current_species),
