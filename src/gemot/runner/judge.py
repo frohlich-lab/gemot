@@ -85,9 +85,8 @@ async def _wait_for_running_fit(call, n_starts) -> "tuple[str, float]":
     ``wait_for_fit`` (PEtab-MCP#177) waits on the server, and is called again while the fit runs
     for as long as the harness would have waited on that fit's own call: the
     :func:`fit_budget.fit_time_budget_for` of its start count (the run's ``n_starts`` until the
-    fit reports one) against the time since its change began. Not ``get_progress``, which waits
-    too, but only because it reads under the lock a change holds for its whole fit: #177 reports
-    that block as a problem for agents, so it need not last.
+    fit reports one) against the time since its change began. Not ``get_progress``, which answers
+    at once during a fit since PEtab-MCP#245.
 
     ``status`` is the last answer's: how the session's last change ended (``committed``,
     ``no_version``, ``idle``), ``still_running`` when the judge stopped waiting on a fit past its

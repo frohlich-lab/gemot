@@ -84,19 +84,22 @@ dependencies = [
     # Then 26e5b76, main: #215: a fit result carries `starts_at_best` (within 1 nll, the margin
     # the explorer's `n_at_best` follows), and warns when most starts run out of the per-start time
     # limit. #214: an edit names the species it prunes, and a condition target nothing reads warns.
-    # Then 1670df9, main: #177: `wait_for_fit` (gemot#73, #79). #224: every call sends a heartbeat,
-    # and `get_run_timing` reports `queue_seconds`. #225: `petab-mcp-pool` runs a fit pool, and
-    # `create_server(cluster=ADDRESS)` joins it (the `pool` extra below, runner/server.py). #226:
-    # a pool from another environment is refused at connect, and a lost pool ends the call as
-    # `infrastructure_error: fit_pool`. #221, #240: a build another server holds is waited for,
-    # across nodes. #222: AMICI needs no HDF5 to send a start to a worker (CI). #188: the per-start
-    # cap is the session's. #229: local workers start by forkserver. #235: `get_version` summarises
-    # a part past the client's 1 MiB event limit. #230, #236: `statements-grammar` covers each
-    # verb, tag and edit, and an edit names a catalyst taken in every state and the readouts no
-    # input reaches. #234: pyPESTO >= 0.8.0. #223, #233, #239: the pool's scheduler stress check.
-    # NOT YET frohlich-lab/PEtab-MCP#241 (open): `distributed>=2023.12.0`, without which a server
-    # joining a pool re-sends `_NoBuild` to every worker, and the pool's config from NEMO.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@1670df9e9c9910ee3cebb393459aae4bd1177956",
+    # Then 0ccda01, main: #177: `wait_for_fit`, which the judge calls before scoring (gemot#73,
+    # #79). #245: `get_progress` and `get_run_timing` answer at once during a fit. #224: every call
+    # sends a heartbeat, and `get_run_timing` reports `queue_seconds`. #225: `petab-mcp-pool` runs
+    # a fit pool, and `create_server(cluster=ADDRESS)` joins it (the `pool` extra below,
+    # runner/server.py). #226, #244: a pool from another environment is refused, and a lost pool
+    # ends the call as `infrastructure_error: fit_pool` until it is back at its address. #241:
+    # `distributed>=2023.12.0`, so a server joining a pool re-sends nothing to its workers.
+    # #221, #240: a build another server holds is waited for, across nodes. #222: AMICI needs no
+    # HDF5 to send a start to a worker (CI). #243: a sigma whose noise formula names another
+    # estimated parameter is `scale_coupled` (gemot#104, #109). #242: a new best with an inflated
+    # sigma resets the non-improving streak. #188: the per-start cap is the session's. #229: local
+    # workers start by forkserver. #235: `get_version` summarises a part past the client's 1 MiB
+    # event limit. #230, #236: `statements-grammar` covers each verb, tag and edit, and an edit
+    # names a catalyst taken in every state and the readouts no input reaches. #234: pyPESTO
+    # >= 0.8.0. #223, #233, #239: the pool's scheduler stress check.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@0ccda012202a9f5d7812f334a0fedb968bb146e2",
     # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
     # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
     # is built on it; 2.3 is the first release fastmcp 4.1 accepts. What 2.0 changed for the code
