@@ -249,7 +249,7 @@ def test_a_compile_past_its_margin_is_wedged():
     watch = _FitWatch(None, 0.0)
     assert watch.stop(_answer("compiling"), 0.0) is None
     assert watch.stop(_answer("compiling"), FIT_COMPILE_MARGIN_S) is None
-    assert "compiling for over" in watch.stop(_answer("compiling"), FIT_COMPILE_MARGIN_S + 1)
+    assert "past the compile margin" in watch.stop(_answer("compiling"), FIT_COMPILE_MARGIN_S + 1)
 
 
 def test_the_wall_budget_bounds_every_phase():

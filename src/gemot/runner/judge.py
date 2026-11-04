@@ -118,7 +118,7 @@ class _FitWatch:
             return "at the end of the run's wall budget"
         if phase == "compiling":
             if now - self._compiling > FIT_COMPILE_MARGIN_S:
-                return f"compiling for over {FIT_COMPILE_MARGIN_S:g}s"
+                return f"past the compile margin ({FIT_COMPILE_MARGIN_S:g}s)"
             return None
         if phase == "queued" or now - self._moved <= _stall_window():
             return None
