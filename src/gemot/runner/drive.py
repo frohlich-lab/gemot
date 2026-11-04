@@ -33,6 +33,16 @@ def _reasoning_effort(args) -> str | None:
     return None if effort == "default" else effort
 
 
+def _wall_deadline(args, t0: float, heartbeats) -> "float | None":
+    """The end of the run's wall budget (``time.monotonic()``), ``None`` without one: its
+    ``max_wall_seconds`` from ``t0``, plus the time its fits have spent queued for the shared fit
+    pool, which is not the run's (``heartbeats``, :class:`.clock._Heartbeats`)."""
+    budget = getattr(args, "max_wall_seconds", None)
+    if budget is None:
+        return None
+    return t0 + budget + (heartbeats.queue_seconds if heartbeats else 0.0)
+
+
 def _infrastructure_abort(exc: BaseException, logs: infrastructure.LogWatch) -> dict:
     """:func:`_write_degraded_result`'s keywords for an abort: the stop reason
     ``infrastructure_error: <cause>`` if it met an infrastructure failure, in its own text or the
@@ -154,7 +164,16 @@ async def _drive(
             print(f"[scripted] applying canonical fix: {scenario.fix_summary or '(see scenario)'}")
             await scenario.scripted_fix(call, args.n_starts)
             meta = {**base_meta, "stop_reason": "completed"}
-            return await _judge(scenario, call, baseline, work, meta, clock, t0)
+            return await _judge(
+                scenario,
+                call,
+                baseline,
+                work,
+                meta,
+                clock,
+                t0,
+                deadline=_wall_deadline(args, t0, heartbeats),
+            )
 
         # All model drivers share a root trace and independent judge. Native CLIs are observed
         # through their event streams and MCP gateway; only deepagents uses LangChain spans.
@@ -362,7 +381,14 @@ async def _drive(
                     exit_code = 1
                 else:
                     exit_code, result = await _judge(
-                        scenario, call, baseline, work, meta, clock, t0
+                        scenario,
+                        call,
+                        baseline,
+                        work,
+                        meta,
+                        clock,
+                        t0,
+                        deadline=_wall_deadline(args, t0, heartbeats),
                     )
                 record_run_result(span, result)
             except BaseException as exc:

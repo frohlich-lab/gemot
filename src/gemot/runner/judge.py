@@ -34,8 +34,8 @@ from pathlib import Path
 from .. import ablations
 from ..agent.circuit_breaker import _is_call_timeout
 from ..agent.probe import best_first
-from ..fit_budget import fit_time_budget_for
-from .clock import HELD_OUT_TOOL, _ToolClock
+from ..fit_budget import FIT_BUDGET_MARGIN, FIT_COMPILE_MARGIN_S, FIT_PER_START_TIMEOUT_S
+from .clock import CALL_IDLE_WINDOW_S, HELD_OUT_TOOL, _ToolClock
 from ..paths import validation_measurements_path
 from .provenance import _bic_reference, _judge_mode, _now_iso, _reference_score
 from ..scenario import Baseline, JudgeContext, Scenario
@@ -69,11 +69,63 @@ class MixedVersionsError(RuntimeError):
 
 
 #: Seconds one ``wait_for_fit`` call waits on the server: the server's own cap (PEtab-MCP's
-#: ``WAIT_FOR_FIT_MAX_S``), well inside the read budget the harness gives the call.
+#: ``WAIT_FOR_FIT_MAX_S``). The call lives on its heartbeats like any other
+#: (``clock._wrap_call_timeout``).
 _WAIT_FOR_FIT_S = 540
 
 
-async def _wait_for_running_fit(call, n_starts) -> "tuple[str, float]":
+def _stall_window() -> float:
+    """How long a ``running`` fit may go without a start finishing before the judge stops waiting
+    on it: the call's idle window, but never less than one start's cap with the budget's margin.
+    A start ends by its cap, so until then a flat count is a slow start, not a wedged fit, and
+    isensee's cap is 12000 s."""
+    return max(CALL_IDLE_WINDOW_S, FIT_PER_START_TIMEOUT_S * FIT_BUDGET_MARGIN)
+
+
+class _FitWatch:
+    """Whether a fit the judge waits on is still worth waiting for, read off the ``phase`` of each
+    ``still_running`` answer of ``wait_for_fit`` (gemot#106):
+
+    * ``queued`` for the shared fit pool: waited on, bounded only by ``deadline``;
+    * ``running``: alive while ``starts_done`` moves within :func:`_stall_window`;
+    * ``compiling`` for longer than ``fit_budget.FIT_COMPILE_MARGIN_S``: wedged.
+
+    ``deadline`` is the end of the run's wall budget (``time.monotonic()``, ``None`` without one),
+    and bounds every phase. ``elapsed_s`` counts the time the fit spent queued, which no formula
+    bounds on a shared pool, so it is compared with no fit budget. A compile's time is counted
+    from the first answer that showed it, so it falls short by whatever ran before the judge
+    asked; a compile the server's heartbeats show past the margin ends the wait's call sooner.
+    """
+
+    def __init__(self, deadline: float | None, now: float) -> None:
+        self.deadline = deadline
+        self._seen: tuple | None = None
+        self._moved = now
+        self._compiling: float | None = None
+
+    def stop(self, answer: dict, now: float) -> "str | None":
+        """Why to stop waiting on the fit ``answer`` shows at ``now``, or ``None`` to go on."""
+        phase = answer.get("phase")
+        seen = (phase, answer.get("starts_done"))
+        if seen != self._seen or phase == "queued":
+            self._moved = now
+        self._seen = seen
+        if phase != "compiling":
+            self._compiling = None
+        elif self._compiling is None:
+            self._compiling = now
+        if self.deadline is not None and now >= self.deadline:
+            return "at the end of the run's wall budget"
+        if phase == "compiling":
+            if now - self._compiling > FIT_COMPILE_MARGIN_S:
+                return f"compiling for over {FIT_COMPILE_MARGIN_S:g}s"
+            return None
+        if phase == "queued" or now - self._moved <= _stall_window():
+            return None
+        return f"with no start finished in {now - self._moved:.0f}s"
+
+
+async def _wait_for_running_fit(call, deadline: "float | None" = None) -> "tuple[str, float]":
     """Wait until no change is being fitted on the session; return ``(status, seconds)``.
 
     The agent can stop while its last ``make_changes`` is still fitting, and the server finishes
@@ -83,35 +135,39 @@ async def _wait_for_running_fit(call, n_starts) -> "tuple[str, float]":
     run whose true best was v6.
 
     ``wait_for_fit`` (PEtab-MCP#177) waits on the server, and is called again while the fit runs
-    for as long as the harness would have waited on that fit's own call: the
-    :func:`fit_budget.fit_time_budget_for` of its start count (the run's ``n_starts`` until the
-    fit reports one) against the time since its change began. Not ``get_progress``, which waits
-    too, but only because it reads under the lock a change holds for its whole fit: #177 reports
-    that block as a problem for agents, so it need not last.
+    and :class:`_FitWatch` finds it worth waiting for, until ``deadline`` at the latest. Not
+    ``get_progress``, which waits too, but only because it reads under the lock a change holds for
+    its whole fit: #177 reports that block as a problem for agents, so it need not last.
 
     ``status`` is the last answer's: how the session's last change ended (``committed``,
-    ``no_version``, ``idle``), ``still_running`` when the judge stopped waiting on a fit past its
-    budget, or ``error`` when the call failed. Either way the judge goes on, and
-    :func:`_scored_version_mismatch` still fails the judgement if a version lands during its reads.
+    ``no_version``, ``idle``), ``still_running`` when the judge stopped waiting on a fit still
+    running, the wait's call cut on the server's heartbeats included, or ``error`` when the call
+    failed. Either way the judge goes on, and :func:`_scored_version_mismatch` still fails the
+    judgement if a version lands during its reads.
     """
     asked = time.monotonic()
+    watch = _FitWatch(deadline, asked)
     while True:
+        wait_s = _WAIT_FOR_FIT_S
+        if deadline is not None:
+            wait_s = max(1.0, min(wait_s, deadline - time.monotonic()))
         try:
-            answer = await call("wait_for_fit", timeout_s=_WAIT_FOR_FIT_S)
+            answer = await call("wait_for_fit", timeout_s=wait_s)
         except Exception as exc:  # noqa: BLE001 - the version check after the reads still guards them
+            if _is_call_timeout(exc):  # the server went silent on the wait, or stuck compiling
+                print(f"[judge] stopped waiting on a fit: {exc}; scoring the versions so far")
+                return "still_running", time.monotonic() - asked
             answer = f"{type(exc).__name__}: {exc}"
         if not (isinstance(answer, dict) and answer.get("status")):
             print(f"[judge] could not wait for a fit still running ({str(answer)[:200]})")
             return "error", time.monotonic() - asked
         if answer["status"] != "still_running":
             break
-        fit_starts = answer.get("n_starts") or None  # 0 while the model compiles
-        budget = fit_time_budget_for(fit_starts, n_starts or fit_starts or 1)
-        if (answer.get("elapsed_s") or 0) >= budget:
+        if (why := watch.stop(answer, time.monotonic())) is not None:
             print(
-                f"[judge] stopped waiting on a fit {answer.get('elapsed_s')}s in, past its "
-                f"{budget:.0f}s budget ({answer.get('starts_done')} of {answer.get('n_starts')} "
-                "starts done); scoring the versions committed so far"
+                f"[judge] stopped waiting on a fit {answer.get('phase')} {why} "
+                f"({answer.get('starts_done')} of {answer.get('n_starts')} starts done, "
+                f"{answer.get('elapsed_s')}s in); scoring the versions committed so far"
             )
             break
     waited = time.monotonic() - asked
@@ -466,6 +522,7 @@ async def _judge(
     clock: "_ToolClock",
     t0: float,
     estimated: "list[str] | None" = None,
+    deadline: "float | None" = None,
 ) -> "tuple[int, dict]":
     """Judge the repaired model against the true model by the run's criterion (structure-agnostic).
 
@@ -488,7 +545,8 @@ async def _judge(
 
     A candidate scored on a different number of data points than the reference has no Δ against
     it: the deltas are withheld (``n_mismatch``) and the run fails. ``estimated`` is the null's (see
-    :func:`_candidate_k`).
+    :func:`_candidate_k`). ``deadline`` is the end of the run's wall budget, past which the judge
+    waits on no fit the agent left running (:func:`_wait_for_running_fit`).
 
     Returns ``(exit_code, result)``: the process exit code (0 on success, 1 otherwise) and
     the machine-readable result dict (also written to ``work/result.json``), so the caller
@@ -500,7 +558,7 @@ async def _judge(
 
     # First let a fit the agent left running commit, so the scan sees its version and nothing
     # moves under the reads below (gemot#73).
-    fit_wait_status, fit_wait_s = await _wait_for_running_fit(call, meta.get("n_starts"))
+    fit_wait_status, fit_wait_s = await _wait_for_running_fit(call, deadline)
     # Restore + score the best model this judge can legitimately score — not whatever was committed
     # last, and not a lower-scoring version whose noise model the gate below would reject while a
     # clean one sits unscored (see the helper). Handed the reference so the scan asks the SAME sigma
@@ -1058,8 +1116,8 @@ async def _judge(
         "scored_version": scored_version,
         # The judge's wait for a fit still running when the agent stopped (`wait_for_fit`): how
         # the last change ended (`committed`, `no_version`, `idle`), `still_running` when the
-        # judge gave up on a fit past its budget, `error` when it could not wait; and the seconds
-        # it took, a few ms when no fit was running.
+        # judge stopped waiting on a fit still running (`_FitWatch`), `error` when it could not
+        # wait; and the seconds it took, a few ms when no fit was running.
         "fit_wait_status": fit_wait_status,
         "fit_wait_seconds": round(fit_wait_s, 1),
         "n_errors": len(errors) if isinstance(errors, list) else 0,
