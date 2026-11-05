@@ -131,6 +131,50 @@ def _render_merge(hints) -> str:
         return ""  # mistake must cost the advisory line, never every finish in the run
 
 
+#: How many of ``residual_structure.sigma_heterogeneity`` the ARM text names, smallest ``p`` first:
+#: as many as a fit result names (``petab_mcp.data_access._MAX_NAMED``), where ``get_fit_summary``
+#: keeps every one.
+_MAX_SIGMAS_NAMED = 3
+
+
+def _render_sigma_heterogeneity(named) -> str:
+    """The SIGMA HETEROGENEITY line for the ARM text, or ``""`` when the rollup names no sigma.
+
+    ``named`` is ``get_fit_summary``'s ``residual_structure.sigma_heterogeneity``, rows of
+    ``{parameter_id, p, worst_series, fitted_over_data_noise}`` (frohlich-lab/PEtab-MCP#212). Fails
+    OPEN like :func:`_render_merge`: an odd shape costs the line, never the finish, and one
+    unreadable row does not silence the readable ones.
+    """
+    if not isinstance(named, (list, tuple)):
+        return ""
+    rows: list[str] = []
+    for row in named:
+        if not isinstance(row, dict) or not row.get("parameter_id"):
+            continue
+        ratio = row.get("fitted_over_data_noise")
+        try:
+            rows.append(
+                prompts.FINISH_ARMED_SIGMA_TMPL.format(
+                    parameter_id=row["parameter_id"],
+                    p=row.get("p"),
+                    worst_series=row.get("worst_series"),
+                    ratio="unknown" if ratio is None else ratio,
+                )
+            )
+        except Exception:  # noqa: BLE001 - an advisory line never fails a finish
+            continue
+    if not rows:
+        return ""
+    rest = len(rows) - _MAX_SIGMAS_NAMED
+    try:
+        return prompts.FINISH_ARMED_SIGMA_HETEROGENEITY_TMPL.format(
+            sigmas=",".join(rows[:_MAX_SIGMAS_NAMED]),
+            more=prompts.FINISH_ARMED_SIGMA_MORE_TMPL.format(n=rest) if rest > 0 else "",
+        )
+    except Exception:  # noqa: BLE001 - inside the fail-open boundary, as in _render_merge
+        return ""
+
+
 def _dscore_magnitude(dscore) -> str:
     """How much score the merge LOWERS, as displayed: the magnitude, ``unknown`` when there is
     none, and a BOUND rather than ``0.0`` when the win is real but below the resolution shown (it is
@@ -366,6 +410,12 @@ def _finish_tool(session, finish_state=None, probe=None):
             # diagnosis carries the per-observable detail behind it, not a second copy.
             rs = fit.get("residual_structure") or {}
             struct = rs.get("summary") or prompts.FINISH_STRUCT_UNAVAILABLE
+            # Where estimated sigmas or scales could have absorbed what the tests look for: the
+            # server's caveat on a clean summary, and the sigmas it names as having done so. Both
+            # inform the lead's reading of the verdict; neither refuses (see the note at the top).
+            caveat = rs.get("structure_tests_caveat")
+            caveat = f" {caveat}" if isinstance(caveat, str) and caveat else ""
+            sigma_line = _render_sigma_heterogeneity(rs.get("sigma_heterogeneity"))
             per = diag.get("per_observable") or []
             worst = (
                 max(per, key=lambda o: abs(o.get("mean_weighted_residual") or 0.0), default=None)
@@ -408,7 +458,9 @@ def _finish_tool(session, finish_state=None, probe=None):
                 bic=bic,
                 nll=nll,
                 struct=struct,
+                caveat=caveat,
                 worst_line=worst_line,
+                sigma_line=sigma_line,
                 merge_line=merge_line,
                 invalid_line=invalid_line,
             )

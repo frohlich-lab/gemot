@@ -408,6 +408,76 @@ async def test_a_residual_flag_arms_and_confirms(verdict):
     assert (await _finish(tool)).startswith("Recorded: finish")
 
 
+# The server's caveat on a clean summary where sigmas are estimated, verbatim from
+# petab_mcp.data_access._ABSORBED_MISFIT_CAVEAT.
+_CAVEAT = (
+    "Estimated noise sigmas absorb misfit, so the sign/runs tests have little power here and no "
+    "structure flag is NOT adequacy. get_fit_diagnosis's sigma_heterogeneity and "
+    "noise_sigma.fitted_over_data_noise rank where to look."
+)
+
+
+def _sigma(pid, p, ratio=2.4):
+    """One `residual_structure.sigma_heterogeneity` row, in the shape data_access._absorbed_misfit
+    puts on get_fit_summary."""
+    return {
+        "parameter_id": pid,
+        "p": p,
+        "worst_series": f"{pid}_gel2_data3",
+        "fitted_over_data_noise": ratio,
+    }
+
+
+@pytest.mark.asyncio
+async def test_arm_text_carries_the_caveat_and_the_heterogeneous_sigmas():
+    """gemot#111: on a problem with estimated sigmas (bachmann, fiedler) the ARM text quoted "no
+    significant residual structure" alone, though the sign/runs tests have little power there and a
+    sigma inflated for one series hides misfit from them. The server's caveat and the sigmas it names
+    (PEtab-MCP#212) now follow the summary, the first three by p with the rest counted; the finish
+    still arms and confirms, as no residual evidence refuses one (gemot#97)."""
+    named = [
+        _sigma("sigma_pMek", 0.0018),
+        _sigma("sigma_pErk", 0.0031, ratio=None),
+        _sigma("sigma_pRaf", 0.01),
+        _sigma("sigma_pAkt", 0.02),
+        _sigma("sigma_pS6", 0.03),
+    ]
+    rs = {
+        "summary": "no significant residual structure (sign-test bias or runs-test time trend).",
+        "flagged_observables": [],
+        "low_power": False,
+        "sigma_heterogeneity": named,
+        "structure_tests_caveat": _CAVEAT,
+    }
+    tool = _tool_for(_agent, _fit(residual_structure=rs))
+    out = await _finish(tool)
+    assert "FINISH ARMED" in out and "FINISH REFUSED" not in out
+    assert f"{rs['summary']} {_CAVEAT}" in out  # the caveat qualifies the summary it follows
+    assert "SIGMA HETEROGENEITY" in out
+    assert "sigma_pMek (p=0.0018, worst series sigma_pMek_gel2_data3, " in out
+    assert "fitted_over_data_noise=2.4)" in out
+    assert "sigma_pErk (p=0.0031, worst series sigma_pErk_gel2_data3, " in out
+    assert "fitted_over_data_noise=unknown)" in out  # a sigma the cap report cannot price
+    assert "sigma_pRaf" in out
+    assert "sigma_pAkt" not in out and "sigma_pS6" not in out
+    assert prompts.FINISH_ARMED_SIGMA_MORE_TMPL.format(n=2) in out
+    assert (await _finish(tool)).startswith("Recorded: finish")
+
+
+@pytest.mark.asyncio
+async def test_arm_text_adds_nothing_without_the_caveat_or_named_sigmas():
+    """gemot#111's other half: a rollup that carries neither key (fixed sigmas, or a fit that flags
+    an observable and names no sigma) arms on the summary exactly as before, with no empty label."""
+    rs = {
+        "summary": "systematic residual structure in obs_A.",
+        "flagged_observables": ["obs_A"],
+        "low_power": False,
+    }
+    out = await _finish(_tool_for(_agent, _fit(residual_structure=rs)))
+    assert f"Residual structure: {rs['summary']} " + prompts._RESIDUALS_DO_NOT_DECIDE_DONE in out
+    assert "SIGMA HETEROGENEITY" not in out and "absorb misfit" not in out
+
+
 # --- the PARSIMONY / identifiability gate ----------------------------------------------------
 _FLAT_16_ICS = _ident(
     rank_deficient=True,
