@@ -241,53 +241,26 @@ async def _petab_server(
         handle_out["handle"] = handle
     try:
         _wait_until_listening(host, port, proc, server_log_path, timeout=listen_timeout)
-        # A single make_changes commit fits the model with an n_starts multistart that streams
-        # nothing back for its whole duration; the transport's default read timeout (300s) would
-        # drop that response and hang the call.
+        # Two timeouts sit under every call, and neither is the one that cuts it:
+        # clock._wrap_call_timeout cuts a call once the server has sent no heartbeat on it for
+        # CALL_IDLE_WINDOW_S, since on a shared fit pool no budget bounds a fit's wall time.
         #
-        # This is the CEILING, not the fit budget. mcp layers two independent timeouts and they
-        # do NOT compose the way the names suggest:
+        #   * the read timeout of the httpx2 client the transport runs on (built below). Per
+        #     SESSION, and per read: each heartbeat on a call's response stream restarts it.
+        #   * ClientSession's read_timeout_seconds, a deadline in the session layer that a call's
+        #     own value replaces outright (mcp/client/session.py). The shadow passes
+        #     `math.inf` on every call.
         #
-        #   * the read timeout of the httpx2 client the transport runs on (built below; mcp 1.x
-        #     took it as `sse_read_timeout`). Per SESSION, so it cannot know any call's n_starts.
-        #   * ClientSession's read_timeout_seconds is a deadline in the session layer, and it takes
-        #     precedence PER CALL (mcp/shared/jsonrpc_dispatcher.py) -- but only ever to cut a
-        #     call SHORTER. It cannot lift the httpx2 ceiling above.
-        #
-        # So the exact per-call budget has to be applied downward from a ceiling that is high
-        # enough for the largest fit the run could ask for -- and that number is unknowable here:
-        # make_changes takes an n_starts that REPLACES the default, the agent chooses it at
-        # runtime, and scenario.build_true_model floors it higher still (bruno 400, fujita 300).
-        # This used to be `fit_time_budget(2 * n_starts)`; the 2x was a guess that still sat
-        # below the scenario floors on the scripted path.
-        #
-        # Hence: make this ceiling deliberately NON-BINDING and let clock._wrap_call_timeout do
-        # the real enforcement, exactly, off each call's own n_starts.
-        #
-        # Strictly ABOVE FIT_BUDGET_CEILING_S, which is what fit_time_budget_for clamps every
-        # per-call budget to. Setting the two equal would leave the worst case (a hallucinated
-        # n_starts that clamps to the ceiling) as a race between an anyio timer and httpx2's read
-        # deadline -- and if httpx2 won, the connection would be torn down instead of the call
-        # returning a clean 408, which is the abort path this whole redesign exists to avoid.
-        # The margin makes the per-call cut PROVABLY the tighter one.
-        #
-        # A flat constant, deliberately NOT args.max_wall_seconds. Tying it to the run budget
-        # reads tidy -- no call can usefully outlive the run -- but it hands this timeout a way
-        # to bind again: a fit that runs past a short --max-wall-seconds would surface as an
-        # httpx2 read timeout instead of the clean "wall_time_budget_exceeded" stop the driver is
-        # there to produce, i.e. a confusing error in place of a scored result. The wall budget
-        # is already enforced where it can stop cleanly (agent.driver, at a step boundary).
-        # Above the CEILING *and* above this run's own default budget: a 1-worker run with a large
-        # --n-starts can compute a default budget past the ceiling (the ceiling bounds what the
-        # MODEL may ask for, not what the operator configured), and this has to stay looser than
-        # both.
+        # The ceiling stays far above CALL_IDLE_WINDOW_S, so a silent server's call ends as the
+        # clean MCPError(REQUEST_TIMEOUT) rather than as httpx2 tearing the connection down. A
+        # flat constant, deliberately NOT args.max_wall_seconds: tied to the run budget, a fit
+        # running past a short --max-wall-seconds would surface as an httpx2 read timeout instead
+        # of the clean "wall_time_budget_exceeded" stop the driver is there to produce. The wall
+        # budget is already enforced where it can stop cleanly (agent.driver, at a step boundary).
         read_ceiling_s = max(FIT_BUDGET_CEILING_S, fit_time_budget_for(None, args.n_starts)) * 1.2
-        # Session-wide fallback UNDER the per-call cut. mcp prefers a per-request
-        # read_timeout_seconds outright (it does not take a min), so clock._wrap_call_timeout
-        # still overrides this on every tool call. It matters in the two windows that shadow
-        # does not cover: `initialize()`, which would otherwise run against the non-binding
-        # ceiling, and the case where installing the shadow FAILS -- which previously left the
-        # run with no effective call timeout at all.
+        # Session-wide fallback for the two windows the shadow does not cover: `initialize()`,
+        # which would otherwise run against the non-binding ceiling, and the case where installing
+        # the shadow FAILS -- which previously left the run with no effective call timeout at all.
         call_timeout_s = fit_time_budget_for(None, args.n_starts)
         async with _open_session(
             handle.url, read_ceiling_s=read_ceiling_s, call_timeout_s=call_timeout_s

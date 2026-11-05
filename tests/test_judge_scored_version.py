@@ -20,9 +20,9 @@ import pytest
 
 pytest.importorskip("mcp", reason="harness-only dependency")
 
-from gemot.fit_budget import FIT_BUDGET_CEILING_S  # noqa: E402
+from gemot.fit_budget import FIT_BUDGET_CEILING_S, FIT_COMPILE_MARGIN_S  # noqa: E402
 from gemot.runner import _ToolClock  # noqa: E402
-from gemot.runner.judge import MixedVersionsError, _judge  # noqa: E402
+from gemot.runner.judge import MixedVersionsError, _FitWatch, _judge, _stall_window  # noqa: E402
 
 #: The run's data-point count, and each version's (nll, estimated-row count).
 _N = 4511
@@ -60,18 +60,25 @@ class _Session:
     before the server answers ``lands_on``: ``"commit"`` commits v6 (HEAD moves to it), ``"edit"``
     only puts v6's model in the working state, as a change does before its fit commits.
 
-    ``wait_for_fit`` answers ``still_running`` while the fit runs: ``polls`` times inside its budget
-    before it lands, when it lands on the wait; past any budget otherwise, so the judge gives up
-    on it and the fit lands later, during the reads."""
+    ``wait_for_fit`` answers ``still_running`` in ``phase`` while the fit runs, ``polls`` times
+    before it lands when it lands on the wait, with its ``elapsed_s`` past any fit budget: a fit
+    queued for the shared pool is not over its budget, it has none (gemot#106). Otherwise it never
+    lands on the wait, and the judge gives up on it at its ``deadline``; it lands later, during
+    the reads."""
 
     def __init__(
-        self, lands_on: "str | None", landing: str = "commit", polls: int = 0, stores_k=True
+        self,
+        lands_on: "str | None",
+        landing: str = "commit",
+        polls: int = 0,
+        stores_k=True,
+        phase="running",
     ):
         self.stores_k = stores_k  # False: a store written before PEtab-MCP#175 recorded k
         self.stored = {5: _V5}
         self.head = 5
         self.working = _V5
-        self.lands_on, self.landing, self.polls = lands_on, landing, polls
+        self.lands_on, self.landing, self.polls, self.phase = lands_on, landing, polls, phase
         self.calls: list[str] = []
 
     def _wait(self):
@@ -80,11 +87,11 @@ class _Session:
         if self.lands_on == "wait_for_fit" and not self.polls:
             self._land()
             return {"status": "committed", "version": self.head}
-        within = self.lands_on == "wait_for_fit"
-        self.polls -= within
+        self.polls -= self.lands_on == "wait_for_fit"
         return {
             "status": "still_running",
-            "elapsed_s": 60 if within else FIT_BUDGET_CEILING_S + 1,
+            "elapsed_s": FIT_BUDGET_CEILING_S + 1,
+            "phase": self.phase,
             "starts_done": 3,
             "n_starts": 8,
         }
@@ -130,17 +137,28 @@ class _Session:
         return [] if name == "get_errors" else {}
 
 
-def _judge_on(work: Path, session: _Session):
+def _judge_on(work: Path, session: _Session, deadline=None):
     return asyncio.run(
-        _judge(_Scenario(work), session, _Baseline(), work, {}, _ToolClock(), time.monotonic())
+        _judge(
+            _Scenario(work),
+            session,
+            _Baseline(),
+            work,
+            {},
+            _ToolClock(),
+            time.monotonic(),
+            deadline=deadline,
+        )
     )
 
 
-def test_the_judge_waits_for_the_running_fit_and_scores_its_version(tmp_path):
+@pytest.mark.parametrize("phase", ["running", "queued"])
+def test_the_judge_waits_for_the_running_fit_and_scores_its_version(tmp_path, phase):
     """The fix: the judge waits on ``wait_for_fit`` before its scan, asking again while the fit is
-    inside its budget, so the scan lists v6 and scores it whole: v6's nll with v6's k, the best BIC
-    of the run."""
-    session = _Session(lands_on="wait_for_fit", polls=2)
+    worth waiting for, so the scan lists v6 and scores it whole: v6's nll with v6's k, the best
+    BIC of the run. A fit queued for the shared pool is waited on although its ``elapsed_s`` is
+    past the budget the judge used to cut it at (gemot#106)."""
+    session = _Session(lands_on="wait_for_fit", polls=2, phase=phase)
     _, result = _judge_on(tmp_path, session)
 
     assert session.calls[:3] == ["wait_for_fit"] * 3
@@ -166,12 +184,14 @@ def test_the_judge_waits_for_the_running_fit_and_scores_its_version(tmp_path):
 def test_reads_across_two_versions_fail_the_judgement_instead_of_scoring_it(
     tmp_path, landing, stores_k, why
 ):
-    """If a fit lands during the reads anyway (here one past its budget, which the judge stopped
-    waiting on), the judge refuses to score rather than writing v5's nll with v6's k. No
-    result.json: the runner writes the run as degraded with this message."""
+    """If a fit lands during the reads anyway (here one still running at the end of the run's
+    wall budget, which the judge stopped waiting on), the judge refuses to score rather than
+    writing v5's nll with v6's k. No result.json: the runner writes the run as degraded with this
+    message."""
     session = _Session(lands_on="get_parameters", landing=landing, stores_k=stores_k)
     with pytest.raises(MixedVersionsError, match=why):
-        _judge_on(tmp_path, session)
+        _judge_on(tmp_path, session, deadline=time.monotonic())
+    assert session.calls.count("wait_for_fit") == 1
     assert not (tmp_path / "result.json").exists()
 
 
@@ -183,11 +203,57 @@ def test_a_run_with_no_fit_in_flight_scores_the_version_it_restored(tmp_path):
     assert result["fit_wait_status"] == "committed"
 
 
-def test_a_fit_past_its_budget_is_left_running_and_said_so(tmp_path):
-    """The wait is bounded: a fit running past the budget the harness would give its own call is
-    not waited on further. Here it never lands, so the run is scored on v5 and records why it did
+def test_a_fit_at_the_end_of_the_wall_budget_is_left_running_and_said_so(tmp_path):
+    """The wait is bounded: a fit still running when the run's wall budget ends is not waited on
+    further, queued or not. Here it never lands, so the run is scored on v5 and records why it did
     not wait."""
-    session = _Session(lands_on="never")
-    _, result = _judge_on(tmp_path, session)
+    session = _Session(lands_on="never", phase="queued")
+    _, result = _judge_on(tmp_path, session, deadline=time.monotonic())
     assert session.calls.count("wait_for_fit") == 1
     assert (result["scored_version"], result["fit_wait_status"]) == (5, "still_running")
+
+
+# -- what the judge waits on (gemot#106) ----------------------------------------------------
+def _answer(phase, done=0):
+    return {"status": "still_running", "phase": phase, "starts_done": done, "n_starts": 8}
+
+
+def test_the_judge_keeps_waiting_on_a_queued_fit():
+    """A fit queued for the shared pool is waited on for as long as it queues, here ten hours of
+    the server's 540 s waits, with no budget to end the run's."""
+    watch = _FitWatch(None, 0.0)
+    assert all(watch.stop(_answer("queued"), t) is None for t in range(540, 36_000, 540))
+
+
+def test_the_judge_stops_on_a_running_fit_whose_starts_stall():
+    """The plan's check: alive while ``starts_done`` moves within the window, stopped once it does
+    not. The window is never less than a start's cap, which a flat count can still be inside."""
+    window = _stall_window()
+    watch = _FitWatch(None, 0.0)
+    assert watch.stop(_answer("running", 1), 0.0) is None
+    assert watch.stop(_answer("running", 2), window) is None  # a start finished: alive
+    assert watch.stop(_answer("running", 2), 2 * window) is None  # flat, but only a window
+    assert "no start finished" in watch.stop(_answer("running", 2), 2 * window + 1)
+
+
+def test_a_fit_that_queued_is_not_charged_its_queue_as_a_stall():
+    """A fit just out of the queue has finished no start yet; its window begins there."""
+    window = _stall_window()
+    watch = _FitWatch(None, 0.0)
+    assert watch.stop(_answer("queued"), 10 * window) is None
+    assert watch.stop(_answer("running"), 10 * window + 1) is None
+    assert watch.stop(_answer("running"), 11 * window) is None
+
+
+def test_a_compile_past_its_margin_is_wedged():
+    watch = _FitWatch(None, 0.0)
+    assert watch.stop(_answer("compiling"), 0.0) is None
+    assert watch.stop(_answer("compiling"), FIT_COMPILE_MARGIN_S) is None
+    assert "past the compile margin" in watch.stop(_answer("compiling"), FIT_COMPILE_MARGIN_S + 1)
+
+
+def test_the_wall_budget_bounds_every_phase():
+    for phase in ("queued", "running", "compiling"):
+        watch = _FitWatch(100.0, 0.0)
+        assert watch.stop(_answer(phase), 99.0) is None
+        assert "wall budget" in watch.stop(_answer(phase), 100.0)

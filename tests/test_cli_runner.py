@@ -201,7 +201,7 @@ def test_native_runner_records_phoenix_and_judges_without_panel(monkeypatch, tmp
     async def no_panel(*args, **kwargs):
         pytest.fail("native CLI driver constructed a deepagents panel")
 
-    async def judge(scenario, call, baseline, work, meta, clock, t0):
+    async def judge(scenario, call, baseline, work, meta, clock, t0, **_):
         seen.append("judge")
         result = {**meta, "success": True}
         (work / "result.json").write_text(json.dumps(result))

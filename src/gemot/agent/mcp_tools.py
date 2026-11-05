@@ -8,7 +8,7 @@ matches result for result (content blocks plus a ``structured_content`` artifact
 Its ``as_langchain_tool`` is written for a fastmcp ``Client``. It is handed
 :class:`_SessionClient` instead, which calls through the mcp ``ClientSession`` the runner opened,
 for one reason: the runner shadows that session's ``call_tool`` with the tool clock and the
-per-call timeout (``runner.clock._wrap_tool_clock``, ``_wrap_call_timeout``), the bio cache
+heartbeat timeout (``runner.clock._wrap_tool_clock``, ``_wrap_call_timeout``), the bio cache
 shadows it on a bio session (``bio_cache.wrap_session``), and a tool calling through a fastmcp
 client of its own would bypass all three. What ``as_langchain_tool`` reads off its client is
 pinned in tests/test_mcp_tools.py, since ``langchain.mcp`` is a beta namespace.

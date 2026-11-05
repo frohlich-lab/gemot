@@ -21,7 +21,7 @@ from mcp import ClientSession
 from .. import ablations, infrastructure
 from .failure import _should_reraise, _summarize_exc, _write_degraded_result
 from .judge import _judge
-from .clock import _held_out_fits, _make_call, _wrap_call_timeout, _wrap_tool_clock
+from .clock import _make_call, _wrap_call_timeout, _wrap_tool_clock
 from .provenance import _agent_meta, _base_meta, _write_live_marker
 from ..scenario import Baseline, Scenario
 
@@ -31,6 +31,16 @@ def _reasoning_effort(args) -> str | None:
     default or the OpenRouter model's setting (:mod:`gemot.models`)."""
     effort = getattr(args, "reasoning_effort", None)
     return None if effort == "default" else effort
+
+
+def _wall_deadline(args, t0: float, heartbeats) -> "float | None":
+    """The end of the run's wall budget (``time.monotonic()``), ``None`` without one: its
+    ``max_wall_seconds`` from ``t0``, plus the time its fits have spent queued for the shared fit
+    pool, which is not the run's (``heartbeats``, :class:`.clock._Heartbeats`)."""
+    budget = getattr(args, "max_wall_seconds", None)
+    if budget is None:
+        return None
+    return t0 + budget + (heartbeats.queue_seconds if heartbeats else 0.0)
 
 
 def _infrastructure_abort(exc: BaseException, logs: infrastructure.LogWatch) -> dict:
@@ -66,14 +76,14 @@ async def _drive(
     Returns ``(exit_code, result)`` (see :func:`_judge`).
     """
     t0 = time.monotonic()
-    # Per-call read timeouts FIRST, so every later shadow (and `raw_call_tool` below) inherits
-    # them: the session-wide read timeout can only know the run default, but n_starts is a
-    # per-call argument. See _wrap_call_timeout.
-    _wrap_call_timeout(session, args.n_starts, held_out_fits=_held_out_fits(scenario.example_dir))
+    # The heartbeat timeout FIRST, so every later shadow (and `raw_call_tool` below) inherits it:
+    # the session-wide read timeout is sized to the run default's fit, which a fit queued for a
+    # shared pool outlasts. See _wrap_call_timeout.
+    heartbeats = _wrap_call_timeout(session)
     # Capture the un-timed call handle BEFORE the clock wrapper, so the agent's internal
     # early-stop polls (get_progress, once per super-step) don't inflate the tool clock /
-    # tool_calls metric. "Un-timed" means unmeasured, not unbounded — it still carries the
-    # per-call timeout applied above.
+    # tool_calls metric. "Un-timed" means unmeasured, not unbounded — it is still cut on the
+    # server's heartbeats, as above.
     raw_call_tool = session.call_tool
     clock = _wrap_tool_clock(session)  # split server/compute time from LLM time
     call = _make_call(session)
@@ -154,7 +164,16 @@ async def _drive(
             print(f"[scripted] applying canonical fix: {scenario.fix_summary or '(see scenario)'}")
             await scenario.scripted_fix(call, args.n_starts)
             meta = {**base_meta, "stop_reason": "completed"}
-            return await _judge(scenario, call, baseline, work, meta, clock, t0)
+            return await _judge(
+                scenario,
+                call,
+                baseline,
+                work,
+                meta,
+                clock,
+                t0,
+                deadline=_wall_deadline(args, t0, heartbeats),
+            )
 
         # All model drivers share a root trace and independent judge. Native CLIs are observed
         # through their event streams and MCP gateway; only deepagents uses LangChain spans.
@@ -279,6 +298,7 @@ async def _drive(
                         reasoning_effort=_reasoning_effort(args),
                         n_starts=args.n_starts,
                         max_wall_seconds=args.max_wall_seconds,
+                        heartbeats=heartbeats,
                         progress_probe=raw_call_tool,
                         # The exact liveness signal, not a probe: Popen.poll() cannot confuse
                         # a server busy fitting with one that is gone (see _server_is_alive).
@@ -361,7 +381,14 @@ async def _drive(
                     exit_code = 1
                 else:
                     exit_code, result = await _judge(
-                        scenario, call, baseline, work, meta, clock, t0
+                        scenario,
+                        call,
+                        baseline,
+                        work,
+                        meta,
+                        clock,
+                        t0,
+                        deadline=_wall_deadline(args, t0, heartbeats),
                     )
                 record_run_result(span, result)
             except BaseException as exc:

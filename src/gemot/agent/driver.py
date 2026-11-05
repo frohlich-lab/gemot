@@ -7,9 +7,10 @@ checkpointer) and the RUN LOOP around ``astream``.
 
 The loop is where a run's failure modes are absorbed rather than thrown away:
 
-* a per-super-step **stall watchdog**, sized to the run's real fit budget so a long multistart
-  is not mistaken for a hang;
-* a **wall-clock deadline** and the server's own early-stop signal;
+* a per-super-step **stall watchdog**, sized to the run's real fit budget and pushed out by the
+  server's heartbeats, so a long or queued multistart is not mistaken for a hang;
+* a **wall-clock deadline**, less the time fits spent queued for a shared pool, and the server's
+  own early-stop signal;
 * **resume from the last checkpoint** on a transient provider failure, instead of abandoning the
   run, waiting a provider outage out in minutes on a budget of its own;
 * **bounced silent stops** — a graph that ends on a no-tool turn is pushed back into the finish
@@ -28,6 +29,7 @@ import os
 import uuid
 import functools
 import inspect
+import math
 import re
 import time
 from typing import Any
@@ -246,15 +248,36 @@ class _StepStalled(Exception):
     """
 
 
-async def _next_step(agen: Any, timeout: float) -> Any:
-    """``agen``'s next emission, or :class:`_StepStalled` if none arrives within ``timeout``.
+async def _next_step(
+    agen: Any, timeout: float, *, heartbeats: Any | None = None, left: Any | None = None
+) -> Any:
+    """``agen``'s next emission, or :class:`_StepStalled` if none arrives within ``timeout`` of the
+    step's start or of the server's last live heartbeat, whichever is later.
+
+    ``heartbeats`` is the run's :class:`gemot.runner.clock._Heartbeats`: a step whose tool call
+    the server is still working on, a fit queued for the shared pool included, is not stalled.
+    ``left`` (a zero-argument callable) is the seconds of wall budget left, which caps every wait
+    at the budget's end; the first is no less than a second, so a step begun at the end still gets
+    to hand back.
 
     A ``TimeoutError`` raised by the step itself propagates unchanged, to be classified with the
     other provider failures (:func:`_transient_provider_reason`).
     """
+    loop = asyncio.get_running_loop()
+
+    def until() -> float:
+        return loop.time() + (timeout if left is None else min(timeout, left()))
+
+    first = until() if left is None else max(until(), loop.time() + 1.0)
     try:
-        async with asyncio.timeout(timeout) as watchdog:
-            return await agen.__anext__()
+        async with asyncio.timeout_at(first) as watchdog:
+
+            def heard() -> None:
+                with contextlib.suppress(RuntimeError):  # the watchdog has already expired
+                    watchdog.reschedule(max(watchdog.when(), until()))
+
+            with heartbeats.listen(heard) if heartbeats is not None else contextlib.nullcontext():
+                return await agen.__anext__()
     except TimeoutError:
         if watchdog.expired():
             raise _StepStalled from None
@@ -330,8 +353,8 @@ def _pending_fit_starts(state: Any, default: int, stats: dict | None = None) -> 
                     continue
                 n = (c.get("args") or {}).get("n_starts")
                 # Only the COUNT is decided here, for the window and for the stall message; the
-                # default floor and the ceiling live in fit_time_budget_for so the watchdog and
-                # the transport cut cannot disagree. max(1, ...) matches the server's own
+                # default floor and the ceiling live in fit_time_budget_for. max(1, ...) matches
+                # the server's own
                 # `_coerce_n_starts` lower bound -- without it a `n_starts=-5` the server will
                 # reject still reaches the post-mortem as "-5-start fit pending".
                 asked = default if n is None or isinstance(n, bool) else max(1, int(n))
@@ -731,6 +754,7 @@ async def run_deepagents(
     reasoning_effort: str | None = None,
     n_starts: int = 1,
     max_wall_seconds: float | None = None,
+    heartbeats: Any | None = None,
     max_run_tokens: int | None = _MAX_RUN_TOKENS,
     progress_probe: Any | None = None,
     server_poll: Any | None = None,
@@ -753,6 +777,12 @@ async def run_deepagents(
     fires first. ``None`` (the default) means no self-imposed limit — only the per-step stall
     watchdog and the outer scheduler's own limit apply, as before.
 
+    ``heartbeats`` (optional) is the run's :class:`gemot.runner.clock._Heartbeats`, which
+    ``clock._wrap_call_timeout`` returns. Each live heartbeat on a tool call pushes the stall
+    watchdog out (:func:`_next_step`), and the time its fits spent queued for the shared fit pool
+    (``queue_seconds``) is left out of ``max_wall_seconds``: waiting for a worker is not the run's
+    time, so it is not left less time to think. ``None`` does neither.
+
     ``progress_probe`` (optional) is an un-timed ``await probe(tool, args)`` handle used to poll
     the server's ``get_progress`` between super-steps: when the early-stop chain reports
     ``should_stop`` (the non-improving-streak cap, or a plateau once the best model is adequate),
@@ -764,8 +794,8 @@ async def run_deepagents(
     reads run INSIDE a tool super-step rather than between them — so they can queue behind a live
     or abandoned multistart. Worth stating because assuming otherwise is what made a flat per-call
     bound on this handle look safe: it 408s the gate's read, ``_current_fit`` comes back empty, and
-    five refusals relabel a fully fitted run ``no_model_built``. The budget belongs in
-    ``clock._wrap_call_timeout``, which keeps the queue term.
+    five refusals relabel a fully fitted run ``no_model_built``. The cut belongs in
+    ``clock._wrap_call_timeout``, where such a read lives on the fit's heartbeats.
 
     ``biocurator_model`` (optional) puts the biocurator on its OWN model — an alias or a full
     OpenRouter id — leaving the lead and the three analysts on ``model``. ``None`` keeps the whole
@@ -1166,8 +1196,9 @@ async def run_deepagents(
     # fit (astream emits nothing until it returns), so the stall window must exceed one whole fit
     # or a slow-but-healthy fit trips the watchdog. That used to force ONE global wait wide enough
     # for the largest possible fit, which is also how long a wedged NON-fit step (a lead LLM call,
-    # an analyst sub-agent) went undetected. The window is sized PER STEP now: `step_wait` in the
-    # loop below rises to the pending fit's own budget and otherwise sits at the floor below.
+    # an analyst sub-agent) went undetected. The window is sized PER STEP now: `step_limit` in the
+    # loop below rises to the pending fit's own budget and otherwise sits at the floor below, and
+    # the server's heartbeats push it out while a call is still being worked on.
     #
     # Note what that does and does not buy. A wedged NON-fit step is still not detected promptly --
     # the floor is max(_STEP_STALL_TIMEOUT_S, fit_time_budget(run default)), so on the large
@@ -1197,7 +1228,7 @@ async def run_deepagents(
     # budget and rises only for a step that actually asked for more.
     # Self-imposed total-runtime budget (see the docstring): checked between super-steps, never
     # mid-step, so we always stop at a clean boundary rather than interrupting a live commit/fit.
-    deadline = (time.monotonic() + max_wall_seconds) if max_wall_seconds is not None else None
+    started = time.monotonic()
     # RESERVE ONE STEP. The budget is checked at step boundaries, but a super-step that commits a
     # model runs a full multistart, so "am I past the deadline?" asked AFTER the step is asked too
     # late: the overshoot is a whole fit. On the 2026-08-17 isensee sweep (budget 56400s inside a
@@ -1218,13 +1249,26 @@ async def run_deepagents(
         if max_wall_seconds is not None
         else 0.0
     )
-    # THE deadline for every "may I start (or continue into) another step?" decision. The hard
-    # `deadline` is the budget; this is the budget minus one step, i.e. the last moment at which
-    # beginning a super-step can still finish inside it. Every such decision must use this one --
-    # guarding only the step-boundary check left three paths (the stall/budget split, the
-    # silent-finish bounce, and the retry-resume gate) able to start a fresh super-step inside the
-    # reserved window, which is exactly the overshoot that TIMEOUT-killed 15/16 isensee tasks.
-    soft_deadline = (deadline - step_headroom) if deadline is not None else None
+
+    def _time_left(reserve: float = 0.0) -> float:
+        """Seconds of the wall budget left after ``reserve``, ``inf`` without a budget. The time
+        the run's fits spent queued for the shared fit pool (``heartbeats``) is not the run's, so
+        it moves the end of the budget out."""
+        if max_wall_seconds is None:
+            return math.inf
+        queued = heartbeats.queue_seconds if heartbeats is not None else 0.0
+        return started + max_wall_seconds + queued - reserve - time.monotonic()
+
+    # THE test for every "may I start (or continue into) another step?" decision: the budget less
+    # one step, i.e. the last moment at which beginning a super-step can still finish inside it.
+    # Every such decision must use this one -- guarding only the step-boundary check left three
+    # paths (the stall/budget split, the silent-finish bounce, and the retry-resume gate) able to
+    # start a fresh super-step inside the reserved window, which is exactly the overshoot that
+    # TIMEOUT-killed 15/16 isensee tasks.
+    def _past_last_step(wait: float = 0.0) -> bool:
+        """Whether a step begun after waiting ``wait`` seconds could no longer finish in budget."""
+        return _time_left(step_headroom) <= wait
+
     config: dict[str, Any] = {"recursion_limit": recursion_limit}
     if checkpointer is not None:
         config["configurable"] = {"thread_id": "petab-mcp-run"}
@@ -1348,49 +1392,47 @@ async def run_deepagents(
             agen = agent.astream(stream_input, config=config, stream_mode="values").__aiter__()
             while True:
                 try:
-                    # How long this ONE step may take. fit_time_budget_for already floors at
-                    # the RUN-DEFAULT fit budget and caps at FIT_BUDGET_CEILING_S, and it is the
-                    # same function the per-call transport cut uses, so the two cannot disagree
-                    # about how long a given fit is allowed to take. The only thing left to add
-                    # is the absolute _STEP_STALL_TIMEOUT_S floor for a run whose fit budget is tiny;
-                    # the run-default term must not be applied a second time -- the function
-                    # already applies it.
+                    # How long this ONE step may go with nothing completed and no heartbeat.
+                    # fit_time_budget_for already floors at the RUN-DEFAULT fit budget and caps at
+                    # FIT_BUDGET_CEILING_S; the only thing left to add is the absolute
+                    # _STEP_STALL_TIMEOUT_S floor for a run whose fit budget is tiny. The
+                    # run-default term must not be applied a second time -- the function already
+                    # applies it.
                     #
-                    # FIT_WATCHDOG_MARGIN keeps this STRICTLY ABOVE the transport cut for the
-                    # same fit. Tied, the watchdog always wins (it is armed a graph-dispatch
-                    # earlier) and an overrunning fit is cancelled mid-step as "stalled" instead
-                    # of returning the clean 408 that resumes without telling the model to
-                    # re-fit. Ordering: httpx ceiling > watchdog > per-call cut.
+                    # Every live heartbeat on a call the step waits on pushes the window out again
+                    # (_next_step), so a fit queued for the shared pool for hours is not a stall,
+                    # and the fit-derived floor matters only for a step whose calls are too short
+                    # to get one, such as an analyst's run of LLM calls. A silent server's call is
+                    # cut first, clock.CALL_IDLE_WINDOW_S after its last heartbeat and well inside
+                    # this window, with the clean timeout that resumes without telling the model
+                    # to re-fit (clock._wrap_call_timeout).
                     # `stall_backoff` widens ONLY the floor, never the fit-derived term. The
                     # fit term is already clamped at FIT_BUDGET_CEILING_S so a derived timeout
                     # cannot switch the watchdog off, and it must stay strictly below the session
-                    # httpx ceiling (ordering above). Multiplying the whole max() breaks both: on
-                    # isensee at the 12000s cap the fit term is ~20286s, so x8 would be 162288s
-                    # (45h) -- past the 86400s clamp and past the httpx ceiling, leaving a wedged
-                    # step undetected for half a multi-day run.
+                    # httpx ceiling. Multiplying the whole max() breaks both: on isensee at the
+                    # 12000s cap the fit term is ~20286s, so x8 would be 162288s (45h) -- past the
+                    # 86400s clamp and past the httpx ceiling, leaving a wedged step undetected for
+                    # half a multi-day run.
                     step_limit = max(
                         _STEP_STALL_TIMEOUT_S * stall_backoff,
                         fit_time_budget_for(pending_fit, n_starts) * FIT_WATCHDOG_MARGIN,
                     )
-                    # Wait no longer than the time left in the wall-time budget. Without this the
-                    # loop can only notice the deadline BETWEEN super-steps, so a step starting
-                    # just before it runs the loop up to `step_limit` PAST it -- against a default
-                    # margin of 20 min, that leaves ~2 min for the judge to restore and score a
-                    # checkpoint. Observed: a fujita/v4-pro run was hard-killed by Slurm at
-                    # exactly 06:00:02 with NO result.json, losing the whole run. Capping the wait
-                    # hands control back at the deadline, so the entire margin is available for
-                    # scoring.
-                    # The HARD deadline, deliberately — NOT `soft_deadline`. This bounds a step
+                    # Wait no longer than the time left in the wall-time budget (`left`). Without
+                    # this the loop can only notice the deadline BETWEEN super-steps, so a step
+                    # starting just before it runs the loop up to `step_limit` PAST it -- against
+                    # a default margin of 20 min, that leaves ~2 min for the judge to restore and
+                    # score a checkpoint. Observed: a fujita/v4-pro run was hard-killed by Slurm
+                    # at exactly 06:00:02 with NO result.json, losing the whole run. Capping the
+                    # wait hands control back at the deadline, so the entire margin is available
+                    # for scoring.
+                    # The budget's END, deliberately — NOT `_past_last_step`. This bounds a step
                     # that is already running, and the whole point of the reserve is to let that
-                    # step finish: capping the wait at the soft deadline cancels a commit step up
+                    # step finish: capping the wait at the last-step line cancels a commit step up
                     # to `step_headroom` (as much as half the budget) early and throws its fit
-                    # away. Only the "may I START another step?" decisions use the soft deadline.
-                    step_wait = (
-                        step_limit
-                        if deadline is None
-                        else max(1.0, min(step_limit, deadline - time.monotonic()))
+                    # away. Only the "may I START another step?" decisions use the reserve.
+                    state = await _next_step(
+                        agen, step_limit, heartbeats=heartbeats, left=_time_left
                     )
-                    state = await _next_step(agen, step_wait)
                 except StopAsyncIteration:
                     break
                 # A step COMPLETED, so the provider is responsive: drop back to the base window.
@@ -1422,7 +1464,7 @@ async def run_deepagents(
                 # check after this try).
                 if _infrastructure_stop() is not None:
                     break
-                if soft_deadline is not None and time.monotonic() >= soft_deadline:
+                if _past_last_step():
                     wall_budget_exceeded = True
                     break
                 # Token ceiling, checked at the same clean boundary as the wall-time budget. The
@@ -1495,7 +1537,7 @@ async def run_deepagents(
                 else "completed"
             )
         except _StepStalled:
-            if soft_deadline is not None and time.monotonic() >= soft_deadline:
+            if _past_last_step():
                 # The wait was cut short by the wall-time cap above, not by a wedged step. This is
                 # the budget expiring mid-super-step, so it must STOP (and let the judge score what
                 # is committed) rather than resume — a resume here would spend the margin that the
@@ -1514,8 +1556,8 @@ async def run_deepagents(
                     else "no fit pending"
                 )
                 retriable = (
-                    f"stalled: no step completed in {step_wait:.0f}s "
-                    f"({waiting_on}; hung provider call or wedged fit)"
+                    f"stalled: no step completed in {step_limit:.0f}s "
+                    f"({waiting_on}, and no heartbeat; hung provider call or wedged step)"
                 )
         except _TRANSIENT_ERRORS as exc:  # call-level retries exhausted -> resume the run
             retriable = f"{type(exc).__name__}: {exc}"
@@ -1619,7 +1661,7 @@ async def run_deepagents(
             # out. model_committed is captured for the post-loop relabel (no second probe).
             if stop_reason == "completed" and not finish_state["confirmed"]:
                 model_committed = await _model_committed(progress_probe)
-                past_deadline = soft_deadline is not None and time.monotonic() >= soft_deadline
+                past_deadline = _past_last_step()
                 if (
                     silent_bounces < _MAX_SILENT_BOUNCES
                     and checkpointer is not None
@@ -1640,7 +1682,7 @@ async def run_deepagents(
                     stream_input = {"messages": [{"role": "user", "content": nudge}]}
                     continue
             break
-        if soft_deadline is not None and time.monotonic() >= soft_deadline:
+        if _past_last_step():
             # Out of time even before a resume would start — don't burn a backoff on a retry
             # the deadline will just cut off anyway.
             stop_reason = f"wall_time_budget_exceeded (during retry: {retriable})"
@@ -1699,7 +1741,7 @@ async def run_deepagents(
                 stop_reason = retriable  # out of outage retries — end with whatever was built
                 break
             backoff = _outage_backoff(outage_streak + 1)
-            if soft_deadline is not None and time.monotonic() + backoff >= soft_deadline:
+            if _past_last_step(backoff):
                 stop_reason = f"wall_time_budget_exceeded (during retry: {retriable})"
                 print(
                     f"[agent] {retriable} — a {backoff:.0f}s outage wait would end past the "
