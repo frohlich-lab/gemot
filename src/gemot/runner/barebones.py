@@ -58,6 +58,7 @@ from .failure import _should_reraise, _summarize_exc, _write_degraded_result
 from .judge import _judge
 from .main import _petab_server, cleanup
 from .provenance import _base_meta, _now_iso, _write_live_marker
+from .server import _build_root
 
 #: The agent's workspace is THIS subdirectory of ``work/``, holding only the problem files. The
 #: harness's own files — ``run_live.json`` (which carries the reference score), ``result.json``,
@@ -706,12 +707,11 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
                         "petab_invalid: " + "; ".join(delivery["petab_lint"]["messages"][:5])[:400],
                     )
                 else:
-                    build_root = scenario.example_dir / ".amici_build"
                     server = None
                     try:
                         async with _petab_server(
                             work,
-                            build_root,
+                            _build_root(scenario),
                             args,
                             scenario=scenario,
                             score_shipped_model=True,

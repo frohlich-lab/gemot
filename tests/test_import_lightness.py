@@ -262,6 +262,9 @@ def test_the_recorded_fit_settings_are_every_one_the_server_reads():
         )
     }
     assert names, "the server no longer names its fit settings the way this test reads them"
+    # Where the fits run, not what they search: the server's CLI reads the pool's address (a
+    # bootstrap reads it here), and the run records it beside these (`provenance._fit_settings`).
+    names -= {"PETAB_MCP_FIT_POOL"}
     assert set(constants) == names, f"read but not as a fitting constant: {names - set(constants)}"
     assert fit_budget.server_fit_settings(os.environ) == {
         name: getattr(fitting, constant) for name, constant in constants.items()

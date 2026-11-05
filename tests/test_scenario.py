@@ -101,6 +101,7 @@ def test_the_run_records_the_fit_settings_its_server_is_launched_with(tmp_path, 
         monkeypatch.delenv(f"PETAB_MCP_FIT_{unset}", raising=False)
     monkeypatch.setenv("PETAB_MCP_FIT_TASK_SECONDS", "-1")
     monkeypatch.setenv("PETAB_MCP_CRITERION", "AICc")
+    monkeypatch.delenv("PETAB_MCP_FIT_POOL", raising=False)
     scenario = Scenario(
         name="raimundez",
         problem_dir=tmp_path / "problem",
@@ -120,10 +121,15 @@ def test_the_run_records_the_fit_settings_its_server_is_launched_with(tmp_path, 
         "PETAB_MCP_FIT_AMICI_ATOL_STEADY_STATE": None,
         "PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE": 1e-9,
         "PETAB_MCP_CRITERION": "aicc",
+        "PETAB_MCP_FIT_POOL": None,
     }
     # ...and read off the environment the server is actually launched with.
     launched = _launch_env(tmp_path, scenario, monkeypatch)
-    assert recorded == {**fit_budget.server_fit_settings(launched), "PETAB_MCP_CRITERION": "aicc"}
+    assert recorded == {
+        **fit_budget.server_fit_settings(launched),
+        "PETAB_MCP_CRITERION": "aicc",
+        "PETAB_MCP_FIT_POOL": None,
+    }
 
 
 @pytest.mark.parametrize("value", [None, "tight", 0, -1e-9, float("nan"), float("inf")])

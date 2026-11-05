@@ -85,9 +85,8 @@ async def _wait_for_running_fit(call, n_starts) -> "tuple[str, float]":
     ``wait_for_fit`` (PEtab-MCP#177) waits on the server, and is called again while the fit runs
     for as long as the harness would have waited on that fit's own call: the
     :func:`fit_budget.fit_time_budget_for` of its start count (the run's ``n_starts`` until the
-    fit reports one) against the time since its change began. Not ``get_progress``, which waits
-    too, but only because it reads under the lock a change holds for its whole fit: #177 reports
-    that block as a problem for agents, so it need not last.
+    fit reports one) against the time since its change began. Not ``get_progress``, which answers
+    at once during a fit since PEtab-MCP#245.
 
     ``status`` is the last answer's: how the session's last change ended (``committed``,
     ``no_version``, ``idle``), ``still_running`` when the judge stopped waiting on a fit past its
@@ -889,16 +888,19 @@ async def _judge(
                 )
             )
     # Server-side breakdown of the heavy compute: how much of the tool time was the one-time
-    # AMICI compile vs the recurring pyPESTO fit (best-effort — a server without the tool, or
-    # a failed call, just leaves these None). Fetched BEFORE the clock snapshot below so this
-    # probe is counted consistently in BOTH compute_seconds and tool_calls (not one but not
-    # the other), keeping the two metrics comparable.
-    compile_s = fit_s = n_compiles = n_fits = None
+    # AMICI compile vs the recurring pyPESTO fit, and of the fit the time its starts waited for a
+    # worker of a sweep's fit pool with none of them running (`queue_seconds`, PEtab-MCP#224; 0
+    # on the server's own workers). Best-effort — a server without the tool, or a failed call,
+    # just leaves these None. Fetched BEFORE the clock snapshot below so this probe is counted
+    # consistently in BOTH compute_seconds and tool_calls (not one but not the other), keeping
+    # the two metrics comparable.
+    compile_s = fit_s = queue_s = n_compiles = n_fits = None
     try:
         timing = await call("get_run_timing")
         if isinstance(timing, dict):
             compile_s = timing.get("compile_seconds")
             fit_s = timing.get("fit_seconds")
+            queue_s = timing.get("queue_seconds")
             n_compiles = timing.get("n_compiles")
             n_fits = timing.get("n_fits")
     except Exception:
@@ -1069,6 +1071,8 @@ async def _judge(
         # Server-side split of the heavy compute (None if the server didn't report it).
         "compile_seconds": compile_s,
         "fit_seconds": fit_s,
+        # Part of fit_seconds, and so of compute_seconds: what a busy pool cost the run.
+        "queue_seconds": queue_s,
         "n_compiles": n_compiles,
         "n_fits": n_fits,
         "tool_calls": clock.calls,

@@ -30,8 +30,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
+
+      # pip keys the AMICI wheel it builds on the sdist's URL alone, and setup-python's own cache
+      # restores any older cache of this Python by prefix: an AMICI built against the HDF5 this job
+      # installed before PEtab-MCP#222 then failed to import (`libhdf5_serial_hl.so.100`). So this
+      # prefix names the toolchain below, as petab-mcp's CI does. Change "ninja" when that
+      # toolchain changes.
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-ninja-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-ninja-${{ runner.os }}-py${{ matrix.python-version }}-
 
       # AMICI generates and compiles C++ for every model, and is itself built
       # from source here: petab-mcp pins a git commit of it, and so does the
@@ -39,19 +49,19 @@ jobs:
       # scipy-openblas64 wheel. A C/C++ compiler and CMake ship on ubuntu-latest;
       # the Ninja generator AMICI drives CMake with does not, so install it.
       #
-      # HDF5 too: AMICI builds with it only if it finds the headers, and needs it
-      # to pickle a solver, i.e. to send a fit start to a worker. As petab-mcp's
-      # own CI does.
+      # No HDF5: AMICI >= 1.2.0 pickles a solver as a dict of its settings, so a
+      # fit start reaches a worker without it, and petab-mcp's CI dropped it
+      # (PEtab-MCP#222). pyPESTO's result file is written by h5py, whose wheel
+      # brings its own.
       #
       # Deliberately NOT installing the apt `swig`: AMICI is built against the
       # pip `swig`, and a mismatched system SWIG makes compiled models raise
       # "'SwigPyObject' object has no attribute 'module'". The matching SWIG is
       # the pip `swig` package (installed and pinned below).
-      - name: Install build toolchain (Ninja, HDF5)
+      - name: Install build toolchain (Ninja)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build cmake build-essential
-          sudo apt-get install -y libhdf5-dev  # with its recommends, as AMICI's own CI does
 
       # tests/test_sandbox.py runs the barebones agent's shell under bubblewrap and checks what it
       # must not reach (the example directory above the workspace, $HOME, the network, the

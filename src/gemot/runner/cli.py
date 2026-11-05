@@ -34,6 +34,7 @@ import os
 
 from .failure import _should_reraise, _summarize_exc
 from .main import _constraints, _main_async
+from .server import _shared_build_root
 from ..scenario import Scenario
 from .. import models
 
@@ -208,8 +209,10 @@ def run_scenario(scenario: Scenario, argv: list[str] | None = None) -> int:
     parser = build_parser(scenario)
     args = parser.parse_args(argv)
     # Before anything is wiped or launched, and outside the catch below, which would file it as a
-    # teardown error: an arm this problem cannot run is refused, not run as something else.
+    # teardown error: an arm this problem cannot run is refused, not run as something else, and so
+    # is a fit pool without its build root.
     _constraints(scenario)
+    _shared_build_root()
     if args.driver in {"codex", "claude"}:
         if not args.model or not args.model.strip():
             parser.error(
