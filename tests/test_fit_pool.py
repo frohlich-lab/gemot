@@ -133,13 +133,15 @@ def test_a_run_on_a_pool_fits_there_and_records_the_pool_and_its_wait(
         release = Event("gemot-test-release", client=client)
         held = client.submit(release.wait, 600, pure=False)
         seen: list[str] = []
+        returned = threading.Event()
 
         def _release_once_the_fit_waits() -> None:
             # A fit's batches run `dask_engine._work`, so their keys show the fit reached the
             # pool's scheduler. Matched on the key, not its prefix: dask's prefix drops the `_`.
+            # A fit that returns without reaching it releases the worker too, so the test fails on
+            # what the fit said rather than on this wait.
             try:
-                deadline = time.monotonic() + 300
-                while time.monotonic() < deadline:
+                while not returned.is_set():
                     keys = client.run_on_scheduler(
                         lambda dask_scheduler: [str(key) for key in dask_scheduler.tasks]
                     )
@@ -171,12 +173,15 @@ def test_a_run_on_a_pool_fits_there_and_records_the_pool_and_its_wait(
                 )
                 return fit, judged
 
-        fit, (_, result) = asyncio.run(_fit_and_judge())
-        releaser.join(timeout=60)
+        try:
+            fit, (_, result) = asyncio.run(_fit_and_judge())
+        finally:
+            returned.set()
+            releaser.join(timeout=60)
         assert held.result(timeout=60) is True
 
-    assert seen, "the fit never reached the pool"
     assert isinstance(fit, dict) and fit.get("committed"), fit
+    assert seen, "the fit never reached the pool"
     assert result["fit_settings"]["PETAB_MCP_FIT_POOL"] == address
     assert _HELD_S / 2 <= result["queue_seconds"] < result["fit_seconds"], result
     assert (

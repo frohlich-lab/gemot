@@ -30,8 +30,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
+
+      # pip keys the AMICI wheel it builds on the sdist's URL alone, and setup-python's own cache
+      # restores any older cache of this Python by prefix: an AMICI built against the HDF5 this job
+      # installed before PEtab-MCP#222 then failed to import (`libhdf5_serial_hl.so.100`). So this
+      # prefix names the toolchain below, as petab-mcp's CI does. Change "ninja" when that
+      # toolchain changes.
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-ninja-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-ninja-${{ runner.os }}-py${{ matrix.python-version }}-
 
       # AMICI generates and compiles C++ for every model, and is itself built
       # from source here: petab-mcp pins a git commit of it, and so does the
