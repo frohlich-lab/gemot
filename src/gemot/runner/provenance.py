@@ -288,7 +288,11 @@ def _fit_settings(scenario: Scenario) -> dict:
     every recorded field and pooled in every aggregate, though at the old cap isensee's ΔBIC
     measured the cap rather than the model (gemot#6). The keys are the ones the sweep's
     ``combo.env`` records. The criterion is resolved as ``petab_mcp.criteria.from_env`` does: the
-    judge reads one only off a fit, so a run that stopped before fitting recorded none."""
+    judge reads one only off a fit, so a run that stopped before fitting recorded none.
+
+    ``PETAB_MCP_FIT_POOL`` is where the fits ran: the address of the sweep's fit pool the bootstrap
+    joined (``server._SERVER_BOOTSTRAP``), ``None`` on the server's own worker processes. It moves
+    what a fit costs, not what it finds; the run's wait for a worker is ``queue_seconds``."""
     from petab_mcp.criteria import Criterion
 
     from ..fit_budget import server_fit_settings
@@ -296,7 +300,11 @@ def _fit_settings(scenario: Scenario) -> dict:
 
     env = _server_env(scenario)
     criterion = Criterion.from_name(env.get("PETAB_MCP_CRITERION")) or Criterion()
-    return {**server_fit_settings(env), "PETAB_MCP_CRITERION": criterion.name}
+    return {
+        **server_fit_settings(env),
+        "PETAB_MCP_CRITERION": criterion.name,
+        "PETAB_MCP_FIT_POOL": env.get("PETAB_MCP_FIT_POOL") or None,
+    }
 
 
 def _base_meta(

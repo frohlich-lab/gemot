@@ -84,10 +84,24 @@ dependencies = [
     # Then 26e5b76, main: #215: a fit result carries `starts_at_best` (within 1 nll, the margin
     # the explorer's `n_at_best` follows), and warns when most starts run out of the per-start time
     # limit. #214: an edit names the species it prunes, and a condition target nothing reads warns.
-    # NOT YET frohlich-lab/PEtab-MCP#177 (open): `wait_for_fit` (gemot#73, #79). Until the pin
-    # reaches #177's merge commit the server refuses that call as an unknown tool, the judge says
-    # it could not wait, and only the version check after its reads guards the score.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@26e5b761cdcf461464e45e9a19f893a7c62e62e1",
+    # Then 082d34e, main: #177: `wait_for_fit`, which the judge calls before scoring (gemot#73,
+    # #79). #245: `get_progress` and `get_run_timing` answer at once during a fit. #224: every call
+    # sends a heartbeat, and `get_run_timing` reports `queue_seconds`. #225: `petab-mcp-pool` runs
+    # a fit pool, and `create_server(cluster=ADDRESS)` joins it (the `pool` extra below,
+    # runner/server.py). #226, #244: a pool from another environment is refused, and a lost pool
+    # ends the call as `infrastructure_error: fit_pool` until it is back at its address. #241:
+    # `distributed>=2023.12.0`, so a server joining a pool re-sends nothing to its workers.
+    # #221, #240: a build another server holds is waited for, across nodes. #222: AMICI needs no
+    # HDF5 to send a start to a worker (CI). #243: a sigma whose noise formula names another
+    # estimated parameter is `scale_coupled` (gemot#104, #109). #242: a new best with an inflated
+    # sigma resets the non-improving streak. #188: the per-start cap is the session's. #229: local
+    # workers start by forkserver. #235: `get_version` summarises a part past the client's 1 MiB
+    # event limit. #230, #236: `statements-grammar` covers each verb, tag and edit, and an edit
+    # names a catalyst taken in every state and the readouts no input reaches. #234: pyPESTO
+    # >= 0.8.0. #223, #233, #239: the pool's scheduler stress check. #249: no condition target
+    # is held: each period sets an ordinary species, and a dose in excess is bound
+    # `nondepleting`. #248: a residual flag gates no stop and claims no missing form (gemot#102).
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@082d34e36bd69d7ef89fa63e025e22e9868c6663",
     # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
     # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
     # is built on it; 2.3 is the first release fastmcp 4.1 accepts. What 2.0 changed for the code
@@ -148,8 +162,17 @@ dev = [
     "fastmcp>=4,<5",
     "gemot[agent]",
     "gemot[neural]",
+    "gemot[pool]",
     "gemot[tracing]",
 ]
+
+# Fitting on a sweep's fit pool (`PETAB_MCP_FIT_POOL`, runner/server.py): the server's `dask`
+# extra, which brings the dask client its `DaskEngine` joins the pool with, and `petab-mcp-pool`,
+# which runs the pool. A pool must run from the same environment as the servers that join it, or
+# they refuse it at connect (PEtab-MCP#226), so one install provides both. No URL: the version is
+# the pin above. Split out so `harness`, which a sweep installs, and `dev`, whose pool test needs
+# it, share one line.
+pool = ["petab-mcp[dask]"]
 
 # The deepagents driver stack: what the analyst panel actually runs on, and the only part of the
 # harness the test suite exercises. Split out from `harness` so `dev` can depend on exactly this
@@ -204,6 +227,7 @@ agent = [
 #     export OPENROUTER_API_KEY=sk-or-...      # https://openrouter.ai/keys
 harness = [
     "gemot[agent]",
+    "gemot[pool]",
     # Arize Phoenix agent tracing (ON by default; disable at runtime with --no-phoenix).
     # Traces every LLM + MCP tool call the agent makes as OpenTelemetry spans viewable in the
     # Phoenix UI. The `tracing` extra EXPORTS the spans; the full `arize-phoenix` package

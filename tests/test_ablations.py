@@ -134,6 +134,9 @@ _NOT_ABLATIONS = {
     "PATH": "the shell's own",
     "PETAB_BIO_CACHE_DIR": "plumbing: where a bio answer is read from, not what it says",
     "PETAB_MCP_BUILD_ROOT": "path for AMICI build artefacts",
+    "PETAB_MCP_FIT_POOL": "where the fits run, a sweep's fit pool by address: it changes what a "
+    "fit costs and how long it waits, not what it searches or finds. Recorded in "
+    "fit_settings all the same, and its wait as queue_seconds",
     "PETAB_MCP_CRITERION": "the complexity penalty the server ranks models by "
     "(bic/caic/aic/aicc/hqc/tic). "
     "By the membership test above this IS an arm — it changes what answer "

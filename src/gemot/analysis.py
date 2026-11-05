@@ -401,10 +401,9 @@ def timing_split(row: dict) -> dict[str, float | None]:
     """Where one run's wall clock went, as the judge accounted it.
 
     ``llm`` is the model thinking, ``compute`` the server working on its behalf (compile + fit),
-    ``queue`` the part of ``compute``'s wall time the fit spent waiting for a cluster worker — a
-    number that exists only since fits moved to the shared server, and one the client could not
-    have measured itself. ``tool_wall`` is the raw client-side busy interval that ``compute``
-    is derived from (``compute = tool_wall - queue``). On the null arm ``compute`` is the agent's
+    ``queue`` the part of ``compute``'s wall time its fits spent waiting for a worker of a sweep's
+    fit pool (the server's ``queue_seconds``, gemot#105; 0 on the server's own workers) — a number
+    the client could not have measured itself. ``tool_wall`` is the raw client-side busy interval. On the null arm ``compute`` is the agent's
     sandboxed commands plus the compile and nominal score of its delivery (``scoring_seconds``) and
     the judge's reads; null rows without ``scoring_seconds`` predate that and booked all of it as
     ``llm`` (#8).

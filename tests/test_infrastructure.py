@@ -55,6 +55,19 @@ def test_a_full_disk_is_found_wherever_it_is_printed(text):
         ),
         # Behind the exception's own name, as the adapter's error reads.
         ("_MCPToolExecutionError: " + _REPORT, "disk_full"),
+        # A sweep's fit pool, lost mid-fit, or refused at startup in the server's traceback
+        # (PEtab-MCP#226): the pool is to blame, not the run.
+        (
+            "infrastructure_error: fit_pool: the fit's client lost the pool's scheduler: "
+            "FuturesCancelledError('scheduler-connection-lost')",
+            "fit_pool",
+        ),
+        (
+            "petab_mcp.errors.InfrastructureError: infrastructure_error: fit_pool: the pool at "
+            "tcp://cn081:8786 runs another environment (amici 1.1.0 there, 1.2.0 here): start a "
+            "pool from this server's environment",
+            "fit_pool",
+        ),
         # A cause the server may add later is read, not assumed.
         ("infrastructure_error: out_of_memory: the worker was killed", "out_of_memory"),
     ],
@@ -63,6 +76,19 @@ def test_the_servers_report_names_its_cause(text, cause):
     hit = I.find(text)
     assert hit.cause == cause and hit.text.startswith("infrastructure_error: ")
     assert I.stop_reason(hit.cause) == f"infrastructure_error: {cause}"
+
+
+def test_the_causes_are_named_as_the_server_names_them():
+    """The two packages cannot share a constant (this module is stdlib only), so the names are
+    restated here; a server that renamed one would leave a stop filed under a name nothing reads."""
+    from petab_mcp import errors
+
+    assert I.STOP_PREFIX == errors.INFRASTRUCTURE_ERROR
+    assert (I.DISK_FULL, I.FIT_WEDGED, I.FIT_POOL) == (
+        errors.DISK_FULL,
+        errors.FIT_WEDGED,
+        errors.FIT_POOL,
+    )
 
 
 @pytest.mark.parametrize(

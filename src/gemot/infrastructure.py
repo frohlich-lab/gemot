@@ -15,8 +15,8 @@ This module is the ONE definition of what such a failure looks like and of the s
 There are two kinds of evidence (:func:`find`):
 
 * the server's own report (PEtab-MCP#95): a tool error whose text starts
-  ``infrastructure_error: <cause>: <detail>``, ``disk_full`` being the only cause it reports so
-  far;
+  ``infrastructure_error: <cause>: <detail>``, for a full disk (:data:`DISK_FULL`), a wedged fit
+  (:data:`FIT_WEDGED`) or a lost fit pool (:data:`FIT_POOL`), and whatever cause it adds later;
 * the raw disk-full text, from a server that predates that report, or anywhere the report does not
   reach: an ``OSError``, a linker's ``final link failed: Disk quota exceeded``, HDF5's error stack.
 
@@ -34,7 +34,9 @@ It is read in four places:
 A server wedged on a fit (:data:`FIT_WEDGED`) is stopped the same way, though no text names it:
 the tool wrapper raises it on what the calls after a timed-out fit meet. So is a tool call a native
 CLI refused itself (:data:`CLI_REFUSED`), which the native driver reads from the CLI's own event
-stream (:mod:`gemot.agent.native_cli`).
+stream (:mod:`gemot.agent.native_cli`). A server refusing its fit pool at startup leaves its
+report in its log alone, which the runner reads when the server never comes up
+(``runner.main._main_async``).
 
 Stdlib only: the agent package imports this (tests/test_import_lightness.py).
 """
@@ -57,6 +59,12 @@ DISK_FULL = "disk_full"
 #: wrapper is its witness (``agent.circuit_breaker._fit_wedged``). Every call the run, or a
 #: judge, would make next queues behind the same fit.
 FIT_WEDGED = "fit_wedged"
+
+#: A sweep's fit pool lost or unusable (``petab_mcp.errors.FIT_POOL``, PEtab-MCP#226): the server's
+#: client lost the pool's scheduler mid-fit, a worker refused to build because the build root is not
+#: the pool's, or the pool runs another environment, which the server refuses at startup. It blames
+#: the pool, not the run. A batch that kills its worker stays a failed fit of the run.
+FIT_POOL = "fit_pool"
 
 #: A native CLI refused a gateway tool call itself, so the call never reached the server
 #: (gemot#69). On 2026-10-26 Codex's approval policy refused every ``make_changes`` of seven
