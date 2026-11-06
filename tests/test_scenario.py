@@ -120,6 +120,7 @@ def test_the_run_records_the_fit_settings_its_server_is_launched_with(tmp_path, 
         "PETAB_MCP_FIT_AMICI_RTOL": 1e-7,
         "PETAB_MCP_FIT_AMICI_ATOL_STEADY_STATE": None,
         "PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE": 1e-9,
+        "PETAB_MCP_FIT_AMICI_N_THREADS": 1,
         "PETAB_MCP_CRITERION": "aicc",
         "PETAB_MCP_FIT_POOL": None,
     }

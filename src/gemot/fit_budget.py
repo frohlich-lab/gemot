@@ -127,7 +127,8 @@ def server_fit_settings(env: Mapping[str, str]) -> dict[str, float | int | None]
     tolerance leaves AMICI's own default, that of the AMICI the run records in ``dependency_code``.
 
     The two above size the budget; the rest change what a fit searches without sizing any timeout:
-    AMICI's tolerances what it integrates, the task settings how its starts are batched. Read from
+    AMICI's tolerances what it integrates, the task settings how its starts are batched, and AMICI's
+    thread count how many of an objective's experiments it simulates at once. Read from
     ``env`` rather than from ``petab_mcp.fitting``, which resolves once from its own process's
     environment, while the run launches its server with another (``runner.server``).
     """
@@ -146,6 +147,7 @@ def server_fit_settings(env: Mapping[str, str]) -> dict[str, float | int | None]
         "PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE": _env_float(
             "PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE", None, env
         ),
+        "PETAB_MCP_FIT_AMICI_N_THREADS": _env_int("PETAB_MCP_FIT_AMICI_N_THREADS", 1, env),
     }
 
 
