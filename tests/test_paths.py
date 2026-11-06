@@ -39,11 +39,11 @@ def test_the_roster_categories_are_disjoint_and_all_examples_is_their_union_in_o
     assert paths.DATA_PACKAGE_EXAMPLES == ["dessauges", "fontaine", "lun", "thomas"]
 
 
-def test_large_examples_are_still_the_five_large_collection_networks():
+def test_large_examples_are_still_the_six_large_collection_networks():
     """LARGE_EXAMPLES is the TAIL of BENCHMARK_EXAMPLES, so a new kind of example appended there
     instead of to its own list would silently replace raimundez and friends as the examples given
     the bigger per-task budget."""
     assert paths.LARGE_EXAMPLES == frozenset(
-        {"isensee", "alkan", "bachmann", "lucarelli", "raimundez"}
+        {"isensee", "alkan", "bachmann", "lucarelli", "raimundez", "froehlich"}
     )
     assert not paths.LARGE_EXAMPLES & set(paths.DATA_PACKAGE_EXAMPLES)
