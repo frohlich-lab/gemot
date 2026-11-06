@@ -51,8 +51,8 @@ _POOL = textwrap.dedent("""
         if sys.argv[1] != "-":
             ours = dask_engine.versions
             dask_engine.versions = lambda: {**ours(), "amici": sys.argv[1]}
-        pool._slurm_cluster = lambda port, min_jobs, max_jobs: LocalCluster(
-            n_workers=max_jobs, threads_per_worker=1, scheduler_port=port, dashboard_address=":0"
+        pool._slurm_cluster = lambda port, jobs: LocalCluster(
+            n_workers=jobs, threads_per_worker=1, scheduler_port=port, dashboard_address=":0"
         )
         raise SystemExit(pool.main(sys.argv[2:]))
 """)

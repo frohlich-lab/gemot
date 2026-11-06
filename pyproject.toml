@@ -101,7 +101,12 @@ dependencies = [
     # >= 0.8.0. #223, #233, #239: the pool's scheduler stress check. #249: no condition target
     # is held: each period sets an ordinary species, and a dose in excess is bound
     # `nondepleting`. #248: a residual flag gates no stop and claims no missing form (gemot#102).
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@082d34e36bd69d7ef89fa63e025e22e9868c6663",
+    # Then 74f398e, main: #255: a statements refusal names the row, the sites and the ids to send,
+    # and `set_seed` is flat (`agent`, `amount`, `name` beside `op`; a nested `seed` is refused).
+    # #257: a Conversion to nothing under `indra_default` is refused, not crashed. #256: a pool
+    # runs a fixed number of worker jobs, with no adapt. #254: a fit with idle pool workers is
+    # spread over them, and a task is sized at the 90th-percentile start.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@74f398ec0b6ed150264a442581c2be3f123b8336",
     # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
     # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
     # is built on it; 2.3 is the first release fastmcp 4.1 accepts. What 2.0 changed for the code
