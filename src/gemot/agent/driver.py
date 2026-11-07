@@ -1881,5 +1881,9 @@ async def run_deepagents(
             "refusals": dict(finish_state.get("refusals", {})),
             "relents": dict(finish_state.get("relents", {})),
         },
+        # gemot#124: final reports written without calling `finish`, bounced back into the gate.
+        # Not `idle_nudges`, which counts no-tool turns before the first tool call and so reads 0
+        # for a run that was bounced.
+        "silent_bounces": silent_bounces,
         **guard_stats,
     }
