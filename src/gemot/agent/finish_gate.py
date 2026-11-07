@@ -1,7 +1,8 @@
 """``finish`` — the lead-only control tool, and the only legitimate way to end a run.
 
 Plain iteration needs no call here; the tool exists to GATE a finish. A finish must rest on a
-fitted model with a plausible noise sigma, and takes a two-call ARM→CONFIRM handshake so a
+fitted model with a plausible noise sigma (and, where the run is judged by chi2 against GIVEN
+noise, on one that passes it, within bounds), and takes a two-call ARM→CONFIRM handshake so a
 diagnosis is always shown before a run is allowed to end. The model it judges is the version the
 run is scored on (its best-scoring one with a plausible noise sigma, as the judge picks it), which
 the gate first restores as HEAD where the lead explored past it. A silent stop is bounced back into this gate by the driver, so it cannot be sidestepped.
@@ -15,7 +16,8 @@ from __future__ import annotations
 import math
 
 from .. import prompts
-from .probe import _current_diagnosis, _current_fit, _restore_best
+from ..scenario import ADEQUACY_CHI2, REFERENCE_FREE_GOF_ALPHA, chi2_passes
+from .probe import _current_diagnosis, _current_fit, _restore_best, _structured
 
 # After this many CONSECUTIVE finish attempts with no valid fit, the gate gives up: it flags the
 # run (finish_state["gave_up"]) so the driver ends it promptly as no-model-built, rather than
@@ -50,6 +52,21 @@ _MAX_SIGMA_FINISH_REFUSALS = 3
 # refuses a finish. The advice is deliberately GENERAL (name the flat-direction params, point at the
 # simplification menu); the specific fix is the agent's to reason out, not the gate's to hand over.
 _MAX_PARSIMONY_FINISH_REFUSALS = 3
+
+# A finish on a fit that FAILS the run's chi2 bar while its noise is GIVEN is REFUSED: the scenario
+# is judged by chi2 (``Scenario.adequacy``) and the fit estimated no noise sigma, so chi2 measures
+# the mechanism's misfit and nothing else, and the judge will score the run inadequate there. This is
+# NOT the case issue #54 closed: there the sigmas were ESTIMATED, chi2 pinned near n, and a chi2
+# gate sent the panel after an unreachable target, which is why no other run is ever refused on chi2.
+# Motivated by gemot_iclr_2026 sweep 63372750 (dessauges, chi2 against given SEMs): 4 of 5 leads
+# finished at p 2.5e-26 to 0.005 after 5-9% of their wall budget. A refusal is SPENT only by a
+# finish that follows a new version since the previous one, so calling finish again on unchanged
+# work does not wear the gate down (the pattern in prompts.py: a lead re-calling finish after every
+# refusal until the gate relented). It relents after this many spent refusals, or once
+# _ADEQUACY_RELENT_BUDGET_SHARE of the wall budget is gone, so a model that cannot pass still ends at
+# its honest, failing score.
+_MAX_ADEQUACY_FINISH_REFUSALS = 5
+_ADEQUACY_RELENT_BUDGET_SHARE = 0.5
 
 # Deliberately NO refusal on a residual flag, the replicate lack-of-fit arm's included (gemot#97).
 # One refused a finish up to three times on the strength of that arm, and sweep round 3 showed the
@@ -175,6 +192,22 @@ def _render_sigma_heterogeneity(named) -> str:
         return ""
 
 
+async def _latest_version(reader) -> int | None:
+    """The newest version in the store (``list_versions``): the chi2 gate spends a refusal only on a
+    finish that follows a new one. ``None`` when unreadable, which counts as new work, so an
+    unreadable store can only bring the relent closer."""
+    try:
+        rows = _structured(await reader("list_versions", {}))
+    except Exception:  # noqa: BLE001 - a probe never breaks the gate
+        return None
+    versions = [
+        row["version"]
+        for row in (rows if isinstance(rows, list) else [])
+        if isinstance(row, dict) and isinstance(row.get("version"), int)
+    ]
+    return max(versions) if versions else None
+
+
 def _dscore_magnitude(dscore) -> str:
     """How much score the merge LOWERS, as displayed: the magnitude, ``unknown`` when there is
     none, and a BOUND rather than ``0.0`` when the win is real but below the resolution shown (it is
@@ -185,7 +218,7 @@ def _dscore_magnitude(dscore) -> str:
     return f"{magnitude:g}" if round(magnitude, 3) else "less than 0.001"
 
 
-def _finish_tool(session, finish_state=None, probe=None):
+def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None, budget_used=None):
     """The lead-only control tool for the one non-default move: ending the run.
 
     ``probe`` is the driver's UN-TIMED ``await probe(name, args)`` handle; the gate's two internal
@@ -211,18 +244,31 @@ def _finish_tool(session, finish_state=None, probe=None):
     (a shared dict) records ``confirmed`` for the driver, so a properly-confirmed finish is not
     bounced.
 
-    It deliberately does NOT gate on the χ² goodness-of-fit (chi2_gof_pvalue / reduced_chi2).
-    Whenever the observable noise sigmas are estimated (as in the issue-#54 benchmarks — though
-    not every problem frees them), χ² pins near the data-point count by construction and its
-    p-value is uninformative, so gating ``finish`` on p ≥ 0.05 made the panel abandon its
-    best-scoring model to chase an unreachable target (issue #54). Where χ² cannot be computed at
-    all, the tool SAYS so rather than surfacing it as a fit rejection.
+    It gates on the χ² goodness-of-fit ONLY where ``adequacy`` (the scenario's declared bar,
+    :attr:`gemot.scenario.Scenario.adequacy`) is ``chi2`` AND the fit estimated no noise sigma: the
+    judge's own chi2 rule (:func:`gemot.scenario.chi2_passes`) decides, bounded by
+    ``_MAX_ADEQUACY_FINISH_REFUSALS`` and by ``budget_used``, the driver's share of the wall budget
+    spent (``None`` without one). Everywhere else it deliberately does NOT: whenever the
+    observable noise sigmas are estimated (as in the issue-#54 benchmarks), χ² pins near the
+    data-point count by construction and its p-value is uninformative, so gating ``finish`` on
+    p ≥ 0.05 made the panel abandon its best-scoring model to chase an unreachable target (issue
+    #54). Where χ² cannot be computed at all, the tool SAYS so rather than surfacing it as a fit
+    rejection.
+
+    ``finish_state`` also collects how often each refusal fired (``refusals``) and how often a
+    finish went through on a relent (``relents``), by gate, for the run's result.
     """
     from langchain_core.tools import StructuredTool
 
     finish_state = finish_state if finish_state is not None else {}
     finish_state.setdefault("confirmed", False)
     finish_state.setdefault("gave_up", False)
+    finish_state.setdefault("refusals", {})
+    finish_state.setdefault("relents", {})
+
+    def _count(table: str, gate: str) -> None:
+        finish_state[table][gate] = finish_state[table].get(gate, 0) + 1
+
     # Read HEAD's fit/diagnosis through the un-timed probe when the driver wires one, so the
     # gate's own polling doesn't count toward the tool clock / tool_calls metric; fall back to
     # the (timed) session handle otherwise.
@@ -240,6 +286,9 @@ def _finish_tool(session, finish_state=None, probe=None):
         "no_fit_refusals": 0,
         "sigma_refusals": 0,
         "parsimony_refusals": 0,
+        # The chi2 gate's refusals still to spend, and the newest version when it last spent one.
+        "adequacy_left": _MAX_ADEQUACY_FINISH_REFUSALS,
+        "adequacy_mark": None,
     }
 
     def _finite(x):
@@ -297,6 +346,7 @@ def _finish_tool(session, finish_state=None, probe=None):
                 f"[finish BLOCKED {state['no_fit_refusals']}/{_MAX_NO_FIT_FINISH_ATTEMPTS}] "
                 "no valid fit (no model built, non-finite objective, or no score)"
             )
+            _count("refusals", "no_fit")
             return prompts.FINISH_REFUSED_NO_FIT
         # A valid fit exists -> reset the no-fit give-up counter.
         state["no_fit_refusals"] = 0
@@ -329,11 +379,13 @@ def _finish_tool(session, finish_state=None, probe=None):
                     f"[finish BLOCKED {state['sigma_refusals']}/{_MAX_SIGMA_FINISH_REFUSALS}] "
                     f"noise sigma {which} — refusing finish on a gamed noise model"
                 )
+                _count("refusals", "sigma")
                 return prompts.FINISH_REFUSED_SIGMA_TMPL.format(advice=advice, which=which)
             print(
                 f"[finish RELENTED] noise sigma still implausible after "
                 f"{state['sigma_refusals']} refusals — allowing finish at its honest score"
             )
+            _count("relents", "sigma")
         else:
             state["sigma_refusals"] = 0
         # HARD STOP on an OVER-parameterised model: a finish whose good-looking bic rests on
@@ -389,14 +441,52 @@ def _finish_tool(session, finish_state=None, probe=None):
                         f"{_MAX_PARSIMONY_FINISH_REFUSALS}] rank-deficient FIM, flat "
                         f"directions {directions} — refusing finish on an over-parameterised model"
                     )
+                    _count("refusals", "parsimony")
                     return prompts.FINISH_REFUSED_PARSIMONY_TMPL.format(directions=directions)
                 print(
                     f"[finish RELENTED] parameters still non-identifiable after "
                     f"{state['parsimony_refusals']} refusals — allowing finish at its "
                     "honest score"
                 )
+                _count("relents", "parsimony")
             else:
                 state["parsimony_refusals"] = 0
+        # HARD STOP on a fit that fails the run's chi2 bar while its noise is GIVEN (see
+        # _MAX_ADEQUACY_FINISH_REFUSALS), by the judge's own chi2 rule (scenario.chi2_passes), so
+        # the gate refuses exactly the fits the judge would score inadequate. It FAILS OPEN: the
+        # rule says None, never refusing, where a sigma was estimated, the noise report is
+        # unreadable, or the p-value is missing or not finite.
+        if adequacy == ADEQUACY_CHI2:
+            p = fit.get("chi2_gof_pvalue")
+            if chi2_passes(fit.get("noise_sigma_report"), p) is False:
+                reason = f"chi2 GoF p={p:.3g} < {REFERENCE_FREE_GOF_ALPHA:g}"
+                share = budget_used() if budget_used is not None else None
+                late = share is not None and share >= _ADEQUACY_RELENT_BUDGET_SHARE
+                if not late and state["adequacy_left"] > 0:
+                    latest = await _latest_version(reader)
+                    if latest is None or latest != state["adequacy_mark"]:
+                        state["adequacy_left"] -= 1
+                        state["adequacy_mark"] = latest
+                    state["armed_token"] = None
+                    spent = _MAX_ADEQUACY_FINISH_REFUSALS - state["adequacy_left"]
+                    print(
+                        f"[finish BLOCKED {spent}/{_MAX_ADEQUACY_FINISH_REFUSALS}] "
+                        f"{reason} against given noise — refusing finish on an inadequate model"
+                    )
+                    _count("refusals", "adequacy")
+                    return prompts.FINISH_REFUSED_ADEQUACY_TMPL.format(
+                        p=p,
+                        alpha=REFERENCE_FREE_GOF_ALPHA,
+                        left=state["adequacy_left"],
+                        budget=f"{_ADEQUACY_RELENT_BUDGET_SHARE:.0%}",
+                    )
+                print(
+                    f"[finish RELENTED] {reason} still, after "
+                    f"{_MAX_ADEQUACY_FINISH_REFUSALS - state['adequacy_left']} refusals"
+                    + (f" and {share:.0%} of the wall budget" if share is not None else "")
+                    + " — allowing finish at its honest score"
+                )
+                _count("relents", "adequacy")
         # Valid, fitted model. First finish call ARMS: show the bic and the residual diagnosis
         # and require a confirming second finish, so a finish is a considered call rather than a
         # reflex. The residual verdict is shown as WHERE the fit is off, not as grounds to refuse

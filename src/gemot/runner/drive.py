@@ -313,6 +313,8 @@ async def _drive(
                         biology_blinded=blind_names is not None,
                         # The driver writes these anonymized protocols into the blind task.
                         input_protocols=blind_names.protocols if blind_names is not None else None,
+                        # The bar the finish gate refuses a failing chi2 on (given noise only).
+                        adequacy=scenario.adequacy,
                     )
                 stop_reason = agent_out.get("stop_reason", "completed")
                 # The logs once more, to their end: the driver stops reading them at its first

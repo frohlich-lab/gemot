@@ -164,6 +164,16 @@ _RESIDUALS_DO_NOT_DECIDE_DONE = (
     "is not thrift."
 )
 
+#: When the finish gate refuses on chi2 (``finish_gate._MAX_ADEQUACY_FINISH_REFUSALS``), read in
+#: the finish tool's description and in its refusal. Only where the noise is GIVEN: an estimated
+#: sigma pins chi2 near n, and a chi2 gate there chased an unreachable target (issue #54).
+_CHI2_GATE_RULE = (
+    "Where the run is judged by chi2 against GIVEN noise (no noise sigma is estimated), the gate "
+    "also refuses a finish on a scored fit that fails chi2, because the run would be scored "
+    "inadequate there: each refusal asks for a new fitted version first, and the gate lets the "
+    "finish through after a few of them, or late in the wall budget."
+)
+
 #: The `model_edits` operation vocabulary, with one example each. The lead reads it in its own
 #: prompt and again in the editor's description; an op documented on only one of the two is an op
 #: half the panel never learns about.
@@ -1087,7 +1097,7 @@ FINISH_DESCRIPTION = (
     "first ARMS it and shows you the "
     "current bic and residual-structure diagnosis; review it, then call `finish` AGAIN to "
     "confirm and end. It is refused when there is no valid fit yet (no model built / "
-    "no finite bic). Prefer the FEWEST free parameters that fit "
+    "no finite bic). " + _CHI2_GATE_RULE + " Prefer the FEWEST free parameters that fit "
     "(lower bic wins). `rationale` is REQUIRED: one line on why this model is done."
 )
 
@@ -1136,6 +1146,22 @@ FINISH_REFUSED_PARSIMONY_TMPL = (
     "merge a collinear pair into one parameter, or fix a value the experiment sets "
     "— do not just re-fit the same structure. (" + _PARAMETER_HALF + " has "
     "the full flat_directions and ranked candidates; the tool's default section does NOT.)"
+)
+
+# The CHI2 gate (finish_gate._MAX_ADEQUACY_FINISH_REFUSALS): only where the run is judged by chi2
+# and the fit estimated no noise sigma. `p` is the scored fit's chi2_gof_pvalue and `alpha` the
+# judge's level; `left` is how many more finishes that follow a new fitted version it still refuses,
+# and `budget` the share of the wall budget after which it refuses none.
+FINISH_REFUSED_ADEQUACY_TMPL = (
+    "FINISH REFUSED — the version this run is scored on fails chi2: goodness-of-fit p={p:.3g} < "
+    "{alpha:g}. "
+    + _CHI2_GATE_RULE
+    + " With the noise given, no noise parameter can absorb that misfit: it is the MECHANISM's. "
+    "Keep going with genuinely different structures (a missing intermediate or complex, a "
+    "feedback, a saturation, a delay, another way an observable reads the model) and fit them. A "
+    "finish with no new fitted version since the last refusal is refused again; the gate refuses "
+    "{left} more finishes that follow a new fitted version, and none once {budget} of the wall "
+    "budget is spent."
 )
 
 # Put before whatever the gate returns when it made the run's best version HEAD first, so a lead that
@@ -1577,6 +1603,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "refused_sigma": FINISH_REFUSED_SIGMA_TMPL,
             "sigma_fallback_advice": FINISH_SIGMA_FALLBACK_ADVICE,
             "refused_parsimony": FINISH_REFUSED_PARSIMONY_TMPL,
+            "refused_adequacy": FINISH_REFUSED_ADEQUACY_TMPL,
             "restored_best": FINISH_RESTORED_BEST_TMPL,
             "armed": FINISH_ARMED_TMPL,
             "armed_worst": FINISH_ARMED_WORST_TMPL,

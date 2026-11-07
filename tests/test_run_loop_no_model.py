@@ -123,9 +123,9 @@ def _run(
     # to confirmed (a fake astream can't itself call `finish`).
     _real_finish_tool = mod._finish_tool
 
-    def _capturing_finish_tool(session, finish_state=None, probe=None):
+    def _capturing_finish_tool(session, finish_state=None, probe=None, **gate):
         fake_agent.captured["fs"] = finish_state
-        return _real_finish_tool(session, finish_state, probe=probe)
+        return _real_finish_tool(session, finish_state, probe=probe, **gate)
 
     monkeypatch.setattr(mod.driver, "_finish_tool", _capturing_finish_tool)
 

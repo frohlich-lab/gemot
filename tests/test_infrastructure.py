@@ -302,6 +302,7 @@ def _drive(monkeypatch, tmp_path, run_deepagents):
         agent_task="t",
         agent_entities=[],
         example_dir=tmp_path,
+        adequacy=None,
     )
     args = Namespace(
         driver="deepagents",

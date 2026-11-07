@@ -26,7 +26,12 @@ from petab_mcp.constants import (
     NOISE_SIGMA_REFERENCE_FACTOR as _NOISE_SIGMA_REFERENCE_FACTOR,
 )
 
-from ..scenario import ADEQUACY_CHI2, ADEQUACY_REPLICATE_LOF, ADEQUACY_RESIDUAL_STRUCTURE
+from ..scenario import (
+    ADEQUACY_CHI2,
+    ADEQUACY_REPLICATE_LOF,
+    ADEQUACY_RESIDUAL_STRUCTURE,
+    REFERENCE_FREE_GOF_ALPHA,
+)
 
 __all__ = [
     "_NOISE_SIGMA_COLLAPSE_FRACTION",
@@ -41,10 +46,6 @@ __all__ = [
     "_scale_coupled_sigmas",
     "_validation_fields",
 ]
-
-#: The level of a reference-free example's chi2 bar. The other two tests arrive as the server's own
-#: verdicts, already decided at the server's own alphas, so this does not reach them.
-REFERENCE_FREE_GOF_ALPHA = 0.05
 
 
 def _validation_fields(

@@ -129,6 +129,7 @@ def _drive_failing(tmp_path, monkeypatch, *, in_judge: bool) -> dict:
         agent_task="",
         agent_entities=(),
         example_dir=tmp_path,
+        adequacy=None,
     )
     exit_code, result = asyncio.run(drive._drive(scenario, _Session(), tmp_path, args))
     assert exit_code == 1
