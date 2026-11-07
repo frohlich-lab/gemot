@@ -821,29 +821,31 @@ def test_no_model_nudge_text_is_actionable():
 
 
 # --- the invalid-comparison note on the ARM (petab_mcp.nesting) ----------------------------
-# The failure this addresses is real: blasi run 80ccf20efcbc020dc2becda41d14c62e, where the panel's
-# ONLY "does adding structure help?" experiment (v3 -> v4) was a botched non-additive edit — k rose
-# 6 -> 7 structural while the nll got 3.984 WORSE, because the new c816 factor REPLACED the c81216
-# already in `r5_12_16_8` — and the lead read the worse score as evidence the model was complete,
-# then finished at 4 fitted ops on 5% of its budget. The server flags that at commit time and keeps
-# the flag until a valid additive experiment supersedes it; the gate must put it in front of the lead before it
-# is allowed to confirm. It is a NOTE, not a refusal: exploring a non-nested variant is legitimate,
-# and the run may have other grounds to finish.
-_BLASI_ADVISORY = (
-    "INVALID COMPARISON vs v3: k rose 7->8 but neg_log_likelihood got WORSE by 3.98381 — a model "
-    "nested in its parent cannot fit worse. Either the edit was not additive (c81216 now appears "
-    "in 8 places, was 9), or the fit under-converged."
+# Written for blasi run 80ccf20efcbc020dc2becda41d14c62e, where the panel's ONLY "does adding
+# structure help?" experiment (v3 -> v4) fit 3.984 WORSE with one more parameter, and the lead read
+# the worse score as evidence the model was complete, then finished at 4 fitted ops on 5% of its
+# budget. Since frohlich-lab/PEtab-MCP#276 the server flags only a child nested in its parent (that
+# blasi edit replaced a factor in a rate law, so it now reads "not nested" and is not flagged), and
+# keeps the flag until a valid additive experiment supersedes it; the gate must put it in front of
+# the lead before it is allowed to confirm. It is a NOTE, not a refusal: the run may have other
+# grounds to finish.
+_NESTED_ADVISORY = (
+    "INVALID COMPARISON vs v3: k rose 7->8 but neg_log_likelihood got WORSE by 3.98381, though the "
+    "edit only added to v3 and its fitted values lie inside the bounds — a model nested in its "
+    "parent cannot fit worse. Either the fit under-converged or a new term cannot be switched off "
+    "inside its bounds. This does NOT show the added structure fails to help: re-fit with more "
+    "starts before concluding anything from it."
 )
 
 
 @pytest.mark.asyncio
 async def test_arm_surfaces_an_outstanding_invalid_comparison():
     mod = _agent
-    tool = _tool_for(mod, _fit(invalid_comparison=_BLASI_ADVISORY))
+    tool = _tool_for(mod, _fit(invalid_comparison=_NESTED_ADVISORY))
     armed = await _finish(tool)
     assert "FINISH ARMED" in armed
-    # the server's advisory is quoted verbatim, so the displaced parameter is named to the lead
-    assert "c81216 now appears in 8 places, was 9" in armed
+    # the server's advisory is quoted verbatim, so its cause and its re-fit advice reach the lead
+    assert _NESTED_ADVISORY in armed
     # ...and the gate says what it means for the finish it is about to confirm
     assert "INVALID" in armed and "adding structure fails to help" in armed
     # NOTE, not refusal: a second finish still confirms.
