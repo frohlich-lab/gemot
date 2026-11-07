@@ -106,12 +106,15 @@ BENCHMARK_EXAMPLES = [
     "bachmann",
     "lucarelli",
     "raimundez",
+    # By far the largest: 1396 species, 2686 reactions, reference k 4231 over 9169 steady states
+    # (PEtabAgentBench#47). Its reference.json is the published optimum, not a refit.
+    "froehlich",
 ]
 
 #: The subset needing a bigger per-task budget than the sweep defaults: AMICI has to compile
-#: 36-96 reactions before the multistart starts. Derived from the tail of BENCHMARK_EXAMPLES so
+#: 36-2686 reactions before the multistart starts. Derived from the tail of BENCHMARK_EXAMPLES so
 #: it cannot drift from the authoritative list above.
-LARGE_EXAMPLES = frozenset(BENCHMARK_EXAMPLES[-5:])
+LARGE_EXAMPLES = frozenset(BENCHMARK_EXAMPLES[-6:])
 
 #: Model-free data packages: curated PEtab v2 problems imported from frohlich-lab/petab_datasets,
 #: with no published mechanistic model behind them. Their ``problem/`` is committed, NOT
