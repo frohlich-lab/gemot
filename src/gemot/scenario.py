@@ -47,8 +47,10 @@ ADEQUACY_TESTS = (ADEQUACY_CHI2, ADEQUACY_REPLICATE_LOF, ADEQUACY_RESIDUAL_STRUC
 #: The level of a reference-free example's chi2 bar. The other two tests arrive as the server's own
 #: verdicts, already decided at the server's own alphas, so this does not reach them. Here rather
 #: than in ``runner.scoring`` (which re-exports it) so the finish gate can read it without
-#: ``petab_mcp``, as above.
-REFERENCE_FREE_GOF_ALPHA = 0.05
+#: ``petab_mcp``, as above. 0.01, not the conventional 0.05: the level of the server's other
+#: adequacy tests (``REPLICATE_LOF_ALPHA``, ``NOISE_SIGMA_BAND_ALPHA``). The server's own plateau
+#: check (``petab_mcp.constants.ADEQUATE_GOF_PVALUE``) keeps its separate value.
+REFERENCE_FREE_GOF_ALPHA = 0.01
 
 
 def chi2_passes(

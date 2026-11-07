@@ -345,7 +345,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "with estimate=1; usually the case here) chi2 pins near the number of data points by "
     "construction, so reduced_chi2 ≈ 1 and its p-value are UNINFORMATIVE — often stuck at the "
     "noise floor however wrong the mechanism is. Do NOT "
-    "chase chi2_gof_pvalue ≥ 0.05, and do NOT restructure or trade away nll/bic to raise it. "
+    "chase a passing chi2_gof_pvalue, and do NOT restructure or trade away nll/bic to raise it. "
     + _SIGMA_CAP_ADVISORY
     + " Judge whether the "
     "mechanism is RIGHT from the residual STRUCTURE — get_fit_diagnosis's per-observable bias + "
