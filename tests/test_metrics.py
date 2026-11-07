@@ -134,6 +134,32 @@ def test_native_unknown_aggregate_does_not_fall_back_to_partial_response_usage(m
     assert result["tokens_total"] is None
 
 
+def test_a_span_without_a_total_counts_its_prompt_and_completion(monkeypatch):
+    """A turn the thinking hand-off put together from two calls recorded prompt and completion but
+    no total until #125, and summing the total column alone left the run's ``tokens_total`` short
+    of the two: one such span in sweep 63372750 held 371k prompt + 132k completion tokens."""
+    result = _trace_metrics(
+        monkeypatch,
+        [
+            {
+                "attributes.openinference.span.kind": "LLM",
+                "attributes.llm.token_count.prompt": 40,
+                "attributes.llm.token_count.completion": 5,
+                "attributes.llm.token_count.total": 45,
+            },
+            {
+                "attributes.openinference.span.kind": "LLM",
+                "attributes.llm.token_count.prompt": 371_000,
+                "attributes.llm.token_count.completion": 132_000,
+            },
+            {"attributes.openinference.span.kind": "TOOL"},
+        ],
+    )
+    assert result["tokens_prompt"] == 371_040
+    assert result["tokens_completion"] == 132_005
+    assert result["tokens_total"] == 503_045  # Not 45.
+
+
 def test_openrouter_span_accounting_is_unchanged(monkeypatch):
     result = _trace_metrics(
         monkeypatch,
