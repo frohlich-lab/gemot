@@ -56,8 +56,9 @@ _MAX_PARSIMONY_FINISH_REFUSALS = 3
 # A finish on a fit that FAILS the run's chi2 bar while its noise is GIVEN is REFUSED: the scenario
 # is judged by chi2 (``Scenario.adequacy``) and the fit estimated no noise sigma, so chi2 measures
 # the mechanism's misfit and nothing else, and the judge will score the run inadequate there. This is
-# NOT the case issue #54 closed: there the sigmas were ESTIMATED, chi2 pinned near n, and a chi2
-# gate sent the panel after an unreachable target, which is why no other run is ever refused on chi2.
+# NOT the case frohlich-lab/gemot_iclr_2026#54 closed: there the sigmas were ESTIMATED, chi2 pinned
+# near n, and a chi2 gate sent the panel after an unreachable target, which is why no other run is
+# ever refused on chi2.
 # Motivated by gemot_iclr_2026 sweep 63372750 (dessauges, chi2 against given SEMs): 4 of 5 leads
 # finished at p 2.5e-26 to 0.005 after 5-9% of their wall budget. A refusal is SPENT only by a
 # finish that follows a new version since the previous one, so calling finish again on unchanged
@@ -248,11 +249,11 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
     :attr:`gemot.scenario.Scenario.adequacy`) is ``chi2`` AND the fit estimated no noise sigma: the
     judge's own chi2 rule (:func:`gemot.scenario.chi2_passes`) decides, bounded by
     ``_MAX_ADEQUACY_FINISH_REFUSALS``. Everywhere else it deliberately does NOT: whenever the
-    observable noise sigmas are estimated (as in the issue-#54 benchmarks), χ² pins near the
-    data-point count by construction and its p-value is uninformative, so gating ``finish`` on
-    p ≥ 0.05 made the panel abandon its best-scoring model to chase an unreachable target (issue
-    #54). Where χ² cannot be computed at all, the tool SAYS so rather than surfacing it as a fit
-    rejection.
+    observable noise sigmas are estimated (as in the benchmarks of
+    frohlich-lab/gemot_iclr_2026#54), χ² pins near the data-point count by construction and its
+    p-value is uninformative, so gating ``finish`` on p ≥ 0.05 made the panel abandon its
+    best-scoring model to chase an unreachable target (frohlich-lab/gemot_iclr_2026#54). Where χ²
+    cannot be computed at all, the tool SAYS so rather than surfacing it as a fit rejection.
 
     ``finish_state`` also collects how often each refusal fired (``refusals``) and how often a
     finish went through on a relent (``relents``), by gate, for the run's result.

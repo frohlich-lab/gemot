@@ -166,9 +166,9 @@ _RESIDUALS_DO_NOT_DECIDE_DONE = (
 
 #: When the finish gate refuses on chi2 (``finish_gate._MAX_ADEQUACY_FINISH_REFUSALS``), read in
 #: the finish tool's description and in its refusal. Only where the noise is GIVEN: an estimated
-#: sigma pins chi2 near n, and a chi2 gate there chased an unreachable target (issue #54).
-#: Deliberately silent on the gate's bound: a lead told that the gate gives in after a few refusals
-#: works toward the bound instead of the model.
+#: sigma pins chi2 near n, and a chi2 gate there chased an unreachable target
+#: (frohlich-lab/gemot_iclr_2026#54). Deliberately silent on the gate's bound: a lead told that the
+#: gate gives in after a few refusals works toward the bound instead of the model.
 _CHI2_GATE_RULE = (
     "Where the run is judged by chi2 against GIVEN noise (no noise sigma is estimated), the gate "
     "also refuses a finish on a scored fit that fails chi2: the run would be scored inadequate "
