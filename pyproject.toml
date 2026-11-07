@@ -109,10 +109,10 @@ dependencies = [
     # Then ba49253, main: #258: AMICI simulates a fit's experiments on
     # `PETAB_MCP_FIT_AMICI_N_THREADS` threads, default 1, which `fit_budget.server_fit_settings`
     # records.
-    # Then f321d8f, frohlich-lab/PEtab-MCP#259 (unmerged; re-pin to its merge commit): the plateau
-    # gate calls a fixed-sigma model adequate at chi2 p >= 0.1, the level of
-    # `scenario.REFERENCE_FREE_GOF_ALPHA`, so it no longer stops a run the judge then fails.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@f321d8fd7a883adfb6f86f887d5a919904fc5050",
+    # Then 9732ddf, main: frohlich-lab/PEtab-MCP#259: the plateau gate calls a fixed-sigma model
+    # adequate at chi2 p >= 0.1, the level of `scenario.REFERENCE_FREE_GOF_ALPHA`, so it no longer
+    # stops a run the judge then fails.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@9732ddfb468c278dc0587a336690c6326da3ff6c",
     # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
     # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
     # is built on it; 2.3 is the first release fastmcp 4.1 accepts. What 2.0 changed for the code
