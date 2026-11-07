@@ -975,3 +975,97 @@ async def test_when_every_version_is_gamed_the_best_scoring_one_is_judged():
     out = await _finish(mod._finish_tool(session))
     assert session.restored == [4]
     assert "FINISH REFUSED" in out and "implausible noise model" in out
+
+
+# The CHI2 gate: a run judged by chi2 whose fit estimated no noise sigma. `_GIVEN` is the
+# noise_sigma_report of such a fit (empty: nothing estimated); `_STORE` one fitted version, HEAD and
+# best, so the gate restores nothing and the tests can add versions to mark new work.
+_GIVEN: dict = {}
+_STORE = [{"version": 5, "criterion_value": 210.0, "bic": 210.0}]
+
+
+def _chi2_fit(p, report=_GIVEN):
+    return _fit(chi2_gof_pvalue=p, noise_sigma_report=report)
+
+
+def _chi2_gate(fit_summary, *, adequacy="chi2", finish_state=None):
+    session = _FakeSession(fit_summary, versions=[dict(r) for r in _STORE], head=5)
+    tool = _agent._finish_tool(session, finish_state, adequacy=adequacy)
+    return session, tool
+
+
+def _new_version(session):
+    """A new fitted version, worse than the best, so the best (and the fit judged) stays put."""
+    v = max(r["version"] for r in session.versions) + 1
+    session.versions.append({"version": v, "criterion_value": 300.0, "bic": 300.0})
+
+
+@pytest.mark.asyncio
+async def test_chi2_gate_refuses_a_failing_fit_on_given_noise():
+    """The dessauges case (gemot_iclr_2026 sweep 63372750): judged by chi2 against given SEMs, 4 of
+    5 leads finished on fits the judge then scored inadequate. A failing chi2 there is refused,
+    and the refusal is counted for the run's result."""
+    fs = {}
+    _, tool = _chi2_gate(_chi2_fit(1e-6), finish_state=fs)
+    out = await _finish(tool)
+    assert out.startswith("FINISH REFUSED") and "p=1e-06" in out
+    assert fs["refusals"] == {"adequacy": 1} and fs.get("confirmed") is not True
+
+
+@pytest.mark.asyncio
+async def test_chi2_gate_never_reads_chi2_against_an_estimated_sigma():
+    """Issue #54: with a sigma estimated, chi2 pins near n and refusing on it chased an
+    unreachable target. A non-empty noise_sigma_report, or an unreadable one, never refuses."""
+    for report in ({"noise_obs": {"fitted": 1.0}}, None):
+        _, tool = _chi2_gate(_chi2_fit(1e-6, report=report))
+        assert "FINISH ARMED" in await _finish(tool)
+
+
+@pytest.mark.asyncio
+async def test_chi2_gate_is_off_unless_the_run_is_judged_by_chi2():
+    """A run judged against a reference (no `adequacy`) or by another test is never refused on
+    chi2, however small its p."""
+    for adequacy in (None, "residual_structure", "replicate_lof"):
+        _, tool = _chi2_gate(_chi2_fit(1e-6), adequacy=adequacy)
+        assert "FINISH ARMED" in await _finish(tool)
+
+
+@pytest.mark.asyncio
+async def test_chi2_gate_passes_an_adequate_fit():
+    _, tool = _chi2_gate(_chi2_fit(0.2))
+    assert "FINISH ARMED" in await _finish(tool)
+
+
+@pytest.mark.asyncio
+async def test_chi2_gate_cannot_be_worn_down_by_finishing_again():
+    """A refusal is SPENT only by a finish that follows a new version: re-calling finish on
+    unchanged work (the pattern of a lead calling finish after every refusal until the gate
+    relented) is refused every time and brings the relent no closer. After
+    _MAX_ADEQUACY_FINISH_REFUSALS spent refusals, each after new work, the finish goes through."""
+    n = _agent._MAX_ADEQUACY_FINISH_REFUSALS
+    fs = {}
+    session, tool = _chi2_gate(_chi2_fit(1e-6), finish_state=fs)
+    for spent in range(1, n + 1):
+        out = await _finish(tool)  # the first, or after new work: refused, and spent
+        assert out.startswith("FINISH REFUSED")
+        if spent < n:
+            for _ in range(3):  # no new version since: refused again, and NOT spent
+                assert (await _finish(tool)).startswith("FINISH REFUSED")
+            _new_version(session)
+    assert "FINISH ARMED" in await _finish(tool)  # every refusal spent: the finish goes through
+    assert fs["relents"] == {"adequacy": 1}
+    assert fs["refusals"] == {"adequacy": n + 3 * (n - 1)}
+
+
+@pytest.mark.parametrize(
+    "report, p",
+    [({}, 0.01), ({}, 0.05), ({}, 0.2), ({"noise_obs": {}}, 0.01), (None, 0.01), ({}, None)],
+)
+def test_the_gate_reads_chi2_as_the_judge_does(report, p):
+    """The gate refuses exactly the fits the judge scores inadequate: it applies
+    scenario.chi2_passes because the agent package cannot import the judge (it pulls in
+    petab_mcp, see test_import_lightness), so the two rules are locked together here."""
+    from gemot.runner.scoring import _reference_free_adequacy
+    from gemot.scenario import chi2_passes
+
+    assert chi2_passes(report, p) == _reference_free_adequacy("chi2", report, p, None)["passed"]

@@ -50,6 +50,7 @@ _FRAGMENTS = {
     "_MERGE_HINTS_WHERE",
     "_RESIDUALS_DO_NOT_DECIDE_DONE",
     "_MODEL_EDIT_OPS",
+    "_CHI2_GATE_RULE",
     # Read by the statements lead and the null arm (the barebones template).
     "_FREE_LITERALS",
 }

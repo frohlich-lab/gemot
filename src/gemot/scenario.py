@@ -44,6 +44,31 @@ ADEQUACY_REPLICATE_LOF = "replicate_lof"
 ADEQUACY_RESIDUAL_STRUCTURE = "residual_structure"
 ADEQUACY_TESTS = (ADEQUACY_CHI2, ADEQUACY_REPLICATE_LOF, ADEQUACY_RESIDUAL_STRUCTURE)
 
+#: The level of a reference-free example's chi2 bar. The other two tests arrive as the server's own
+#: verdicts, already decided at the server's own alphas, so this does not reach them. Here rather
+#: than in ``runner.scoring`` (which re-exports it) so the finish gate can read it without
+#: ``petab_mcp``, as above. 0.1, STRICTER than the conventional 0.05: a fit passes at p >= alpha,
+#: so a fit with 0.05 <= p < 0.1 fails here. The server's plateau check
+#: (``petab_mcp.constants.ADEQUATE_GOF_PVALUE``) holds the same level since frohlich-lab/PEtab-MCP#259,
+#: so it never stops, as adequate, a run this bar fails.
+REFERENCE_FREE_GOF_ALPHA = 0.1
+
+
+def chi2_passes(
+    noise_sigma_report, chi2_gof_pvalue, alpha: float = REFERENCE_FREE_GOF_ALPHA
+) -> bool | None:
+    """Whether a fit passes the ``chi2`` bar, or ``None`` where chi2 cannot judge it: an unreadable
+    noise-sigma report (not a dict), an ESTIMATED sigma (a non-empty report, since an ML sigma pins
+    chi2 near ``n``), or no finite p-value. The rule of ``runner.scoring._reference_free_adequacy``'s
+    ``chi2`` arm, which the finish gate's chi2 refusal applies without importing the judge."""
+    if not isinstance(noise_sigma_report, dict) or noise_sigma_report:
+        return None
+    p = chi2_gof_pvalue
+    if not isinstance(p, (int, float)) or isinstance(p, bool) or not math.isfinite(p):
+        return None
+    return p >= alpha
+
+
 #: What :attr:`Scenario.amici_tolerances` may set, and the server's environment variable for each.
 #: The server reads them where it configures AMICI's solver
 #: (``petab_mcp.fitting._apply_amici_solver_defaults``), for every fit and every held-out score.

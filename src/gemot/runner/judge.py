@@ -38,7 +38,7 @@ from ..fit_budget import FIT_BUDGET_MARGIN, FIT_COMPILE_MARGIN_S, FIT_PER_START_
 from .clock import CALL_IDLE_WINDOW_S, HELD_OUT_TOOL, _ToolClock
 from ..paths import validation_measurements_path
 from .provenance import _bic_reference, _judge_mode, _now_iso, _reference_score
-from ..scenario import Baseline, JudgeContext, Scenario
+from ..scenario import REFERENCE_FREE_GOF_ALPHA, Baseline, JudgeContext, Scenario
 from .scoring import (
     _noise_sigma_flag,
     _reference_free_adequacy,
@@ -896,7 +896,7 @@ async def _judge(
     if p_gof is not None:
         print(
             f"  chi2 GoF:             p={p_gof:.3g} (dof={dof}) "
-            f"— {'consistent with noise' if p_gof >= 0.05 else 'worse than noise'}"
+            f"— {'consistent with noise' if p_gof >= REFERENCE_FREE_GOF_ALPHA else 'worse than noise'}"
         )
     if validation:
         # Printed next to ΔBIC because it is the same shape of comparison against the same true

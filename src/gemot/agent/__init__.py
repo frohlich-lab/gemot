@@ -75,6 +75,7 @@ from .dedup import (
 )
 from .driver import _MAX_SILENT_BOUNCES, run_deepagents
 from .finish_gate import (
+    _MAX_ADEQUACY_FINISH_REFUSALS,
     _MAX_NO_FIT_FINISH_ATTEMPTS,
     _MAX_PARSIMONY_FINISH_REFUSALS,
     _MAX_SIGMA_FINISH_REFUSALS,
