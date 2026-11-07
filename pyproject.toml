@@ -112,7 +112,9 @@ dependencies = [
     # Then 9732ddf, main: frohlich-lab/PEtab-MCP#259: the plateau gate calls a fixed-sigma model
     # adequate at chi2 p >= 0.1, the level of `scenario.REFERENCE_FREE_GOF_ALPHA`, so it no longer
     # stops a run the judge then fails.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@9732ddfb468c278dc0587a336690c6326da3ff6c",
+    # Then 8c06ba0, main: frohlich-lab/PEtab-MCP#260: petab at PEtab-dev/libpetab-python#579, which
+    # keeps per-experiment constants in the condition table; without it froehlich does not import.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@8c06ba0b05351a317db40de003ae097d720694c9",
     # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
     # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
     # is built on it; 2.3 is the first release fastmcp 4.1 accepts. What 2.0 changed for the code
