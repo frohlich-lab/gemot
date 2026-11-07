@@ -239,11 +239,16 @@ def _usage_metadata(usage: dict) -> dict:
 def _add_usage(blocks: list[dict | None]) -> dict | None:
     """The usage blocks of a turn's calls summed. A cost only if every call reported one: a call
     with no account (a stopped stream OpenRouter never filed) leaves the turn uncosted rather
-    than undercounted."""
+    than undercounted.
+
+    It is the turn's ``llm_output`` usage, which the tracer reads its token counts from, so it
+    carries a total: without one the span recorded prompt and completion alone, and a run's total
+    came out short of the two (#125)."""
     known = [b for b in blocks if b]
     if not known:
         return None
     out = {k: sum(int(b.get(k) or 0) for b in known) for k in ("prompt_tokens", "completion_tokens")}
+    out["total_tokens"] = out["prompt_tokens"] + out["completion_tokens"]
     cached = sum(int((b.get("prompt_tokens_details") or {}).get("cached_tokens") or 0) for b in known)
     if cached:
         out["prompt_tokens_details"] = {"cached_tokens": cached}

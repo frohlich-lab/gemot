@@ -149,8 +149,10 @@ def create_app(
         run_dir, meta = loaded
         data = _build(run_id, run_dir, meta)  # heavy; outside cache_lock (uses its own fetch_lock)
         data["live"] = False
-        # cache only once the Phoenix half succeeded (so a not-yet-ingested trace can be retried)
-        if data.get("phoenix", {}).get("ok") or not meta.get("phoenix_trace_id"):
+        # cache only once the Phoenix half succeeded and was whole (so a not-yet-ingested trace,
+        # or one still missing spans, can be retried)
+        px = data.get("phoenix", {})
+        if (px.get("ok") and px.get("complete")) or not meta.get("phoenix_trace_id"):
             with cache_lock:
                 cache[run_id] = data
                 cache.move_to_end(run_id)

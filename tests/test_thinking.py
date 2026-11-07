@@ -103,6 +103,9 @@ def test_a_looping_stream_is_stopped_and_its_thinking_handed_back(monkeypatch):
     # Both calls are on the bill: the stopped stream's from /generation, the hand-off's own.
     assert msg.response_metadata["token_usage"]["cost"] == pytest.approx(0.012)
     assert msg.usage_metadata["output_tokens"] == 5020
+    # The tracer reads the span's counts from llm_output; with no total there, a run's total came
+    # out short of its prompt plus completion (#125).
+    assert result.llm_output["token_usage"]["total_tokens"] == 6120
 
 
 def _bad_request(text):
