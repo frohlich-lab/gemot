@@ -313,20 +313,27 @@ def phoenix_trace_metrics(
     def _kcount(kind: str) -> int:
         return int((kinds == kind).sum()) if kinds is not None else 0
 
-    def _tok(name: str) -> int | None:
-        col = f"attributes.llm.token_count.{name}"
-        if col not in sub.columns:
-            return None
-        vals = sub[col].dropna()
-        # Empty after dropna = the column exists but no span carried a token count. Report None
-        # (unknown), not 0 — a genuine zero and "never captured" must stay distinguishable.
+    # One count per span, NaN where the span recorded none or the frame has no such column.
+    counts = sub.reindex(
+        columns=[f"attributes.llm.token_count.{name}" for name in ("prompt", "completion", "total")]
+    )
+    prompt, completion, total = (counts[col] for col in counts.columns)
+
+    def _tok(vals) -> int | None:
+        vals = vals.dropna()
+        # Empty after dropna = no span carried this count. Report None (unknown), not 0 — a
+        # genuine zero and "never captured" must stay distinguishable.
         return int(vals.sum()) if len(vals) else None
 
     usage = {
         "n_llm_calls": _kcount("LLM"),
-        "tokens_prompt": _tok("prompt"),
-        "tokens_completion": _tok("completion"),
-        "tokens_total": _tok("total"),
+        "tokens_prompt": _tok(prompt),
+        "tokens_completion": _tok(completion),
+        # A span's own total, or its prompt plus completion where it recorded none: a turn the
+        # thinking hand-off put together from two calls carried no total until #125, and summing
+        # the total column alone left those runs short of the two (the rule
+        # :func:`gemot.explorer.bundle._token_total` applies per span).
+        "tokens_total": _tok(total.fillna(prompt.add(completion, fill_value=0))),
     }
     scope_col = "attributes.gemot.cli.usage_scope"
     native = sub[sub[scope_col] == "session_aggregate"] if scope_col in sub.columns else None
