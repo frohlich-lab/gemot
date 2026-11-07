@@ -48,8 +48,9 @@ ADEQUACY_TESTS = (ADEQUACY_CHI2, ADEQUACY_REPLICATE_LOF, ADEQUACY_RESIDUAL_STRUC
 #: verdicts, already decided at the server's own alphas, so this does not reach them. Here rather
 #: than in ``runner.scoring`` (which re-exports it) so the finish gate can read it without
 #: ``petab_mcp``, as above. 0.1, STRICTER than the conventional 0.05: a fit passes at p >= alpha,
-#: so a fit with 0.05 <= p < 0.1 fails here. The server's own plateau check
-#: (``petab_mcp.constants.ADEQUATE_GOF_PVALUE``) keeps its separate value.
+#: so a fit with 0.05 <= p < 0.1 fails here. The server's plateau check
+#: (``petab_mcp.constants.ADEQUATE_GOF_PVALUE``) holds the same level since frohlich-lab/PEtab-MCP#259,
+#: so it never stops, as adequate, a run this bar fails.
 REFERENCE_FREE_GOF_ALPHA = 0.1
 
 
