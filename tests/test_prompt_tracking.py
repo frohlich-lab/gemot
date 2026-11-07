@@ -19,10 +19,18 @@ import pytest
 from gemot import prompts as P
 
 # Module-level names that are NOT model-facing text: the registry machinery itself, the separator
-# it serializes with, and the one list of TOOL NAMES the lead prompt renders itself from (the
-# rendered text is tracked through DEFAULT_SYSTEM_PROMPT, so editing the tuple still moves the
-# version). Everything else in `prompts` is prose sent to a model.
-_NOT_PROMPTS = {"PROMPT_GROUPS", "_HASH_SEP", "LEAD_SELF_READ_TOOLS"}
+# it serializes with, and the lists of TOOL NAMES a prompt renders itself from: the lead's own
+# reads, tracked through DEFAULT_SYSTEM_PROMPT, and each analyst's, tracked through its
+# descriptions. Editing a tuple still moves the version. Everything else in `prompts` is prose
+# sent to a model.
+_NOT_PROMPTS = {
+    "PROMPT_GROUPS",
+    "_HASH_SEP",
+    "LEAD_SELF_READ_TOOLS",
+    "MATHEMATICIAN_READ_TOOLS",
+    "SYSTEMS_SCIENTIST_READ_TOOLS",
+    "SIGNAL_ENGINEER_READ_TOOLS",
+}
 
 # FRAGMENTS: constants that are concatenated INTO another prompt rather than sent on their own
 # (both report contracts are appended to the personas). They have no registry entry of their
@@ -53,6 +61,8 @@ _FRAGMENTS = {
     "_CHI2_GATE_RULE",
     # Read by the statements lead and the null arm (the barebones template).
     "_FREE_LITERALS",
+    # Closes every analyst description, on both arms.
+    "_ANALYST_READS_HEAD",
 }
 
 

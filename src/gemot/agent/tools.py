@@ -20,6 +20,9 @@ from ..prompts import (
     INDRA_STATEMENTS_ENABLED,
     BIOLOGY_BLIND_TOOL_DESCRIPTIONS,
     LEAD_SELF_READ_TOOLS,
+    MATHEMATICIAN_READ_TOOLS,
+    SIGNAL_ENGINEER_READ_TOOLS,
+    SYSTEMS_SCIENTIST_READ_TOOLS,
 )
 
 # ---------------------------------------------------------------- tool exposure
@@ -27,35 +30,13 @@ from ..prompts import (
 # can do without is dropped rather than kept "just in case". The comments below say only WHY
 # each persona gets the tools it does.
 
-# Mathematician: structural capability + estimation numerics. The reaction network (rate
-# laws) + the parameter search space + the fit metrics + — uniquely — the pyPESTO/Fides log.
-MATHEMATICIAN_TOOLS = [
-    "get_model_structure",  # species; reactions and rate laws when asked (empty until built)
-    "get_measurements",  # the DATA — dynamics/shape to reason about candidate structure
-    "list_observables",  # what is measured
-    "get_parameters",  # scales, bounds — identifiability / conditioning
-    "get_fit_summary",
-    "get_fitting_log",  # pyPESTO/Fides log: multistart spread, convergence, bounds
-    # get_skill is NOT here: every analyst fetched the same petab-model-building document once
-    # per spawn (203/203, 217/217, 115/115 across the A/B) — a deterministic call is a constant,
-    # so the skill is INLINED into the persona prompts (prompts.py) where it caches as prefix.
-]
-
-# Systems scientist: is the mechanism real? The mechanism as written, what was measured
-# (the readout + data shape), and whether the rate magnitudes are plausible.
-SYSTEMS_SCIENTIST_TOOLS = [
-    "get_model_structure",  # the mechanism as written
-    "list_observables",  # what quantity is measured
-    "get_measurements",  # the actual data / dynamic behaviour
-    "get_parameters",  # are the rate magnitudes plausible?
-]
-
-# Signal-processing engineer: residuals as signals, entirely via SQL over the data.
-SIGNAL_ENGINEER_TOOLS = [
-    "list_data_tables",  # the queryable tables (simulations, residuals, ...) + columns
-    "query_data",  # SQL over measured-vs-simulated points + residual breakdowns
-    "get_fit_summary",
-]
+# The three analysts' sets come from `prompts`, which renders each into the description the lead
+# reads when it delegates: one tuple per analyst, so the lead cannot be told an analyst holds a
+# tool it does not (gemot#122). What each tool is FOR on each analyst is documented there. Lists,
+# because the arm strip below edits every toolset in place.
+MATHEMATICIAN_TOOLS = list(MATHEMATICIAN_READ_TOOLS)
+SYSTEMS_SCIENTIST_TOOLS = list(SYSTEMS_SCIENTIST_READ_TOOLS)
+SIGNAL_ENGINEER_TOOLS = list(SIGNAL_ENGINEER_READ_TOOLS)
 
 # The orchestrator ("modeling lead") orients, delegates analysis to the three analysts, and
 # is the ONLY agent that authors the model. It keeps a MINIMAL surface: read the model + score,

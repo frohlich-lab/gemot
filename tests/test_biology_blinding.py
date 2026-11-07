@@ -350,6 +350,9 @@ assert all("EGFR" not in t.description for t in tools)
 panel = agent._build_subagents({t.name:t for t in tools})
 for spec in panel:
     assert "biochemistry" not in str(spec) and "EGFR" not in str(spec)
+    # The blind descriptions name each analyst's tools as this arm leaves them (gemot#122).
+    held = tuple(t.name for t in spec["tools"])
+    assert spec["description"].endswith(prompts._analyst_reach(held)), spec["name"]
 async def check():
     try:
         await agent.run_deepagents(None, model="test", api_key="test", base_url="http://invalid",

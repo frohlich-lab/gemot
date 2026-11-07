@@ -777,7 +777,9 @@ MATHEMATICIAN_PROMPT = (
     "what reaction-network FORM could GENERATE them — the state dimension, which rate laws are "
     "linear vs saturating vs cooperative, the conservation laws implied. Once a model exists "
     "(get_model_structure), ask whether its rate-law FORM can produce the observed dynamics "
-    "for ANY parameter values.\n"
+    "for ANY parameter values. What a FITTED model actually does is its simulation: read it "
+    "(query_data, or get_version for another version) rather than integrating the equations "
+    "by hand.\n"
     "- Numerics: read get_parameters (scales, bounds) and, once a fit exists, get_fit_summary "
     "and get_fitting_log (the pyPESTO/Fides multistart). Did the starts converge, is a "
     "parameter pinned at a bound, is the objective flat in some direction "
@@ -825,25 +827,90 @@ SIGNAL_ENGINEER_PROMPT = (
 # -------------- analyst descriptions (what the LEAD sees in its `task` tool)
 # The one-liner the lead reads when choosing a `subagent_type`. Distinct from the persona
 # prompts above: these describe the analyst to its CALLER, the personas instruct the analyst.
+# Each closes with the analyst's REACH: the tools it holds and which version they read. Untold,
+# the lead asked an analyst for a tool it lacked in 26 of 85 delegations of sweep 63372750
+# (`get_fit_diagnosis`, `get_model(version=N)`, a version's simulation), and an analyst asked
+# about the best version read HEAD as if it were that version (gemot#122).
+
+#: Each analyst's tools: rendered into its description (and its biology-blind one) AND spliced
+#: into its toolset (agent/tools.py), so the lead cannot be told an analyst holds a tool it does
+#: not. Each set is as SMALL as the analyst's lens allows (agent/tools.py says why); what each tool
+#: is FOR on that analyst is said here.
+#:
+#: get_skill is on none of them: every analyst fetched the same petab-model-building document once
+#: per spawn (203/203, 217/217, 115/115 across the A/B), and a deterministic call is a constant, so
+#: the skill is INLINED into the personas above, where it caches as prefix. Nor is
+#: get_fit_diagnosis: it is the lead's own compact read of the current fit, and an analyst that
+#: needs that fit's per-point rows reads them in SQL.
+#:
+#: Mathematician: structural capability + estimation numerics.
+MATHEMATICIAN_READ_TOOLS = (
+    "get_model_structure",  # species; reactions and rate laws when asked (empty until built)
+    "get_measurements",  # the DATA — dynamics/shape to reason about candidate structure
+    "list_observables",  # what is measured
+    "get_parameters",  # scales, bounds — identifiability / conditioning
+    "get_fit_summary",
+    "get_fitting_log",  # uniquely: the pyPESTO/Fides log — multistart spread, convergence, bounds
+    # What a fitted model SIMULATES, read rather than integrated by hand: without them, a
+    # mathematician in sweep 63372750 hand-integrated the ODEs and predicted a crash its model's
+    # simulation does not show (gemot#122).
+    "list_data_tables",
+    "query_data",
+    # On every analyst: a version other than HEAD, whose model, parameters and (asked for) simulated
+    # points no other read of theirs reaches.
+    "get_version",
+)
+
+#: Systems scientist: is the mechanism real? The mechanism as written, what was measured, and
+#: whether the rate magnitudes are plausible.
+SYSTEMS_SCIENTIST_READ_TOOLS = (
+    "get_model_structure",  # the mechanism as written
+    "list_observables",  # what quantity is measured
+    "get_measurements",  # the actual data / dynamic behaviour
+    "get_parameters",  # are the rate magnitudes plausible?
+    "get_version",
+)
+
+#: Signal-processing engineer: residuals as signals, entirely via SQL over the data.
+SIGNAL_ENGINEER_READ_TOOLS = (
+    "list_data_tables",  # the queryable tables (simulations, residuals, ...) + columns
+    "query_data",  # SQL over measured-vs-simulated points + residual breakdowns
+    "get_fit_summary",
+    "get_version",
+)
+
+#: Closes every analyst description, the biology-blind ones too.
+_ANALYST_READS_HEAD = (
+    "Its model and fit reads show HEAD, the current version; name any other version you mean, "
+    "and it reads that one with `get_version`."
+)
+
+
+def _analyst_reach(tools: "tuple[str, ...]") -> str:
+    """The close of an analyst's description: the tools it holds, then ``_ANALYST_READS_HEAD``."""
+    return " It holds only " + ", ".join(f"`{t}`" for t in tools) + ". " + _ANALYST_READS_HEAD
+
+
 MATHEMATICIAN_DESCRIPTION = (
     "Mathematician: equation structure, dynamical-systems theory, and fit numerics. "
     "Ask what reaction-network structure the measured dynamics imply, and — once a "
     "model exists — whether a poor fit is structural (the rate-law form cannot produce "
-    "the dynamics) or numerical (non-identifiability, optimizer failure). Reads the "
-    "fitting log."
+    "the dynamics) or numerical (non-identifiability, optimizer failure)."
+    + _analyst_reach(MATHEMATICIAN_READ_TOOLS)
 )
 
 SYSTEMS_SCIENTIST_DESCRIPTION = (
     "Systems scientist (biochemistry / gene regulation / ecology): mechanistic "
     "plausibility. Ask what mechanism the measured system has — the species and their "
     "interactions — and whether a reaction is a faithful process or a curve-fitting "
-    "artifact to reject."
+    "artifact to reject." + _analyst_reach(SYSTEMS_SCIENTIST_READ_TOOLS)
 )
 
 SIGNAL_ENGINEER_DESCRIPTION = (
     "Signal-processing engineer: characterizes the measured signal (shape, "
     "periodicity, timescales) and — once a model is fitted — the residuals (bias, "
     "drift, shape/timing mismatch), with no mechanistic claim."
+    + _analyst_reach(SIGNAL_ENGINEER_READ_TOOLS)
 )
 
 
@@ -1462,7 +1529,8 @@ def biology_blind_task(protocols: "list[tuple[str, str]] | None" = None) -> str:
 
 BIOLOGY_BLIND_ANALYSTS = {
     "mathematician": {
-        "description": "Equation structure, dynamical systems, identifiability and optimization.",
+        "description": "Equation structure, dynamical systems, identifiability and optimization."
+        + _analyst_reach(MATHEMATICIAN_READ_TOOLS),
         "prompt": "You analyze ODE structure and parameter estimation. Inspect the actual equations, "
         "data and fitting evidence. Separate limitations of the functional form from "
         "optimization failures or unidentifiable coefficients. Return a short report "
@@ -1470,7 +1538,8 @@ BIOLOGY_BLIND_ANALYSTS = {
         + BIOLOGY_BLIND_SEMANTICS,
     },
     "systems_scientist": {
-        "description": "State-space structure and input/output dynamics inferred from data.",
+        "description": "State-space structure and input/output dynamics inferred from data."
+        + _analyst_reach(SYSTEMS_SCIENTIST_READ_TOOLS),
         "prompt": "You analyze anonymous input/output systems. Inspect the measurements and model "
         "before recommending a state dimension, coupling, feedback or output mapping. "
         "Distinguish constraints established by the data from assumptions and identify "
@@ -1478,7 +1547,8 @@ BIOLOGY_BLIND_ANALYSTS = {
         "and one concrete change the lead can test. You cannot edit. " + BIOLOGY_BLIND_SEMANTICS,
     },
     "signal_engineer": {
-        "description": "Measured signal shapes, time scales, replicates and residual structure.",
+        "description": "Measured signal shapes, time scales, replicates and residual structure."
+        + _analyst_reach(SIGNAL_ENGINEER_READ_TOOLS),
         "prompt": "You analyze measurements and residuals as numerical signals. Use your tools to "
         "locate systematic timing, shape, amplitude or input-response errors relative "
         "to the supplied noise model. Report what is established, what is uncertain, "
