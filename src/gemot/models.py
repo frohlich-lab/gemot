@@ -88,6 +88,26 @@ DEFAULT = "glm-flash"
 #: still permits fallback to any other provider. Verified live: three consecutive calls all served
 #: by DigitalOcean, with Novita as the standby if it goes down. AkashML is deliberately absent —
 #: it serves the date-pinned ``-0731`` id but not this floating one.
+#:
+#: Checked again on 2026-11-07, against each model's endpoint list and OpenRouter's list of ZDR
+#: endpoints (``/api/v1/endpoints/zdr``). Six models had lost a pinned tag (Novita, Parasail,
+#: Together, and the bare and ``/eu`` Vertex tags); each lost tag is replaced by a ZDR endpoint at
+#: fp8 or better, with 1M context and tool calls, which answered a live call. The other endpoints
+#: are unchanged.
+#:
+#: Three things that check found:
+#:
+#: * **ZDR has to be read off OpenRouter's ZDR list now.** The account no longer enforces it:
+#:   every endpoint probed answered, including GMICloud, Baidu, StreamLake and
+#:   ``google-ai-studio``, which the notes below record as ZDR-blocked when they were checked.
+#: * **Which pins are not ZDR.** The ``openai`` tag of the OpenAI family is not on the list
+#:   (``azure`` is, at the same price), nor is ``xiaomi/fp8``, nor grok's ``xai`` standby. The
+#:   ``anthropic`` tag of sonnet and haiku isn't either, but it runs through this account's own
+#:   key. Every other pinned tag is on the list.
+#: * **How a bare provider slug matches.** It takes the provider's quantization variants but not
+#:   its service tiers. ``only: [z-ai]`` reached ``z-ai/fp8``, the only Z.AI endpoint left.
+#:   ``only: [openai]`` billed luna's standard rate on 3 of 3 calls, where ``openai/flex`` billed
+#:   half.
 _ROUTING: dict[str, dict] = {
     # glm-flash: ONE provider (Z.AI itself), so the pin is not about price mirrors -- it is a
     # standing guarantee that a provider added later cannot silently take the traffic. Verified
@@ -101,29 +121,46 @@ _ROUTING: dict[str, dict] = {
     # and 58% below luna's. It needs a >=78% cache hit rate just to break even, and can only
     # afford 1.16x luna's token consumption before it costs MORE. Treat cost parity as unproven
     # until a real sweep reports its own cache_read_tokens.
-    "z-ai/glm-5.3-flash": {"only": ["z-ai"]},
+    #
+    # 2026-11-07: no longer ONE provider. 41 endpoints serve it, and Z.AI's own is now tagged
+    # `z-ai/fp8` (ZDR; $0.15/$0.50, cache read $0.03 -- luna's doubled too, to $0.02). Named by
+    # that tag, so a Z.AI variant added later is not taken by the bare slug. Kept on Z.AI alone,
+    # with no standby: the 2026-08 campaign was measured there.
+    "z-ai/glm-5.3-flash": {"only": ["z-ai/fp8"]},
     "openai/gpt-5.6-luna": {"only": ["openai"]},
     "openai/gpt-5.6-luna-pro": {"only": ["openai"]},
+    # 2026-11-07: Novita no longer serves v4-flash. DeepInfra does, now at fp8 rather than fp4
+    # (`deepinfra/fp8`, ZDR, 1M; $0.09/$0.18, cache read $0.018, just under DigitalOcean's), so it
+    # is the standby. Named with its quantization, so a DeepInfra fp4 endpoint is never taken.
+    # DigitalOcean answered 1 of 3 calls that day; the other two came back 429.
     "deepseek/deepseek-v4-flash": {
-        "order": ["digitalocean", "novita"],
-        "only": ["digitalocean", "novita"],
+        "order": ["digitalocean", "deepinfra/fp8"],
+        "only": ["digitalocean", "deepinfra/fp8"],
     },
     # mimo: the $0.003-cache-read endpoints at Xiaomi/GMICloud are ZDR-blocked, so Novita is the
     # cheapest reachable one ($0.066/run) and still carries that cache rate. DeepInfra is excluded
     # for CONTEXT, not price: it serves this model at 262,144 tokens, and driver.py runs no history
     # trimmer on the assumption of a 1M window — a run that landed there could wedge on context.
-    "xiaomi/mimo-v2.5": {
-        "order": ["novita/fp8", "parasail/fp8"],
-        "only": ["novita/fp8", "parasail/fp8"],
-    },
+    #
+    # 2026-11-07: Novita and Parasail no longer serve v2.5. Its one endpoint left is `venice/fp8`
+    # (ZDR, 1M), at $0.40/$2.00 and cache read $0.08, several times what the runs above paid.
+    "xiaomi/mimo-v2.5": {"only": ["venice/fp8"]},
     # v2.6 Flash: unlike v2.5's, Xiaomi's own endpoint is not ZDR-blocked here (every one of its
-    # eight endpoints answered a tool call, 2026-10-17); first-party fp8, Novita the standby.
-    "xiaomi/mimo-v2.6-flash": {"order": ["xiaomi/fp8", "novita/fp8"], "only": ["xiaomi/fp8", "novita/fp8"]},
+    # eight endpoints answered a tool call, 2026-10-17); first-party fp8, with a standby.
+    # 2026-11-07: Novita no longer serves it, so the standby is `deepinfra/fp8` (ZDR, 1M, Xiaomi's
+    # own price). `xiaomi/fp8` is not on OpenRouter's ZDR list.
+    "xiaomi/mimo-v2.6-flash": {
+        "order": ["xiaomi/fp8", "deepinfra/fp8"],
+        "only": ["xiaomi/fp8", "deepinfra/fp8"],
+    },
     # v4-pro: Baidu/StreamLake/DeepSeek serve it at ~$0.15/run but are all ZDR-blocked, so Novita
     # ($0.374) is the floor we can actually reach — the 120x cache discount is NOT available here.
+    # 2026-11-07: Parasail no longer serves it, so `deepinfra/fp8` (ZDR, 1M) is the standby. It is
+    # cheaper than Novita ($1.30/$2.60, cache read $0.10, against $1.60/$3.20 and $0.135). Baidu
+    # and StreamLake (~$0.50) answer but are not on the ZDR list.
     "deepseek/deepseek-v4-pro": {
-        "order": ["novita/fp8", "parasail/fp8"],
-        "only": ["novita/fp8", "parasail/fp8"],
+        "order": ["novita/fp8", "deepinfra/fp8"],
+        "only": ["novita/fp8", "deepinfra/fp8"],
     },
     # minimax-m3: pinned for CONTEXT as much as price. Five of its nine endpoints serve 524,288
     # tokens and Morph 256,000; only GMICloud/Novita/Parasail reach 1M, and GMICloud is ZDR-blocked.
@@ -132,9 +169,10 @@ _ROUTING: dict[str, dict] = {
     # instead of stalling it. 524K is deliberate headroom, not a guess — the largest single call
     # across 210 archived runs was 171k tokens, and the run-level cap is the recursion limit, not
     # the window. Cost is not the reason for the order: the 524K endpoints save ~$0.03/run.
+    # 2026-11-07: Together no longer serves it, so DeepInfra is the one 524K standby.
     "minimax/minimax-m3": {
-        "order": ["novita/fp8", "parasail/fp8", "deepinfra/fp8", "together"],
-        "only": ["novita/fp8", "parasail/fp8", "deepinfra/fp8", "together"],
+        "order": ["novita/fp8", "parasail/fp8", "deepinfra/fp8"],
+        "only": ["novita/fp8", "parasail/fp8", "deepinfra/fp8"],
     },
     # terra: same Azure trap as the rest of the OpenAI family (OpenAI $1.00 vs Azure $2.75, a
     # 5.5x spread), so the bare `openai` tag is mandatory -- it also excludes `openai/flex` and
@@ -172,14 +210,18 @@ _ROUTING: dict[str, dict] = {
     # No _REASONING entry on purpose: both models think by DEFAULT (verified live, 140-210
     # reasoning tokens on a one-shot tool call, tool calls intact). Contrast Flash-Lite below,
     # where thinking was off and had to be asked for.
+    #
+    # 2026-11-07: the Vertex tags have changed. These models have no bare `google-vertex` or
+    # `google-vertex/eu` endpoint any more; Flash has `google-vertex/global` and `google-vertex/us`
+    # ($0.825, 10% above global), Pro has `google-vertex/global` alone. OpenRouter's ZDR list now
+    # has every standard-tier Vertex endpoint, so the first paragraph above no longer holds. AI
+    # Studio answers but is not on the list. So Pro has no standby: a `google-vertex/global`
+    # outage stops its runs.
     "google/gemini-3.6-flash": {
-        "order": ["google-vertex/global", "google-vertex", "google-vertex/eu"],
-        "only": ["google-vertex/global", "google-vertex", "google-vertex/eu"],
+        "order": ["google-vertex/global", "google-vertex/us"],
+        "only": ["google-vertex/global", "google-vertex/us"],
     },
-    "google/gemini-3.1-pro-preview": {
-        "order": ["google-vertex/global", "google-vertex", "google-vertex/eu"],
-        "only": ["google-vertex/global", "google-vertex", "google-vertex/eu"],
-    },
+    "google/gemini-3.1-pro-preview": {"only": ["google-vertex/global"]},
     # Anthropic: one tag, no `order` fallback -- pinned for the cache namespace, not the price.
     # `anthropic`, `claude-on-aws` and `azure/*` are ZDR-blocked here (404, verified per tag).
     # Through this account's own Anthropic key (BYOK), which the ZDR block above does not apply to.

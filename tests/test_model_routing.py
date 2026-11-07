@@ -45,14 +45,16 @@ def test_fallback_is_bounded_by_an_allowlist(model_id):
 
 
 def test_deepseek_flash_excludes_the_fp4_endpoint():
-    """DeepInfra is the cheapest ZDR-eligible endpoint but serves fp4.
+    """No fp4 endpoint, and DeepInfra only by its fp8 tag.
 
-    Benchmarking across differently-quantized endpoints confounds the model comparison, so
-    the allowlist must keep it out even though it would be cheaper.
+    Benchmarking across differently-quantized endpoints confounds the model comparison. DeepInfra
+    served fp4 when this was first pinned and fp8 by 2026-11-07, when it became the standby.
+    The bare slug would also take any DeepInfra variant added later, fp4 included.
     """
     block = provider_routing("deepseek/deepseek-v4-flash")
     assert block is not None
-    assert "deepinfra" not in block["only"]
+    assert not [t for t in block["only"] if "fp4" in t]
+    assert "deepinfra" not in block["only"], "name DeepInfra by its quantization, not its slug"
     assert "deepseek" not in block["only"], "DeepSeek-direct is not ZDR-eligible for this account"
 
 
