@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from gemot import agent
+from gemot import agent, prompts
 
 # The one editor. It authors the model AND fits, so "who may change the model" and "who may
 # score it" are now the same question — and the answer is still: the lead alone.
@@ -79,6 +79,28 @@ def test_only_the_lead_holds_get_model():
     assert "get_model" in agent.ORCHESTRATOR_TOOLS
     for spec in agent.ANALYSTS:
         assert "get_model" not in spec["tools"], spec["name"]
+
+
+# ----------------------------------------------------- what the lead is told each one holds
+def test_the_analysts_hold_the_reads_the_lead_asked_them_for():
+    """gemot#122, sweep 63372750: with no simulation to read, a mathematician integrated the ODEs
+    by hand and predicted a crash its model does not show, and an analyst asked about the best
+    version read HEAD in its place. Every analyst reads any version; the mathematician reads what a
+    fitted model simulates."""
+    assert {"list_data_tables", "query_data", "get_version"} <= set(agent.MATHEMATICIAN_TOOLS)
+    for spec in agent.ANALYSTS:
+        assert "get_version" in spec["tools"], spec["name"]
+
+
+def test_each_analyst_description_names_exactly_the_tools_it_holds():
+    """gemot#122: nothing told the lead which tools an analyst holds, and 26 of 85 delegations in
+    sweep 63372750 asked one for a tool it lacked. Each description renders its analyst's toolset;
+    checked against the tools the built spec is bound to, so a tool an arm strips from an analyst
+    cannot stay named in what the lead reads."""
+    panel = agent._build_subagents({n: _FakeTool(n) for n in agent.ALLOWED_TOOLS})
+    for spec in panel:
+        held = tuple(t.name for t in spec["tools"])
+        assert spec["description"].endswith(prompts._analyst_reach(held)), spec["name"]
 
 
 # ------------------------------------------------------------- the real create_deep_agent

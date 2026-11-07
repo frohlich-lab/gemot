@@ -1112,8 +1112,8 @@ async def run_deepagents(
             "[agent] WARNING: installed deepagents has no `subagents` parameter; "
             "running a single agent without the analyst panel."
         )
-    # Lead middleware: drop deepagents' built-in FS/todo tools (the analysts can't be reliably
-    # filtered in this deepagents version — see _builtin_tool_filter; `task` is untouched), hide a
+    # Lead middleware: drop deepagents' built-in FS/todo tools (each analyst's spec carries its
+    # own filter — see _BUILTIN_TOOLS_TO_HIDE; `task` is untouched), hide a
     # circuit-broken tool so it stops being re-proposed, and guard tool dispatch (dedupe duplicate
     # calls in a batch; push back on idle no-tool turns and label a run that never fires a tool as
     # no_tools_executed — see _tool_dispatch_guard). No history trimming: all target models have a

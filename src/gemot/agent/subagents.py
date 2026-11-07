@@ -30,7 +30,8 @@ the lead's own editing/recovery tools is what reaches ``create_deep_agent``.
 
 Also here: the lead's CONTAINMENT. deepagents auto-inserts a ``general-purpose`` subagent holding
 the full tool pool, which let the lead delegate model authoring into a subagent; and it hands the
-lead filesystem builtins for a filesystem that is empty by design. Both are turned off.
+lead and every analyst filesystem builtins for a filesystem that is empty by design. Both are
+turned off.
 
 The blinded biocurator, whose tools are discovered at runtime, is built in :mod:`.biocurator`.
 """
@@ -159,8 +160,10 @@ def _build_subagents(
                 # that _empty_report_guard papers over with a marker, so the same defect was being
                 # diagnosed as an "empty report" instead of a truncation that a cheap reduced-effort
                 # retry recovers.
+                #
+                # And the built-in filter, for the same reason: see _BUILTIN_TOOLS_TO_HIDE.
                 "middleware": (
-                    [_subagent_turn_limit(ANALYST_MAX_TURNS)]
+                    [_builtin_tool_filter(), _subagent_turn_limit(ANALYST_MAX_TURNS)]
                     + ([_reasoning_runaway_guard(stats)] if stats is not None else [])
                 ),
             }
@@ -240,16 +243,14 @@ def _general_purpose_enabled(llm) -> "bool | None":
 # overhead: their JSON schemas are re-sent on every turn (the input-token cost this module
 # works hard to keep lean, see agent/tools.py), and each call the model
 # wastes on them also burns a recursion step. `task` (subagent delegation) is NEVER excluded —
-# the panel depends on it. We attach this filter to the LEAD only: neither the per-model
-# `HarnessProfile.excluded_tools` route nor a per-subagent `middleware` list reliably reaches
-# deepagents 0.6.12's declarative analyst subagents (both were verified to still leak FS calls
-# there), so the four curated analysts keep their built-ins for now — the lead is the heavy
-# tool-caller and is the one worth trimming. Trimming the analysts cleanly needs an upstream
-# deepagents fix. Note this caveat no longer covers the biggest FS-call sink: the uncurated
-# `general-purpose` subagent is removed outright above, not filtered.
-# This is a deny-list, so a built-in deepagents adds reaches the lead until it is named here:
+# the panel depends on it. The filter rides on the lead AND on every analyst, each analyst
+# through its spec's own `middleware`. The analysts were once left theirs because on deepagents
+# 0.6.12 a per-subagent list did not reach them; on 0.7.32 it does, and in sweep 63372750 they had
+# spent 78 of 909 tool calls on the built-ins, hunting for simulation files (gemot#122).
+# This is a deny-list, so a built-in deepagents adds reaches every agent until it is named here:
 # `delete` did, on every lead turn through deepagents 0.7.32. tests/test_builtin_tool_filter.py
-# checks what the lead's model is actually bound to, so the next one fails there instead.
+# checks what the lead's and each analyst's model is actually bound to, so the next one fails
+# there instead.
 _BUILTIN_TOOLS_TO_HIDE = frozenset(
     {
         "write_todos",
