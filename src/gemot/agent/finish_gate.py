@@ -515,12 +515,12 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
                     runs_p=rtst.get("p"),
                 )
             # The run's OUTSTANDING invalid "does adding structure help?" experiment, if any:
-            # a variant that gained parameters yet fit WORSE than its parent, which a nested
-            # model cannot do (the server flags it at commit time — see petab_mcp.nesting —
-            # and keeps it until a VALID additive experiment supersedes it, so it outlives the
-            # step that produced it). Shown here rather than made a refusal: a
-            # non-nested variant is legitimate to explore, and the run may have plenty of
-            # other grounds to finish. What must not happen is finishing BECAUSE of it.
+            # a variant nested in its parent that gained parameters yet fit WORSE, which only an
+            # under-converged fit can do (the server flags it at commit time — see
+            # petab_mcp.nesting; since PEtab-MCP#276 only a nested child — and keeps it until a
+            # VALID additive experiment supersedes it, so it outlives the step that produced it).
+            # Shown here rather than made a refusal: the run may have plenty of other grounds to
+            # finish. What must not happen is finishing BECAUSE of it.
             invalid = fit.get("invalid_comparison")
             invalid_line = (
                 prompts.FINISH_ARMED_INVALID_COMPARISON_TMPL.format(advisory=invalid)

@@ -1305,15 +1305,16 @@ FINISH_ARMED_MERGE_TIE_TMPL = (
 )
 
 # Appended to the ARM text when the run's last "does adding structure help?" experiment was
-# INVALID — a variant that gained parameters yet fit WORSE than its parent, which a nested model
-# cannot do (see petab_mcp.nesting). The failure this addresses (blasi, run 80ccf20e): the panel's
-# ONLY structure-adding test was a botched non-additive edit, it read the worse score as "the
-# model is complete", and finished at 4 fitted ops on 5% of its budget. The server's advisory
-# ({advisory}) already names the cause; this line says what it means for the finish.
+# INVALID: a variant nested in its parent that gained parameters yet fit WORSE, which only a fit
+# that under-converged can do (petab_mcp.nesting). Since frohlich-lab/PEtab-MCP#276 the server
+# flags only a nested child; a variant that removed or rewrote a reaction or rule reads "not
+# nested" and is not flagged. The failure this was written for (blasi, run 80ccf20e): the panel's
+# ONLY structure-adding test fit worse, it read the worse score as "the model is complete", and
+# finished at 4 fitted ops on 5% of its budget. The server's advisory ({advisory}) names the cause
+# and says to re-fit; this line says what it means for the finish.
 FINISH_ARMED_INVALID_COMPARISON_TMPL = (
-    " NOTE — your last structure-adding experiment was INVALID: {advisory} So you do NOT "
-    "currently have evidence that adding structure fails to help; do not finish on that "
-    "reasoning. Redo it as a strictly additive edit (or re-fit with more starts) first."
+    " NOTE — your last structure-adding experiment was INVALID: {advisory} Do not finish on the "
+    "reasoning that adding structure fails to help."
 )
 
 FINISH_STRUCT_UNAVAILABLE = "residual-structure tests unavailable."
