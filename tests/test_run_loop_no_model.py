@@ -219,6 +219,7 @@ def test_model_silent_stop_bounces_into_the_gate(monkeypatch):
 
     assert result["stop_reason"] == "silent_stop"  # not an accepted finish
     assert len(fake_agent.inputs) == 1 + mod._MAX_SILENT_BOUNCES
+    assert result["silent_bounces"] == mod._MAX_SILENT_BOUNCES
     for inp in fake_agent.inputs[1:]:  # every bounce = the finish nudge
         msg = inp["messages"][0]
         assert msg["role"] == "user" and msg["content"] == mod._SILENT_FINISH_NUDGE
@@ -236,6 +237,23 @@ def test_confirmed_finish_is_not_bounced(monkeypatch):
     # runs no real tools — but never our silent-stop labels.)
     assert result["stop_reason"] not in ("silent_stop", "no_model_built")
     assert len(fake_agent.inputs) == 2  # initial + 1 bounce, then confirmed
+
+
+@requires_harness
+@pytest.mark.parametrize("confirm_after, bounces", [(1, 0), (2, 1)])
+def test_the_result_counts_silent_bounces(monkeypatch, confirm_after, bounces):
+    """gemot#124: in sweep 63372750, fontaine 8 and 9 were each bounced right after the finish
+    gate's third sigma refusal, and neither result showed it. The count lived in a local, and
+    `idle_nudges` (no-tool turns before the first tool call) read 0. A run that finishes first
+    time carries an explicit 0, so a missing key never stands for "not bounced"."""
+    mod = _load_agent_module()
+    result, fake_agent = _run(
+        mod, monkeypatch, _Probe(model_authored=True), confirm_after=confirm_after
+    )
+
+    assert len(fake_agent.inputs) == 1 + bounces
+    assert result["silent_bounces"] == bounces
+    assert result["idle_nudges"] == 0  # the counter this was mistaken for does not see it
 
 
 # --- liveness at the CALL SITE ---------------------------------------------------------------
