@@ -22,10 +22,15 @@ from __future__ import annotations
 
 #: alias -> OpenRouter id. The panel's go-to leads, every one pinned to an endpoint (``_ROUTING``).
 MODELS: dict[str, str] = {
-    "luna": "openai/gpt-5.6-luna",
-    "luna-pro": "openai/gpt-5.6-luna-pro",
-    "v4-flash": "deepseek/deepseek-v4-flash",
-    "v4-pro": "deepseek/deepseek-v4-pro",
+    # GPT-6 Luna since 2026-11-07, at $0.10/$0.50, half of GPT-5.6 Luna's price that day. Runs
+    # before then are GPT-5.6, recorded under its own id.
+    "luna": "openai/gpt-6-luna",
+    "luna-pro": "openai/gpt-6-luna-pro",
+    # DeepSeek's newest since 2026-11-07, both dated snapshots: V4.1 Flash of 17 Oct and V4 Pro of
+    # 13 Aug (there is no V4.1 Pro). The aliases keep their names; runs before then are the
+    # floating V4 ids, recorded under those.
+    "v4-flash": "deepseek/deepseek-v4.1-flash-1017",
+    "v4-pro": "deepseek/deepseek-v4-pro-0813",
     "minimax-m3": "minimax/minimax-m3",
     "mimo": "xiaomi/mimo-v2.5",
     "mimo-flash": "xiaomi/mimo-v2.6-flash",
@@ -108,6 +113,10 @@ DEFAULT = "glm-flash"
 #:   its service tiers. ``only: [z-ai]`` reached ``z-ai/fp8``, the only Z.AI endpoint left.
 #:   ``only: [openai]`` billed luna's standard rate on 3 of 3 calls, where ``openai/flex`` billed
 #:   half.
+#:
+#: The same day luna and luna-pro moved to GPT-6, and v4-flash and v4-pro to DeepSeek's newest
+#: snapshots (V4.1 Flash 1017, V4 Pro 0813), each pinned the same way. The notes above about
+#: v4-flash are about the V4 id they replaced.
 _ROUTING: dict[str, dict] = {
     # glm-flash: ONE provider (Z.AI itself), so the pin is not about price mirrors -- it is a
     # standing guarantee that a provider added later cannot silently take the traffic. Verified
@@ -123,19 +132,25 @@ _ROUTING: dict[str, dict] = {
     # until a real sweep reports its own cache_read_tokens.
     #
     # 2026-11-07: no longer ONE provider. 41 endpoints serve it, and Z.AI's own is now tagged
-    # `z-ai/fp8` (ZDR; $0.15/$0.50, cache read $0.03 -- luna's doubled too, to $0.02). Named by
-    # that tag, so a Z.AI variant added later is not taken by the bare slug. Kept on Z.AI alone,
-    # with no standby: the 2026-08 campaign was measured there.
+    # `z-ai/fp8` (ZDR; $0.15/$0.50, cache read $0.03 -- GPT-5.6 Luna's doubled too, to $0.02).
+    # Named by that tag, so a Z.AI variant added later is not taken by the bare slug. Kept on Z.AI
+    # alone, with no standby: the 2026-08 campaign was measured there.
     "z-ai/glm-5.3-flash": {"only": ["z-ai/fp8"]},
-    "openai/gpt-5.6-luna": {"only": ["openai"]},
-    "openai/gpt-5.6-luna-pro": {"only": ["openai"]},
-    # 2026-11-07: Novita no longer serves v4-flash. DeepInfra does, now at fp8 rather than fp4
-    # (`deepinfra/fp8`, ZDR, 1M; $0.09/$0.18, cache read $0.018, just under DigitalOcean's), so it
-    # is the standby. Named with its quantization, so a DeepInfra fp4 endpoint is never taken.
-    # DigitalOcean answered 1 of 3 calls that day; the other two came back 429.
-    "deepseek/deepseek-v4-flash": {
-        "order": ["digitalocean", "deepinfra/fp8"],
-        "only": ["digitalocean", "deepinfra/fp8"],
+    # GPT-6 Luna: the same endpoints and tiers as 5.6's (`openai`, `openai/flex` at half price,
+    # `openai/fast`, Azure, Bedrock), so the same `openai` pin. Verified live 2026-11-07: served
+    # by OpenAI at the standard rate, with a correct tool call.
+    "openai/gpt-6-luna": {"only": ["openai"]},
+    "openai/gpt-6-luna-pro": {"only": ["openai"]},
+    # V4.1 Flash (1017): 51 endpoints. Pinned to the cheapest that is ZDR, NAMED fp8, 1M and
+    # standard tier, `deepinfra/fp8` ($0.098/$0.294, cache read $0.00294: about $0.065 for the
+    # median run above, at 95% cache reads), with `novita/fp8` ($0.165/$0.66, $0.0033; ~$0.12)
+    # the standby. DigitalOcean, the V4 primary, is left out: OpenRouter lists its quantization
+    # for every model as "unknown", and DigitalOcean's own docs do not say either. Named with the
+    # quantization, so DeepInfra's fp4 or its `/flex` and `/priority` tiers are never taken:
+    # verified live 2026-11-07, both endpoints billed their standard rate and made a tool call.
+    "deepseek/deepseek-v4.1-flash-1017": {
+        "order": ["deepinfra/fp8", "novita/fp8"],
+        "only": ["deepinfra/fp8", "novita/fp8"],
     },
     # mimo: the $0.003-cache-read endpoints at Xiaomi/GMICloud are ZDR-blocked, so Novita is the
     # cheapest reachable one ($0.066/run) and still carries that cache rate. DeepInfra is excluded
@@ -153,14 +168,13 @@ _ROUTING: dict[str, dict] = {
         "order": ["xiaomi/fp8", "deepinfra/fp8"],
         "only": ["xiaomi/fp8", "deepinfra/fp8"],
     },
-    # v4-pro: Baidu/StreamLake/DeepSeek serve it at ~$0.15/run but are all ZDR-blocked, so Novita
-    # ($0.374) is the floor we can actually reach — the 120x cache discount is NOT available here.
-    # 2026-11-07: Parasail no longer serves it, so `deepinfra/fp8` (ZDR, 1M) is the standby. It is
-    # cheaper than Novita ($1.30/$2.60, cache read $0.10, against $1.60/$3.20 and $0.135). Baidu
-    # and StreamLake (~$0.50) answer but are not on the ZDR list.
-    "deepseek/deepseek-v4-pro": {
-        "order": ["novita/fp8", "deepinfra/fp8"],
-        "only": ["novita/fp8", "deepinfra/fp8"],
+    # V4 Pro (0813): the cheapest ZDR, named-fp8, 1M endpoint is `novita/fp8` ($0.99/$2.97, cache
+    # read $0.033), with `parasail/fp8` ($1.32/$3.96, $0.044) the standby. Baidu, StreamLake and
+    # DeepSeek itself are cheaper on prompt but not on the ZDR list. Verified live 2026-11-07:
+    # both billed their standard rate and made a tool call.
+    "deepseek/deepseek-v4-pro-0813": {
+        "order": ["novita/fp8", "parasail/fp8"],
+        "only": ["novita/fp8", "parasail/fp8"],
     },
     # minimax-m3: pinned for CONTEXT as much as price. Five of its nine endpoints serve 524,288
     # tokens and Morph 256,000; only GMICloud/Novita/Parasail reach 1M, and GMICloud is ZDR-blocked.
