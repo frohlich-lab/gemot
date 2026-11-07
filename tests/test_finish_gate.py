@@ -988,9 +988,9 @@ def _chi2_fit(p, report=_GIVEN):
     return _fit(chi2_gof_pvalue=p, noise_sigma_report=report)
 
 
-def _chi2_gate(fit_summary, *, adequacy="chi2", budget_used=None, finish_state=None):
+def _chi2_gate(fit_summary, *, adequacy="chi2", finish_state=None):
     session = _FakeSession(fit_summary, versions=[dict(r) for r in _STORE], head=5)
-    tool = _agent._finish_tool(session, finish_state, adequacy=adequacy, budget_used=budget_used)
+    tool = _agent._finish_tool(session, finish_state, adequacy=adequacy)
     return session, tool
 
 
@@ -1047,7 +1047,7 @@ async def test_chi2_gate_cannot_be_worn_down_by_finishing_again():
     session, tool = _chi2_gate(_chi2_fit(1e-6), finish_state=fs)
     for spent in range(1, n + 1):
         out = await _finish(tool)  # the first, or after new work: refused, and spent
-        assert out.startswith("FINISH REFUSED") and f"refuses {n - spent} more" in out
+        assert out.startswith("FINISH REFUSED")
         if spent < n:
             for _ in range(3):  # no new version since: refused again, and NOT spent
                 assert (await _finish(tool)).startswith("FINISH REFUSED")
@@ -1055,19 +1055,6 @@ async def test_chi2_gate_cannot_be_worn_down_by_finishing_again():
     assert "FINISH ARMED" in await _finish(tool)  # every refusal spent: the finish goes through
     assert fs["relents"] == {"adequacy": 1}
     assert fs["refusals"] == {"adequacy": n + 3 * (n - 1)}
-
-
-@pytest.mark.asyncio
-async def test_chi2_gate_relents_late_in_the_wall_budget():
-    """Past _ADEQUACY_RELENT_BUDGET_SHARE of the wall budget the gate refuses no more, so a model
-    that cannot pass still ends at its honest score while there is time to finish cleanly."""
-    share = _agent._ADEQUACY_RELENT_BUDGET_SHARE
-    _, early = _chi2_gate(_chi2_fit(1e-6), budget_used=lambda: share - 0.01)
-    assert (await _finish(early)).startswith("FINISH REFUSED")
-    fs = {}
-    _, late = _chi2_gate(_chi2_fit(1e-6), budget_used=lambda: share, finish_state=fs)
-    assert "FINISH ARMED" in await _finish(late)
-    assert fs["relents"] == {"adequacy": 1}
 
 
 @pytest.mark.parametrize(

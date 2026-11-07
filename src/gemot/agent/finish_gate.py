@@ -62,11 +62,11 @@ _MAX_PARSIMONY_FINISH_REFUSALS = 3
 # finished at p 2.5e-26 to 0.005 after 5-9% of their wall budget. A refusal is SPENT only by a
 # finish that follows a new version since the previous one, so calling finish again on unchanged
 # work does not wear the gate down (the pattern in prompts.py: a lead re-calling finish after every
-# refusal until the gate relented). It relents after this many spent refusals, or once
-# _ADEQUACY_RELENT_BUDGET_SHARE of the wall budget is gone, so a model that cannot pass still ends at
-# its honest, failing score.
+# refusal until the gate relented). It relents after this many spent refusals, so a model that
+# cannot pass still ends at its honest, failing score. Deliberately NOT eased late in the wall
+# budget, and the lead is told neither the bound nor that it relents (prompts._CHI2_GATE_RULE): a
+# lead that knows when the gate gives in works toward that point instead of the model.
 _MAX_ADEQUACY_FINISH_REFUSALS = 5
-_ADEQUACY_RELENT_BUDGET_SHARE = 0.5
 
 # Deliberately NO refusal on a residual flag, the replicate lack-of-fit arm's included (gemot#97).
 # One refused a finish up to three times on the strength of that arm, and sweep round 3 showed the
@@ -218,7 +218,7 @@ def _dscore_magnitude(dscore) -> str:
     return f"{magnitude:g}" if round(magnitude, 3) else "less than 0.001"
 
 
-def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None, budget_used=None):
+def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
     """The lead-only control tool for the one non-default move: ending the run.
 
     ``probe`` is the driver's UN-TIMED ``await probe(name, args)`` handle; the gate's two internal
@@ -247,8 +247,7 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None, budge
     It gates on the χ² goodness-of-fit ONLY where ``adequacy`` (the scenario's declared bar,
     :attr:`gemot.scenario.Scenario.adequacy`) is ``chi2`` AND the fit estimated no noise sigma: the
     judge's own chi2 rule (:func:`gemot.scenario.chi2_passes`) decides, bounded by
-    ``_MAX_ADEQUACY_FINISH_REFUSALS`` and by ``budget_used``, the driver's share of the wall budget
-    spent (``None`` without one). Everywhere else it deliberately does NOT: whenever the
+    ``_MAX_ADEQUACY_FINISH_REFUSALS``. Everywhere else it deliberately does NOT: whenever the
     observable noise sigmas are estimated (as in the issue-#54 benchmarks), χ² pins near the
     data-point count by construction and its p-value is uninformative, so gating ``finish`` on
     p ≥ 0.05 made the panel abandon its best-scoring model to chase an unreachable target (issue
@@ -460,9 +459,7 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None, budge
             p = fit.get("chi2_gof_pvalue")
             if chi2_passes(fit.get("noise_sigma_report"), p) is False:
                 reason = f"chi2 GoF p={p:.3g} < {REFERENCE_FREE_GOF_ALPHA:g}"
-                share = budget_used() if budget_used is not None else None
-                late = share is not None and share >= _ADEQUACY_RELENT_BUDGET_SHARE
-                if not late and state["adequacy_left"] > 0:
+                if state["adequacy_left"] > 0:
                     latest = await _latest_version(reader)
                     if latest is None or latest != state["adequacy_mark"]:
                         state["adequacy_left"] -= 1
@@ -475,16 +472,11 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None, budge
                     )
                     _count("refusals", "adequacy")
                     return prompts.FINISH_REFUSED_ADEQUACY_TMPL.format(
-                        p=p,
-                        alpha=REFERENCE_FREE_GOF_ALPHA,
-                        left=state["adequacy_left"],
-                        budget=f"{_ADEQUACY_RELENT_BUDGET_SHARE:.0%}",
+                        p=p, alpha=REFERENCE_FREE_GOF_ALPHA
                     )
                 print(
-                    f"[finish RELENTED] {reason} still, after "
-                    f"{_MAX_ADEQUACY_FINISH_REFUSALS - state['adequacy_left']} refusals"
-                    + (f" and {share:.0%} of the wall budget" if share is not None else "")
-                    + " — allowing finish at its honest score"
+                    f"[finish RELENTED] {reason} still, after {_MAX_ADEQUACY_FINISH_REFUSALS} "
+                    "refusals — allowing finish at its honest score"
                 )
                 _count("relents", "adequacy")
         # Valid, fitted model. First finish call ARMS: show the bic and the residual diagnosis

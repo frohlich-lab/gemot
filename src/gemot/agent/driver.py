@@ -772,7 +772,7 @@ async def run_deepagents(
     ``adequacy`` is the scenario's declared absolute bar (:attr:`gemot.scenario.Scenario.adequacy`,
     ``None`` for a scenario judged against a reference). The finish gate refuses a finish that
     fails it only where it is ``chi2`` and the fit estimated no noise sigma
-    (:mod:`gemot.agent.finish_gate`), relenting late in ``max_wall_seconds``.
+    (:mod:`gemot.agent.finish_gate`).
 
     ``max_wall_seconds`` (optional) is a self-imposed total-runtime budget, checked between
     graph super-steps: once exceeded, the loop stops gracefully (like running out of resume
@@ -959,27 +959,9 @@ async def run_deepagents(
     # confirmed finish (so a legitimately-finished run is NOT bounced back), and "gave_up" after
     # too many no-fit finish attempts (so the driver ends the run promptly, not at recursion).
     finish_state = {"confirmed": False, "gave_up": False}
-    # The finish gate's chi2 refusal relents late in the wall budget; it reads the share spent
-    # through this, whose clock the loop below starts (`started`).
-    budget_clock: dict[str, float] = {}
-
-    def _budget_used() -> float | None:
-        """The share of ``max_wall_seconds`` spent, the fit pool's queue time left out as in
-        ``_time_left``; ``None`` without a budget or before the loop's clock starts."""
-        if max_wall_seconds is None or "started" not in budget_clock:
-            return None
-        queued = heartbeats.queue_seconds if heartbeats is not None else 0.0
-        return (time.monotonic() - budget_clock["started"] - queued) / max_wall_seconds
-
     lead_tools = [
         *lead_tools,
-        _finish_tool(
-            session,
-            finish_state,
-            probe=progress_probe,
-            adequacy=adequacy,
-            budget_used=_budget_used,
-        ),
+        _finish_tool(session, finish_state, probe=progress_probe, adequacy=adequacy),
     ]
 
     # The model's REAL context window, as a langchain profile. Without it, deepagents'
@@ -1256,7 +1238,6 @@ async def run_deepagents(
     # Self-imposed total-runtime budget (see the docstring): checked between super-steps, never
     # mid-step, so we always stop at a clean boundary rather than interrupting a live commit/fit.
     started = time.monotonic()
-    budget_clock["started"] = started
     # RESERVE ONE STEP. The budget is checked at step boundaries, but a super-step that commits a
     # model runs a full multistart, so "am I past the deadline?" asked AFTER the step is asked too
     # late: the overshoot is a whole fit. On the 2026-08-17 isensee sweep (budget 56400s inside a

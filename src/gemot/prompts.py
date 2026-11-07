@@ -167,11 +167,12 @@ _RESIDUALS_DO_NOT_DECIDE_DONE = (
 #: When the finish gate refuses on chi2 (``finish_gate._MAX_ADEQUACY_FINISH_REFUSALS``), read in
 #: the finish tool's description and in its refusal. Only where the noise is GIVEN: an estimated
 #: sigma pins chi2 near n, and a chi2 gate there chased an unreachable target (issue #54).
+#: Deliberately silent on the gate's bound: a lead told that the gate gives in after a few refusals
+#: works toward the bound instead of the model.
 _CHI2_GATE_RULE = (
     "Where the run is judged by chi2 against GIVEN noise (no noise sigma is estimated), the gate "
-    "also refuses a finish on a scored fit that fails chi2, because the run would be scored "
-    "inadequate there: each refusal asks for a new fitted version first, and the gate lets the "
-    "finish through after a few of them, or late in the wall budget."
+    "also refuses a finish on a scored fit that fails chi2: the run would be scored inadequate "
+    "there."
 )
 
 #: The `model_edits` operation vocabulary, with one example each. The lead reads it in its own
@@ -1150,18 +1151,15 @@ FINISH_REFUSED_PARSIMONY_TMPL = (
 
 # The CHI2 gate (finish_gate._MAX_ADEQUACY_FINISH_REFUSALS): only where the run is judged by chi2
 # and the fit estimated no noise sigma. `p` is the scored fit's chi2_gof_pvalue and `alpha` the
-# judge's level; `left` is how many more finishes that follow a new fitted version it still refuses,
-# and `budget` the share of the wall budget after which it refuses none.
+# judge's level. Like the rule it composes, it does not say when the gate stops refusing.
 FINISH_REFUSED_ADEQUACY_TMPL = (
     "FINISH REFUSED — the version this run is scored on fails chi2: goodness-of-fit p={p:.3g} < "
     "{alpha:g}. "
     + _CHI2_GATE_RULE
     + " With the noise given, no noise parameter can absorb that misfit: it is the MECHANISM's. "
     "Keep going with genuinely different structures (a missing intermediate or complex, a "
-    "feedback, a saturation, a delay, another way an observable reads the model) and fit them. A "
-    "finish with no new fitted version since the last refusal is refused again; the gate refuses "
-    "{left} more finishes that follow a new fitted version, and none once {budget} of the wall "
-    "budget is spent."
+    "feedback, a saturation, a delay, another way an observable reads the model) and fit them. "
+    "Finishing again on the same work is refused again."
 )
 
 # Put before whatever the gate returns when it made the run's best version HEAD first, so a lead that
