@@ -775,24 +775,31 @@ function renderVariantCard(card, v, meta, metric) {
 }
 
 // ---------------------------------------------------------------- turn stream
+// A span that ended in ERROR (`error` is its status message): a badge, and the message itself.
+// Without them a delegation that died and was run again read as a duplicate with no result (#125).
+const failedBadge = (error) => error ? el("span", { class: "badge-failed", title: error, text: "failed" }) : null;
+const errorEl = (error) => error ? el("div", { class: "span-error", text: error }) : null;
+
 function toolCallEl(tc) {
   if (tc.delegation) {
     const d = tc.delegation;
     const nsub = d.items.filter(x => x.type === "assistant").length;
-    const det = el("details", { class: "delegation" + (d.in_progress ? " running" : ""), open: d.in_progress || false },
+    const det = el("details", { class: "delegation" + (d.in_progress ? " running" : "") + (tc.error ? " failed" : ""), open: d.in_progress || false },
       el("summary", {},
         el("span", { class: "deleg-badge", text: (d.subagent_type || "analyst") }),
         el("span", { class: "deleg-desc", text: d.description || "" }),
         d.in_progress ? el("span", { class: "deleg-live", html: `<span class="live-dot"></span>running` }) : null,
+        failedBadge(tc.error),
         el("span", { class: "deleg-meta", text: `${nsub} turn${nsub === 1 ? "" : "s"}${d.in_progress ? " so far" : ""}` })));
-    const box = el("div", { class: "subturns" });
+    const box = el("div", { class: "subturns" }, errorEl(tc.error));
     let cur = null;
     for (const it of d.items) {
       if (it.type === "assistant") {
         cur = el("div", { class: "subturn" },
-          el("div", { class: "turn-role", text: d.subagent_type || "analyst" }),
+          el("div", { class: "turn-role", text: d.subagent_type || "analyst" }, failedBadge(it.error)),
           el("div", { class: "assistant-text md" + (it.text ? "" : " empty"),
-            ...(it.text ? { html: mdToHtml(it.text) } : { text: "(tool calls only)" }) }));
+            ...(it.text ? { html: mdToHtml(it.text) } : { text: "(tool calls only)" }) }),
+          errorEl(it.error));
         box.append(cur);
       } else {
         (cur || box).append(kvTool(it));
@@ -806,9 +813,9 @@ function toolCallEl(tc) {
 function kvTool(tc) {
   // `set_model` is the pre-consolidation name; traces recorded before the collapse still use it.
   const isSet = tc.name === "make_changes" || tc.name === "set_model";
-  const det = el("details", { class: "toolcall" + (isSet ? " setmodel" : "") },
-    el("summary", {}, el("span", { class: "tool-name", text: tc.name || "tool" })));
-  const body = el("div", { class: "kv" });
+  const det = el("details", { class: "toolcall" + (isSet ? " setmodel" : "") + (tc.error ? " failed" : "") },
+    el("summary", {}, el("span", { class: "tool-name", text: tc.name || "tool" }), failedBadge(tc.error)));
+  const body = el("div", { class: "kv" }, errorEl(tc.error));
   if (tc.args !== undefined && tc.args !== null && tc.args !== "")
     body.append(el("div", { class: "lbl", text: "args" }), el("pre", { text: pretty(tc.args) }));
   if (tc.result !== undefined && tc.result !== null && tc.result !== "")
@@ -825,10 +832,12 @@ function turnEl(t) {
     el("span", { class: "turn-role", text: "lead" }),
     el("span", { class: "turn-idx", text: `turn ${t.i}` }),
     (t.active_variant != null ? el("span", { class: "vtag", text: `v${t.active_variant}` }) : null),
+    failedBadge(t.error),
     badge);
   const body = el("div", { class: "turn-body" },
     el("div", { class: "assistant-text md" + (t.text ? "" : " empty"),
-      ...(t.text ? { html: mdToHtml(t.text) } : { text: "(tool calls only)" }) }));
+      ...(t.text ? { html: mdToHtml(t.text) } : { text: "(tool calls only)" }) }),
+    errorEl(t.error));
   for (const tc of (t.tools || [])) body.append(toolCallEl(tc));
   const node = el("div", { class: "turn", "data-i": t.i }, head, body);
   node._turn = t;
@@ -902,6 +911,9 @@ function turnEl(t) {
     } else if (data.live && !px.ok && (data.turns || []).length === 0) {
       note.hidden = false; note.classList.add("live-note");
       note.textContent = "Live — waiting for the first turns to stream in from Phoenix; the model-variant panel updates from disk in the meantime.";
+    } else if (px.complete === false) {  // a finished run whose trace Phoenix holds only part of
+      note.hidden = false; note.classList.remove("live-note");
+      note.textContent = "Conversation incomplete — " + px.note;
     } else { note.hidden = true; note.classList.remove("live-note"); }
   }
 

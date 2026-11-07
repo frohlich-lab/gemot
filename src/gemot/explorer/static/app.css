@@ -161,6 +161,12 @@ table.runs tbody tr:hover { background:var(--panel); }
 .deleg-live + .deleg-meta { margin-left:8px; }
 .delegation.running { border-color:color-mix(in srgb,var(--accent) 45%,var(--line));
   background:color-mix(in srgb,var(--accent) 6%,var(--bg)); }
+/* a span that ended in ERROR */
+.badge-failed { flex:0 0 auto; background:color-mix(in srgb,var(--bad) 18%,transparent); color:var(--bad);
+  border-radius:5px; padding:1px 6px; font-size:11px; font-weight:600; margin-left:6px; }
+.span-error { margin:6px 0 0; color:var(--bad); font-family:var(--mono); font-size:12px;
+  white-space:pre-wrap; overflow-wrap:anywhere; }
+.toolcall.failed, .delegation.failed { border-color:color-mix(in srgb,var(--bad) 45%,var(--line)); }
 .subturns { padding:6px 10px 10px 14px; border-left:2px solid color-mix(in srgb,var(--analyst) 40%,transparent);
   margin:0 10px 10px; display:flex; flex-direction:column; gap:8px; }
 .subturn { border:1px solid var(--line); border-radius:7px; background:var(--bg); padding:7px 9px; }

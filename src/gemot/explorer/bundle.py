@@ -9,7 +9,7 @@
                      starts:{n_starts, n_at_best, exitflag_counts}, statements} ],
       "turns":    [ {i, kind:"lead", items:[...], tokens:{...}, model, variant_index} ],
       "totals":   {prompt, completion, cache_read, total, lead_turns, analyst_turns, tool_calls},
-      "phoenix":  {ok, trace_id, note}
+      "phoenix":  {ok, trace_id, note, complete}
     }
 
 The conversation (turns/tokens/analyst sub-agents) comes from Phoenix — queried by the indexed
@@ -25,7 +25,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from ..analysis import bic_of, read_version_json
+from ..analysis import bic_of, read_version_json, span_error
 
 # ---------------------------------------------------------------- Phoenix message parsing
 
@@ -91,8 +91,11 @@ def _emits_task(out_msgs) -> bool:
 
 def _match_pending_subagent(agent: str, emitted: list[dict]) -> tuple[str | None, str | None]:
     """(subagent_type, description) for an in-progress analyst: its agent name, and the
-    description of the lead's emitted ``task`` call for that subagent_type, if there is one."""
-    for a in emitted:
+    description of the lead's latest ``task`` call for that subagent_type, if there is one.
+
+    The latest, as the lead waits on its delegations: matching the first gave a running analyst
+    the description of the first delegation of its type the trace held (#125)."""
+    for a in reversed(emitted):
         if a.get("subagent_type") == agent:
             return agent, a.get("description")
     return agent or None, None
@@ -105,6 +108,17 @@ def _num(v) -> float | None:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _token_total(
+    total: float | None, prompt: float | None, completion: float | None
+) -> float | None:
+    """An LLM span's total tokens, or its prompt plus completion where it recorded none. A turn the
+    thinking hand-off put together from two calls carried no total until #125, so the traces before
+    it have spans like that, and summing each count apart left a run's total short of the two."""
+    if total is not None or (prompt is None and completion is None):
+        return total
+    return (prompt or 0) + (completion or 0)
 
 
 def _jload(v):
@@ -127,6 +141,8 @@ class _Trace:
         kind_c = "attributes.openinference.span.kind"
         for span_id, row in df.iterrows():
             r = row.to_dict()
+            prompt = _num(r.get("attributes.llm.token_count.prompt"))
+            completion = _num(r.get("attributes.llm.token_count.completion"))
             self.by_id[span_id] = {
                 "id": span_id,
                 "parent": (None if _isnull(r.get("parent_id")) else r.get("parent_id")),
@@ -139,9 +155,15 @@ class _Trace:
                 "agent": _agent_name(r.get("attributes.metadata")),
                 "out_msgs": r.get("attributes.llm.output_messages"),
                 "model": r.get("attributes.llm.model_name"),
-                "tok_prompt": _num(r.get("attributes.llm.token_count.prompt")),
-                "tok_completion": _num(r.get("attributes.llm.token_count.completion")),
-                "tok_total": _num(r.get("attributes.llm.token_count.total")),
+                # The status message of a span that ended in ERROR: a delegation that died on a
+                # dropped connection and was run again otherwise reads as a duplicate with no
+                # result (#125).
+                "error": None if _isnull(r.get("status_code")) else span_error(r),
+                "tok_prompt": prompt,
+                "tok_completion": completion,
+                "tok_total": _token_total(
+                    _num(r.get("attributes.llm.token_count.total")), prompt, completion
+                ),
                 "tok_cache": _num(r.get("attributes.llm.token_count.prompt_details.cache_read")),
             }
         for sid, s in self.by_id.items():
@@ -181,6 +203,7 @@ class _Trace:
                             "cache_read": s["tok_cache"],
                             "total": s["tok_total"],
                         },
+                        "error": s["error"],
                         "_id": s["id"],
                         "start": s["start"],
                     }
@@ -192,6 +215,7 @@ class _Trace:
                         "name": s["tool_name"] or s["name"],
                         "args": _jload(s["in"]),
                         "result": _jload(s["out"]),
+                        "error": s["error"],
                         "_id": s["id"],
                         "start": s["start"],
                     }
@@ -206,24 +230,59 @@ def _isnull(v) -> bool:
         return v is None
 
 
+#: Spans asked of Phoenix per request. Phoenix returns a query's spans newest first and stops at
+#: its ``limit``, which the client defaults to 1000: fontaine runs 5 and 8 of sweep 63372750 came
+#: back with exactly 1000 spans and without their earliest, the root among them, and their orphaned
+#: analyst turns were drawn as delegations still running in turn 0 (#125). So
+#: :func:`_fetch_trace_df` pages back through the trace, and this number only sets how many
+#: requests that takes.
+_SPAN_PAGE = 1000
+
+
 def _fetch_trace_df(trace_id: str, base_url: str, project: str):
+    """Every span of one trace, in the dataframe shape Phoenix returns.
+
+    Each page asks for the spans that started before the earliest one read so far, plus that
+    instant itself: spans that share a start time can straddle a page's end, so the boundary is
+    read again and the spans already held are dropped. If a whole page shares one start time it
+    adds nothing, and the same page is asked for again at twice the size. The trace has been read
+    to its first span once a page comes back short of its limit."""
+    import pandas as pd
     from phoenix.client import Client
     from phoenix.client.types.spans import SpanQuery
 
-    client = Client(base_url=base_url)
+    spans = Client(base_url=base_url).spans
     q = SpanQuery().where(f"trace_id == '{trace_id}'")
-    return client.spans.get_spans_dataframe(query=q, project_name=project, timeout=120)
+    pages, seen, before, limit = [], set(), None, _SPAN_PAGE
+    while True:
+        page = spans.get_spans_dataframe(
+            query=q, project_name=project, end_time=before, limit=limit, timeout=120
+        )
+        new = page[~page.index.isin(seen)]
+        if len(new):
+            pages.append(new)
+            seen.update(new.index)
+        if len(page) < limit:
+            return pd.concat(pages) if pages else page
+        if new.empty:
+            limit *= 2
+            continue
+        # Phoenix keeps start times to the microsecond and ``end_time`` is exclusive.
+        before = (page["start_time"].min() + pd.Timedelta(microseconds=1)).to_pydatetime()
 
 
 def load_turns(
-    trace_id: str, base_url: str, project: str, df=None
+    trace_id: str, base_url: str, project: str, df=None, *, finished: bool = False
 ) -> tuple[list[dict], dict, dict]:
     """Return (turns, totals, phoenix_status) for a trace. Degrades to empty on any failure.
 
     ``df`` may be a pre-fetched spans dataframe (so a caller can reuse it for variant
-    reconstruction); when None it is fetched here.
+    reconstruction); when None it is fetched here. ``finished`` says the run has ended, so none
+    of its delegations can still be running: an analyst span outside every ``task`` span then
+    means Phoenix lacks part of the trace, and ``phoenix_status`` says so with ``complete``
+    false and a note.
     """
-    status = {"ok": False, "trace_id": trace_id, "note": ""}
+    status = {"ok": False, "trace_id": trace_id, "note": "", "complete": True}
     if df is None:
         try:
             df = _fetch_trace_df(trace_id, base_url, project)
@@ -257,6 +316,25 @@ def load_turns(
             if s["kind"] == "LLM" and sid not in all_analyst_ids:
                 if s["agent"] and s["agent"] not in lead_agents:
                     orphan_analyst_ids.append(sid)
+    # A finished run's trace has its root, and every analyst span sits under a `task` span. When
+    # one does not, the spans that would hold it are missing (#125: a read cut at 1000 spans lost
+    # the earliest, root and all), and so is the lead turn that delegated it, which started
+    # before. Its turns are then left out rather than drawn as a delegation still running.
+    rooted = any(s["parent"] is None for s in tr.by_id.values())
+    if finished and (orphan_analyst_ids or not rooted):
+        n = len(orphan_analyst_ids)
+        status["complete"] = False
+        status["note"] = (
+            f"Phoenix holds only part of this trace ({len(tr.by_id)} spans"
+            + ("" if rooted else ", not its root")
+            + "): the turns whose spans are missing are not shown"
+            + (
+                f", nor {n} analyst turn{'' if n == 1 else 's'} whose delegation is among them"
+                if n
+                else ""
+            )
+            + "."
+        )
 
     # Lead timeline = every span EXCEPT those inside a completed task subtree, the in-progress
     # analyst spans just identified (task spans themselves stay, to render the delegation),
@@ -301,7 +379,7 @@ def load_turns(
     # Render each in-progress analyst as its own delegation block (grouped by persona, since
     # the panel spawns the three analysts concurrently) attached to the lead's spawning turn,
     # rather than letting its turns show up as lead turns.
-    if orphan_analyst_ids:
+    if orphan_analyst_ids and not finished:
         emitted = [
             tc.get("args")
             for it in lead_items
@@ -382,6 +460,7 @@ def _group_turns(items: list[dict]) -> list[dict]:
                 "text": it["text"],
                 "model": it["model"],
                 "tokens": it["tokens"],
+                "error": it["error"],
                 "tools": [],
                 "start": it["start"],
             }
@@ -396,7 +475,11 @@ def _group_turns(items: list[dict]) -> list[dict]:
                     "start": it["start"],
                 }
             cur["tools"].append(
-                {k: it[k] for k in ("name", "args", "result", "delegation", "start") if k in it}
+                {
+                    k: it[k]
+                    for k in ("name", "args", "result", "error", "delegation", "start")
+                    if k in it
+                }
             )
     if cur is not None:
         turns.append(cur)
@@ -785,7 +868,11 @@ def build_bundle(
                 "note": f"could not read Phoenix trace: {type(exc).__name__}: {exc}",
             }
         if df is not None:
-            turns, totals, phoenix = load_turns(trace_id, phoenix_base_url, project, df=df)
+            # `result.json`, written at run end, carries `run_ended_at`; the live marker, written
+            # at its start, does not.
+            turns, totals, phoenix = load_turns(
+                trace_id, phoenix_base_url, project, df=df, finished="run_ended_at" in meta
+            )
             # If the on-disk store was wiped, rebuild the variant trajectory from the trace's
             # fitting spans so the score panel still works.
             if not variants:
