@@ -8,7 +8,8 @@ checkpointer) and the RUN LOOP around ``astream``.
 The loop is where a run's failure modes are absorbed rather than thrown away:
 
 * a per-super-step **stall watchdog**, sized to the run's real fit budget and pushed out by the
-  server's heartbeats, so a long or queued multistart is not mistaken for a hang;
+  server's heartbeats and by every model call that ends, so neither a long or queued multistart
+  nor an analyst round still at work is mistaken for a hang;
 * a **wall-clock deadline**, less the time fits spent queued for a shared pool, and the server's
   own early-stop signal;
 * **resume from the last checkpoint** on a transient provider failure, instead of abandoning the
@@ -102,8 +103,9 @@ _OUTAGE_BACKOFF_MAX_S = 600.0
 # Harness-level stall watchdog on the agent loop. The client `timeout` above does NOT reliably
 # catch a mid-stream provider stall (observed: a 24-min no-progress hang that the 120s timeout
 # never fired on). astream emits once per graph super-step (a lead LLM call, a tool, or a whole
-# analyst sub-agent), so if NO step completes within this window the loop is wedged — we cancel
-# it and RESUME from the last checkpoint (or, once resume attempts run out, end gracefully).
+# analyst sub-agent), so if NO step completes within this window, and no heartbeat or model call
+# ends in it either (_next_step), the loop is wedged — we cancel it and RESUME from the last
+# checkpoint (or, once resume attempts run out, end gracefully).
 # Floor for one super-step. run_deepagents takes max(this, fit_time_budget(run default)) as its
 # baseline and raises it per step to the budget of the fit that step is about to run
 # (fit_budget.py), since a lead commit's fit is one long super-step that legitimately streams
@@ -248,14 +250,60 @@ class _StepStalled(Exception):
     """
 
 
+def _llm_pulses():
+    """A callback that calls its listeners each time a model call ends anywhere in the run.
+
+    Attached through the run config's ``callbacks``, which reach the analyst and biocurator
+    subgraphs, so an analyst's calls count as well as the lead's. ``listen`` works like
+    :meth:`gemot.runner.clock._Heartbeats.listen`, and :func:`_next_step` takes both: a
+    delegation whose analysts are still finishing calls is working, not wedged.
+
+    An analyst round is ONE super-step of the lead's graph, so before this its calls never moved
+    the stall watchdog. A round that ran past the window was cancelled, and the resume ran its
+    unfinished `task` calls again from scratch, under the same tool call: byte-identical `task`
+    calls after one turn, the cancelled one with no output, which no dedup of the model's calls
+    can catch, since the model asked once (gemot#136). Only a call that ENDS counts, so a call
+    hung mid-stream still trips the watchdog, a window after the last call that ended.
+    ``ANALYST_MAX_TURNS`` bounds how long a delegation's calls can hold it open.
+    """
+    from langchain_core.callbacks import AsyncCallbackHandler
+
+    class _Pulses(AsyncCallbackHandler):
+        def __init__(self) -> None:
+            super().__init__()
+            self._listeners: list = []
+
+        @contextlib.contextmanager
+        def listen(self, listener):
+            self._listeners.append(listener)
+            try:
+                yield
+            finally:
+                self._listeners.remove(listener)
+
+        async def on_llm_end(self, response, **kwargs) -> None:
+            for listener in tuple(self._listeners):
+                with contextlib.suppress(Exception):  # a listener never breaks a model call
+                    listener()
+
+    return _Pulses()
+
+
 async def _next_step(
-    agen: Any, timeout: float, *, heartbeats: Any | None = None, left: Any | None = None
+    agen: Any,
+    timeout: float,
+    *,
+    heartbeats: Any | None = None,
+    pulses: Any | None = None,
+    left: Any | None = None,
 ) -> Any:
     """``agen``'s next emission, or :class:`_StepStalled` if none arrives within ``timeout`` of the
-    step's start or of the server's last live heartbeat, whichever is later.
+    step's start, of the server's last live heartbeat, or of the last model call to end, whichever
+    is latest.
 
     ``heartbeats`` is the run's :class:`gemot.runner.clock._Heartbeats`: a step whose tool call
     the server is still working on, a fit queued for the shared pool included, is not stalled.
+    ``pulses`` is :func:`_llm_pulses`'s callback: nor is a step whose analysts are still working.
     ``left`` (a zero-argument callable) is the seconds of wall budget left, which caps every wait
     at the budget's end; the first is no less than a second, so a step begun at the end still gets
     to hand back.
@@ -276,7 +324,10 @@ async def _next_step(
                 with contextlib.suppress(RuntimeError):  # the watchdog has already expired
                     watchdog.reschedule(max(watchdog.when(), until()))
 
-            with heartbeats.listen(heard) if heartbeats is not None else contextlib.nullcontext():
+            with contextlib.ExitStack() as listening:
+                for source in (heartbeats, pulses):
+                    if source is not None:
+                        listening.enter_context(source.listen(heard))
                 return await agen.__anext__()
     except TimeoutError:
         if watchdog.expired():
@@ -1284,7 +1335,9 @@ async def run_deepagents(
     # Sum token usage across the lead + every subagent (config callbacks propagate into the
     # subgraphs), for result.json. One instance across all resume iterations = whole-run totals.
     token_accountant = _token_accountant()
-    config["callbacks"] = [token_accountant]
+    # Every model call that ends, an analyst's included, pushes the stall watchdog out.
+    pulses = _llm_pulses()
+    config["callbacks"] = [token_accountant, pulses]
 
     async def _early_stop_reason() -> str | None:
         """The server's early-stop reason if the run should stop now, else ``None`` (fail-open:
@@ -1410,8 +1463,8 @@ async def run_deepagents(
                     #
                     # Every live heartbeat on a call the step waits on pushes the window out again
                     # (_next_step), so a fit queued for the shared pool for hours is not a stall,
-                    # and the fit-derived floor matters only for a step whose calls are too short
-                    # to get one, such as an analyst's run of LLM calls. A silent server's call is
+                    # and so does every model call that ends, so neither is an analyst round
+                    # still making calls (_llm_pulses). A silent server's call is
                     # cut first, clock.CALL_IDLE_WINDOW_S after its last heartbeat and well inside
                     # this window, with the clean timeout that resumes without telling the model
                     # to re-fit (clock._wrap_call_timeout).
@@ -1440,7 +1493,7 @@ async def run_deepagents(
                     # to `step_headroom` (as much as half the budget) early and throws its fit
                     # away. Only the "may I START another step?" decisions use the reserve.
                     state = await _next_step(
-                        agen, step_limit, heartbeats=heartbeats, left=_time_left
+                        agen, step_limit, heartbeats=heartbeats, pulses=pulses, left=_time_left
                     )
                 except StopAsyncIteration:
                     break

@@ -63,6 +63,8 @@ _FRAGMENTS = {
     "_FREE_LITERALS",
     # Closes every analyst description, on both arms.
     "_ANALYST_READS_HEAD",
+    # What an analyst can and cannot do, in every lead prompt that introduces the analysts.
+    "_ANALYST_LIMITS",
 }
 
 
