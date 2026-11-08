@@ -3,10 +3,9 @@
 Three families, all pure functions over a report payload:
 
 * the compact residual-structure block ``result.json`` carries,
-* the noise-sigma plausibility gates — is the estimated sigma inflated to absorb misfit, or
-  collapsed to overfit the noise? The preferred gate compares against the TRUE model's own
-  fitted sigmas (dimensionally sound); the data-std band is the fallback where a reference
-  doesn't record them — and
+* the noise-sigma plausibility verdicts — is the estimated sigma inflated to absorb misfit, or
+  collapsed to overfit the noise? The gate is the server's own data-std band; the comparison
+  against the reference model's fitted sigmas is recorded beside it and decides nothing — and
 * the absolute adequacy verdict that is a reference-free example's bar, where there is no true
   model to compare against at all.
 
@@ -44,7 +43,6 @@ __all__ = [
     "_reference_sigma_flag",
     "_residual_structure_fields",
     "_scale_coupled_sigmas",
-    "_sigma_verdict",
     "_validation_fields",
 ]
 
@@ -261,10 +259,14 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
     """Plausibility of the candidate's ESTIMATED sigmas against the TRUE model's OWN fitted sigmas
     (``reference.json``'s ``noise_sigma``), or ``None`` when the reference doesn't record them.
 
-    This is the dimensionally sound comparison and the judge's preferred one (#118): the marginal
-    data std conflates variance the model EXPLAINS with variance it cannot, which is why legitimate
-    sigmas span ~0.0004-0.59 of it and no fixed band can hold the truth. Against the reference's own
-    sigma the scale question disappears — a correct fit lands near 1.
+    RECORDED in ``result.json`` (``noise_sigma_reference``), never a gate. It was the judge's
+    preferred gate from #118 (the marginal data std conflates variance the model EXPLAINS with
+    variance it cannot, so legitimate sigmas span ~0.0004-0.59 of it), until gemot#135: the
+    reference is the published model fitted to real data, so its sigma is that model's misfit, not
+    the noise; reference data errors failed honest runs (fiedler, isensee gemot#104, schwen and
+    lucarelli PEtabAgentBench#53); and a rule the agent could not see made the finish gate promise
+    a version the judge then passed over. With the noise model read-only and sigma fitted by ML, no
+    sigma beats the ML one, so BIC already charges what this ratio measures.
 
     How far from 1 is too far depends on HOW MUCH DATA the sigma was estimated from, which the fixed
     tolerance factor this used to apply alone could not know. A fitted sigma is an ML estimate: its
@@ -325,8 +327,8 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
     # be reconstructed generally from the shipped nominals: they ARE the reference fit for fiedler
     # (verified -- both sigmas match reference.json exactly) but differ on most examples (alkan,
     # isensee, oliveira, schwen, blasi...), so reading them would silently compare against the wrong
-    # model. Until then, decline the whole basis as the unpairable-sigma case below does, so `_judge`
-    # falls through to the data-driven band -- the test that was right all along here: it never
+    # model. Until then, decline the whole comparison as the unpairable-sigma case below does. The
+    # data-driven band, the judge's gate, was right all along here: it never
     # flagged any of the 116 runs scored on it, while this basis silently failed 17 fiedler runs that
     # had BEATEN the reference bar. See reconcile.sigma_scale_coupled, which since PEtab-MCP#243 also
     # counts a co-parameter written into the noiseFormula itself: isensee's scales are, and while the
@@ -382,11 +384,9 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
         try:
             fitted, ref_value = float(fitted), float(ref_value)
         except (TypeError, ValueError):
-            # EVERY reported sigma must be pairable and usable. Skipping one and judging on the
-            # rest would let an agent rename (or zero) the sigmas it games and keep one honest
-            # sigma matching, so the gate reports max_ratio ~ 1 and passes a model whose noise was
-            # gamed on every other observable. Give up instead, so `_judge` falls through to the
-            # data-std band rather than accepting a partial verdict.
+            # EVERY reported sigma must be pairable and usable. Comparing the rest would record a
+            # max_ratio ~ 1 for a model whose other sigmas are far off. No record instead of a
+            # partial one.
             return None
         if not (fitted > 0 and ref_value > 0):
             return None
@@ -432,22 +432,6 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
         "max_fraction_of_data_std": _max_fraction_of_data_std(report),
         "min_fraction_of_data_std": _min_fraction_of_data_std(report),
     }
-
-
-def _sigma_verdict(report, reference, k=None, n=None) -> tuple[dict | None, str]:
-    """The judge's noise-sigma verdict on one fitted version, and the basis it was reached on:
-    ``(flag, "reference")`` from :func:`_reference_sigma_flag` wherever that basis applies, else
-    ``(flag, "data_std")`` from :func:`_noise_sigma_flag`, the server's own band. ``flag`` is
-    ``None`` where neither can read the report.
-
-    The ONE statement of the rule. The judge asks it of every candidate in its scoring scan and of
-    the version it scores, and the two must not drift: a scan that chose by one rule and a gate that
-    failed by another would score a version the gate then fails while a clean one sat unscored.
-    """
-    flag = _reference_sigma_flag(report, reference, k=k, n=n)
-    if flag:
-        return flag, "reference"
-    return _noise_sigma_flag(report), "data_std"
 
 
 def _sigma_ratio_band(n_points, k, n, reference, alpha):
@@ -530,15 +514,16 @@ def _min_fraction_of_data_std(report) -> float | None:
 
 
 def _noise_sigma_flag(report) -> dict | None:
-    """Report-only integrity marker: is any ESTIMATED noise sigma implausible relative to the data
+    """The judge's noise-sigma gate: is any ESTIMATED noise sigma implausible relative to the data
     — INFLATED past its data-driven cap (absorbing model misfit) or COLLAPSED far below the data
     std (overfitting the noise for a suspiciously good score)? Returns
     ``{inflated, collapsed, max_fraction_of_data_std, min_fraction_of_data_std}`` or ``None`` when
     the problem has no estimated sigma.
 
-    An inflated/collapsed sigma DISQUALIFIES an otherwise-passing score (see _judge) — a hidden
-    integrity gate applied post-run and never surfaced to the agent. The full block is also written
-    to result.json so a gated (or borderline) run is auditable. The collapse threshold
+    An inflated/collapsed sigma DISQUALIFIES an otherwise-passing score (see _judge). The verdict is
+    the server's own (its predicates, below), the one every fit result and the finish gate show the
+    agent (gemot#135). The full block is also written to result.json so a gated (or borderline) run
+    is auditable. The collapse threshold
     ``_NOISE_SIGMA_COLLAPSE_FRACTION`` is a heuristic — tune it if a genuinely better, more flexible
     model (a legitimately small residual sigma) is being false-failed.
     """

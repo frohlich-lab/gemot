@@ -22,6 +22,13 @@ The numbers on the entries below are pull requests of
 [frohlich-lab/gemot_iclr_2026](https://github.com/frohlich-lab/gemot_iclr_2026) (then named petab_mcp), where this
 package was developed before it moved here.
 
+2026-11 (frohlich-lab/gemot#135) The judge fails a run on the server's own noise-sigma flags,
+never on the fitted sigma against the reference's (`noise_sigma_reference` only records that). The
+reference is the published model fitted to real data, so its sigma is that model's misfit, and bad
+reference data failed honest runs (fiedler, isensee gemot#104, schwen and lucarelli
+PEtabAgentBench#53). Warning the agent instead would leak the bar: Σ nᵢ ln σᵢ + n(1 + ln 2π)/2 over
+the reference sigmas is its nll, to 0.01 on boehm and oliveira.
+
 2026-10 Three ablation arms are retired and fixed at their old defaults (`ablations.py` docstring);
 re-adding one needs a fresh A/B with both arms on one code version.
 - `data_regimes` (off): a 115-run A/B scored 10/58 with it on vs 30/57 off (p=8e-5), almost all on

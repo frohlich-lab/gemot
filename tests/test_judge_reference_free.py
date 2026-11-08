@@ -284,7 +284,7 @@ def test_an_adequate_reference_free_fit_succeeds_with_no_reference_numbers(tmp_p
     # the candidate's own scores are still recorded — they are what ranks runs on this problem
     assert result["bic"] is not None and result["criterion_value"] is not None
     assert result["bic_threshold"] is None  # there is no Δ for it to bound
-    assert result["noise_sigma_basis"] == "data_std"  # no reference sigma to compare against
+    assert result["noise_sigma_reference"] is None  # no reference sigma to compare against
     out = capsys.readouterr().out
     assert "SUCCESS: adequate by its declared chi2 test" in out
     assert "true-model" not in out and "reference missing" not in out
