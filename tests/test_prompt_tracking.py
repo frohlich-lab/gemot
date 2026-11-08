@@ -55,8 +55,10 @@ _FRAGMENTS = {
     "_SIGMA_CAP_ADVISORY",
     "_DSCORE_SIGN",
     "_MERGE_RULE",
+    "_MERGE_BIOLOGY",
     "_MERGE_HINTS_WHERE",
     "_RESIDUALS_DO_NOT_DECIDE_DONE",
+    "_REFIT_TESTS_NO_STRUCTURE",
     "_MODEL_EDIT_OPS",
     "_CHI2_GATE_RULE",
     # Read by the statements lead and the null arm (the barebones template).
@@ -65,6 +67,8 @@ _FRAGMENTS = {
     "_ANALYST_READS_HEAD",
     # What an analyst can and cannot do, in every lead prompt that introduces the analysts.
     "_ANALYST_LIMITS",
+    # Read by the lead on every arm, beside the fit cost each fit result closes with.
+    "_FIT_COST_RULE",
 }
 
 

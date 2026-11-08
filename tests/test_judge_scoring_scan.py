@@ -1,19 +1,13 @@
 """Which version the judge scores.
 
-``_judge`` scores ONE version, and until #154 that was the server's best-BIC checkpoint. Two
-independent mechanisms then conspired to score a model the run had already improved on:
-
-* the checkpoint only moves when a fit beats it by ``NEW_BEST_MIN_DELTA_SCORE`` (2.0), which is right
-  for the streak/plateau logic and wrong for a final decision;
-* the sigma gate that decides success is asked against the TRUE model's fitted sigmas, which the
-  session cannot see — so the server has no way to prefer a version that would clear it.
-
-brannmark run 9285a352 showed the first half live: ``v5`` (bic 344.175) improved on ``v4`` by 0.70,
+``_judge`` scores ONE version, and until #154 that was the server's best-BIC checkpoint, which only
+moves when a fit beats it by ``NEW_BEST_MIN_DELTA_SCORE`` (2.0): right for the streak/plateau logic,
+wrong for a final decision. brannmark run 9285a352: ``v5`` (bic 344.175) improved on ``v4`` by 0.70,
 under the threshold, so the checkpoint stayed at ``v4`` (bic 344.875) and the judge scored the worse
-model. That run failed either way — every one of its versions fitted sigmaYDosR at 0.24-0.28 of the
-reference's 17.58, so there was no clean model to find — but a discarded better version plus a gate
-the server cannot evaluate is a pass waiting to be thrown away. These tests drive the real ``_judge``
-over a fake version store, so the scan is exercised end-to-end rather than in isolation.
+model. The scan walks every fitted version instead, best first, and stops at the first whose noise
+sigma the server does not flag: the finish gate's scan, with the finish gate's predicate, so the
+version the gate names to the agent is the one scored here (gemot#135). These tests drive the real
+``_judge`` over a fake version store, so the scan is exercised end-to-end rather than in isolation.
 """
 
 from __future__ import annotations
@@ -26,17 +20,18 @@ import pytest
 
 pytest.importorskip("mcp", reason="harness-only dependency")
 
-from gemot.runner import _judge, _ToolClock  # noqa: E402
+from gemot.runner import _judge, _noise_sigma_flag, _ToolClock  # noqa: E402
 
-#: brannmark's own numbers: the reference's fitted sigma for the observable that decided the run.
+#: brannmark's own numbers: the reference's fitted sigma for sigmaYDosR, and the data's spread.
 _REF_SIGMA = 17.578327340872296
-#: brannmark v4's fitted value for it — 0.2495 of the reference, inside the collapsed half of the
-#: [1/3, 3] band the judge allows (NOISE_SIGMA_REFERENCE_FACTOR = 3.0).
-_COLLAPSED_SIGMA = 4.386
-#: A value the gate accepts: 0.68 of the reference. Every version of that brannmark run sat between
-#: 0.24 and 0.28, which is WHY the run failed — the clean alternative here is the counterfactual the
-#: scan exists for, not something that run had.
+_DATA_STD = 34.5
+#: A sigma the server flags collapsed: under NOISE_SIGMA_COLLAPSE_FRACTION (1%) of the data's spread.
+_COLLAPSED_SIGMA = 0.2
+#: A sigma the server accepts, 0.68 of the reference's.
 _CLEAN_SIGMA = 12.0
+#: brannmark v4's fitted value, 0.25 of the reference's: outside the 1/3-3x band the judge used to
+#: fail runs on, inside the server's. Since gemot#135 that ratio is only recorded.
+_BELOW_REFERENCE_SIGMA = 4.386
 
 _REF = {"nll": 141.889, "k": 22, "n": 43, "noise_sigma": {"sigmaYDosR": _REF_SIGMA}}
 #: 12 estimated + one fixed, so k=12 — a candidate leaner than the 22-parameter truth, as brannmark's
@@ -50,10 +45,16 @@ def _report(sigma):
             "fitted": sigma,
             "effective_sigma": sigma,
             "upper_bound_cap": 30.0,
-            "data_std": 34.5,
-            "fraction_of_data_std": sigma / 34.5,
+            "data_std": _DATA_STD,
+            "fraction_of_data_std": sigma / _DATA_STD,
         }
     }
+
+
+def _flags(report):
+    """The verdict the server stores in a version's meta, by the server's own predicates."""
+    flag = _noise_sigma_flag(report)
+    return {"noise_sigma_inflated": flag["inflated"], "noise_sigma_collapsed": flag["collapsed"]}
 
 
 class _Scenario:
@@ -105,7 +106,7 @@ class _Store:
         self.head = head
         self.checkpoint = checkpoint
         self.can_list = can_list
-        self.stores_reports = stores_reports  # False = a store written before #155 persisted them
+        self.stores_reports = stores_reports  # False = versions stored before their sigma flags
         self.calls: list[tuple[str, dict]] = []
 
     def _bic(self, version):  # 2*nll + k*ln(n), k=12 n=43 — the judge's own formula
@@ -136,30 +137,36 @@ class _Store:
         if name == "get_progress":
             return {"best_version": self.checkpoint}
         if name == "get_version":
+            # The meta (the server's sigma flags) and the simulation part, whether or not asked for.
+            version = kwargs["version"]
+            nll = self.versions[version][0]
             if not self.stores_reports:
-                return {"simulation": {"neg_log_likelihood": self.versions[kwargs["version"]][0]}}
-            nll, sigma = self.versions[kwargs["version"]]
+                return {"simulation": {"neg_log_likelihood": nll}}
+            report = self._report_for(version)
             return {
+                **_flags(report),
                 "simulation": {
                     "neg_log_likelihood": nll,
                     **({"k_eff": self.k_eff} if self.k_eff is not None else {}),
-                    "noise_sigma_report": _report(sigma),
-                }
+                    "noise_sigma_report": report,
+                },
             }
         if name == "get_fit_summary":
-            nll, sigma = self.versions[self.head]
             return {
-                "neg_log_likelihood": nll,
+                "neg_log_likelihood": self.versions[self.head][0],
                 "n_data_points": 43,
                 "chi2": 40.0,
                 **({"criterion": self.criterion} if self.criterion else {}),
-                "noise_sigma_report": _report(sigma),
+                "noise_sigma_report": self._report_for(self.head),
             }
         if name == "get_parameters":
             return _PARAMS
         if name == "get_model_structure":
             return {"reactions": [{"id": "r1"}], "species": ["A", "B"]}
         return {} if name != "get_errors" else []
+
+    def _report_for(self, version):
+        return _report(self.versions[version][1])
 
     @property
     def restored(self):
@@ -456,9 +463,10 @@ _ISENSEE_REF = {
 
 class _IsenseeStore(_Store):
     """The version store of isensee r2, cut to its two versions that matter: v15 beats the bar
-    with `rho_pRII_Microscopy` at 0.25 of the reference, v3 sits at 0.94 and misses it.
-    ``scale_coupled`` is the server's flag on both entries: False at PEtab-MCP 26e5b76, which read
-    only `noiseParameters`, True since PEtab-MCP#243 counts the scales in the formula."""
+    with `rho_pRII_Microscopy` at 0.25 of the reference, v3 sits at 0.94 and misses it. Both are
+    inside the server's band. ``scale_coupled`` is the server's flag on both entries: False at
+    PEtab-MCP 26e5b76, which read only `noiseParameters`, True since PEtab-MCP#243 counts the scales
+    in the formula."""
 
     def __init__(self, *, scale_coupled):
         super().__init__(
@@ -468,7 +476,8 @@ class _IsenseeStore(_Store):
         )
         self.scale_coupled = scale_coupled
 
-    def _rho_report(self, rho):
+    def _report_for(self, version):
+        rho = self.versions[version][1]
         return {
             "rho_pRII_Microscopy": {
                 "fitted": rho,
@@ -481,30 +490,115 @@ class _IsenseeStore(_Store):
             }
         }
 
-    async def __call__(self, name, **kwargs):
-        if name in ("get_version", "get_fit_summary"):
-            out = await super().__call__(name, **kwargs)
-            version = kwargs["version"] if name == "get_version" else self.head
-            report = self._rho_report(self.versions[version][1])
-            (out["simulation"] if name == "get_version" else out)["noise_sigma_report"] = report
-            return out
-        return await super().__call__(name, **kwargs)
 
-
-def test_a_scale_coupled_sigma_no_longer_costs_the_run_its_better_version(tmp_path):
-    """gemot#104, isensee r2: compared raw, v15 (rho at 0.25 of the reference) was refused and the
-    judge scored v3 (+11.6, a FAIL), though v15's noise in measurement units matched v3's. With the
-    sigma flagged scale-coupled the data-driven band decides, v15 is scored and passes, and
-    result.json names the sigma that moved the basis. Unflagged, as the server reported it at
-    26e5b76, the judge reproduces the round-4 failure."""
+def test_a_reference_ratio_no_longer_costs_the_run_its_better_version(tmp_path):
+    """gemot#104, isensee r2: compared raw against the reference, v15 (rho at 0.25 of it) was
+    refused and the judge scored v3 (+11.6, a FAIL), though v15's noise in measurement units matched
+    v3's. The server's flag decides now (gemot#135), so v15 is scored and passes whether or not the
+    server marks the sigma scale-coupled. The reference ratio is recorded where it can be paired:
+    not for a scale-coupled sigma, which result.json names."""
     store = _IsenseeStore(scale_coupled=True)
     code, result = _run(tmp_path, store, _ISENSEE_REF)
     assert store.head == 15 and result["success"] is True and code == 0
-    assert result["noise_sigma_basis"] == "data_std"
+    assert result["noise_sigma_reference"] is None
     assert result["noise_sigma_scale_coupled"] == ["rho_pRII_Microscopy"]
 
     store = _IsenseeStore(scale_coupled=False)
-    _, result = _run(tmp_path, store, _ISENSEE_REF)
-    assert store.head == 3 and result["success"] is False  # the round-4 failure
-    assert result["noise_sigma_basis"] == "reference"
+    code, result = _run(tmp_path, store, _ISENSEE_REF)
+    assert store.head == 15 and result["success"] is True and code == 0  # not the round-4 failure
+    assert result["noise_sigma_reference"]["collapsed"] is True
     assert result["noise_sigma_scale_coupled"] == []
+
+
+def test_the_judge_scores_a_version_whose_sigma_is_far_below_the_references(tmp_path):
+    """gemot#135, boehm r39: from v14 to v21 the run gained BIC by pushing a sigma to 0.12x the
+    reference's, the finish gate said it judged v21, and the judge scored v13 on a reference rule the
+    agent never saw. The server passes that sigma, so the judge now scores v21, as promised."""
+    store = _Store({13: (141.0, _CLEAN_SIGMA), 21: (140.117, _BELOW_REFERENCE_SIGMA)}, 13, 13)
+    code, result = _run(tmp_path, store)
+    assert store.head == 21 and result["success"] is True and code == 0
+    assert result["noise_sigma_flag"]["collapsed"] is False
+    assert result["noise_sigma_reference"]["collapsed"] is True
+
+
+# --- the scan the finish gate shares (gemot#135) -----------------------------------------------
+# The gate and this judge choose the scored version with ONE function, `probe.scored_version`, and
+# one predicate, `probe.stored_sigma_flagged`. Before, each wrote the loop out and the judge asked a
+# second, hidden question (the reference's sigmas), so the gate told boehm r39 it judged v21 while
+# the judge scored v13.
+
+
+def _verdicts(by_version):
+    async def flagged(version):
+        return by_version[version]
+
+    return flagged
+
+
+def test_the_scan_stops_at_the_first_version_its_predicate_does_not_flag():
+    from gemot.agent.probe import scored_version
+
+    flags = _verdicts({4: True, 5: False, 3: False})
+    assert asyncio.run(scored_version([4, 5, 3], flags)) == (5, True)
+
+
+def test_an_unassessable_version_stops_the_scan_like_a_clean_one():
+    """The judge's gate does not fail a version it cannot assess, so passing it over would score a
+    worse version for nothing."""
+    from gemot.agent.probe import scored_version
+
+    assert asyncio.run(scored_version([4, 5], _verdicts({4: None, 5: False}))) == (4, True)
+
+
+def test_when_every_version_is_flagged_the_scan_returns_the_best_scoring_one_unclean():
+    from gemot.agent.probe import scored_version
+
+    assert asyncio.run(scored_version([4, 5], _verdicts({4: True, 5: True}))) == (4, False)
+
+
+class _OneStore:
+    """One version store answered through both call handles: the judge's ``call(name, **kwargs)``
+    and the finish gate's ``call_tool(name, args)``, whose result carries ``structured_content``."""
+
+    def __init__(self, scores, flagged, head):
+        self.scores, self.flagged, self.head = scores, flagged, head
+
+    def _answer(self, name, kw):
+        if name == "list_versions":
+            return [{"version": v, "bic": b, "criterion_value": b} for v, b in self.scores.items()]
+        if name == "get_version":
+            collapsed = self.flagged[kw["version"]]
+            return {"noise_sigma_inflated": False, "noise_sigma_collapsed": collapsed}
+        if name == "describe_problem":
+            return {"current_version": self.head}
+        if name == "restore_version":
+            self.head = kw["version"]
+            return {"version": self.head}
+        raise AssertionError(f"unexpected tool {name}")
+
+    async def judge_call(self, name, **kwargs):
+        return self._answer(name, kwargs)
+
+    async def gate_call(self, name, args):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(structured_content={"result": self._answer(name, args)})
+
+
+def test_the_finish_gate_and_the_judge_choose_the_same_version():
+    """The promise gemot#135 is about: the version the finish gate restores and names to the agent
+    is the version the judge scores. boehm r39's shape, v21 best, with its sigma flagged in one case
+    and not in the other."""
+    from gemot.agent.probe import _restore_best
+    from gemot.runner import _restore_best_checkpoint
+
+    scores = {13: 263.5, 14: 253.7, 21: 224.8}
+    for flagged, expected in (
+        ({13: False, 14: False, 21: False}, 21),
+        ({13: False, 14: False, 21: True}, 14),
+    ):
+        gate = _OneStore(scores, flagged, head=13)
+        named = asyncio.run(_restore_best(gate.gate_call))
+        judge = _OneStore(scores, flagged, head=13)
+        scored = asyncio.run(_restore_best_checkpoint(judge.judge_call))
+        assert named == (expected, 13) and scored == expected == gate.head == judge.head

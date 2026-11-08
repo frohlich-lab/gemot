@@ -33,17 +33,17 @@ from pathlib import Path
 
 from .. import ablations
 from ..agent.circuit_breaker import _is_call_timeout
-from ..agent.probe import best_first
+from ..agent.probe import best_first, scored_version, stored_sigma_flagged
 from ..fit_budget import FIT_BUDGET_MARGIN, FIT_COMPILE_MARGIN_S, FIT_PER_START_TIMEOUT_S
 from .clock import CALL_IDLE_WINDOW_S, HELD_OUT_TOOL, _ToolClock
 from ..paths import validation_measurements_path
 from .provenance import _bic_reference, _judge_mode, _now_iso, _reference_score
 from ..scenario import REFERENCE_FREE_GOF_ALPHA, Baseline, JudgeContext, Scenario
 from .scoring import (
-    _noise_sigma_flag,
     _reference_free_adequacy,
-    _reference_sigma_flag,
     _residual_structure_fields,
+    _noise_sigma_flag,
+    _reference_sigma_flag,
     _scale_coupled_sigmas,
     _validation_fields,
 )
@@ -251,7 +251,7 @@ def _scored_version_mismatch(version, head, stored, final, params, k=None) -> "s
 _SCORING_SCAN_LIMIT = None
 
 
-async def _restore_best_checkpoint(call, reference=None) -> "int | None":
+async def _restore_best_checkpoint(call) -> "int | None":
     """Make the best model the judge can legitimately score the current HEAD before scoring, and
     return that version: the one the judge scores, or ``None`` where no probe could say.
 
@@ -260,26 +260,21 @@ async def _restore_best_checkpoint(call, reference=None) -> "int | None":
     last-committed one. Runs on ANY termination that reaches the judge (early-stop, wall-time,
     recursion limit, clean finish). Best-effort throughout — any probe failure leaves HEAD in place.
 
-    "Best" is NOT simply the lowest score. A model whose estimated sigma is implausible against the
-    reference's own fitted sigmas fails :func:`_judge`'s integrity gate, so scoring it throws the run
-    away while a clean, nearly-as-good version sits unscored in the same version store. The scan
-    therefore walks EVERY fitted version best-first under the RUN'S OWN criterion (see
-    :func:`_scoreable_versions`; identical to best-BIC under the default) and stops at the first one
-    that would clear the gate, falling back to the plain best-scoring model when NONE is clean (an
-    all-gamed run is still reported on its own best model, exactly as before, and still fails).
+    "Best" is NOT simply the lowest score. A model whose estimated sigma the server flags fails
+    :func:`_judge`'s sigma gate, so scoring it throws the run away while a clean, nearly-as-good
+    version sits unscored in the same version store. The scan therefore walks EVERY fitted version
+    best-first under the RUN'S OWN criterion (see :func:`_scoreable_versions`; identical to best-BIC
+    under the default) and stops at the first one that would clear the gate, falling back to the
+    plain best-scoring model when NONE is clean (an all-flagged run is still reported on its own best
+    model, and still fails). It is the finish gate's scan, with the finish gate's predicate
+    (:func:`probe.scored_version`, :func:`probe.stored_sigma_flagged`), so the version the gate tells
+    the agent it judges is the version scored here (gemot#135).
 
     Why the candidate set is every fitted version and not the server's ``best_version`` checkpoint
     (brannmark, run 9285a352): ``v5`` scored bic 344.175 but improved on ``v4`` by only 0.70 — under
     ``NEW_BEST_MIN_DELTA_SCORE`` (2.0) — so the checkpoint stayed at ``v4`` (bic 344.875) and the judge
-    scored the worse model. That run failed on the sigma gate either way (all six of its versions
-    fitted sigmaYDosR at 0.24-0.28 of the reference's, well under the 1/3 floor), so the hysteresis
-    cost it nothing there; it is a pass waiting to be discarded the first time the two versions
-    differ in plausibility. The threshold is right for the streak and plateau logic, which need a
+    scored the worse model. The threshold is right for the streak and plateau logic, which need a
     stable notion of progress, and wrong for a final decision, which should see every version.
-
-    Nor can the server make this choice: the plausibility question here is asked against the TRUE
-    model's fitted sigmas, which live in the scenario's reference and are deliberately not visible
-    to the session (see :func:`scoring._reference_sigma_flag`). Only the judge holds both halves.
 
     No fitted version at all means no ``make_changes`` call ever produced one — the agent built
     nothing, or every fit failed. There is nothing to score either way, so the judge scores HEAD and
@@ -290,16 +285,11 @@ async def _restore_best_checkpoint(call, reference=None) -> "int | None":
         return await _restore_checkpoint_only(call)
     head = await _head_version(call)
     fallback = candidates[0]
-    chosen, clean = fallback, False
-    for version in candidates[:_SCORING_SCAN_LIMIT]:
-        flagged = await _sigma_flagged(call, version, reference)
-        # `None` is unassessable — no stored report, or one the gate cannot read. The gate will not
-        # fail that version either, so it is scoreable and the scan stops on it exactly as it does
-        # on a clean one. (A whole store of them, e.g. a version dir written before the report was
-        # persisted, therefore lands on the best-scoring version: the pre-scan behaviour.)
-        if flagged is not True:
-            chosen, clean = version, True
-            break
+    # An unassessable version stops the scan as a clean one does, so a whole store of them (version
+    # dirs written before the flags were stored) lands on the best-scoring version.
+    chosen, clean = await scored_version(
+        candidates[:_SCORING_SCAN_LIMIT], lambda v: _sigma_flagged(call, v)
+    )
     # ONE restore, of the version actually chosen. The scan itself is read-only: restoring each
     # candidate to look at it would mutate the working state N times and write N rollback entries
     # into the provenance the run is judged on, to read numbers already stored beside each version.
@@ -404,34 +394,6 @@ def _fitted_parameters(params) -> "dict[str, float] | None":
     return out
 
 
-def _stored_k_and_n(stored) -> "tuple[int | None, int | None]":
-    """``(k, n)`` for a stored version: its ESTIMATED-parameter count and its data-point count.
-
-    The band the sigma gate applies depends on how much freedom the model spent (see
-    :func:`scoring._reference_sigma_flag`), and for a version the judge has not restored those come
-    off the stored payload rather than off live ``get_parameters``/``get_fit_summary``. ``k`` counts
-    rows with ``estimate`` truthy, as the judge does — but off THAT VERSION's stored parameter table
-    rather than the live one, and the two need not agree to the row: ``get_parameters`` also reports
-    parameters the PROBLEM ships that the model never declared (``in_model: false``), and brannmark
-    ships eight all-estimated rows a candidate may leave undeclared. The consequence is bounded: k
-    enters only as the scale factor ``1 - k/n`` on a band's degrees of freedom, so a handful of rows
-    shifts a band slightly and cannot move a sigma across it the way a wrong k would move a score.
-    ``(None, None)`` when either is unreadable: the band then has no df to work from and applies the
-    fixed tolerance factor, so the sigma is still judged, just without df-awareness.
-    """
-    if not isinstance(stored, dict):
-        return None, None
-    params = stored.get("parameters")
-    k = (
-        sum(1 for p in params if isinstance(p, dict) and p.get("estimate"))
-        if isinstance(params, list)
-        else None
-    )
-    simulation = stored.get("simulation")
-    n = simulation.get("n_data_points") if isinstance(simulation, dict) else None
-    return k, (n if isinstance(n, int) else None)
-
-
 async def _scoreable_versions(call) -> "list[int]":
     """Every FITTED version, best first under the run's own criterion (:func:`best_first`, which
     the finish gate shares, so the gate judges a finish on the version this scan starts from) — the
@@ -449,34 +411,18 @@ async def _scoreable_versions(call) -> "list[int]":
     return best_first(versions)
 
 
-async def _sigma_flagged(call, version: int, reference) -> "bool | None":
-    """Would ``version``'s noise model fail :func:`_judge`'s integrity gate? ``None`` when
-    unassessable.
+async def _sigma_flagged(call, version: int) -> "bool | None":
+    """Does the server flag ``version``'s estimated noise sigma? ``None`` when unassessable.
 
-    The SAME verdict the gate itself computes — ``_reference_sigma_flag`` against the reference's
-    fitted sigmas, falling back to the data-std band — read off the report the FIT stored beside
-    that version (:func:`petab_mcp.fitting.build_sim_payload_for_version`). A read, not a rollback:
-    the scan can ask about every version without touching the working state.
-
-    Anything unreadable is ``None``: an unassessable version must not be silently skipped in favour
-    of a worse one, since the gate will not fail it either. A version stored before the report was
-    persisted reads that way too, which is what makes the scan degrade to plain best-scoring on an
-    old store rather than mis-rank it.
+    The finish gate's predicate (:func:`probe.stored_sigma_flagged`) over the same read, the
+    version's stored meta, through the judge's call handle. A read, not a rollback: the scan can ask
+    about every version without touching the working state.
     """
     try:
-        # The simulation carries the report; PEtab-MCP#175 leaves it out unless asked.
-        stored = await call("get_version", version=version, include=["simulation"])
+        meta = await call("get_version", version=version)
     except Exception:  # pragma: no cover - unreadable version: no verdict
         return None
-    simulation = stored.get("simulation") if isinstance(stored, dict) else None
-    report = simulation.get("noise_sigma_report") if isinstance(simulation, dict) else None
-    if not report:
-        return None
-    k_v, n_v = _stored_k_and_n(stored)
-    flag = _reference_sigma_flag(report, reference, k=k_v, n=n_v) or _noise_sigma_flag(report)
-    if not flag:
-        return None
-    return bool(flag["inflated"] or flag["collapsed"])
+    return stored_sigma_flagged(meta)
 
 
 async def _restore(call, version: int, head: "int | None") -> bool:
@@ -530,16 +476,16 @@ async def _judge(
     complexity criterion the SERVER ranked models by (``bic`` unless configured — see
     :mod:`petab_mcp.criteria` and ``docs/RATIONALE.md``) — AND its estimated noise
     sigma is plausible (not inflated to absorb misfit or collapsed to overfit the noise; see
-    ``_noise_sigma_flag``). The sigma check is a HIDDEN integrity gate: it never reaches the agent,
-    so a good score bought with an implausible noise model can't slip through and can't be gamed
-    around. We don't require any particular rate-law FORM (models need not be structurally
+    ``_noise_sigma_flag``). The sigma check is the server's own flag, the one every fit result and
+    the finish gate show the agent, so the gate never fails a run on a rule the agent could not see
+    (gemot#135). We don't require any particular rate-law FORM (models need not be structurally
     identifiable) and we don't special-case invented species — the criterion's complexity penalty
     (BIC's ``k·ln(n)``) makes an extra parameter earn its keep. A χ² goodness-of-fit p-value
     (residuals vs the known noise) is reported alongside. The scenario's optional ``diagnostics``
     hook adds report-only detail.
 
     For a ``reference_free`` scenario the criterion gate is replaced, not relaxed: success ⇔ a valid
-    fit AND a plausible sigma (the data-std band, there being no reference sigma) AND the scenario's
+    fit AND a plausible sigma AND the scenario's
     declared adequacy test PASSES — one it could not assess is not a pass.
 
     A candidate scored on a different number of data points than the reference has no Δ against
@@ -560,9 +506,8 @@ async def _judge(
     fit_wait_status, fit_wait_s = await _wait_for_running_fit(call, deadline)
     # Restore + score the best model this judge can legitimately score — not whatever was committed
     # last, and not a lower-scoring version whose noise model the gate below would reject while a
-    # clean one sits unscored (see the helper). Handed the reference so the scan asks the SAME sigma
-    # question the gate does.
-    scored_version = await _restore_best_checkpoint(call, scenario.reference())
+    # clean one sits unscored (see the helper).
+    scored_version = await _restore_best_checkpoint(call)
 
     # `reactions=""` lists every reaction: the default answer leaves them out (PEtab-MCP#175).
     structure = await call("get_model_structure", reactions="")
@@ -658,12 +603,9 @@ async def _judge(
         (baseline.nll - final_nll) if (baseline.nll is not None and final_nll is not None) else None
     )
 
-    # Estimated-noise-sigma plausibility of the SCORED model. A wrong model can reach a good score
-    # by making the noise model implausible — inflating sigma to absorb misfit, or collapsing it to
-    # overfit the noise — so an implausible sigma disqualifies an otherwise-passing score. This is a
-    # HIDDEN integrity gate: applied post-run in the judge and NEVER surfaced to the agent (which
-    # only ever sees its own noise_sigma_report, not this verdict), so it can't be gamed around.
-    # The raw report is stored in result.json too (it wasn't before) to audit gaming after the fact.
+    # Estimated-noise-sigma plausibility of the SCORED model: a sigma the server flags (inflated past
+    # its data-driven cap, or collapsed below a fraction of the data's spread) disqualifies an
+    # otherwise-passing score. The raw report is stored in result.json to audit it after the fact.
     noise_sigma_report = final.get("noise_sigma_report") if isinstance(final, dict) else None
     ref = scenario.reference()
     judge_mode = _judge_mode(scenario)
@@ -730,14 +672,13 @@ async def _judge(
             print(f"  (causal-constraints record unavailable: {type(exc).__name__}: {exc})")
             causal_constraints = {"error": f"{type(exc).__name__}: {exc}"}
 
-    # PREFER the reference-sigma comparison (#118): a candidate sigma is judged against the TRUE
-    # model's own fitted sigma, not against a fraction of the marginal data std (which conflates
-    # explained and unexplained variance, so no fixed band holds the truth). Falls back to the
-    # data-std band for a reference.json written before `noise_sigma` was recorded — regenerate
-    # with `python -m petab_agent_bench --refit <example>` to switch an example over.
-    reference_sigma_flag = _reference_sigma_flag(noise_sigma_report, ref, k=k, n=n)
-    noise_sigma_flag = reference_sigma_flag or _noise_sigma_flag(noise_sigma_report)
-    sigma_basis = "reference" if reference_sigma_flag else "data_std"
+    # The SERVER's flag decides, the one the agent saw on every fit and the finish gate refused on.
+    # The comparison against the reference model's own fitted sigmas (#118) is only recorded: it
+    # failed honest runs on bad reference data (fiedler, isensee gemot#104, schwen and lucarelli
+    # PEtabAgentBench#53), and as a hidden rule it made the finish gate promise a version the judge
+    # then passed over (gemot#135). docs/RATIONALE.md has the rest.
+    noise_sigma_flag = _noise_sigma_flag(noise_sigma_report)
+    noise_sigma_reference = _reference_sigma_flag(noise_sigma_report, ref, k=k, n=n)
     sigma_implausible = bool(
         noise_sigma_flag and (noise_sigma_flag["inflated"] or noise_sigma_flag["collapsed"])
     )
@@ -1095,15 +1036,16 @@ async def _judge(
         # The causal_constraints arm's refusals, first satisfying version and behaviour at the fit;
         # None off the arm.
         "causal_constraints": causal_constraints,
-        # Noise-sigma plausibility of the scored model: GATES success (an inflated/collapsed sigma
-        # disqualifies an otherwise-passing score; see the gate above) but never shown to the agent.
+        # Noise-sigma plausibility of the scored model: the server's flag, which GATES success (an
+        # inflated/collapsed sigma disqualifies an otherwise-passing score; see the gate above).
         "noise_sigma_report": noise_sigma_report,
         "noise_sigma_flag": noise_sigma_flag,
-        # which comparison produced the flag: "reference" (vs the true model's own
-        # fitted sigma, preferred) or "data_std" (the legacy marginal-std band).
-        "noise_sigma_basis": sigma_basis,
-        # The sigmas whose raw value the reference basis would not compare, so a "data_std"
-        # basis on a reference that records sigmas says why.
+        # Each sigma against the reference model's own fitted one (per-sigma ratio, df and band):
+        # recorded only, it decides nothing. None where the reference records no sigmas, or a
+        # sigma cannot be paired.
+        "noise_sigma_reference": noise_sigma_reference,
+        # The sigmas whose raw value the reference comparison does not compare, so a None
+        # `noise_sigma_reference` on a reference that records sigmas says why.
         "noise_sigma_scale_coupled": _scale_coupled_sigmas(noise_sigma_report),
         "reference": ref,
         "reactions": [r.get("id") for r in reactions],

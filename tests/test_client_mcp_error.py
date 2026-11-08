@@ -217,7 +217,7 @@ def test_a_closed_bio_session_disables_its_tool():
     content, _ = asyncio.run(tool.coroutine())
 
     assert "TOOL DISABLED" in content[0]["text"]
-    assert "query_omnipath" in state["disabled"]
+    assert "query_omnipath" in state["unreachable"]
     assert calls["n"] == 1
 
 

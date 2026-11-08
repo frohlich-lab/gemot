@@ -391,6 +391,32 @@ def test_a_second_fit_timeout_ends_the_run_as_a_wedged_fit(monkeypatch):
     }
 
 
+@requires_harness
+def test_the_leads_fit_result_closes_with_its_cost(monkeypatch):
+    """gemot#137: the lead's own `make_changes`, through every wrapper the driver puts on it, ends
+    with what the fit took and how much of the run's wall budget is left."""
+
+    async def _make_changes(**kw):
+        return ([{"type": "text", "text": '{"applied": true, "committed": true}'}], None)
+
+    mod = _load_agent_module()
+    result, agent = _run(
+        mod,
+        monkeypatch,
+        _Probe(model_authored=True),
+        agent=_FitAgent(fits=1),
+        coroutines={"make_changes": _make_changes},
+        driver_options={"max_wall_seconds": 36_000},
+    )
+
+    content, _ = agent.results[0]
+    assert content[0]["text"] == '{"applied": true, "committed": true}'
+    assert content[-1]["text"] == (
+        "FIT COST: this fit took under a minute; 10.0 h of the run's time is left."
+    )
+    assert result["stop_reason"] == "completed"
+
+
 # --- a client-side MCPError (gemot#103) --------------------------------------------------------
 # f2e2b86d ended 15.8 h into a 33 h budget on one `get_version` reply too large for the client to
 # read. The wrapper's half, and the error's real shape, are in tests/test_client_mcp_error.py.

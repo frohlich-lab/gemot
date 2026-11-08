@@ -53,6 +53,7 @@ from .circuit_breaker import (
     _disabled_tool_filter,
     _new_breaker_state,
     _wrap_tools_with_circuit_breaker,
+    disabled_tools,
 )
 from .guards import _reasoning_runaway_guard, new_guard_stats
 from .literature import _wrap_literature_recorder
@@ -406,6 +407,6 @@ async def run_barebones(
         "biocurator_tools": bio_names,
         "biocurator_literature": literature_log,
         "n_tool_errors": breaker_state["n_tool_errors"],
-        "disabled_tools": sorted(breaker_state["disabled"]),
+        "disabled_tools": disabled_tools(breaker_state),
         **guard_stats,
     }

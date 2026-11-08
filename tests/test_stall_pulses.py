@@ -224,15 +224,16 @@ _MATH_CALLS = 20
 
 
 def _task_runs():
-    """A callback recording each `task` run: its tool call, its analyst, and whether it ended. A
-    run cancelled mid-flight reports neither an end nor an error, so its output is missing."""
+    """A callback recording each `task` run: its tool call, its analyst, and whether it returned
+    an output. A run cancelled mid-flight returns none: langchain-core 1.7.3 reports nothing for
+    it, and 1.7.6 reports a `CancelledError`. Either way the trace has no output for it."""
     from langchain_core.callbacks import AsyncCallbackHandler
 
     class _Runs(AsyncCallbackHandler):
         def __init__(self) -> None:
             super().__init__()
             self.started: dict = {}
-            self.ended: set = set()
+            self.answered: set = set()
 
         async def on_tool_start(self, serialized, input_str, *, run_id, **kwargs):
             if (serialized or {}).get("name") == "task":
@@ -240,13 +241,10 @@ def _task_runs():
                 self.started[run_id] = (kwargs.get("tool_call_id"), who)
 
         async def on_tool_end(self, output, *, run_id, **kwargs):
-            self.ended.add(run_id)
-
-        async def on_tool_error(self, error, *, run_id, **kwargs):
-            self.ended.add(run_id)
+            self.answered.add(run_id)
 
         def of(self, who):
-            return [(tc, rid in self.ended) for rid, (tc, w) in self.started.items() if w == who]
+            return [(tc, rid in self.answered) for rid, (tc, w) in self.started.items() if w == who]
 
     return _Runs()
 

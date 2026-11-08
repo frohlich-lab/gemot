@@ -124,26 +124,55 @@ def best_first(rows) -> list[int]:
     return [num for _, num in scored]
 
 
-async def _sigma_flagged(call_tool, version: int) -> "bool | None":
-    """Does the server flag ``version``'s ESTIMATED noise sigma as implausible? ``None`` when
+async def scored_version(ranked: list[int], flagged) -> tuple[int, bool]:
+    """The version a run is scored on, chosen from ``ranked`` (fitted versions best first,
+    :func:`best_first`): the first whose noise sigma ``await flagged(version)`` does not call
+    implausible, with ``True``; the best-scoring one, with ``False``, when every one is flagged.
+
+    The judge's scoring scan (:func:`gemot.runner.judge._restore_best_checkpoint`) and the finish
+    gate (:func:`_restore_best`) both choose with this, each passing :func:`stored_sigma_flagged`
+    over its own call handle, so the version the gate tells the agent it judges is the one the judge
+    scores (frohlich-lab/gemot#135).
+
+    ``flagged`` answers ``True``, ``False``, or ``None`` for unassessable. ``None`` stops the scan as
+    ``False`` does: the judge's sigma gate does not fail an unassessable version either, so passing
+    it over would score a worse one for nothing.
+    """
+    for version in ranked:
+        if await flagged(version) is not True:
+            return version, True
+    return ranked[0], False
+
+
+def stored_sigma_flagged(meta) -> "bool | None":
+    """Does the server flag a fitted version's ESTIMATED noise sigma as implausible? ``None`` when
     unassessable.
 
-    Read off the version's stored meta (``get_version`` without ``include``), which carries the
-    ``noise_sigma_inflated`` / ``noise_sigma_collapsed`` the server computed at that fit: the same
-    flags the gate refuses HEAD on through ``get_fit_summary``, so the two cannot disagree, and no
-    server predicate has to be imported into this import-light package. Unreadable, or a meta with
-    neither flag, is ``None``: like the judge's scan, an unassessable version is not passed over in
-    favour of a worse one."""
-    try:
-        meta = _structured(await call_tool("get_version", {"version": version}))
-    except Exception:  # pragma: no cover - never let the check break the run
-        return None
+    ``meta`` is the version's stored meta (``get_version`` without ``include``), which carries the
+    ``noise_sigma_inflated`` / ``noise_sigma_collapsed`` the server computed at that fit: the flags
+    every fit result showed the agent, the gate refuses HEAD on, and the judge fails a run on. A meta
+    that is unreadable, or carries neither flag (written before they were stored), is ``None``.
+
+    The ONE noise-sigma rule. The judge used to fail a run on a second, hidden one, the fitted sigma
+    against the reference model's (1/3 to 3x); gemot#135 has why it now only records that.
+    """
     if not isinstance(meta, dict) or meta.get("ok") is False:
         return None
     flags = [meta.get(k) for k in ("noise_sigma_inflated", "noise_sigma_collapsed")]
     if not any(isinstance(f, bool) for f in flags):
         return None
     return any(f is True for f in flags)
+
+
+async def _sigma_flagged(call_tool, version: int) -> "bool | None":
+    """:func:`stored_sigma_flagged` for ``version``, read through the gate's call handle; ``None``
+    when the read fails. A read of the stored meta keeps every server predicate out of this
+    import-light package."""
+    try:
+        meta = _structured(await call_tool("get_version", {"version": version}))
+    except Exception:  # pragma: no cover - never let the check break the run
+        return None
+    return stored_sigma_flagged(meta)
 
 
 async def _restore_best(call_tool) -> "tuple[int, int] | None":
@@ -157,13 +186,12 @@ async def _restore_best(call_tool) -> "tuple[int, int] | None":
     because every gate read (``get_fit_summary``, ``get_fit_diagnosis``) is of HEAD, and because
     the judge restores the same version before it scores.
 
-    Which version is the judge's scan without its reference: the best-scoring one (:func:`best_first`)
-    whose noise sigma the server does not flag (:func:`_sigma_flagged`), else the plain best-scoring
-    one when every version is flagged. Restoring the best-scoring version regardless would put a
-    gamed noise model back over the repaired, slightly worse HEAD the lead had just fitted, refuse
-    the finish on its sigma, and undo the repair on every attempt, while the judge would score the
-    repaired version anyway. The reference sigmas the judge also checks stay hidden: they would
-    tell the run something about the true model.
+    Which version is the judge's own choice (:func:`scored_version`): the best-scoring one
+    (:func:`best_first`) whose noise sigma the server does not flag (:func:`stored_sigma_flagged`),
+    else the plain best-scoring one when every version is flagged. Restoring the best-scoring version
+    regardless would put a flagged noise model back over the repaired, slightly worse HEAD the lead
+    had just fitted, refuse the finish on its sigma, and undo the repair on every attempt, while the
+    judge would score the repaired version anyway.
 
     Fails OPEN to HEAD: an unreadable store, an unknown HEAD or a refused restore leaves the gate
     judging HEAD, as it did before."""
@@ -171,11 +199,7 @@ async def _restore_best(call_tool) -> "tuple[int, int] | None":
         ranked = best_first(_structured(await call_tool("list_versions", {})))
         if not ranked:
             return None
-        chosen = ranked[0]
-        for version in ranked:
-            if await _sigma_flagged(call_tool, version) is not True:
-                chosen = version
-                break
+        chosen, _ = await scored_version(ranked, lambda v: _sigma_flagged(call_tool, v))
         desc = _structured(await call_tool("describe_problem", {}))
         head = desc.get("current_version") if isinstance(desc, dict) else None
         if not isinstance(head, int) or head == chosen:
