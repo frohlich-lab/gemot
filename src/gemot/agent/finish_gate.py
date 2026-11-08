@@ -91,6 +91,18 @@ _MAX_ADEQUACY_FINISH_REFUSALS = 5
 # its +437 run is why the refusal existed). Do not add a flag-keyed refusal back without showing,
 # on runs, that it separates; the flags reach the lead as the ARM text's residual verdict.
 
+# Deliberately NO refusal on a standing warning either (frohlich-lab/PEtab-MCP#286). The judged
+# version's warnings, whole (:func:`_judged_warnings`), end every refusal on a fitted model and the
+# ARM text, so the lead reads each before a finish can be confirmed, which is all the issue needs:
+# bachmann 77's best model kept a dead `pSTAT5n` that its results had folded to a count since v7.
+# A refusal would also fire on warnings no edit clears (the statements arm's ungrounded agents, on
+# every version of a run) and would cost a finish call at least, a fit (hours on the slow problems)
+# where the lead tries to clear one. Where a warning costs BIC, a refusal that can move it is often
+# there already: a parameter only a dead state reads has no sensitivity, so the FIM is rank-deficient
+# and the parsimony gate refuses, now with the warning that names the cause. A readout of a dead
+# state is misfit, which only the chi2 gate refuses on, where the noise is given. Two runs are the
+# whole evidence so far, and gemot#97 is what a refusal on an unseparating signal cost.
+
 
 def _render_flat_directions(flat_directions, *, max_dirs: int = 4, max_parts: int = 4) -> str:
     """The FIM's near-flat (non-identifiable) eigen-directions rendered for the refusal text — as
@@ -277,6 +289,32 @@ def _render_sigma_heterogeneity(named) -> str:
         return ""
 
 
+async def _judged_warnings(reader) -> str:
+    """The WARNINGS text for the version the gate judges, or ``""`` when it has none.
+
+    That version is HEAD (``describe_problem``), which :func:`probe._restore_best` has made the
+    version the run is scored on, and its warnings are the ``edit_warnings`` its stored record
+    keeps whole (``get_version``), where its fit result may have folded them into a count. Not
+    read off ``get_fit_summary``: a restored payload carries no version. Fails OPEN like every
+    probe here: an unreadable record costs the text, never the finish.
+    """
+    try:
+        desc = _structured(await reader("describe_problem", {}))
+        version = desc["current_version"]
+        if not isinstance(version, int) or version < 0:
+            return ""
+        record = _structured(await reader("get_version", {"version": version}))
+        warnings = "".join(
+            prompts.FINISH_WARNING_TMPL.format(source=w["source"], message=w["message"])
+            for w in record["edit_warnings"]
+        )
+    except Exception:  # noqa: BLE001 - a probe never breaks the gate
+        return ""
+    if not warnings:
+        return ""
+    return prompts.FINISH_WARNINGS_TMPL.format(version=version, warnings=warnings)
+
+
 async def _latest_version(reader) -> int | None:
     """The newest version in the store (``list_versions``): the chi2 gate spends a refusal only on a
     finish that follows a new one. ``None`` when unreadable, which counts as new work, so an
@@ -434,6 +472,8 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
             return prompts.FINISH_REFUSED_NO_FIT
         # A valid fit exists -> reset the no-fit give-up counter.
         state["no_fit_refusals"] = 0
+        # Ends every refusal below and fills the ARM text (see the note on standing warnings).
+        warnings_line = await _judged_warnings(reader)
         # There used to be a third gate here, for a model edited since its last fit: the bic
         # would belong to the previous structure. `make_changes` cannot leave that state — a
         # change that fails to fit is reverted — so the gate had nothing left to catch, and
@@ -464,7 +504,10 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
                     f"noise sigma {which} — refusing finish on a gamed noise model"
                 )
                 _count("refusals", "sigma")
-                return prompts.FINISH_REFUSED_SIGMA_TMPL.format(advice=advice, which=which)
+                return (
+                    prompts.FINISH_REFUSED_SIGMA_TMPL.format(advice=advice, which=which)
+                    + warnings_line
+                )
             print(
                 f"[finish RELENTED] noise sigma still implausible after "
                 f"{state['sigma_refusals']} refusals — allowing finish at its honest score"
@@ -494,8 +537,11 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
                         f"{reason} against given noise — refusing finish on an inadequate model"
                     )
                     _count("refusals", "adequacy")
-                    return prompts.FINISH_REFUSED_ADEQUACY_TMPL.format(
-                        p=p, alpha=REFERENCE_FREE_GOF_ALPHA
+                    return (
+                        prompts.FINISH_REFUSED_ADEQUACY_TMPL.format(
+                            p=p, alpha=REFERENCE_FREE_GOF_ALPHA
+                        )
+                        + warnings_line
                     )
                 print(
                     f"[finish RELENTED] {reason} still, after {_MAX_ADEQUACY_FINISH_REFUSALS} "
@@ -569,13 +615,16 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
                         f"directions {directions} — refusing finish on an over-parameterised model"
                     )
                     _count("refusals", "parsimony")
-                    return prompts.FINISH_REFUSED_PARSIMONY_TMPL.format(
-                        directions=directions,
-                        left_out=(
-                            prompts.FINISH_REFUSED_PARSIMONY_LEFT_OUT
-                            if len(reachable) < len(flat_dirs)
-                            else ""
-                        ),
+                    return (
+                        prompts.FINISH_REFUSED_PARSIMONY_TMPL.format(
+                            directions=directions,
+                            left_out=(
+                                prompts.FINISH_REFUSED_PARSIMONY_LEFT_OUT
+                                if len(reachable) < len(flat_dirs)
+                                else ""
+                            ),
+                        )
+                        + warnings_line
                     )
                 print(
                     f"[finish RELENTED] parameters still non-identifiable after "
@@ -651,6 +700,7 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
                 sigma_line=sigma_line,
                 merge_line=merge_line,
                 invalid_line=invalid_line,
+                warnings_line=warnings_line,
             )
         # Second finish on the same fit -> confirmed. Record it so the driver does not bounce
         # a legitimately-finished run back into the gate.

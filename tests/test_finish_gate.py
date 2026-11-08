@@ -604,13 +604,18 @@ async def test_clean_identifiable_finish_is_unaffected():
 async def test_one_diagnosis_call_serves_both_the_parsimony_gate_and_the_arm():
     """The residual detail and the FIM are two sections of ONE tool, so an armed finish costs one
     diagnosis probe, not two — and the gate must never reach for the deleted second tool (the fake
-    raises on any other name)."""
+    raises on any other name). `describe_problem` says which version's warnings to read."""
     mod = _agent
     session = _FakeSession(_fit())
     tool = mod._finish_tool(session)
     assert "FINISH ARMED" in await _finish(tool)
     assert session.calls.count("get_fit_diagnosis") == 1
-    assert set(session.calls) == {"list_versions", "get_fit_summary", "get_fit_diagnosis"}
+    assert set(session.calls) == {
+        "list_versions",
+        "describe_problem",
+        "get_fit_summary",
+        "get_fit_diagnosis",
+    }
 
 
 #: A `merge_hints` row as the server puts it on a fit result AND on get_fit_summary.
@@ -1202,3 +1207,86 @@ async def test_an_inadequate_over_parameterised_model_hears_adequacy_first():
     out = await _finish(tool)
     assert out.startswith("FINISH REFUSED") and "cannot constrain" in out
     assert fs["refusals"] == {"adequacy": 1, "parsimony": 1}
+
+
+# --- the judged version's warnings, whole (frohlich-lab/PEtab-MCP#286) ------------------------
+#: The server's dead-state lint on bachmann 77's v7, which every later result folded into
+#: "1 warning(s) unchanged since version 7, naming `pSTAT5n`, `readout_tSTAT5`".
+_DEAD_STATE = (
+    "species `pSTAT5n` starts at 0 and stays 0: no reaction produces it, and no condition, event "
+    "or rule sets it. The rate laws and rules that read it (`readout_tSTAT5`) see 0 throughout, so "
+    "a parameter acting only through it cannot change the fit. Give it a source: a reaction that "
+    "produces it, or a nonzero initial amount."
+)
+
+
+def _warning(message, source="validation"):
+    """A version's `edit_warnings` entry, as the server stores it: a message-stack warning."""
+    return {"level": "warning", "source": source, "message": message}
+
+
+def _shown(version, *warnings):
+    return prompts.FINISH_WARNINGS_TMPL.format(
+        version=version,
+        warnings="".join(
+            prompts.FINISH_WARNING_TMPL.format(source=w["source"], message=w["message"])
+            for w in warnings
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_warning_folded_on_an_earlier_version_is_shown_whole_at_finish():
+    """bachmann 77 replaced `pSTAT5n` at v7 while three readouts still read it. Every result after
+    v7 folded the dead-state warning into a count, and the best model, v10, kept the bug. The ARM
+    text gives the scored version's warnings whole, from its stored record, even where HEAD has
+    moved past it: v11 has none, and it is v10 the run is scored on."""
+    dead, minted = _warning(_DEAD_STATE), _warning("New estimated parameter(s): `k_d1`.", "edit")
+    rows = [
+        {"version": 7, "criterion_value": 300.0, "bic": 300.0},
+        {"version": 10, "criterion_value": 205.0, "bic": 205.0},
+        {"version": 11, "criterion_value": 260.0, "bic": 260.0},
+    ]
+    session = _FakeSession(
+        _fit(version=11, bic=260.0),
+        versions=rows,
+        head=11,
+        summaries={10: _fit(version=10, bic=205.0)},
+        metas={7: {"edit_warnings": [dead]}, 10: {"edit_warnings": [dead, minted]}, 11: {}},
+    )
+    tool = _agent._finish_tool(session)
+    armed = await _finish(tool)
+    assert session.restored == [10] and "FINISH ARMED" in armed
+    assert _shown(10, dead, minted) + " " + prompts._RESIDUALS_DO_NOT_DECIDE_DONE in armed
+    assert "unchanged since version 7," not in armed
+    assert (await _finish(tool)).startswith("Recorded: finish")
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_ends_with_the_judged_versions_warnings():
+    """A refusal sends the lead back to work, so it carries the warnings too: here the cause of the
+    refusal itself, a rate constant that only reads a dead state and so has no sensitivity."""
+    flat_k3 = _ident(
+        rank_deficient=True,
+        flat_directions=[{"eigenvalue": 0.0, "participants": [{"id": "k3", "weight": 1.0}]}],
+    )
+    dead = _warning(_DEAD_STATE.replace("pSTAT5n", "C").replace("readout_tSTAT5", "r3"))
+    session = _FakeSession(
+        _fit(),
+        identifiability=flat_k3,
+        versions=[dict(r) for r in _STORE],
+        head=5,
+        metas={5: {"edit_warnings": [dead]}},
+    )
+    out = await _finish(_agent._finish_tool(session))
+    assert out.startswith("FINISH REFUSED") and "[k3·1.0]" in out
+    assert out.endswith(_shown(5, dead))
+
+
+@pytest.mark.asyncio
+async def test_a_version_without_warnings_adds_no_line():
+    session = _FakeSession(
+        _fit(), versions=[dict(r) for r in _STORE], head=5, metas={5: {"edit_warnings": []}}
+    )
+    armed = await _finish(_agent._finish_tool(session))
+    assert "FINISH ARMED" in armed and "WARNINGS ON" not in armed

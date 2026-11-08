@@ -1354,9 +1354,26 @@ FINISH_RESTORED_BEST_TMPL = (
 FINISH_ARMED_TMPL = (
     "FINISH ARMED — review before confirming. Current fit: bic={bic:.6g}, "
     "neg_log_likelihood={nll:.6g}. Residual structure: {struct}{caveat}{worst_line}"
-    "{sigma_line}{merge_line}{invalid_line} " + _RESIDUALS_DO_NOT_DECIDE_DONE + " If you have "
-    "genuinely bottomed out BIC, call finish AGAIN to confirm and end the run."
+    "{sigma_line}{merge_line}{invalid_line}{warnings_line} "
+    + _RESIDUALS_DO_NOT_DECIDE_DONE
+    + " If you have genuinely bottomed out BIC, call finish AGAIN to confirm and end the run."
 )
+
+# Ends a refusal on a fitted model, and fills the ARM text's `{warnings_line}`: every warning the
+# server gave the change and the validation of the version the gate judges, whole, as that version
+# stored them (`edit_warnings`, frohlich-lab/PEtab-MCP#313). A fit result folds a warning the one
+# before it carried into a count. bachmann 77 replaced `pSTAT5n` at v7 while three readouts still
+# read it, and from then on its results said only "1 warning(s) unchanged since version 7"; its best
+# model, v10, kept the dead state. sneyd 28 kept a species that starts at 0 and stays 0 the same way
+# (PEtab-MCP#286). Shown, never refused on: see finish_gate.
+FINISH_WARNINGS_TMPL = (
+    " WARNINGS ON v{version}, in full: every warning the server gave this version's change and its "
+    'validation, though a fit result may have shown one only as a count "unchanged since version '
+    'N". Each is about the model this run is scored on:{warnings}'
+)
+
+#: One warning inside :data:`FINISH_WARNINGS_TMPL`, with the step that gave it.
+FINISH_WARNING_TMPL = " [{source}] {message}"
 
 FINISH_ARMED_WORST_TMPL = (
     " Worst observable {observable_id}: sign-test p={sign_p}, runs-test p={runs_p}."
@@ -1798,6 +1815,8 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "armed_merge": FINISH_ARMED_MERGE_TMPL,
             "armed_merge_tie": FINISH_ARMED_MERGE_TIE_TMPL,
             "armed_invalid_comparison": FINISH_ARMED_INVALID_COMPARISON_TMPL,
+            "warnings": FINISH_WARNINGS_TMPL,
+            "warning": FINISH_WARNING_TMPL,
             "struct_unavailable": FINISH_STRUCT_UNAVAILABLE,
             "confirmed": FINISH_CONFIRMED_TMPL,
             "chi2_unavailable_note": FINISH_CHI2_UNAVAILABLE_NOTE,
