@@ -96,6 +96,7 @@ async def run_barebones(
     task: str,
     recursion_limit: int,
     temperature: float = 1.0,
+    reasoning_effort: str | None = None,
     execute_timeout_s: float,
     n_cpus: int = 1,
     max_wall_seconds: float | None = None,
@@ -105,8 +106,10 @@ async def run_barebones(
 ) -> dict[str, Any]:
     """Drive one stock deepagent over ``workspace`` until it stops, and return the accounting.
 
-    The caller has run :func:`sandbox_preflight`. ``execute_timeout_s`` bounds one shell command
-    and sizes the stall watchdog; ``n_cpus`` sets the sandbox's worker/thread knobs;
+    The caller has run :func:`sandbox_preflight`. ``reasoning_effort`` is the run's, sent as the
+    panel driver sends it (:func:`.driver._extra_body`); ``None`` leaves the model's own setting,
+    which for most models is no ``reasoning`` field at all. ``execute_timeout_s`` bounds one shell
+    command and sizes the stall watchdog; ``n_cpus`` sets the sandbox's worker/thread knobs;
     ``bio_sessions`` are the panel's bio-knowledge MCP sessions, whose curated tools this agent
     gets as plain tools (calls run in this process, so the sandbox stays offline). The loop is
     :func:`.driver.run_deepagents`'s minus the finish gate and silent-stop bounce: a graph that
@@ -163,7 +166,7 @@ async def run_barebones(
         stream_usage=True,
         **({"max_tokens": max_output_tokens} if max_output_tokens else {}),
         model_kwargs={"prompt_cache_key": prompt_cache_key},
-        extra_body=_extra_body(model),
+        extra_body=_extra_body(model, reasoning_effort),
     )
 
     from json import JSONDecodeError
@@ -396,7 +399,7 @@ async def run_barebones(
         "provider_outage_wait_s": outage_wait_s,
         "final_reply": final_reply,
         "workspace_audit": audit,
-        "openrouter_extra_body": _extra_body(model),
+        "openrouter_extra_body": _extra_body(model, reasoning_effort),
         "openrouter_endpoints": token_accountant.endpoints(),
         "token_usage": token_usage,
         "max_output_tokens": max_output_tokens,
