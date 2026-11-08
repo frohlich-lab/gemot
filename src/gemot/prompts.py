@@ -250,6 +250,86 @@ LEAD_SELF_READ_TOOLS = (
     "list_versions",
 )
 
+#: Each analyst's tools: rendered into its description (and its biology-blind one) AND spliced
+#: into its toolset (agent/tools.py), so the lead cannot be told an analyst holds a tool it does
+#: not. Each set is as SMALL as the analyst's lens allows (agent/tools.py says why); what each tool
+#: is FOR on that analyst is said here.
+#:
+#: get_skill is on none of them: every analyst fetched the same petab-model-building document once
+#: per spawn (203/203, 217/217, 115/115 across the A/B), and a deterministic call is a constant, so
+#: the skill is INLINED into the analyst personas below, where it caches as prefix. Nor is
+#: get_fit_diagnosis: it is the lead's own compact read of the current fit, and an analyst that
+#: needs that fit's per-point rows reads them in SQL.
+#:
+#: Mathematician: structural capability + estimation numerics.
+MATHEMATICIAN_READ_TOOLS = (
+    "get_model_structure",  # species; reactions and rate laws when asked (empty until built)
+    "get_measurements",  # the DATA — dynamics/shape to reason about candidate structure
+    "list_observables",  # what is measured
+    "get_parameters",  # scales, bounds — identifiability / conditioning
+    "get_fit_summary",
+    "get_fitting_log",  # uniquely: the pyPESTO/Fides log — multistart spread, convergence, bounds
+    # What a fitted model SIMULATES, read rather than integrated by hand: without them, a
+    # mathematician in sweep 63372750 hand-integrated the ODEs and predicted a crash its model's
+    # simulation does not show (gemot#122).
+    "list_data_tables",
+    "query_data",
+    # On every analyst: a version other than HEAD, whose model, parameters and (asked for) simulated
+    # points no other read of theirs reaches.
+    "get_version",
+)
+
+#: Systems scientist: is the mechanism real? The mechanism as written, what was measured, and
+#: whether the rate magnitudes are plausible.
+SYSTEMS_SCIENTIST_READ_TOOLS = (
+    "get_model_structure",  # the mechanism as written
+    "list_observables",  # what quantity is measured
+    "get_measurements",  # the actual data / dynamic behaviour
+    "get_parameters",  # are the rate magnitudes plausible?
+    "get_version",
+)
+
+#: Signal-processing engineer: residuals as signals, entirely via SQL over the data.
+SIGNAL_ENGINEER_READ_TOOLS = (
+    "list_data_tables",  # the queryable tables (simulations, residuals, ...) + columns
+    "query_data",  # SQL over measured-vs-simulated points + residual breakdowns
+    "get_fit_summary",
+    "get_version",
+)
+
+
+def _analyst_limits() -> str:
+    """What the lead is told an analyst can and cannot do.
+
+    It names no analyst's tool. The `task` tool lists each one's, rendered from the tuples above
+    (`_analyst_reach`), and a tool named in the lead's own prompt is one the lead tries to call
+    (tests/test_agent_tool_dispatch.py). Who can run SQL is read from the same tuples.
+    """
+    toolsets = (
+        ("mathematician", MATHEMATICIAN_READ_TOOLS),
+        ("systems_scientist", SYSTEMS_SCIENTIST_READ_TOOLS),
+        ("signal_engineer", SIGNAL_ENGINEER_READ_TOOLS),
+    )
+    sql = " and the ".join(name for name, tools in toolsets if "query_data" in tools)
+    return (
+        "WHAT AN ANALYST CAN DO. The `task` tool lists the tools each analyst holds, and those "
+        "are all it has. No analyst runs code, simulates a model or fits one. The only computing "
+        "any of them can do is SQL over the problem's tables, and only the " + sql + " can do "
+        "that. So ask an analyst to READ and JUDGE (the data, the model, the residuals, the "
+        "fitting log), never to solve, integrate, simulate or derive something: a steady state, "
+        "a stationary distribution, a reduced model worked out by hand. It cannot do that, and "
+        "trying costs hours. A candidate model is tested by FITTING it, and only you fit "
+        "(`make_changes`). `get_fit_diagnosis` is yours alone: no analyst holds it, so read it "
+        "yourself and put what an analyst needs from it in the `description`."
+    )
+
+
+#: The analysts' reach, told to the lead once in every lead prompt that introduces them. The
+#: `task` tool listed each analyst's tools already, yet in sweep 63522750 6 of 10 isensee/alkan
+#: leads still asked an analyst for `get_fit_diagnosis`, and blasi 7 spent 2.7 of its 3.4 h
+#: waiting on an analyst trying to solve a 16-state CTMC in SQL (gemot#136).
+_ANALYST_LIMITS = _analyst_limits()
+
 
 _FREE_EXPONENTS_GUIDANCE = (
     " EXPONENTS ARE PARAMETERS. EVERY time you write a cooperative or ligand-gated dependence "
@@ -328,7 +408,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "identifiability; "
     "for the raw DATA and any DEEP diagnosis (a full residual breakdown, the optimizer/fitting "
     "log) you DELEGATE to the analysts — they read the bulky data in "
-    "their OWN context and hand you back summaries, so your context stays lean.\n\n"
+    "their OWN context and hand you back summaries, so your context stays lean. "
+    + _ANALYST_LIMITS
+    + "\n\n"
     "Work as an explicit model-building LOOP:\n"
     "0. Read both skills once, before your first `make_changes`: "
     "`get_skill('petab-model-building')` and `get_skill('antimony-authoring')`. They are short, "
@@ -513,7 +595,9 @@ INDRA_SYSTEM_PROMPT = (
     )
     + ". You read only the model, the scores `make_changes` returns, and "
     + ", ".join(LEAD_SELF_READ_TOOLS)
-    + ".\n\n"
+    + ". "
+    + _ANALYST_LIMITS
+    + "\n\n"
     "1. ORIENT in at most ~3 rounds: describe_problem, list_observables, list_conditions, "
     "list_experiments; read `get_skill('petab-model-building')` and "
     "`get_skill('statements-grammar')` once, and `list_mechanisms`: its index first, then in ONE "
@@ -890,53 +974,6 @@ SIGNAL_ENGINEER_PROMPT = (
 # the lead asked an analyst for a tool it lacked in 26 of 85 delegations of sweep 63372750
 # (`get_fit_diagnosis`, `get_model(version=N)`, a version's simulation), and an analyst asked
 # about the best version read HEAD as if it were that version (gemot#122).
-
-#: Each analyst's tools: rendered into its description (and its biology-blind one) AND spliced
-#: into its toolset (agent/tools.py), so the lead cannot be told an analyst holds a tool it does
-#: not. Each set is as SMALL as the analyst's lens allows (agent/tools.py says why); what each tool
-#: is FOR on that analyst is said here.
-#:
-#: get_skill is on none of them: every analyst fetched the same petab-model-building document once
-#: per spawn (203/203, 217/217, 115/115 across the A/B), and a deterministic call is a constant, so
-#: the skill is INLINED into the personas above, where it caches as prefix. Nor is
-#: get_fit_diagnosis: it is the lead's own compact read of the current fit, and an analyst that
-#: needs that fit's per-point rows reads them in SQL.
-#:
-#: Mathematician: structural capability + estimation numerics.
-MATHEMATICIAN_READ_TOOLS = (
-    "get_model_structure",  # species; reactions and rate laws when asked (empty until built)
-    "get_measurements",  # the DATA — dynamics/shape to reason about candidate structure
-    "list_observables",  # what is measured
-    "get_parameters",  # scales, bounds — identifiability / conditioning
-    "get_fit_summary",
-    "get_fitting_log",  # uniquely: the pyPESTO/Fides log — multistart spread, convergence, bounds
-    # What a fitted model SIMULATES, read rather than integrated by hand: without them, a
-    # mathematician in sweep 63372750 hand-integrated the ODEs and predicted a crash its model's
-    # simulation does not show (gemot#122).
-    "list_data_tables",
-    "query_data",
-    # On every analyst: a version other than HEAD, whose model, parameters and (asked for) simulated
-    # points no other read of theirs reaches.
-    "get_version",
-)
-
-#: Systems scientist: is the mechanism real? The mechanism as written, what was measured, and
-#: whether the rate magnitudes are plausible.
-SYSTEMS_SCIENTIST_READ_TOOLS = (
-    "get_model_structure",  # the mechanism as written
-    "list_observables",  # what quantity is measured
-    "get_measurements",  # the actual data / dynamic behaviour
-    "get_parameters",  # are the rate magnitudes plausible?
-    "get_version",
-)
-
-#: Signal-processing engineer: residuals as signals, entirely via SQL over the data.
-SIGNAL_ENGINEER_READ_TOOLS = (
-    "list_data_tables",  # the queryable tables (simulations, residuals, ...) + columns
-    "query_data",  # SQL over measured-vs-simulated points + residual breakdowns
-    "get_fit_summary",
-    "get_version",
-)
 
 #: Closes every analyst description, the biology-blind ones too.
 _ANALYST_READS_HEAD = (
@@ -1532,7 +1569,9 @@ BIOLOGY_BLIND_SYSTEM_PROMPT = (
     "You have three independent analysts through task(subagent_type=..., description=...): "
     "mathematician for equations and estimation, systems_scientist for dynamical structure, "
     "and signal_engineer for measured signals and residuals. Put the complete question in "
-    "description. The analysts inspect and advise; only you author and fit. Delegate bulky "
+    "description. The analysts inspect and advise; only you author and fit. "
+    + _ANALYST_LIMITS
+    + " Delegate bulky "
     "measurement, SQL and fitting-log reads, and use your own compact tools to orient and decide. "
     "Begin with describe_problem, list_observables, list_conditions, list_experiments and "
     "get_parameters. Ask the analysts to inspect the data independently, then build an initial "
