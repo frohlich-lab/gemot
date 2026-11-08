@@ -51,6 +51,13 @@ _MAX_SIGMA_FINISH_REFUSALS = 3
 # STALE diagnosis (no FIM, a diagnosis of a DIFFERENT structure, or the probe returned {}) never
 # refuses a finish. The advice is deliberately GENERAL (name the flat-direction params, point at the
 # simplification menu); the specific fix is the agent's to reason out, not the gate's to hand over.
+# A deficiency made only of directions in the problem's OWN observation or noise parameters
+# (:func:`_fixed_table_parameters`) does not count, and such a direction is never named: no model
+# edit reaches one. On schwen (gemot#134) every first refusal led with `[km_nExpID3·1.0]`, a shipped
+# detector constant whose readout stays far below its lower bound for any model, and all 4 finished
+# runs spent 45-100 min narrowing its bounds to get past the gate. Deliberately NOT "flat in the
+# reference too": a refusal the published model would also get is not a defect by itself; one that
+# no edit can clear is, because it spends the run's budget for nothing.
 _MAX_PARSIMONY_FINISH_REFUSALS = 3
 
 # A finish on a fit that FAILS the run's chi2 bar while its noise is GIVEN is REFUSED: the scenario
@@ -67,6 +74,11 @@ _MAX_PARSIMONY_FINISH_REFUSALS = 3
 # cannot pass still ends at its honest, failing score. Deliberately NOT eased late in the wall
 # budget, and the lead is told neither the bound nor that it relents (prompts._CHI2_GATE_RULE): a
 # lead that knows when the gate gives in works toward that point instead of the model.
+# It is tested BEFORE the parsimony gate (gemot#134), as the lead prompt's ADEQUACY BEFORE PARSIMONY
+# rule orders the two: the other way round, an inadequate, over-parameterised model was told only
+# that some parameters were unconstrained. dessauges 90 (chi2 p 1e-23) then spent its last 11 fits
+# on equivalent rewrites until the streak cap ended it; dessauges 94 (p 1e-66) spent 6 removing flat
+# directions, and two of those fits collapsed.
 _MAX_ADEQUACY_FINISH_REFUSALS = 5
 
 # Deliberately NO refusal on a residual flag, the replicate lack-of-fit arm's included (gemot#97).
@@ -104,6 +116,78 @@ def _render_flat_directions(flat_directions, *, max_dirs: int = 4, max_parts: in
         # flat directions at all, so a lead following this would spend the turn on the wrong payload.
         return "(see get_fit_diagnosis(sections='parameters') for the flat directions)"
     return "; ".join(groups) + ("; …" if len(flat_directions) > max_dirs else "")
+
+
+#: The ``role`` ``get_parameters`` gives a parameter of the problem's fixed observation model
+#: (``petab_mcp.reconcile.parameter_roles``): a noise sigma, or any parameter the observable
+#: formulas and their measurement-level ``observableParameters`` resolve to, a nonlinear detector
+#: constant included.
+_OBSERVATION_ROLES = frozenset({"noise_sigma", "observable_scaling"})
+
+
+async def _fixed_table_parameters(reader) -> frozenset[str]:
+    """The parameters only the problem's fixed tables use: an observation or noise parameter (by
+    ``get_parameters``' ``role``) that the model does not declare (``get_model_structure``). No
+    model edit reaches one. A model that declares such a parameter uses it in its own math, which
+    the server allows beside a rate constant of the reaction's own, and so owns it.
+
+    Read only when a rank-deficient FIM has directions to name. Empty when either read fails or
+    has an odd shape, so nothing is left out and the parsimony gate refuses as it did before.
+    """
+    try:
+        rows = _structured(await reader("get_parameters", {}))
+        structure = _structured(await reader("get_model_structure", {}))
+    except Exception:  # noqa: BLE001 - a probe never breaks the gate
+        return frozenset()
+    if not isinstance(rows, list) or not isinstance(structure, dict):
+        return frozenset()
+    declared = structure.get("parameters")
+    if not isinstance(declared, list):
+        return frozenset()
+    observation = {
+        str(row["parameterId"])
+        for row in rows
+        if isinstance(row, dict)
+        and row.get("parameterId")
+        and row.get("role") in _OBSERVATION_ROLES
+    }
+    return frozenset(observation - {str(p) for p in declared})
+
+
+def _out_of_reach(direction, fixed: frozenset[str]) -> bool:
+    """Whether every parameter a flat direction names is in ``fixed``. A direction that names
+    none is not shown to be, so it stays."""
+    if not isinstance(direction, dict):
+        return False
+    ids = [p.get("id") for p in (direction.get("participants") or []) if isinstance(p, dict)]
+    return bool(ids) and all(i in fixed for i in ids)
+
+
+def _deficiency_out_of_reach(fim_info: dict, flat_directions, fixed: frozenset[str]) -> bool:
+    """Whether the FIM's rank deficiency lies only along directions in ``fixed`` parameters.
+
+    The deficient directions are the ``n_estimated - rank`` flat directions with the smallest
+    ``|eigenvalue|``: the diagnosis keeps every direction far flatter than its rank tolerance, the
+    deficient ones among them, and an ill-conditioned but full-rank direction beside them does not
+    count (see the gate). Every deficient direction has to be listed and out of reach; anything
+    the payload does not show (a missing rank, fewer directions listed than the deficiency) keeps
+    the refusal."""
+    if not fixed:
+        return False
+    try:
+        nullity = int(fim_info["n_estimated"]) - int(fim_info["rank"])
+    except (KeyError, TypeError, ValueError):
+        nullity = len(flat_directions)
+    if nullity < 1 or len(flat_directions) < nullity:
+        return False
+
+    def flatness(direction) -> float:
+        ev = direction.get("eigenvalue") if isinstance(direction, dict) else None
+        finite = isinstance(ev, (int, float)) and not isinstance(ev, bool) and math.isfinite(ev)
+        return abs(ev) if finite else 0.0
+
+    deficient = sorted(flat_directions, key=flatness)[:nullity]
+    return all(_out_of_reach(d, fixed) for d in deficient)
 
 
 def _render_merge(hints) -> str:
@@ -388,6 +472,36 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
             _count("relents", "sigma")
         else:
             state["sigma_refusals"] = 0
+        # HARD STOP on a fit that fails the run's chi2 bar while its noise is GIVEN (see
+        # _MAX_ADEQUACY_FINISH_REFUSALS), by the judge's own chi2 rule (scenario.chi2_passes), so
+        # the gate refuses exactly the fits the judge would score inadequate. It FAILS OPEN: the
+        # rule says None, never refusing, where a sigma was estimated, the noise report is
+        # unreadable, or the p-value is missing or not finite. Ahead of the parsimony gate, so an
+        # inadequate model hears that first (gemot#134), and needs no FIM to do so.
+        if adequacy == ADEQUACY_CHI2:
+            p = fit.get("chi2_gof_pvalue")
+            if chi2_passes(fit.get("noise_sigma_report"), p) is False:
+                reason = f"chi2 GoF p={p:.3g} < {REFERENCE_FREE_GOF_ALPHA:g}"
+                if state["adequacy_left"] > 0:
+                    latest = await _latest_version(reader)
+                    if latest is None or latest != state["adequacy_mark"]:
+                        state["adequacy_left"] -= 1
+                        state["adequacy_mark"] = latest
+                    state["armed_token"] = None
+                    spent = _MAX_ADEQUACY_FINISH_REFUSALS - state["adequacy_left"]
+                    print(
+                        f"[finish BLOCKED {spent}/{_MAX_ADEQUACY_FINISH_REFUSALS}] "
+                        f"{reason} against given noise — refusing finish on an inadequate model"
+                    )
+                    _count("refusals", "adequacy")
+                    return prompts.FINISH_REFUSED_ADEQUACY_TMPL.format(
+                        p=p, alpha=REFERENCE_FREE_GOF_ALPHA
+                    )
+                print(
+                    f"[finish RELENTED] {reason} still, after {_MAX_ADEQUACY_FINISH_REFUSALS} "
+                    "refusals — allowing finish at its honest score"
+                )
+                _count("relents", "adequacy")
         # HARD STOP on an OVER-parameterised model: a finish whose good-looking bic rests on
         # parameters the data cannot constrain — a RANK-DEFICIENT Fisher-information matrix (a
         # non-identifiable parameter COMBINATION the diagnosis surfaces as a near-flat
@@ -403,7 +517,7 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
         #
         # ONE diagnosis call serves this branch and the ARM step below: both halves of it come
         # from the same optimum, and the probe is fetched here (not at the arm) because this
-        # branch runs on every finish attempt while arming does not.
+        # branch runs on every finish attempt that gets this far while arming does not.
         diag = await _current_diagnosis(reader)
         ident = diag.get("identifiability") or {}
         fim_info = ident.get("fim")
@@ -431,18 +545,38 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
             # params — but only rank deficiency triggers the refusal.
             rank_deficient = bool(fim_info.get("rank_deficient"))
             flat_dirs = ident.get("flat_directions") or []
+            # Leave out what no model edit reaches (see _MAX_PARSIMONY_FINISH_REFUSALS): a
+            # deficiency lying only in the problem's own observation or noise parameters is no
+            # refusal, and a direction carried only by them is not named.
+            reachable = flat_dirs
+            if rank_deficient and flat_dirs:
+                fixed = await _fixed_table_parameters(reader)
+                if _deficiency_out_of_reach(fim_info, flat_dirs, fixed):
+                    rank_deficient = False
+                    print(
+                        f"[finish] rank-deficient FIM only along fixed-table parameters "
+                        f"{_render_flat_directions(flat_dirs)} — no edit reaches it, not refusing"
+                    )
+                reachable = [d for d in flat_dirs if not _out_of_reach(d, fixed)]
             if rank_deficient:
                 if state["parsimony_refusals"] < _MAX_PARSIMONY_FINISH_REFUSALS:
                     state["armed_token"] = None
                     state["parsimony_refusals"] += 1
-                    directions = _render_flat_directions(flat_dirs)
+                    directions = _render_flat_directions(reachable)
                     print(
                         f"[finish BLOCKED {state['parsimony_refusals']}/"
                         f"{_MAX_PARSIMONY_FINISH_REFUSALS}] rank-deficient FIM, flat "
                         f"directions {directions} — refusing finish on an over-parameterised model"
                     )
                     _count("refusals", "parsimony")
-                    return prompts.FINISH_REFUSED_PARSIMONY_TMPL.format(directions=directions)
+                    return prompts.FINISH_REFUSED_PARSIMONY_TMPL.format(
+                        directions=directions,
+                        left_out=(
+                            prompts.FINISH_REFUSED_PARSIMONY_LEFT_OUT
+                            if len(reachable) < len(flat_dirs)
+                            else ""
+                        ),
+                    )
                 print(
                     f"[finish RELENTED] parameters still non-identifiable after "
                     f"{state['parsimony_refusals']} refusals — allowing finish at its "
@@ -451,35 +585,6 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
                 _count("relents", "parsimony")
             else:
                 state["parsimony_refusals"] = 0
-        # HARD STOP on a fit that fails the run's chi2 bar while its noise is GIVEN (see
-        # _MAX_ADEQUACY_FINISH_REFUSALS), by the judge's own chi2 rule (scenario.chi2_passes), so
-        # the gate refuses exactly the fits the judge would score inadequate. It FAILS OPEN: the
-        # rule says None, never refusing, where a sigma was estimated, the noise report is
-        # unreadable, or the p-value is missing or not finite.
-        if adequacy == ADEQUACY_CHI2:
-            p = fit.get("chi2_gof_pvalue")
-            if chi2_passes(fit.get("noise_sigma_report"), p) is False:
-                reason = f"chi2 GoF p={p:.3g} < {REFERENCE_FREE_GOF_ALPHA:g}"
-                if state["adequacy_left"] > 0:
-                    latest = await _latest_version(reader)
-                    if latest is None or latest != state["adequacy_mark"]:
-                        state["adequacy_left"] -= 1
-                        state["adequacy_mark"] = latest
-                    state["armed_token"] = None
-                    spent = _MAX_ADEQUACY_FINISH_REFUSALS - state["adequacy_left"]
-                    print(
-                        f"[finish BLOCKED {spent}/{_MAX_ADEQUACY_FINISH_REFUSALS}] "
-                        f"{reason} against given noise — refusing finish on an inadequate model"
-                    )
-                    _count("refusals", "adequacy")
-                    return prompts.FINISH_REFUSED_ADEQUACY_TMPL.format(
-                        p=p, alpha=REFERENCE_FREE_GOF_ALPHA
-                    )
-                print(
-                    f"[finish RELENTED] {reason} still, after {_MAX_ADEQUACY_FINISH_REFUSALS} "
-                    "refusals — allowing finish at its honest score"
-                )
-                _count("relents", "adequacy")
         # Valid, fitted model. First finish call ARMS: show the bic and the residual diagnosis
         # and require a confirming second finish, so a finish is a considered call rather than a
         # reflex. The residual verdict is shown as WHERE the fit is off, not as grounds to refuse
