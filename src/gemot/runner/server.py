@@ -19,7 +19,7 @@ from ..scenario import Scenario
 # --------------------------------------------------------------------------- server
 # Launched with:
 #   python -c <bootstrap> <yaml> <build_root> <ref_mode> <host> <port> <n_starts> <validation_tsv>
-#             <score_shipped> <entity_map> <constraints>
+#             <score_shipped> <entity_map> <constraints> <progress_signals>
 # <validation_tsv> is "" for an example with no held-out data, <score_shipped> is "1" to compile
 # and score a problem's SHIPPED model at its nominal values before listening
 # (create_server(score_shipped_model=True)) and "0" for a zero-shot run, which has nothing to
@@ -32,6 +32,8 @@ from ..scenario import Scenario
 # the server checks every change against (create_server(constraints=...)). Updates stay off
 # (constraint_updates="off"), so the server registers no `set_constraints` and no agent can change
 # the claims it is held to; an arm in which the agent may is a decision of its own.
+# <progress_signals> is "1", or "0" on the progress_signals arm's off side, where the server withholds
+# its standing, comparisons and whole-fit verdicts from the agent (create_server(progress_signals=)).
 _SERVER_BOOTSTRAP = (
     "import sys, os, threading, time\n"
     # Parent-death watchdog: if run.py dies (incl. SIGKILL by the batch watchdog, which skips
@@ -52,7 +54,7 @@ _SERVER_BOOTSTRAP = (
     "uvicorn.Config = lambda *a, **k: _Config(*a, **{**k, 'access_log': False})\n"
     "from petab_mcp.server import create_server\n"
     "yaml_path, build_root, ref_mode, host, port, n_starts, validation_tsv, score_shipped, \\\n"
-    "    entity_map, constraints = sys.argv[1:11]\n"
+    "    entity_map, constraints, progress_signals = sys.argv[1:12]\n"
     # The agent's own commits don't pass n_starts, so make the server's
     # default multistart count match --n-starts — otherwise agent fits use the low library
     # default (5), too few for the harder several-parameter oscillator fits.
@@ -66,7 +68,8 @@ _SERVER_BOOTSTRAP = (
     # A sweep's fit pool, by its scheduler's address (`petab-mcp-pool`, PEtab-MCP#225), read
     # under the name the server's own CLI reads. Unset, the fits run on this server's own worker
     # processes. Read off the environment the run records it from (`provenance._fit_settings`).
-    "                    cluster=os.environ.get('PETAB_MCP_FIT_POOL') or None)\n"
+    "                    cluster=os.environ.get('PETAB_MCP_FIT_POOL') or None,\n"
+    "                    progress_signals=(progress_signals == '1'))\n"
     # fastmcp >=3.4 dropped `srv.settings`; host/port are passed to run() (forwarded to the
     # streamable-http transport's run_http_async(host=, port=)).
     "srv.run(transport='streamable-http', host=host, port=int(port))\n"

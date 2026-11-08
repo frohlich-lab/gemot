@@ -382,12 +382,29 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
     # deliberate argument the old `action` string used to be. An argless call is a schema error the
     # model is handed back, not a first half of the arm->confirm handshake.
     async def finish(rationale: str) -> str:
+        if not prompts.PROGRESS_SIGNALS_ENABLED:
+            return await _end(rationale)
         moved = await _restore_best(reader)
         if moved is None:
             return await _decide(rationale)
         print(f"[finish] restored the best version v{moved[0]} as HEAD (was v{moved[1]})")
         note = prompts.FINISH_RESTORED_BEST_TMPL.format(best=moved[0], head=moved[1])
         return note + await _decide(rationale)
+
+    async def _end(rationale: str) -> str:
+        """The progress_signals arm's finish: one call ends the run on the version it is scored
+        on, made HEAD unannounced, with no refusal and no review; with no fit, as no-model-built."""
+        print(f"[lead finish] {rationale}")
+        await _restore_best(reader)
+        fit = await _current_fit(reader)
+        nll, bic = fit.get("neg_log_likelihood"), fit.get("bic")
+        if not (_finite(nll) and _finite(fit.get("criterion_value", bic)) and _finite(bic)):
+            finish_state["gave_up"] = True
+            print("[finish ENDED] no fitted model — ending the run as no-model-built")
+            return prompts.FINISH_ENDED_NO_FIT
+        finish_state["confirmed"] = True
+        print(f"[finish CONFIRMED v={fit.get('version')}] bic={bic:.6g}")
+        return prompts.FINISH_CONFIRMED_TMPL.format(bic=bic, nll=nll, chi2_note="")
 
     async def _decide(rationale: str) -> str:
         print(f"[lead finish] {rationale}")

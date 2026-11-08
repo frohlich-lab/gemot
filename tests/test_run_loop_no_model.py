@@ -256,6 +256,38 @@ def test_the_result_counts_silent_bounces(monkeypatch, confirm_after, bounces):
     assert result["idle_nudges"] == 0  # the counter this was mistaken for does not see it
 
 
+class _RecordingProbe(_Probe):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.tools: list[str] = []
+
+    async def __call__(self, tool, args):
+        self.tools.append(tool)
+        return await super().__call__(tool, args)
+
+
+@requires_harness
+@pytest.mark.parametrize("authored, label", [(True, "silent_stop"), (False, "no_model_built")])
+def test_off_the_progress_signals_arm_nothing_bounces_or_stops_the_run(
+    monkeypatch, authored, label
+):
+    """With progress signals off, a silent stop ends the run unbounced, labelled as before, and the
+    server's early-stop probe is never read."""
+    from gemot.agent import driver
+
+    mod = _load_agent_module()
+    probe = _RecordingProbe(model_authored=authored)
+    _run(mod, monkeypatch, probe)
+    assert "get_progress" in probe.tools  # on, the probe is read after every super-step
+    monkeypatch.setattr(driver, "PROGRESS_SIGNALS_ENABLED", False)
+    probe = _RecordingProbe(model_authored=authored)
+    result, fake_agent = _run(mod, monkeypatch, probe)
+
+    assert result["stop_reason"] == label
+    assert len(fake_agent.inputs) == 1 and result["silent_bounces"] == 0
+    assert "get_progress" not in probe.tools
+
+
 # --- liveness at the CALL SITE ---------------------------------------------------------------
 # `_server_is_alive` is unit-tested in tests/test_judge_call_timeout.py; these drive the branch
 # in run_deepagents that consumes it, which is where the three-state handling actually matters.

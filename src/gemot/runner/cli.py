@@ -137,7 +137,8 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
         default=250,
         help="deepagents/LangGraph super-step budget — a GENEROUS backstop only (above "
         "the longest legitimate ~200-step run). The early-stop chain (non-improving"
-        "-streak cap + plateau) does the real stopping, so this should rarely fire.",
+        "-streak cap + plateau) does the real stopping, so this should rarely fire; with "
+        "PETAB_PROGRESS_SIGNALS=0 there is none, and this and the wall budget stop the run.",
     )
     p.add_argument(
         "--n-starts",

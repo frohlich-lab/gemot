@@ -145,6 +145,19 @@ ABLATIONS: tuple[Ablation, ...] = (
         "problem's tables, its constants still shipping as named fixed rows, and the biocurator "
         "the measured entities and inputs with their identifiers, derived (`entity_ids`)",
     ),
+    Ablation(
+        name="progress_signals",
+        env="PETAB_PROGRESS_SIGNALS",
+        default_on=True,
+        changes_prompt=True,
+        effect="OFF withholds what tells the agent how well it is doing or pushes it to go on or "
+        "stop: the server's standing, comparisons and whole-fit verdicts (best version, new-best "
+        'flags, improvement, chi2 p-value, residual verdict, "kept regardless"), the finish '
+        "gate's refusals and review (one `finish` call ends the run), the early stop on the "
+        "server's streak or plateau, the idle, no-model and silent-stop bounces, the time and turns "
+        "left, and the prompts' keep-going and bottomed-out guidance. Each fit's own nll, criterion, "
+        "k and chi2 stay, and the judge scores as before",
+    ),
 )
 
 _BY_NAME = {a.name: a for a in ABLATIONS}

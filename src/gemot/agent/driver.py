@@ -75,7 +75,12 @@ from .tools import (
     _check_statements_editor,
     _select_tools,
 )
-from ..prompts import INDRA_STATEMENTS_ENABLED, _NO_MODEL_NUDGE, _SILENT_FINISH_NUDGE
+from ..prompts import (
+    INDRA_STATEMENTS_ENABLED,
+    PROGRESS_SIGNALS_ENABLED,
+    _NO_MODEL_NUDGE,
+    _SILENT_FINISH_NUDGE,
+)
 from .. import infrastructure, models, prompts
 
 # --- guards on the (input-dominated, occasionally-hanging) LLM loop -----------------------
@@ -1218,7 +1223,9 @@ async def run_deepagents(
             # applied nothing and must not count as an executed tool.
             *([_statements_only_guard(guard_stats)] if INDRA_STATEMENTS_ENABLED else []),
             _reasoning_runaway_guard(guard_stats),
-            _tool_dispatch_guard(guard_stats),
+            _tool_dispatch_guard(
+                guard_stats, **({} if PROGRESS_SIGNALS_ENABLED else {"max_idle_steps": 0})
+            ),
             _empty_report_guard(guard_stats),
         ]
     else:  # pragma: no cover - guards against a deepagents API drift
@@ -1359,7 +1366,7 @@ async def run_deepagents(
     async def _early_stop_reason() -> str | None:
         """The server's early-stop reason if the run should stop now, else ``None`` (fail-open:
         any probe error just means "keep going")."""
-        if progress_probe is None:
+        if progress_probe is None or not PROGRESS_SIGNALS_ENABLED:
             return None
         try:
             data = _structured(await progress_probe("get_progress", {}))
@@ -1742,7 +1749,8 @@ async def run_deepagents(
                 model_committed = await _model_committed(progress_probe)
                 past_deadline = _past_last_step()
                 if (
-                    silent_bounces < _MAX_SILENT_BOUNCES
+                    PROGRESS_SIGNALS_ENABLED
+                    and silent_bounces < _MAX_SILENT_BOUNCES
                     and checkpointer is not None
                     and not past_deadline
                 ):

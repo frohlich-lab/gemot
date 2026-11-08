@@ -793,6 +793,8 @@ def _turn_notice(turns_used: int, cap: int) -> "str | None":
     open on the WARNING. `cap // 2` leaves the shipped 20-turn caps EXACTLY as they were (10 -> 10)
     while keeping the notices a genuine approach signal at any smaller cap.
     """
+    if not prompts.PROGRESS_SIGNALS_ENABLED:
+        return None
     left = cap - turns_used
     for threshold, text in sorted(_TURN_NOTICES, key=lambda t: t[0]):
         earned = min(threshold, max(1, cap // 2))

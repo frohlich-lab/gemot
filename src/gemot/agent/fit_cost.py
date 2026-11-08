@@ -58,7 +58,7 @@ def _fit_ran(content: Any, artifact: Any) -> bool:
 def fit_cost_note(took: float, left: float) -> str:
     """The line closing a fit result: ``took`` and ``left`` are seconds of the run's budget, and
     ``left`` is ``inf`` for a run without one."""
-    if math.isinf(left):
+    if math.isinf(left) or not prompts.PROGRESS_SIGNALS_ENABLED:
         return prompts.FIT_COST_UNBUDGETED_TMPL.format(took=_span(took))
     return prompts.FIT_COST_TMPL.format(took=_span(took), left=_span(max(left, 0.0)))
 
