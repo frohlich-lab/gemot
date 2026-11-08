@@ -118,6 +118,6 @@ def test_only_the_fit_tools_are_wrapped():
 
 def test_the_lead_is_told_what_the_line_is_for_on_every_arm():
     """The line is read beside the rule that says what to do with it: price a refit by it, and
-    send the analysts beside a long fit rather than in a turn of their own."""
+    move a delegation the lead would make anyway beside a long fit, never add one to fill it."""
     for lead in (P.DEFAULT_SYSTEM_PROMPT, P.INDRA_SYSTEM_PROMPT, P.BIOLOGY_BLIND_SYSTEM_PROMPT):
         assert P._FIT_COST_RULE in lead

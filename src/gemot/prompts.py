@@ -165,15 +165,18 @@ _RESIDUALS_DO_NOT_DECIDE_DONE = (
 )
 
 #: What closes every fit result (``agent.fit_cost``) and what to do with it. A turn waits for its
-#: slowest call, so a fit sent in a turn of its own leaves the analysts idle while it runs: before
-#: this, 14 of 15 runs on the problems whose fits take hours sent no analyst beside a fit, and leads
-#: called multi-hour refits cheap (gemot#137). Read by the lead on every arm.
+#: slowest call, so a delegation sent in a turn of its own runs after a fit instead of beside it:
+#: 14 of 15 runs on the problems whose fits take hours did that, and leads called multi-hour refits
+#: cheap (gemot#137). Deliberately it only MOVES a delegation the lead would make anyway: "do not
+#: leave the analysts idle" invites questions asked to fill a fit's time, each one paid in tokens.
+#: Read by the lead on every arm.
 _FIT_COST_RULE = (
     "THE RUN'S TIME: a `make_changes` result that ran a fit ends with what the fit took and how "
     "much of the run's time is left. Read it before you call another fit cheap. A turn lasts as "
-    "long as its slowest call, so do not leave the analysts idle while a long fit runs: send the "
-    "`task` you would send next (a deep dive on the version you already have) in the SAME turn as "
-    "the `make_changes`, not in a turn of its own before or after it."
+    "long as its slowest call, so a delegation you ALREADY mean to make, on a question the next "
+    "fit will not answer, goes in the SAME turn as a long `make_changes` rather than in a turn of "
+    "its own. A running fit is never a reason to ask the analysts anything: a delegation costs the "
+    "same tokens whenever it runs, and one you would not otherwise make is waste."
 )
 
 #: When the finish gate refuses on chi2 (``finish_gate._MAX_ADEQUACY_FINISH_REFUSALS``), read in
