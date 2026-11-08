@@ -270,11 +270,10 @@ async def _restore_best_checkpoint(call) -> "int | None":
     (:func:`probe.scored_version`, :func:`probe.stored_sigma_flagged`), so the version the gate tells
     the agent it judges is the version scored here (gemot#135).
 
-    Why the candidate set is every fitted version and not the server's ``best_version`` checkpoint
-    (brannmark, run 9285a352): ``v5`` scored bic 344.175 but improved on ``v4`` by only 0.70 — under
-    ``NEW_BEST_MIN_DELTA_SCORE`` (2.0) — so the checkpoint stayed at ``v4`` (bic 344.875) and the judge
-    scored the worse model. The threshold is right for the streak and plateau logic, which need a
-    stable notion of progress, and wrong for a final decision, which should see every version.
+    Why the candidate set is every fitted version and not the server's ``best_version`` checkpoint:
+    the checkpoint names only the best, and when the sigma gate refuses that one the scan needs the
+    runners-up in order. Since PEtab-MCP#304 the checkpoint is the strict minimum too, so where the
+    best is clean the two agree.
 
     No fitted version at all means no ``make_changes`` call ever produced one — the agent built
     nothing, or every fit failed. There is nothing to score either way, so the judge scores HEAD and
@@ -399,8 +398,8 @@ async def _scoreable_versions(call) -> "list[int]":
     the finish gate shares, so the gate judges a finish on the version this scan starts from) — the
     candidate set for the scoring scan.
 
-    Read off ``list_versions`` rather than ``get_progress`` so a version the checkpoint's
-    minimum-improvement threshold skipped is still a candidate (see :func:`_restore_best_checkpoint`).
+    Read off ``list_versions`` rather than ``get_progress``, which names only the best (see
+    :func:`_restore_best_checkpoint`).
     The criterion that orders them then GRADES the chosen version in :func:`_judge`, with canonical
     BIC recorded alongside (see :mod:`petab_mcp.criteria`).
     """

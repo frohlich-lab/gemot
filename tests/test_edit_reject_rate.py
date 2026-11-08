@@ -57,7 +57,8 @@ def test_an_applied_edit_is_counted_but_not_rejected():
         ),
         ("Refusing to widen 'k' a 3rd time: it re-pinned at its upper bound", "repeated_widening"),
         (
-            "change_parameters: 'k' sets only one bound — a bound edit needs BOTH",
+            "'k': the box would be [5, 1], since its upper bound stays as it is. Send "
+            "upper_bound too.",
             "bad_bounds_usage",
         ),
         ("change_parameters: entry for 'k' has unknown key(s) ['bounds']", "unknown_key"),

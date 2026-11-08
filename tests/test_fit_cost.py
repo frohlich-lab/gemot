@@ -72,7 +72,7 @@ def test_a_fit_result_closes_with_its_cost_on_the_budget_clock(artifact):
     "payload",
     [
         # refused before the fit stage, in seconds: no `committed`
-        {"applied": False, "error": "'k_pde' sets only one bound ... send both"},
+        {"applied": False, "error": "'k_pde': the box would be [5, 1] ... Send upper_bound too."},
         # the de-dup: the same model as a version already scored, so no fit ran
         {"applied": True, "committed": False, "no_change": True, "duplicate_of_version": 3},
         # the breaker's note in place of a fit that outran its call timeout: no result at all
