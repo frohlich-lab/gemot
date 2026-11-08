@@ -730,7 +730,7 @@ def _traced_run():
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-    from gemot.agent.circuit_breaker import _disabled_tool_filter
+    from gemot.agent.circuit_breaker import _disabled_tool_filter, _new_breaker_state
     from gemot.agent.guards import (
         _reasoning_runaway_guard,
         _subagent_turn_limit,
@@ -739,7 +739,7 @@ def _traced_run():
     )
 
     ids = iter(range(1000))
-    breaker = {"disabled": set()}
+    breaker = _new_breaker_state()
 
     def turn(name, args, copies=1):
         call = {"name": name, "args": args, "id": f"c{next(ids)}", "type": "tool_call"}

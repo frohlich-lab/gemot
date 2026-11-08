@@ -45,6 +45,8 @@ from .circuit_breaker import (
     _new_breaker_state,
     _wrap_tools_with_circuit_breaker,
     call_outcomes,
+    disabled_tools,
+    task_disabled_tools,
 )
 from .finish_gate import _finish_tool
 from .guards import (
@@ -1811,10 +1813,12 @@ async def run_deepagents(
             "call(s) within a batch over the run"
         )
     if breaker_state["n_tool_errors"]:
-        disabled = sorted(breaker_state["disabled"])
+        disabled = disabled_tools(breaker_state)
+        in_tasks = task_disabled_tools(breaker_state)
         print(
             f"[agent] tool errors this run: {breaker_state['n_tool_errors']}"
             + (f"; disabled: {disabled}" if disabled else "")
+            + (f"; disabled within tasks: {in_tasks}" if in_tasks else "")
         )
     token_usage = token_accountant.totals()
     # A run that dispatched tools necessarily made LLM calls; capturing zero of them means the
@@ -1842,7 +1846,9 @@ async def run_deepagents(
         "provider_outage_retries": outage_retries,
         "provider_outage_wait_s": outage_wait_s,
         "n_tool_errors": breaker_state["n_tool_errors"],
-        "disabled_tools": sorted(breaker_state["disabled"]),
+        "disabled_tools": disabled_tools(breaker_state),
+        # gemot#133: a tool an analyst's own errors cut, for that task only, and in how many.
+        "task_disabled_tools": task_disabled_tools(breaker_state),
         # Call-level outcomes for the single editor, counted at the CLIENT wrapper. Distinct from
         # `edit_rejects`, which is server-side and therefore blind to a call that never reached
         # the server -- the case that mattered: a run making 134 failing make_changes calls
