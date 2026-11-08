@@ -61,7 +61,11 @@ class _FakeSession:
     on, ``metas`` the stored meta `get_version` returns for a version (its noise-sigma flags),
     ``head`` the version `describe_problem` reports, and ``summaries`` the fit summary each version
     restores (`restore_version` swaps it in and moves HEAD). With no versions, the gate has nothing
-    to restore and judges HEAD."""
+    to restore and judges HEAD.
+
+    ``parameters`` are the `get_parameters` rows (id and role) and ``model_parameters`` the ids
+    `get_model_structure` says the model declares, which the parsimony gate reads to leave out the
+    flat directions only the fixed tables' parameters carry."""
 
     def __init__(
         self,
@@ -72,6 +76,8 @@ class _FakeSession:
         head=None,
         summaries=None,
         metas=None,
+        parameters=(),
+        model_parameters=(),
     ):
         self.fit_summary = fit_summary
         self.diagnosis = diagnosis or {"per_observable": []}
@@ -81,6 +87,11 @@ class _FakeSession:
         self.head = head
         self.summaries = summaries or {}
         self.metas = metas or {}
+        # JSON lists, as the server sends them; anything else as given, for the odd shapes.
+        self.parameters = list(parameters) if isinstance(parameters, tuple) else parameters
+        self.model_parameters = (
+            list(model_parameters) if isinstance(model_parameters, tuple) else model_parameters
+        )
         self.calls: list[str] = []
         self.restored: list[int] = []
 
@@ -96,6 +107,10 @@ class _FakeSession:
             return _FakeResult({"current_version": self.head})
         if name == "get_version":
             return _FakeResult({"version": args["version"], **self.metas.get(args["version"], {})})
+        if name == "get_parameters":
+            return _FakeResult({"result": self.parameters})
+        if name == "get_model_structure":
+            return _FakeResult({"species": [], "parameters": self.model_parameters, "readouts": {}})
         if name == "restore_version":
             if args["version"] not in self.summaries:
                 return _FakeResult({"ok": False, "error": "no such version"})
@@ -776,6 +791,98 @@ async def test_a_refusal_disarms_a_pending_finish():
     assert (await _finish(tool)).startswith("Recorded: finish")
 
 
+# A schwen-shaped geometry (gemot#134): `km_nExpID3` is a shipped detector constant that only the
+# measurement table's observableParameters use. Its readout stays far below km's lower bound for any
+# model, so the FIM is flat along it whatever the model is. The model's own rates carry an
+# ill-conditioned but full-rank direction beside it. The server lists flat directions smallest
+# eigenvalue first; these lists put the model's first, so the gate cannot lean on that order.
+_KM = "km_nExpID3"
+_KM_ONLY = {"eigenvalue": 0.0, "rel": 0.0, "participants": [{"id": _KM, "weight": 1.0}]}
+_KM_AND_RATE = {
+    "eigenvalue": 1e-12,
+    "rel": 0.0,
+    "participants": [{"id": _KM, "weight": 0.9}, {"id": "k3", "weight": 0.4}],
+}
+_RATES = {
+    "eigenvalue": 2e-4,
+    "rel": 4e-4,
+    "participants": [{"id": "k1", "weight": 0.7}, {"id": "k2", "weight": -0.7}],
+}
+_SCHWEN_ROWS = [
+    {"parameterId": _KM, "role": "observable_scaling"},
+    {"parameterId": "sigma_insulin", "role": "noise_sigma"},
+    *({"parameterId": k, "role": "kinetic"} for k in ("k1", "k2", "k3")),
+]
+
+
+def _schwen(*, rank, directions, parameters=_SCHWEN_ROWS, model_parameters=("k1", "k2", "k3")):
+    """A session whose FIM, over 4 estimated parameters, has ``rank`` and ``directions``."""
+    ident = {
+        "available": True,
+        "method": "fim+multistart",
+        "fim": {"rank": rank, "n_estimated": 4, "condition": 1e16, "rank_deficient": rank < 4},
+        "flat_directions": directions,
+    }
+    return _FakeSession(
+        _fit(), identifiability=ident, parameters=parameters, model_parameters=model_parameters
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_deficiency_only_a_shipped_observation_parameter_carries_is_no_refusal():
+    """schwen (gemot#134): every first refusal led with `[km_nExpID3·1.0]`, which no model edit can
+    fix, and all 4 finished runs spent 45-100 min narrowing km's bounds to get past the gate. A
+    rank deficiency lying only along such a parameter is not a refusal, and the model's merely
+    ill-conditioned direction beside it does not become one (the rank-deficiency-only rule)."""
+    fs = {}
+    session = _schwen(rank=3, directions=[_RATES, _KM_ONLY])
+    tool = _agent._finish_tool(session, fs)
+    assert "FINISH ARMED" in await _finish(tool)
+    assert (await _finish(tool)).startswith("Recorded: finish")
+    assert fs["refusals"] == {} and fs["relents"] == {}
+
+
+@pytest.mark.asyncio
+async def test_a_shipped_direction_is_never_named_beside_the_models_own():
+    """A deficiency the model can reach still refuses, but names only what an edit reaches: the
+    km-only direction is left out (and the refusal says something was), while a direction km
+    shares with a model rate stays, since the rate is the model's to change."""
+    session = _schwen(rank=2, directions=[_RATES, _KM_ONLY, _KM_AND_RATE])
+    out = await _finish(_agent._finish_tool(session))
+    assert out.startswith("FINISH REFUSED") and "cannot constrain" in out
+    assert f"[{_KM}·1.0]" not in out
+    assert f"[{_KM}·0.9, k3·0.4]" in out and "[k1·0.7, k2·-0.7]" in out
+    assert prompts.FINISH_REFUSED_PARSIMONY_LEFT_OUT in out
+
+
+@pytest.mark.asyncio
+async def test_an_observation_parameter_the_model_declares_is_its_own():
+    """A published model may reuse an observable's normaliser in its own math (`A_tot`, the
+    server's warning-level reuse), and then an edit does reach it: such a parameter is the model's,
+    and its direction refuses and is named as before."""
+    session = _schwen(rank=3, directions=[_KM_ONLY], model_parameters=("k1", "k2", "k3", _KM))
+    out = await _finish(_agent._finish_tool(session))
+    assert out.startswith("FINISH REFUSED") and f"[{_KM}·1.0]" in out
+    assert prompts.FINISH_REFUSED_PARSIMONY_LEFT_OUT not in out
+
+
+@pytest.mark.parametrize(
+    "parameters, model_parameters",
+    [((), ("k1", "k2", "k3")), (_SCHWEN_ROWS, None), ("not rows", ("k1",))],
+)
+@pytest.mark.asyncio
+async def test_without_readable_roles_the_parsimony_gate_refuses_as_before(
+    parameters, model_parameters
+):
+    """Nothing is left out unless the reads show it out of reach: no observation roles, an
+    unreadable model structure, or an odd `get_parameters` shape keep the refusal and its naming."""
+    session = _schwen(
+        rank=3, directions=[_KM_ONLY], parameters=parameters, model_parameters=model_parameters
+    )
+    out = await _finish(_agent._finish_tool(session))
+    assert out.startswith("FINISH REFUSED") and f"[{_KM}·1.0]" in out
+
+
 # --- _model_committed: the driver-loop guard for a silent stop that built nothing ------------
 def _probe_returning(payload):
     async def probe(tool, args):
@@ -1071,3 +1178,27 @@ def test_the_gate_reads_chi2_as_the_judge_does(report, p):
     from gemot.scenario import chi2_passes
 
     assert chi2_passes(report, p) == _reference_free_adequacy("chi2", report, p, None)["passed"]
+
+
+@pytest.mark.asyncio
+async def test_an_inadequate_over_parameterised_model_hears_adequacy_first():
+    """gemot#134: the parsimony refusal used to return before the chi2 check was reached, so an
+    inadequate, rank-deficient model was told only that some parameters were unconstrained.
+    dessauges 90 (p 1e-23) then spent its last 11 fits on equivalent rewrites until the streak cap
+    ended it. The chi2 refusal comes first, without the FIM probe; once the model passes chi2, the
+    parsimony refusal follows."""
+    fs = {}
+    session = _FakeSession(
+        _chi2_fit(1e-23),
+        identifiability=_FLAT_16_ICS,
+        versions=[dict(r) for r in _STORE],
+        head=5,
+    )
+    tool = _agent._finish_tool(session, fs, adequacy="chi2")
+    out = await _finish(tool)
+    assert out.startswith("FINISH REFUSED") and "fails chi2" in out
+    assert "cannot constrain" not in out and "get_fit_diagnosis" not in session.calls
+    session.fit_summary = _chi2_fit(0.2)
+    out = await _finish(tool)
+    assert out.startswith("FINISH REFUSED") and "cannot constrain" in out
+    assert fs["refusals"] == {"adequacy": 1, "parsimony": 1}

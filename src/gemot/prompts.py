@@ -1207,13 +1207,22 @@ FINISH_REFUSED_PARSIMONY_TMPL = (
     "constrain. The Fisher-information matrix at the optimum is RANK-DEFICIENT: "
     "the near-flat eigen-directions below are parameter combinations that trade "
     "off freely with no effect on the fit (each term as id·weight; parameters "
-    "sharing a direction move together). {directions}. Estimating a combination "
+    "sharing a direction move together). {directions}.{left_out} Estimating a combination "
     "the data cannot pin inflates k for no gain, and a bic resting on "
     "non-identifiable parameters is not accepted. Simplify the model FORM and "
     "refit — remove the term, take its limiting (irreversible/instantaneous) form, "
     "merge a collinear pair into one parameter, or fix a value the experiment sets "
     "— do not just re-fit the same structure. (" + _PARAMETER_HALF + " has "
     "the full flat_directions and ranked candidates; the tool's default section does NOT.)"
+)
+
+# `left_out` in FINISH_REFUSED_PARSIMONY_TMPL where the gate dropped a flat direction carried only by
+# the problem's own observation or noise parameters (finish_gate._fixed_table_parameters), which the
+# full diagnosis still lists: on schwen (gemot#134) that was a shipped detector constant leading
+# every refusal, and runs spent 45-100 min narrowing its bounds to get past the gate.
+FINISH_REFUSED_PARSIMONY_LEFT_OUT = (
+    " Left out: any direction carried only by the problem's own observation or noise parameters, "
+    "which no model edit reaches."
 )
 
 # The CHI2 gate (finish_gate._MAX_ADEQUACY_FINISH_REFUSALS): only where the run is judged by chi2
@@ -1672,6 +1681,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "refused_sigma": FINISH_REFUSED_SIGMA_TMPL,
             "sigma_fallback_advice": FINISH_SIGMA_FALLBACK_ADVICE,
             "refused_parsimony": FINISH_REFUSED_PARSIMONY_TMPL,
+            "refused_parsimony_left_out": FINISH_REFUSED_PARSIMONY_LEFT_OUT,
             "refused_adequacy": FINISH_REFUSED_ADEQUACY_TMPL,
             "restored_best": FINISH_RESTORED_BEST_TMPL,
             "armed": FINISH_ARMED_TMPL,
