@@ -67,6 +67,7 @@ _LAZY = {
     "_NOISE_SIGMA_BAND_MIN_DF": ".scoring",
     "_noise_sigma_flag": ".scoring",
     "_reference_sigma_flag": ".scoring",
+    "_sigma_verdict": ".scoring",
     "_residual_structure_fields": ".scoring",
     "_reference_free_adequacy": ".scoring",
     "REFERENCE_FREE_GOF_ALPHA": ".scoring",

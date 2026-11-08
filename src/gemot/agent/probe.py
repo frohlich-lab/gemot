@@ -124,6 +124,26 @@ def best_first(rows) -> list[int]:
     return [num for _, num in scored]
 
 
+async def scored_version(ranked: list[int], flagged) -> tuple[int, bool]:
+    """The version a run is scored on, chosen from ``ranked`` (fitted versions best first,
+    :func:`best_first`): the first whose noise sigma ``await flagged(version)`` does not call
+    implausible, with ``True``; the best-scoring one, with ``False``, when every one is flagged.
+
+    The judge's scoring scan (:func:`gemot.runner.judge._restore_best_checkpoint`) and the finish
+    gate (:func:`_restore_best`) both choose with this, so the rule is written once. They differ only
+    in ``flagged``: the judge also asks the reference model's fitted sigmas, which the gate does not
+    hold (frohlich-lab/gemot#135).
+
+    ``flagged`` answers ``True``, ``False``, or ``None`` for unassessable (no stored report, or one no
+    band can read). ``None`` stops the scan as ``False`` does: the judge's sigma gate does not fail an
+    unassessable version either, so passing it over would score a worse one for nothing.
+    """
+    for version in ranked:
+        if await flagged(version) is not True:
+            return version, True
+    return ranked[0], False
+
+
 async def _sigma_flagged(call_tool, version: int) -> "bool | None":
     """Does the server flag ``version``'s ESTIMATED noise sigma as implausible? ``None`` when
     unassessable.
@@ -157,9 +177,9 @@ async def _restore_best(call_tool) -> "tuple[int, int] | None":
     because every gate read (``get_fit_summary``, ``get_fit_diagnosis``) is of HEAD, and because
     the judge restores the same version before it scores.
 
-    Which version is the judge's scan without its reference: the best-scoring one (:func:`best_first`)
-    whose noise sigma the server does not flag (:func:`_sigma_flagged`), else the plain best-scoring
-    one when every version is flagged. Restoring the best-scoring version regardless would put a
+    Which version is the judge's scan (:func:`scored_version`) without its reference: the
+    best-scoring one (:func:`best_first`) whose noise sigma the server does not flag
+    (:func:`_sigma_flagged`), else the plain best-scoring one when every version is flagged. Restoring the best-scoring version regardless would put a
     gamed noise model back over the repaired, slightly worse HEAD the lead had just fitted, refuse
     the finish on its sigma, and undo the repair on every attempt, while the judge would score the
     repaired version anyway. The reference sigmas the judge also checks stay hidden: they would
@@ -171,11 +191,7 @@ async def _restore_best(call_tool) -> "tuple[int, int] | None":
         ranked = best_first(_structured(await call_tool("list_versions", {})))
         if not ranked:
             return None
-        chosen = ranked[0]
-        for version in ranked:
-            if await _sigma_flagged(call_tool, version) is not True:
-                chosen = version
-                break
+        chosen, _ = await scored_version(ranked, lambda v: _sigma_flagged(call_tool, v))
         desc = _structured(await call_tool("describe_problem", {}))
         head = desc.get("current_version") if isinstance(desc, dict) else None
         if not isinstance(head, int) or head == chosen:

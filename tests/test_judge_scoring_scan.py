@@ -508,3 +508,38 @@ def test_a_scale_coupled_sigma_no_longer_costs_the_run_its_better_version(tmp_pa
     assert store.head == 3 and result["success"] is False  # the round-4 failure
     assert result["noise_sigma_basis"] == "reference"
     assert result["noise_sigma_scale_coupled"] == []
+
+
+# --- the scan the finish gate shares (gemot#135) -----------------------------------------------
+# The gate and this judge choose the scored version with ONE function, `probe.scored_version`; they
+# differ only in the sigma predicate they hand it. Before, each wrote the loop out, and a change to
+# one (what an unassessable version means, say) would have left the gate promising a version the
+# judge does not score.
+
+
+def _verdicts(by_version):
+    async def flagged(version):
+        return by_version[version]
+
+    return flagged
+
+
+def test_the_scan_stops_at_the_first_version_its_predicate_does_not_flag():
+    from gemot.agent.probe import scored_version
+
+    flags = _verdicts({4: True, 5: False, 3: False})
+    assert asyncio.run(scored_version([4, 5, 3], flags)) == (5, True)
+
+
+def test_an_unassessable_version_stops_the_scan_like_a_clean_one():
+    """The judge's gate does not fail a version it cannot assess, so passing it over would score a
+    worse version for nothing."""
+    from gemot.agent.probe import scored_version
+
+    assert asyncio.run(scored_version([4, 5], _verdicts({4: None, 5: False}))) == (4, True)
+
+
+def test_when_every_version_is_flagged_the_scan_returns_the_best_scoring_one_unclean():
+    from gemot.agent.probe import scored_version
+
+    assert asyncio.run(scored_version([4, 5], _verdicts({4: True, 5: True}))) == (4, False)

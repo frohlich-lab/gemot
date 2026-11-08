@@ -33,18 +33,17 @@ from pathlib import Path
 
 from .. import ablations
 from ..agent.circuit_breaker import _is_call_timeout
-from ..agent.probe import best_first
+from ..agent.probe import best_first, scored_version
 from ..fit_budget import FIT_BUDGET_MARGIN, FIT_COMPILE_MARGIN_S, FIT_PER_START_TIMEOUT_S
 from .clock import CALL_IDLE_WINDOW_S, HELD_OUT_TOOL, _ToolClock
 from ..paths import validation_measurements_path
 from .provenance import _bic_reference, _judge_mode, _now_iso, _reference_score
 from ..scenario import REFERENCE_FREE_GOF_ALPHA, Baseline, JudgeContext, Scenario
 from .scoring import (
-    _noise_sigma_flag,
     _reference_free_adequacy,
-    _reference_sigma_flag,
     _residual_structure_fields,
     _scale_coupled_sigmas,
+    _sigma_verdict,
     _validation_fields,
 )
 
@@ -290,16 +289,12 @@ async def _restore_best_checkpoint(call, reference=None) -> "int | None":
         return await _restore_checkpoint_only(call)
     head = await _head_version(call)
     fallback = candidates[0]
-    chosen, clean = fallback, False
-    for version in candidates[:_SCORING_SCAN_LIMIT]:
-        flagged = await _sigma_flagged(call, version, reference)
-        # `None` is unassessable — no stored report, or one the gate cannot read. The gate will not
-        # fail that version either, so it is scoreable and the scan stops on it exactly as it does
-        # on a clean one. (A whole store of them, e.g. a version dir written before the report was
-        # persisted, therefore lands on the best-scoring version: the pre-scan behaviour.)
-        if flagged is not True:
-            chosen, clean = version, True
-            break
+    # The finish gate chooses with the same scan, minus the reference. An unassessable version stops
+    # it as a clean one does, so a whole store of them (a version dir written before the report was
+    # persisted) lands on the best-scoring version: the pre-scan behaviour.
+    chosen, clean = await scored_version(
+        candidates[:_SCORING_SCAN_LIMIT], lambda v: _sigma_flagged(call, v, reference)
+    )
     # ONE restore, of the version actually chosen. The scan itself is read-only: restoring each
     # candidate to look at it would mutate the working state N times and write N rollback entries
     # into the provenance the run is judged on, to read numbers already stored beside each version.
@@ -453,8 +448,8 @@ async def _sigma_flagged(call, version: int, reference) -> "bool | None":
     """Would ``version``'s noise model fail :func:`_judge`'s integrity gate? ``None`` when
     unassessable.
 
-    The SAME verdict the gate itself computes — ``_reference_sigma_flag`` against the reference's
-    fitted sigmas, falling back to the data-std band — read off the report the FIT stored beside
+    The SAME verdict the gate itself computes (:func:`scoring._sigma_verdict`: the reference's
+    fitted sigmas, falling back to the data-std band), read off the report the FIT stored beside
     that version (:func:`petab_mcp.fitting.build_sim_payload_for_version`). A read, not a rollback:
     the scan can ask about every version without touching the working state.
 
@@ -473,7 +468,7 @@ async def _sigma_flagged(call, version: int, reference) -> "bool | None":
     if not report:
         return None
     k_v, n_v = _stored_k_and_n(stored)
-    flag = _reference_sigma_flag(report, reference, k=k_v, n=n_v) or _noise_sigma_flag(report)
+    flag, _ = _sigma_verdict(report, reference, k=k_v, n=n_v)
     if not flag:
         return None
     return bool(flag["inflated"] or flag["collapsed"])
@@ -735,9 +730,7 @@ async def _judge(
     # explained and unexplained variance, so no fixed band holds the truth). Falls back to the
     # data-std band for a reference.json written before `noise_sigma` was recorded — regenerate
     # with `python -m petab_agent_bench --refit <example>` to switch an example over.
-    reference_sigma_flag = _reference_sigma_flag(noise_sigma_report, ref, k=k, n=n)
-    noise_sigma_flag = reference_sigma_flag or _noise_sigma_flag(noise_sigma_report)
-    sigma_basis = "reference" if reference_sigma_flag else "data_std"
+    noise_sigma_flag, sigma_basis = _sigma_verdict(noise_sigma_report, ref, k=k, n=n)
     sigma_implausible = bool(
         noise_sigma_flag and (noise_sigma_flag["inflated"] or noise_sigma_flag["collapsed"])
     )

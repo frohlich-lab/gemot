@@ -44,6 +44,7 @@ __all__ = [
     "_reference_sigma_flag",
     "_residual_structure_fields",
     "_scale_coupled_sigmas",
+    "_sigma_verdict",
     "_validation_fields",
 ]
 
@@ -431,6 +432,22 @@ def _reference_sigma_flag(report, reference, k=None, n=None) -> dict | None:
         "max_fraction_of_data_std": _max_fraction_of_data_std(report),
         "min_fraction_of_data_std": _min_fraction_of_data_std(report),
     }
+
+
+def _sigma_verdict(report, reference, k=None, n=None) -> tuple[dict | None, str]:
+    """The judge's noise-sigma verdict on one fitted version, and the basis it was reached on:
+    ``(flag, "reference")`` from :func:`_reference_sigma_flag` wherever that basis applies, else
+    ``(flag, "data_std")`` from :func:`_noise_sigma_flag`, the server's own band. ``flag`` is
+    ``None`` where neither can read the report.
+
+    The ONE statement of the rule. The judge asks it of every candidate in its scoring scan and of
+    the version it scores, and the two must not drift: a scan that chose by one rule and a gate that
+    failed by another would score a version the gate then fails while a clean one sat unscored.
+    """
+    flag = _reference_sigma_flag(report, reference, k=k, n=n)
+    if flag:
+        return flag, "reference"
+    return _noise_sigma_flag(report), "data_std"
 
 
 def _sigma_ratio_band(n_points, k, n, reference, alpha):

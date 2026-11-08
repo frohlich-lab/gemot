@@ -22,6 +22,7 @@ from gemot.runner import (  # noqa: E402
     _judge,
     _noise_sigma_flag,
     _reference_sigma_flag,
+    _sigma_verdict,
     _ToolClock,
 )
 
@@ -329,6 +330,22 @@ def test_reference_sigma_flag_is_none_without_recorded_reference_sigmas():
     assert _reference_sigma_flag({"s": {"fitted": 0.1}}, {"nll": 1.0, "k": 2, "n": 3}) is None
     assert _reference_sigma_flag({"s": {"fitted": 0.1}}, {"noise_sigma": {}}) is None
     assert _reference_sigma_flag({}, {"noise_sigma": {"s": 0.1}}) is None
+
+
+def test_the_sigma_verdict_prefers_the_reference_and_names_its_basis():
+    """``_sigma_verdict`` is the ONE statement of the rule the judge's scan and its gate both apply
+    (gemot#135): the reference basis wherever the reference records the sigma, else the server's
+    data-std band, and the basis it took. A 0.12x collapse against the reference (boehm r39's
+    sigma_pSTAT5B at v21) is caught there though the data-std band calls the same sigma plausible."""
+    report = {"s": {**_sigma_entry(0.12, 1.0, 0.4), "n_points": 60}}
+    ref = {"noise_sigma": {"s": 1.0}, "k": _WELL_POWERED["ref_k"], "n": _WELL_POWERED["ref_n"]}
+    flag, basis = _sigma_verdict(report, ref, k=12, n=120)
+    assert basis == "reference" and flag["collapsed"] and not flag["inflated"]
+    # the same report against a reference that records no sigma: the server's band, which passes it
+    flag, basis = _sigma_verdict(report, {"nll": 1.0, "k": 2, "n": 3})
+    assert basis == "data_std" and not flag["collapsed"] and not flag["inflated"]
+    # nothing to read: no verdict, on the fallback basis
+    assert _sigma_verdict({}, ref) == (None, "data_std")
 
 
 def test_reference_sigma_pairs_a_lone_sigma_across_an_id_mismatch():
