@@ -214,8 +214,10 @@ async def _petab_server(
         else "",
         # <constraints>: the causal_constraints arm's file, "" off it.
         _constraints(scenario),
-        # <progress_signals>: "0" on the progress_signals arm's off side, which withholds the
-        # server's standing, comparisons and whole-fit verdicts from the agent.
+        # <fix_pointers>: "0" on the fix_pointers arm, whose server sends no what-to-change text.
+        "1" if ablations.enabled("fix_pointers") else "0",
+        # <progress_signals>: "0" on the progress_signals arm's off side, whose server withholds
+        # the numbers that rank, compare or judge a fit.
         "1" if ablations.enabled("progress_signals") else "0",
     ]
     server_log_path = work / "server.log"

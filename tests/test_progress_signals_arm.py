@@ -71,7 +71,7 @@ def _bootstrap(monkeypatch, argv: list[str]) -> dict:
 
 
 def test_the_server_gets_the_switch_as_the_last_argument(monkeypatch):
-    argv = ["p.yaml", "build", "off", "127.0.0.1", "0", "5", "", "0", "", ""]
+    argv = ["p.yaml", "build", "off", "127.0.0.1", "0", "5", "", "0", "", "", "1"]
     assert _bootstrap(monkeypatch, [*argv, "1"])["progress_signals"] is True
     assert _bootstrap(monkeypatch, [*argv, "0"])["progress_signals"] is False
     with pytest.raises(ValueError, match="not enough values to unpack"):

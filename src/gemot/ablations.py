@@ -146,6 +146,17 @@ ABLATIONS: tuple[Ablation, ...] = (
         "the measured entities and inputs with their identifiers, derived (`entity_ids`)",
     ),
     Ablation(
+        name="fix_pointers",
+        env="PETAB_FIX_POINTERS",
+        default_on=True,
+        changes_prompt=True,
+        effect="OFF withholds the numbers that point the agent at what to change or where the fit is "
+        "off: the merge hints and a tie's payoff, the ranked candidates, the regime grades, the "
+        "per-observable residual tables and outliers, sigma heterogeneity and which observables a "
+        "verdict flags (create_server(fix_pointers=False)), and the prompt lines that read them. "
+        "Every score, total and verdict, and all prose, stay",
+    ),
+    Ablation(
         name="progress_signals",
         env="PETAB_PROGRESS_SIGNALS",
         default_on=True,

@@ -52,6 +52,13 @@ BIOLOGY_BLIND_ENABLED = _ablations.enabled("biology_blind")
 BIOCURATOR_ENABLED = _ablations.enabled("biocurator") and not BIOLOGY_BLIND_ENABLED
 INDRA_STATEMENTS_ENABLED = _ablations.enabled("indra_statements")
 CAUSAL_CONSTRAINTS_ENABLED = _ablations.enabled("causal_constraints")
+FIX_POINTERS_ENABLED = _ablations.enabled("fix_pointers")
+
+
+def _pointing(text: str, off: str = "") -> str:
+    """``text``, which reads numbers the server withholds on the ``fix_pointers`` arm (the merge
+    hints, a tie's payoff, the per-observable residual tables), or ``off`` on that arm."""
+    return text if FIX_POINTERS_ENABLED else off
 PROGRESS_SIGNALS_ENABLED = _ablations.enabled("progress_signals")
 
 
@@ -123,7 +130,7 @@ _FREE_LITERALS = "0, ±1, 2, 3, 4, 6, 100 and their reciprocals"
 #: ``dscore`` is 2·(dnll − price) and so NEGATIVE when the merge is worth taking. Stated as the
 #: sign convention rather than as a direction of change: "lowers the score by dscore" reads, for
 #: a dscore of −5.2, as raising it by 5.2.
-_DSCORE_SIGN = "a NEGATIVE `dscore` is the win: it is how much the merge LOWERS bic"
+_DSCORE_SIGN = _pointing("a NEGATIVE `dscore` is the win: it is how much the merge LOWERS bic")
 
 #: What a priced merge hint does and does not license. It is an OPTION, never a condition for
 #: finishing: told that a bottomed-out bic with merges outstanding "is NOT a finished model", runs
@@ -131,7 +138,7 @@ _DSCORE_SIGN = "a NEGATIVE `dscore` is the win: it is how much the merge LOWERS 
 #: reading of the model, and merges took 10-13 of ~45 fits per sneyd run (gemot#94). Each price is
 #: for ONE PAIR, and the edit that is priced by nothing — collapsing three symbols into a single
 #: value — is the expensive one.
-_MERGE_RULE = (
+_MERGE_RULE = _pointing(
     "A priced merge is an OPTION, not a condition for finishing: a model with hints standing can "
     "be done. Take one where the two parameters could be ONE quantity, and only a PRICED pair. "
     "Each price is for that PAIR alone, so hints sharing NO parameter are independent edits — put "
@@ -148,7 +155,7 @@ _MERGE_RULE = (
 #: one declined tie alone was worth about 3.5 of a run's 14 bic over the bar (gemot#138). A pair
 #: holding a rate constant still gets the test, so it still covers the ties it was written against:
 #: a rate tied to a concentration, a threshold or a gain (gemot#94).
-_MERGE_BIOLOGY = (
+_MERGE_BIOLOGY = _pointing(
     "The hints price IDENTIFIABILITY, not biology, so you supply the biology for a pair holding a "
     "mechanistic RATE CONSTANT: tie it only to a rate that could plausibly BE the same physical "
     "process (dephosphorylation of A at S10 and at T20, B binding two equivalent sites of A), "
@@ -161,7 +168,7 @@ _MERGE_BIOLOGY = (
 #: Where the priced ties are. A fit result lists only the ties new since its parent version
 #: (frohlich-lab/PEtab-MCP#211), so one first listed on an earlier version shows on a later fit only
 #: as ``merge_hints: []`` beside ``n_merge_hints``.
-_MERGE_HINTS_WHERE = (
+_MERGE_HINTS_WHERE = _pointing(
     "`merge_hints` on your last fit, or on the earlier fit where they first appeared "
     "(`n_merge_hints` counts every tie that still stands),"
 )
@@ -490,8 +497,9 @@ DEFAULT_SYSTEM_PROMPT = (
     )
     + _SIGMA_CAP_ADVISORY
     + " Judge whether the "
-    "mechanism is RIGHT from the residual STRUCTURE — get_fit_diagnosis's per-observable bias + "
-    "worst-fit points, or a signal_engineer time-trend read: SYSTEMATIC (non-random) residuals "
+    "mechanism is RIGHT from the residual STRUCTURE — "
+    + _pointing("get_fit_diagnosis's per-observable bias + worst-fit points, or ")
+    + "a signal_engineer time-trend read: SYSTEMATIC (non-random) residuals "
     "mean a mechanism is still missing; clean random scatter means it isn't. INITIAL CONDITIONS "
     "— the server AUTO-GENERATES an `<species>_init` parameter for most species you declare, "
     "ESTIMATED by default, whether or not you write one: every species you add silently adds a "
@@ -518,8 +526,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "mind. Three consequences follow directly, and they are the ones runs get wrong: (a) a "
     "parameter that buys LESS than ln(n) of 2·nll makes the model WORSE even though the fit got "
     "better, so 'nll improved' is not a reason to keep a parameter; (b) dropping a parameter that "
-    "costs you nothing in nll is a FREE ln(n) of bic, which is why the merges and pinned "
-    "parameters your fit already names are worth weighing; and (c) the failure is TWO-SIDED — too "
+    "costs you nothing in nll is a FREE ln(n) of bic, which is why the "
+    + _pointing("merges and ")
+    + "pinned parameters your fit already names are worth weighing; and (c) the failure is TWO-SIDED — too "
     "few parameters underfits and too many is charged for nothing, and both lose. Note which side "
     "you are on: while the residuals are still structured you are underfitting, and the arithmetic "
     "above is for pricing what you keep at the end, not for talking yourself out of a mechanism "
@@ -531,9 +540,12 @@ DEFAULT_SYSTEM_PROMPT = (
     + "\n"
     "3. Read the CURRENT HEAD's metrics (never an earlier version's) after each `make_changes` and decide "
     "what to do next. The DEFAULT is to KEEP ITERATING while bic is still improving fit-over-fit "
-    "by more than a few units, or while a genuinely different structure is still untried — "
-    "get_fit_diagnosis's systematic per-observable bias / residual time-trend says where one is "
-    "likeliest to pay: just make the next justified "
+    "by more than a few units, or while a genuinely different structure is still untried"
+    + _pointing(
+        " — get_fit_diagnosis's systematic per-observable bias / residual time-trend says where "
+        "one is likeliest to pay"
+    )
+    + ": just make the next justified "
     "`make_changes` call (iterating needs NO control call). "
     "STRUCTURE BEFORE POLISH — while the residuals still show systematic structure, the MECHANISM is "
     "what is wrong, so spend the call on the mechanism: a rate-law form, a topology, a species, a "
@@ -548,14 +560,19 @@ DEFAULT_SYSTEM_PROMPT = (
     "fixing. What that tells you depends on the residuals. While they are still systematically "
     "structured, small gains are a WRONG structure being polished — 'bic is still improving' is then "
     "no reason to keep going in that direction, so change the mechanism instead. Once they are CLEAN, "
-    "small gains are the legitimate endgame: keep taking them — a sound merge your fit names, a "
-    "dropped parameter, a tighter form — until they run out, because the last few bic are often "
+    "small gains are the legitimate endgame: keep taking them — a sound merge"
+    + _pointing(" your fit names")
+    + ", a dropped parameter, a tighter form — until they run out, because the last few bic are often "
     "exactly what puts a model at the bar. Either way, when bic has NOT "
     "improved over the last few "
     "iterations, STOP tweaking the same structure or piling on parameters: (a) call "
     "`get_fit_diagnosis(sections='all')`, which answers both halves of 'why is it stuck' in one "
-    "call — a systematic sign/trend at particular observables or times points at the missing "
-    "mechanism, and the `parameters` section says which free parameters the data cannot pin and "
+    "call — "
+    + _pointing(
+        "a systematic sign/trend at particular observables or times points at the missing "
+        "mechanism, and "
+    )
+    + "the `parameters` section says which free parameters the data cannot pin and "
     "which pair would cost least to give one shared value. That section is the one to ASK FOR when "
     "bic has stalled; the default `sections='residuals'` is the cheap read for 'where is the fit "
     "off'. If that is not enough, "
@@ -573,12 +590,15 @@ DEFAULT_SYSTEM_PROMPT = (
     "rate-law form or topology).\n"
     "Call `finish` — the ONE control call — when bic has bottomed out: you cannot lower it "
     "further by adding, dropping or re-forming mechanism, or by a merge you judge sound. "
-    + _MERGE_HINTS_WHERE
-    + " name pairs the data cannot tell apart and what tying each would buy. "
-    + _MERGE_RULE
-    + " "
-    + _MERGE_BIOLOGY
-    + " Finish on the LOWEST-bic such model.\n"
+    + _pointing(
+        _MERGE_HINTS_WHERE
+        + " name pairs the data cannot tell apart and what tying each would buy. "
+        + _MERGE_RULE
+        + " "
+        + _MERGE_BIOLOGY
+        + " "
+    )
+    + "Finish on the LOWEST-bic such model.\n"
     + _RESIDUALS_DO_NOT_DECIDE_DONE
     + "\n"
     "Repeat until you call `finish`. When you finish, report the "
@@ -688,11 +708,13 @@ INDRA_SYSTEM_PROMPT = (
     "did not help costs nothing.\n"
     "5. FINISH when bic has bottomed out: nothing "
     "you add, drop or re-form lowers it, nor a merge you judge sound. "
-    + _MERGE_HINTS_WHERE
-    + " name pairs the data cannot tell apart. "
-    + _MERGE_RULE
-    + " "
-    + _MERGE_BIOLOGY
+    + _pointing(
+        _MERGE_HINTS_WHERE
+        + " name pairs the data cannot tell apart. "
+        + _MERGE_RULE
+        + " "
+        + _MERGE_BIOLOGY
+    )
     + "\n"
     # The arm's own stopping rule, in place of _RESIDUALS_DO_NOT_DECIDE_DONE's "three failed calls
     # and bic has bottomed out": Claude Haiku finished after 12-21 minutes of a two-hour budget, on
@@ -706,8 +728,9 @@ INDRA_SYSTEM_PROMPT = (
     "worse attempt costs nothing and time left unspent is bic forfeited. Before you finish, have "
     "tried each kind of change: other mechanisms for what each observable measures (an "
     "unmeasured intermediate or complex, a feedback or regulation, another policy or a `scheme` "
-    "of your own), dropping what the data does not need, the merges the fit names that tie one "
-    "quantity, and from "
+    "of your own), dropping what the data does not need, the merges"
+    + _pointing(" the fit names")
+    + " that tie one quantity, and from "
     "the best version (`base_version`) the next idea."
     "\nWhen you finish, report the final bic and the model."
 )
@@ -1261,19 +1284,22 @@ FINISH_DESCRIPTION = (
     "reach. Its PASS is worth only its lof_df "
     "(replicated points minus your estimated structural parameters): a pass carrying weak: true, or "
     "carrying no lof_df at all, does not show the form is right. "
-    + _MERGE_HINTS_WHERE
-    + " which the ARM message lists as PRICED MERGES, are pairs of parameters the data cannot "
-    "tell apart: tying one into one symbol costs `dnll` in fit and changes the score by its "
-    "`dscore` — "
-    + _DSCORE_SIGN
-    + ". "
-    + _MERGE_RULE
-    + " A `move_scaled` of many decades is a flat direction rather than an edit that survives a "
-    "refit. "
-    + (
-        "Take a merge only where the measured design gives the two parameters no distinct role. "
-        if BIOLOGY_BLIND_ENABLED
-        else _MERGE_BIOLOGY + " "
+    + _pointing(
+        _MERGE_HINTS_WHERE
+        + " which the ARM message lists as PRICED MERGES, are pairs of parameters the data cannot "
+        "tell apart: tying one into one symbol costs `dnll` in fit and changes the score by its "
+        "`dscore` — "
+        + _DSCORE_SIGN
+        + ". "
+        + _MERGE_RULE
+        + " A `move_scaled` of many decades is a flat direction rather than an edit that survives "
+        "a refit. "
+        + (
+            "Take a merge only where the measured design gives the two parameters no distinct "
+            "role. "
+            if BIOLOGY_BLIND_ENABLED
+            else _MERGE_BIOLOGY + " "
+        )
     )
     + "Finishing takes TWO calls: the "
     "first ARMS it and shows you the "
@@ -1329,7 +1355,9 @@ FINISH_REFUSED_PARSIMONY_TMPL = (
     "refit — remove the term, take its limiting (irreversible/instantaneous) form, "
     "merge a collinear pair into one parameter, or fix a value the experiment sets "
     "— do not just re-fit the same structure. (" + _PARAMETER_HALF + " has "
-    "the full flat_directions and ranked candidates; the tool's default section does NOT.)"
+    "the full flat_directions"
+    + _pointing(" and ranked candidates")
+    + "; the tool's default section does NOT.)"
 )
 
 # `left_out` in FINISH_REFUSED_PARSIMONY_TMPL where the gate dropped a flat direction carried only by

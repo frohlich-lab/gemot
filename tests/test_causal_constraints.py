@@ -52,15 +52,16 @@ def _bootstrap(monkeypatch, argv: list[str]) -> dict:
 
 
 _ARGV = ["p.yaml", "build", "off", "127.0.0.1", "0", "5", "", "0", "build/entity_map.json"]
+_FIX_POINTERS = "1"
 
 
 def test_the_server_gets_the_constraints_with_updates_off(monkeypatch):
     """The eleventh argument is the constraints file, "" off the arm. Updates stay off either way,
     so the server registers no `set_constraints` (#134, decision 6)."""
-    seen = _bootstrap(monkeypatch, [*_ARGV, "indra/constraints.txt", "1"])
+    seen = _bootstrap(monkeypatch, [*_ARGV, "indra/constraints.txt", _FIX_POINTERS, "1"])
     assert seen["constraints"] == "indra/constraints.txt"
     assert seen["constraint_updates"] == "off"
-    assert _bootstrap(monkeypatch, [*_ARGV, "", "1"])["constraints"] is None
+    assert _bootstrap(monkeypatch, [*_ARGV, "", _FIX_POINTERS, "1"])["constraints"] is None
 
 
 def test_a_bootstrap_missing_the_constraints_argument_fails_at_startup(monkeypatch):

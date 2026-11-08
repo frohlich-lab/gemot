@@ -140,8 +140,11 @@ dependencies = [
     # Then 92133c8, main: #313: every version's meta keeps its edit's and lint's warnings whole, as
     # `edit_warnings`, which `get_version` returns; a result folds a repeated one to a line (#296).
     # gemot reads nothing of it yet (#286 item 4). #311, #312: CI and tests only.
-    # Then 7ffb364, main: #316: `create_server(progress_signals=False)`, the progress_signals arm's
-    # server half. #314: `create_server(fix_pointers=False)`, which gemot passes nowhere yet (#150).
+    # Then b5c9b35, main: #314: `create_server(fix_pointers=False)` withholds the numbers that point
+    # at what to change or where the fit is off; the bootstrap passes it on every launch (the
+    # fix_pointers arm).
+    # Then 7ffb364, main: #316: `create_server(progress_signals=False)` withholds the numbers that
+    # rank, compare or judge a fit; the bootstrap passes it on every launch (the progress_signals arm).
     "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@7ffb3643d5fc034cfacda789e1a6d5674c6e5aed",
     # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
     # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
