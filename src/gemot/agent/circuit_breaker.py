@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
+from contextvars import ContextVar
 from typing import Any
 
 from .. import infrastructure, prompts
@@ -15,17 +17,35 @@ from ..prompts import _DISABLED_TOOL_HINT_DEFAULT, _DISABLED_TOOL_HINTS
 # trace-review swarm saw one query_data call re-proposed ~798× — up to ~100 pending copies in
 # a single step) while the agent learned nothing from the identical failures. This breaker
 # counts every tool failure and, after N CONSECUTIVE IDENTICAL errors from the same tool,
-# DISABLES that tool for the rest of the run: further calls are short-circuited with a terminal
-# message pointing at the working alternative, so the agent stops hammering a dead tool and
-# moves on. A SUCCESS resets a tool's streak; DIFFERENT errors reset it too (the agent is still
-# exploring), so only a genuinely-stuck tool is cut off.
+# DISABLES that tool for the caller (see below): its further calls are short-circuited with a
+# terminal message pointing at the working alternative, so the agent stops hammering a dead tool
+# and moves on. A SUCCESS resets a tool's streak; DIFFERENT errors reset it too (the agent is
+# still exploring), so only a genuinely-stuck tool is cut off.
 #
 # It works at the TOOL-OBJECT layer (wrapping each loaded tool's coroutine), not as agent
 # middleware, deliberately: the heavy data/diagnostic tools (query_data, get_fitting_log, …)
 # run INSIDE the analyst subagents, and deepagents 0.6.12's declarative subagents don't
 # reliably receive a middleware list (see _builtin_tool_filter). Wrapping the tool object makes
 # the breaker travel WITH the tool into whichever agent (lead or analyst) calls it.
-_TOOL_ERROR_DISABLE_THRESHOLD = 3  # consecutive identical errors from one tool before it is cut
+#
+# What it cuts is a CALLER that is stuck, so the streak and the disable belong to the caller: the
+# lead, whose scope is the run, or one `task` (one analyst's dispatch, from its first turn to its
+# report). They used to belong to the run, and one analyst's three identical SQL errors took
+# `query_data` from the lead and every later analyst for the remaining 2.5 days of a 3-day budget
+# (gemot#133: lun 103 and froehlich 106 of sweep 63522750, both in the first analyst round). A
+# tool that is really dead costs a later task three calls to find out again. A server that is
+# gone is the run's, not a caller's, so the transport disable below stays run-wide.
+_TOOL_ERROR_DISABLE_THRESHOLD = 3  # consecutive identical errors from one caller before it is cut
+
+#: The `task` whose subagent is making the call, or ``None`` for the lead. Set by the lead's breaker
+#: middleware around each `task` call (:func:`_disabled_tool_filter`). A context variable, because
+#: the subagent's tool calls run inside that call, and asyncio and langgraph hand each task they
+#: start a copy of the context it was started in: parallel tasks each see their own.
+_TASK: ContextVar[str | None] = ContextVar("gemot_breaker_task", default=None)
+
+#: What a disable notice says it lasts, per caller.
+_FOR_THE_RUN = "the rest of this run"
+_FOR_THE_TASK = "the rest of this task; other tasks keep it"
 
 # Tools the breaker may NEVER disable, however often they fail. `make_changes` is the run's only
 # committer: disabling it does not degrade the run, it GUARANTEES `no_model_built`, because nothing
@@ -213,9 +233,14 @@ def _is_transport_error(exc: BaseException) -> bool:
 def _new_breaker_state() -> dict[str, Any]:
     """Mutable, run-scoped state shared by the wrapped tools and the lead's tool filter."""
     return {
+        # The LEAD's scope: the tools it has had disabled, and its error streaks. Each `task`
+        # has the same two under `tasks` (see `_scope`).
         "disabled": set(),
-        "n_tool_errors": 0,
         "streaks": {},
+        "tasks": {},
+        # Tools whose server went away (a transport error on a bio tool): cut for every caller.
+        "unreachable": set(),
+        "n_tool_errors": 0,
         "events": [],
         # Separate from `streaks`: an operation REJECTION is not a tool error (see
         # `_result_error`) and must never disable anything, but a run can still spend its
@@ -239,11 +264,35 @@ def _new_breaker_state() -> dict[str, Any]:
     }
 
 
+def _scope(state: dict[str, Any]) -> dict[str, Any]:
+    """The calling scope's ``{"disabled", "streaks"}``: the lead's (the run's state itself), or
+    the current `task`'s."""
+    task = _TASK.get()
+    if task is None:
+        return state
+    return state["tasks"].setdefault(task, {"disabled": set(), "streaks": {}})
+
+
+def disabled_tools(state: dict[str, Any]) -> list[str]:
+    """The tools the run lost: the lead's disables and the tools of a server that went away."""
+    return sorted(state["disabled"] | state["unreachable"])
+
+
+def task_disabled_tools(state: dict[str, Any]) -> dict[str, int]:
+    """``{tool: how many tasks had it disabled}``. Each task lost it only for itself."""
+    counts: dict[str, int] = {}
+    for scope in state["tasks"].values():
+        for name in scope["disabled"]:
+            counts[name] = counts.get(name, 0) + 1
+    return dict(sorted(counts.items()))
+
+
 def _breaker_message(name: str, hint: str) -> list[dict[str, str]]:
     """The terminal content block returned in place of a disabled tool's result."""
-    return [
-        {"type": "text", "text": prompts.TOOL_DISABLED_REPEATED_TMPL.format(name=name, hint=hint)}
-    ]
+    text = prompts.TOOL_DISABLED_REPEATED_TMPL.format(
+        name=name, hint=hint, scope=_FOR_THE_RUN if _TASK.get() is None else _FOR_THE_TASK
+    )
+    return [{"type": "text", "text": text}]
 
 
 def _transport_breaker_message(name: str, hint: str) -> list[dict[str, str]]:
@@ -340,15 +389,17 @@ def _verdict_or_error(payload: dict) -> str | None:
 
 
 def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
-    """Count a tool error; return True iff it TRIPS the breaker (disables the tool now)."""
+    """Count a tool error; return True iff it TRIPS the breaker (disables the tool now, for the
+    calling scope)."""
     state["n_tool_errors"] += 1
+    scope = _scope(state)
     sig = err[:200]
-    streak = state["streaks"].get(name)
+    streak = scope["streaks"].get(name)
     if streak and streak["sig"] == sig:
         streak["count"] += 1
     else:
         streak = {"sig": sig, "count": 1}
-        state["streaks"][name] = streak
+        scope["streaks"][name] = streak
     if name in _NEVER_DISABLE:
         # Not disabled — but still RECORDED. Returning silently here would leave a run that
         # failed this call 200 times reporting `disabled_tools: []`, no breaker line in the log
@@ -362,9 +413,12 @@ def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
             state["events"].append(msg)
             print(f"[circuit-breaker] {msg}")
         return False
-    if streak["count"] >= _TOOL_ERROR_DISABLE_THRESHOLD and name not in state["disabled"]:
-        state["disabled"].add(name)
-        msg = f"disabled `{name}` after {streak['count']} consecutive identical errors: {sig}"
+    if streak["count"] >= _TOOL_ERROR_DISABLE_THRESHOLD and name not in scope["disabled"]:
+        scope["disabled"].add(name)
+        msg = (
+            f"disabled `{name}` for {_TASK.get() or 'the lead'} after {streak['count']} "
+            f"consecutive identical errors: {sig}"
+        )
         state["events"].append(msg)
         print(f"[circuit-breaker] {msg}")
         return True
@@ -423,7 +477,10 @@ def _wrap_tools_with_circuit_breaker(
                     # in flight beside it must not reach the server either.
                     _note_call(state, name, _CALL_DISABLED)
                     raise InfrastructureError(state["infrastructure"]["evidence"])
-                if name in state["disabled"]:
+                if name in state["unreachable"]:
+                    _note_call(state, name, _CALL_DISABLED)
+                    return (_transport_breaker_message(name, hint), None)
+                if name in _scope(state)["disabled"]:
                     _note_call(state, name, _CALL_DISABLED)
                     return (_breaker_message(name, hint), None)  # short-circuit, no server hit
                 arguments = _coerce_json_string_args(arguments, containers)
@@ -484,7 +541,7 @@ def _wrap_tools_with_circuit_breaker(
                         # (`response_format="content_and_artifact"`) and the same one the breaker
                         # and transport paths return, so the model reliably SEES the error and can
                         # correct the call — which is the entire point of never disabling this tool.
-                        n = state["streaks"].get(name, {}).get("count", 1)
+                        n = _scope(state)["streaks"].get(name, {}).get("count", 1)
                         esc = _ESCALATION_READ if name in _NEVER_DISABLE_READS else _ESCALATION
                         detail = sig + (
                             esc.format(n=n, name=name) if n >= _TOOL_ERROR_DISABLE_THRESHOLD else ""
@@ -499,7 +556,7 @@ def _wrap_tools_with_circuit_breaker(
                     # 3-strike / re-raise path, so a single localhost blip can't strip `fit` or
                     # `make_changes` for the rest of the run.
                     if name in transport_disable and _is_transport_error(exc):
-                        state["disabled"].add(name)
+                        state["unreachable"].add(name)
                         return (_transport_breaker_message(name, hint), None)
                     if tripped:
                         return (_breaker_message(name, hint), None)
@@ -526,7 +583,7 @@ def _wrap_tools_with_circuit_breaker(
                     state["fit_timeout"] = None  # answered, so the timed-out fit has ended
                 err = _result_error(content, artifact)
                 if err is None:
-                    state["streaks"].pop(name, None)  # a success clears the tool's error streak
+                    _scope(state)["streaks"].pop(name, None)  # a success clears the streak
                     escalated = _note_repeated_rejection(state, name, content, artifact)
                     _note_call(
                         state,
@@ -546,7 +603,7 @@ def _wrap_tools_with_circuit_breaker(
                     # `{"ok": false, "error": ...}`), which never raises. Without this, an editor
                     # stuck on one bad `old_string` loops on byte-identical feedback until the
                     # turn limit — no disable, no escalation, only a stdout line it cannot see.
-                    n = state["streaks"].get(name, {}).get("count", 1)
+                    n = _scope(state)["streaks"].get(name, {}).get("count", 1)
                     if n >= _TOOL_ERROR_DISABLE_THRESHOLD and isinstance(content, list):
                         note = [
                             {
@@ -740,20 +797,36 @@ def _coerce_json_string_args(arguments: dict, containers: dict) -> dict:
 
 
 def _disabled_tool_filter(state: dict[str, Any]):
-    """Lead-only middleware: hide a disabled tool from the model so it stops being re-proposed.
+    """Lead-only middleware: hide a disabled tool from the model so it stops being re-proposed,
+    and give each `task` call its own breaker scope.
 
     Complements the coroutine wrapper (the wrapper is what actually reaches the analyst
     subagents): for the LEAD's own tools this also drops the tool's schema from the re-sent
     request once it is disabled, saving tokens and removing the temptation to call it again.
+
+    Around a `task` call it sets :data:`_TASK`, so the subagent's tool calls count their errors,
+    and lose a tool, only within that task. The label is the analyst and the task's number in the
+    run, not the tool call id: some providers repeat ids across turns.
     """
     from langchain.agents.middleware.types import AgentMiddleware
+
+    numbers = itertools.count(1)
 
     def _name(tool) -> str | None:
         name = tool.get("name") if isinstance(tool, dict) else getattr(tool, "name", None)
         return name if isinstance(name, str) else None
 
     def _keep(request):
-        return [t for t in request.tools if _name(t) not in state["disabled"]]
+        gone = state["disabled"] | state["unreachable"]
+        return [t for t in request.tools if _name(t) not in gone]
+
+    def _task(request) -> str | None:
+        """This call's scope label if it is a `task` call, else None."""
+        tc = getattr(request, "tool_call", None) or {}
+        if tc.get("name") != "task":
+            return None
+        analyst = (tc.get("args") or {}).get("subagent_type") or "subagent"
+        return f"{analyst} task {next(numbers)}"
 
     class _DropDisabledTools(AgentMiddleware):
         def wrap_model_call(self, request, handler):
@@ -761,5 +834,23 @@ def _disabled_tool_filter(state: dict[str, Any]):
 
         async def awrap_model_call(self, request, handler):
             return await handler(request.override(tools=_keep(request)))
+
+        def wrap_tool_call(self, request, handler):
+            if (task := _task(request)) is None:
+                return handler(request)
+            token = _TASK.set(task)
+            try:
+                return handler(request)
+            finally:
+                _TASK.reset(token)
+
+        async def awrap_tool_call(self, request, handler):
+            if (task := _task(request)) is None:
+                return await handler(request)
+            token = _TASK.set(task)
+            try:
+                return await handler(request)
+            finally:
+                _TASK.reset(token)
 
     return _DropDisabledTools()

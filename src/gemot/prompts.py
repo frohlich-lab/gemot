@@ -1090,21 +1090,24 @@ _IDLE_NUDGE = (
 # What the agent is told IN PLACE of a disabled tool's result, and where to go instead. The
 # hints and the templates that interpolate them are one unit — they were two sections apart,
 # which is how the pair drifted out of sight of each other. Anything unlisted gets the
-# generic hint.
+# generic hint. A hint names only tools that every holder of the disabled tool also holds
+# (tests/test_breaker_scope.py): the query_data hint used to send the signal engineer to
+# `get_measurements`, and the default one everyone to `get_errors`, which no agent holds
+# (gemot#133).
 _DISABLED_TOOL_HINTS = {
     "query_data": (
-        "Use `get_measurements` for the raw measurement data, or `list_data_tables` "
-        "for the available tables and their columns."
+        "Use `list_data_tables` for the exact table and column names your queries got wrong, "
+        "and say in your report what you could not query."
     ),
 }
 
-_DISABLED_TOOL_HINT_DEFAULT = (
-    "Use a different tool (or `get_errors` to review the failure) and continue without it."
-)
+_DISABLED_TOOL_HINT_DEFAULT = "Continue with the other tools you hold."
 
+# `{scope}` is the rest of the run for the lead, the rest of the task for an analyst: the breaker
+# disables a tool for the caller whose calls failed (agent/circuit_breaker.py).
 TOOL_DISABLED_REPEATED_TMPL = (
-    "TOOL DISABLED: `{name}` failed repeatedly with the same error and is disabled for the "
-    "rest of this run. Do NOT call it again — {hint}"
+    "TOOL DISABLED: `{name}` failed repeatedly with the same error and is disabled for "
+    "{scope}. Do NOT call it again — {hint}"
 )
 
 # A transport error disables on the FIRST failure, so "failed repeatedly" would misdescribe it.

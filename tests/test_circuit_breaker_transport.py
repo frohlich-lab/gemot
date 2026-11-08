@@ -68,7 +68,7 @@ def test_breaker_degrades_a_transport_error_without_raising_or_3_strikes():
 
     result = asyncio.run(tool.coroutine())  # must NOT raise
     assert "TOOL DISABLED" in _degraded_text(result)
-    assert "get_reactome_info_by_identifier" in state["disabled"]
+    assert "get_reactome_info_by_identifier" in state["unreachable"]  # gone for every caller
     assert calls["n"] == 1  # called once, then degraded
     # A later call short-circuits on the disabled set (still no server hit, still no raise).
     assert "TOOL DISABLED" in _degraded_text(asyncio.run(tool.coroutine()))
@@ -91,7 +91,7 @@ def test_transport_error_on_a_core_tool_is_not_auto_disabled():
     )
     with pytest.raises(anyio.ClosedResourceError):
         asyncio.run(tool.coroutine())
-    assert "fit" not in state["disabled"]
+    assert "fit" not in state["disabled"] | state["unreachable"]
 
 
 def test_breaker_still_reraises_a_normal_tool_error():
@@ -107,4 +107,4 @@ def test_breaker_still_reraises_a_normal_tool_error():
     mod._wrap_tools_with_circuit_breaker([tool], state)
     with pytest.raises(ValueError):
         asyncio.run(tool.coroutine())
-    assert "some_tool" not in state["disabled"]
+    assert "some_tool" not in state["disabled"] | state["unreachable"]
