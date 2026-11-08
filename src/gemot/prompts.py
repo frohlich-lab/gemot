@@ -56,8 +56,8 @@ PROGRESS_SIGNALS_ENABLED = _ablations.enabled("progress_signals")
 
 
 def _signal(text: str, plain: str = "") -> str:
-    """``text`` where the agent is told how well it is doing and pushed to go on or stop (the
-    ``progress_signals`` arm, on by default), else ``plain``."""
+    """``text`` where the agent gets the numbers that tell it how well it is doing (the
+    ``progress_signals`` arm, on by default), else ``plain``: text naming a withheld number."""
     return text if PROGRESS_SIGNALS_ENABLED else plain
 
 
@@ -109,10 +109,10 @@ _PARAMETER_HALF = "get_fit_diagnosis(sections='parameters')"
 _SIGMA_CAP_ADVISORY = (
     "NEVER free or widen an estimated noise sigma to "
     + _signal("lower reduced_chi2", "absorb misfit")
-    + ". Nothing stops you — widening one past its data-driven cap only WARNS — which is exactly "
-    "why it is on you: it hides a missing mechanism behind inflated noise"
-    + _signal(", and the finish gate refuses a run resting on one")
-    + "."
+    + ". Nothing stops you — "
+    "widening one past its data-driven cap only WARNS — which is exactly why it is on you: it "
+    "hides a missing mechanism behind inflated noise, and the finish gate refuses a run resting "
+    "on one."
 )
 
 #: The numerals ``petab_mcp.literals`` charges nothing for (its ``STRUCTURAL_VALUES``); every
@@ -170,7 +170,7 @@ _MERGE_HINTS_WHERE = (
 #: rather than in evidence a run does not have. A clean verdict is a weak stopping rule; a flag is
 #: no reason to go on either: in sweep round 3 the flags at the scored version did not separate
 #: passing runs from failing ones, and sneyd's stood at every version of every run (gemot#97).
-_RESIDUALS_DO_NOT_DECIDE_DONE = _signal(
+_RESIDUALS_DO_NOT_DECIDE_DONE = (
     "THE RESIDUAL TESTS DO NOT DECIDE WHEN YOU ARE DONE, in either direction. A CLEAN verdict is "
     "a WEAK stopping rule: the tests have real power only while the model is badly wrong; they go "
     "SILENT well before bic bottoms out, and on a steady-state design (one measured point per "
@@ -187,8 +187,7 @@ _RESIDUALS_DO_NOT_DECIDE_DONE = _signal(
     "costs you nothing to be wrong about — every fitted version is kept and you are scored on "
     "your BEST bic wherever you end — while finishing on the first adequate model forfeits every "
     "bic you had budget left to find. An unspent step budget is not thrift. Nor is that count a "
-    "quota: a fit you make only to reach it buys nothing.",
-    "Read a residual flag for WHERE the fit is off — a place worth a structural try.",
+    "quota: a fit you make only to reach it buys nothing."
 )
 
 #: What a refit tests, read in both lead prompts' STRUCTURE BEFORE POLISH. In the 2026-11-08 sweep
@@ -227,7 +226,7 @@ _FIT_COST_RULE = (
 #: sigma pins chi2 near n, and a chi2 gate there chased an unreachable target
 #: (frohlich-lab/gemot_iclr_2026#54). Deliberately silent on the gate's bound: a lead told that the
 #: gate gives in after a few refusals works toward the bound instead of the model.
-_CHI2_GATE_RULE = _signal(
+_CHI2_GATE_RULE = (
     "Where the run is judged by chi2 against GIVEN noise (no noise sigma is estimated), the gate "
     "also refuses a finish on a scored fit that fails chi2: the run would be scored inadequate "
     "there."
@@ -465,8 +464,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "Give `antimony` to author the FIRST model, `model_edits` (structured operations) to "
     "change it thereafter, `parameters` to retune the search space, or a model route AND "
     "`parameters` when a structural change needs bounds. "
-    + _signal("Your step budget is the scarce resource, so put", "Put")
-    + " a whole coherent change in one call rather than dribbling it out. The result IS the fit (`bic`, `neg_log_likelihood`, `k` = `n_estimated` + "
+    "Your step "
+    "budget is the scarce resource, so put a whole coherent change in one call rather than "
+    "dribbling it out. The result IS the fit (`bic`, `neg_log_likelihood`, `k` = `n_estimated` + "
     "`hardcoded_constants`: a numeric literal in your model's math is a parameter too, bar a few "
     "structural ones, and the result lists the ones you are being charged for. So freezing a "
     "value you fitted costs what estimating it costs and buys none of the flexibility, an "
@@ -477,16 +477,16 @@ DEFAULT_SYSTEM_PROMPT = (
     "rejected, or reverted because it could not be scored, so fix what the error names) or in "
     "place but unscored because this structure already IS a version (make a "
     "genuinely DIFFERENT change). THE ONLY SUCCESS TARGET "
-    "IS BIC (2·nll + k·ln(n)); a lower bic is a better model and is "
+    "IS BIC (2·nll + k·ln(n)); a lower bic is a better model and is EXACTLY what you are scored "
+    "on (against the true mechanism). "
     + _signal(
-        "EXACTLY what you are scored on (against the true mechanism). The fit also reports "
-        "reduced_chi2 and chi2_gof_pvalue, but do NOT treat them as a success gate: they only mean "
-        "something with a KNOWN noise level, and WHENEVER the observable noise sigmas are "
-        "ESTIMATED (check get_parameters — a sigma_* with estimate=1; usually the case here) chi2 "
-        "pins near the number of data points by construction, so reduced_chi2 ≈ 1 and its p-value "
-        "are UNINFORMATIVE — often stuck at the noise floor however wrong the mechanism is. Do NOT "
-        "chase a passing chi2_gof_pvalue, and do NOT restructure or trade away nll/bic to raise it. ",
-        "what you are scored on. ",
+        "The fit also reports reduced_chi2 and chi2_gof_pvalue, but do NOT treat them as a "
+        "success gate: they only mean something with a KNOWN noise level, and WHENEVER the "
+        "observable noise sigmas are ESTIMATED (check get_parameters — a sigma_* with estimate=1; "
+        "usually the case here) chi2 pins near the number of data points by construction, so "
+        "reduced_chi2 ≈ 1 and its p-value are UNINFORMATIVE — often stuck at the noise floor "
+        "however wrong the mechanism is. Do NOT chase a passing chi2_gof_pvalue, and do NOT "
+        "restructure or trade away nll/bic to raise it. "
     )
     + _SIGMA_CAP_ADVISORY
     + " Judge whether the "
@@ -501,9 +501,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "Any other declared initial becomes an estimated `<species>_init`. So an estimated IC the "
     "DATA CANNOT CONSTRAIN — a starting state "
     "the measurement does not depend on — is a non-identifiable free parameter inflating k for no "
-    "gain in fit"
-    + _signal(" (and the finish gate REFUSES a rank-deficient fit on exactly these)")
-    + ". It is on YOU "
+    "gain in fit (and the finish gate REFUSES a rank-deficient fit on exactly these). It is on YOU "
     "to decide which initials the experiment actually pins. The ONLY lever is the VALUE: give a "
     "known-and-irrelevant starting state 0 or 1 and it costs you no free parameter; "
     "an initial of ANY OTHER value stays ESTIMATED and there is no tool to fix it — so do not rely "
@@ -532,16 +530,10 @@ DEFAULT_SYSTEM_PROMPT = (
     + _FIT_COST_RULE
     + "\n"
     "3. Read the CURRENT HEAD's metrics (never an earlier version's) after each `make_changes` and decide "
-    "what to do next"
-    + _signal(
-        ". The DEFAULT is to KEEP ITERATING while bic is still improving fit-over-fit by more than "
-        "a few units, or while a genuinely different structure is still untried — "
-        "get_fit_diagnosis's systematic per-observable bias / residual time-trend says where one "
-        "is likeliest to pay",
-        ". get_fit_diagnosis's systematic per-observable bias / residual time-trend says where a "
-        "structural change is likeliest to pay",
-    )
-    + ": just make the next justified "
+    "what to do next. The DEFAULT is to KEEP ITERATING while bic is still improving fit-over-fit "
+    "by more than a few units, or while a genuinely different structure is still untried — "
+    "get_fit_diagnosis's systematic per-observable bias / residual time-trend says where one is "
+    "likeliest to pay: just make the next justified "
     "`make_changes` call (iterating needs NO control call). "
     "STRUCTURE BEFORE POLISH — while the residuals still show systematic structure, the MECHANISM is "
     "what is wrong, so spend the call on the mechanism: a rate-law form, a topology, a species, a "
@@ -551,26 +543,21 @@ DEFAULT_SYSTEM_PROMPT = (
     "underfits; the exception is a NUMERICAL fault the diagnosis actually names (a parameter pinned "
     "at a bound, a rank-deficient fit), which you fix and then go straight back to the mechanism. "
     + _REFIT_TESTS_NO_STRUCTURE
-    + _signal(
-        " And read the SIZE of each gain, not just its sign: getting a structure right buys TENS "
-        "or hundreds of bic, so a run of calls buying a few bic each means you are refining rather "
-        "than fixing. What that tells you depends on the residuals. While they are still "
-        "systematically structured, small gains are a WRONG structure being polished — 'bic is "
-        "still improving' is then no reason to keep going in that direction, so change the "
-        "mechanism instead. Once they are CLEAN, small gains are the legitimate endgame: keep "
-        "taking them — a sound merge your fit names, a dropped parameter, a tighter form — until "
-        "they run out, because the last few bic are often exactly what puts a model at the bar. "
-        "Either way, when bic has NOT improved over the last few iterations, STOP tweaking the "
-        "same structure or piling on parameters:",
-        " To find out why a model is stuck:",
-    )
-    + " (a) call "
+    + " And read the SIZE of each gain, not just its sign: getting a structure right buys TENS or "
+    "hundreds of bic, so a run of calls buying a few bic each means you are refining rather than "
+    "fixing. What that tells you depends on the residuals. While they are still systematically "
+    "structured, small gains are a WRONG structure being polished — 'bic is still improving' is then "
+    "no reason to keep going in that direction, so change the mechanism instead. Once they are CLEAN, "
+    "small gains are the legitimate endgame: keep taking them — a sound merge your fit names, a "
+    "dropped parameter, a tighter form — until they run out, because the last few bic are often "
+    "exactly what puts a model at the bar. Either way, when bic has NOT "
+    "improved over the last few "
+    "iterations, STOP tweaking the same structure or piling on parameters: (a) call "
     "`get_fit_diagnosis(sections='all')`, which answers both halves of 'why is it stuck' in one "
     "call — a systematic sign/trend at particular observables or times points at the missing "
     "mechanism, and the `parameters` section says which free parameters the data cannot pin and "
-    "which pair would cost least to give one shared value. That section is the one to ASK FOR "
-    + _signal("when bic has stalled", "when you need to know what to cut")
-    + "; the default `sections='residuals'` is the cheap read for 'where is the fit "
+    "which pair would cost least to give one shared value. That section is the one to ASK FOR when "
+    "bic has stalled; the default `sections='residuals'` is the cheap read for 'where is the fit "
     "off'. If that is not enough, "
     "DELEGATE the deep dive — the `mathematician` reads the fitting log (parameters pinned at a "
     "bound, non-identifiability, optimizer convergence) and the `signal_engineer` gives a full "
@@ -579,29 +566,19 @@ DEFAULT_SYSTEM_PROMPT = (
     "genuinely DIFFERENT structure — a different rate-law form or topology. If a LARGER model "
     "fits but a smaller one won't, the smaller one is usually "
     "MIS-PARAMETERISED (wrong fixed/free split, bad bounds, or wrong initial conditions), not "
-    "too simple — fix that instead of keeping the bloat. "
-    + _signal(
-        "A change that did NOT help costs you nothing and needs no control call: every fitted "
-        "version is kept and the run is scored on your BEST-bic one regardless of where you end "
-        "(`list_versions` shows it), so never",
-        "Never",
-    )
-    + " re-author a version you already have — just make a genuinely DIFFERENT change from here (a different "
+    "too simple — fix that instead of keeping the bloat. A change that did NOT help costs you "
+    "nothing and needs no control call: every fitted version is kept and the run is scored on "
+    "your BEST-bic one regardless of where you end (`list_versions` shows it), so never re-author "
+    "a version you already have — just make a genuinely DIFFERENT change from here (a different "
     "rate-law form or topology).\n"
-    "Call `finish` — the ONE control call — "
-    + _signal(
-        "when bic has bottomed out: you cannot lower it further by adding, dropping or re-forming "
-        "mechanism, or by a merge you judge sound",
-        "to end the run",
-    )
-    + ". "
+    "Call `finish` — the ONE control call — when bic has bottomed out: you cannot lower it "
+    "further by adding, dropping or re-forming mechanism, or by a merge you judge sound. "
     + _MERGE_HINTS_WHERE
     + " name pairs the data cannot tell apart and what tying each would buy. "
     + _MERGE_RULE
     + " "
     + _MERGE_BIOLOGY
-    + _signal(" Finish on the LOWEST-bic such model.")
-    + "\n"
+    + " Finish on the LOWEST-bic such model.\n"
     + _RESIDUALS_DO_NOT_DECIDE_DONE
     + "\n"
     "Repeat until you call `finish`. When you finish, report the "
@@ -705,21 +682,12 @@ INDRA_SYSTEM_PROMPT = (
     "`get_model(format='statements')` shows the current rows, `version=N` an earlier one's.\n"
     "STRUCTURE BEFORE POLISH: while the residuals are systematic, change the mechanism (a "
     "statement, a policy, a species); bounds, merges and pinned initials finish a model whose "
-    "residuals are already clean. "
-    + _REFIT_TESTS_NO_STRUCTURE
-    + _signal(" When bic stalls for a few calls, call", " To find out why a model is stuck, call")
-    + " `get_fit_diagnosis(sections='all')` and try a genuinely different structure."
-    + _signal(
-        " Every fitted version is kept and the run is scored on the best, so a change that did "
-        "not help costs nothing."
-    )
-    + "\n5. FINISH "
-    + _signal(
-        "when bic has bottomed out: nothing you add, drop or re-form lowers it, nor a merge you "
-        "judge sound",
-        "to end the run",
-    )
-    + ". "
+    "residuals are already clean. " + _REFIT_TESTS_NO_STRUCTURE + " When bic stalls for a few "
+    "calls, call "
+    "`get_fit_diagnosis(sections='all')` and try a genuinely different structure. Every fitted version is kept and the run is scored on the best, so a change that "
+    "did not help costs nothing.\n"
+    "5. FINISH when bic has bottomed out: nothing "
+    "you add, drop or re-form lowers it, nor a merge you judge sound. "
     + _MERGE_HINTS_WHERE
     + " name pairs the data cannot tell apart. "
     + _MERGE_RULE
@@ -730,21 +698,17 @@ INDRA_SYSTEM_PROMPT = (
     # and bic has bottomed out": Claude Haiku finished after 12-21 minutes of a two-hour budget, on
     # models the fit itself flagged, calling `finish` again after each refusal until the gate
     # relented. Residual flags left this list with the gate's replicate refusal (gemot#97).
-    + _signal(
-        "NEVER FINISH ON A MODEL THE GATE REFUSES: a noise sigma inflated past its cap or a "
-        "rank-deficient FIM each say the MECHANISM is wrong, and a refused `finish` names which. "
-        "Fix that; never just call `finish` again. And an adequate model is not done either: KEEP "
-        "GOING UNTIL YOU HAVE EXHAUSTED THE OPTIONS. Every fitted version is kept and the run is "
-        "scored on the best one wherever you end, so a worse attempt costs nothing and time left "
-        "unspent is bic forfeited. Before you finish, have tried each kind of change:",
-        "The kinds of change:",
-    )
-    + " other mechanisms for what each observable measures (an "
+    "NEVER FINISH ON A MODEL THE GATE REFUSES: a noise sigma inflated past its cap or a "
+    "rank-deficient FIM each say the MECHANISM is "
+    "wrong, and a refused `finish` names which. Fix that; never just call `finish` again. And "
+    "an adequate model is not done either: KEEP GOING UNTIL YOU HAVE EXHAUSTED THE OPTIONS. "
+    "Every fitted version is kept and the run is scored on the best one wherever you end, so a "
+    "worse attempt costs nothing and time left unspent is bic forfeited. Before you finish, have "
+    "tried each kind of change: other mechanisms for what each observable measures (an "
     "unmeasured intermediate or complex, a feedback or regulation, another policy or a `scheme` "
     "of your own), dropping what the data does not need, the merges the fit names that tie one "
     "quantity, and from "
-    + _signal("the best version", "an earlier version")
-    + " (`base_version`) the next idea."
+    "the best version (`base_version`) the next idea."
     "\nWhen you finish, report the final bic and the model."
 )
 
@@ -765,14 +729,11 @@ DEFAULT_TASK = (
     "This PEtab problem ships WITHOUT a model — you have the measured data, the observables, "
     "and the conditions, but no reactions yet (describe_problem reports "
     "model_authored: false). Build a mechanistic ODE model that explains the data, working "
-    "the loop above"
-    + _signal(" until you reach the lowest-bic model you can find")
-    + ", then report the model you built and its fit."
+    "the loop above until you reach the lowest-bic model you can find, then report the model you "
+    "built and its fit."
     "\n\nSCORING: the run is scored on your BEST-bic fitted version AUTOMATICALLY, wherever HEAD "
     "ends up. Every fitted version is kept; you never need to roll back to, re-commit, or end on "
-    "a good version"
-    + _signal(" — a worse attempt after it costs nothing")
-    + "."
+    "a good version — a worse attempt after it costs nothing."
     "\n\nREADOUTS: a `readout_<name>` symbol in an observable formula is a MEASUREMENT "
     "MAPPING, not a species. The observable table states WHAT the assay measured "
     "(observableName); YOUR model says what that quantity is in terms of its own states, with "
@@ -1013,12 +974,8 @@ SIGNAL_ENGINEER_PROMPT = (
     "and `noise`: compute breakdowns in SQL — grouped by observable_id / experiment_id / time, "
     "the worst-fit points (`ORDER BY abs(residual_weighted) DESC`), per-group bias "
     "(`avg(residual_weighted)`), and time-trend (`corr(time, residual_weighted)`) — and say "
-    + _signal(
-        "whether the residuals look like noise (the fit is adequate) or systematic (the "
-        "structure is still wrong)",
-        "where the residuals are systematic",
-    )
-    + ". Localize; leave the WHY to the mathematician and systems scientist."
+    "whether the residuals look like noise (the fit is adequate) or systematic (the structure "
+    "is still wrong). Localize; leave the WHY to the mathematician and systems scientist."
     + _REPORT_CONTRACT
     + _PETAB_SKILL_INLINE
 )
@@ -1288,7 +1245,7 @@ FIT_COST_UNBUDGETED_TMPL = "FIT COST: this fit took {took}."
 # it relents -- is agent/finish_gate.py; only the text is here. The `_TMPL` entries are .format()ed
 # with the values named in their fields; everything else is sent verbatim.
 
-FINISH_DESCRIPTION = _signal(
+FINISH_DESCRIPTION = (
     "Ends the run on the version it is scored on, your best-scoring one (passing over any whose "
     "noise sigma is implausible where another's is not): whatever HEAD is, the gate restores that "
     "version and judges it, so you never roll back to finish. You do NOT "
@@ -1322,10 +1279,10 @@ FINISH_DESCRIPTION = _signal(
     "first ARMS it and shows you the "
     "current bic and residual-structure diagnosis; review it, then call `finish` AGAIN to "
     "confirm and end. It is refused when there is no valid fit yet (no model built / "
-    "no finite bic). " + _CHI2_GATE_RULE + " Prefer the FEWEST free parameters that fit "
-    "(lower bic wins). `rationale` is REQUIRED: one line on why this model is done.",
-    "Ends the run, in one call. The run is scored on your best-bic fitted version, whatever HEAD "
-    "is. `rationale` is REQUIRED: one line on why you end it here.",
+    "no finite bic). "
+    + _signal(_CHI2_GATE_RULE + " ")
+    + "Prefer the FEWEST free parameters that fit "
+    "(lower bic wins). `rationale` is REQUIRED: one line on why this model is done."
 )
 
 # No fittable model. Refused every time -- the harness never records an unfitted model as
@@ -1491,12 +1448,6 @@ FINISH_CONFIRMED_TMPL = (
     "Recorded: finish — final bic={bic:.6g}, neg_log_likelihood={nll:.6g}."
     "{chi2_note} Report the bic, the neg_log_likelihood, and exactly what you "
     "changed, then stop."
-)
-
-# A finish with no fitted model where the agent is not told how it is doing: the run ends at once
-# as no-model-built, with no refusal (finish_gate._finish_tool).
-FINISH_ENDED_NO_FIT = (
-    "Recorded: finish — there is no fitted model, so this run has no scoreable result. Stop now."
 )
 
 FINISH_CHI2_UNAVAILABLE_NOTE = (
@@ -1865,7 +1816,6 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "armed_invalid_comparison": FINISH_ARMED_INVALID_COMPARISON_TMPL,
             "struct_unavailable": FINISH_STRUCT_UNAVAILABLE,
             "confirmed": FINISH_CONFIRMED_TMPL,
-            "ended_no_fit": FINISH_ENDED_NO_FIT,
             "chi2_unavailable_note": FINISH_CHI2_UNAVAILABLE_NOTE,
         },
         "petab-nudges": {

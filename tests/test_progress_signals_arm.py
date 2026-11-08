@@ -1,5 +1,5 @@
-"""The progress_signals arm (``PETAB_PROGRESS_SIGNALS``): off, the agent is not told how well it is
-doing, and nothing pushes it to go on or stop."""
+"""The progress_signals arm (``PETAB_PROGRESS_SIGNALS``): off, the agent gets none of the numbers
+that tell it how well it is doing, and the server's streak or plateau does not stop the run."""
 
 from __future__ import annotations
 
@@ -18,31 +18,20 @@ from gemot.runner.server import _SERVER_BOOTSTRAP
 
 ROOT = Path(__file__).resolve().parents[1]
 
-#: What the agent no longer reads when the arm is off: the server's withheld fields, and the
-#: prompts' standing, verdicts and nudges.
+#: What the agent no longer reads when the arm is off: the server's withheld fields and the
+#: numbers the harness quotes.
 _WITHHELD = (
     "is_new_best",
     "best_version",
     "chi2_gof_pvalue",
     "reduced_chi2",
     "get_progress",
-    "bottomed out",
-    "did not help costs",
-    "did NOT help costs",
-    "worse attempt",
     "time is left",
-    "KEEP GOING",
-    "KEEP ITERATING",
-    "REFUSES",
-    "the gate refuses",
-    "the finish gate refuses",
-    "fit is adequate",
-    "accept the current structure and stop",
+    "refuses a finish on a scored fit that fails chi2",
 )
 
-#: Texts the arm's off side never sends (the finish gate's refusals and review, the bounces and
-#: the turn notices), and the null agent's own prompt, which the arm leaves alone.
-_NOT_SENT_OFF = ("petab-finish-gate", "petab-nudges", "petab-guards", "petab-lead-indra-no-model")
+#: The finish gate's and the guards' own texts, checked by what they send rather than by name.
+_NOT_SENT_OFF = ("petab-finish-gate", "petab-guards")
 
 
 def _fresh(script: str, **switches: str) -> str:
@@ -92,7 +81,7 @@ def test_the_server_gets_the_switch_as_the_last_argument(monkeypatch):
 _SURFACE = r"""
 import json
 from gemot import prompts
-from gemot.agent import circuit_breaker, fit_cost, guards
+from gemot.agent import fit_cost, guards
 print(json.dumps({
     # The inlined petab-model-building skill warns against reduced_chi2 rather than pointing at it.
     "prompts": {
@@ -103,24 +92,21 @@ print(json.dumps({
     "groups": prompts.prompt_group_versions(),
     "fit_cost": fit_cost.fit_cost_note(60.0, 3600.0),
     "notice": guards._turn_notice(19, 20),
-    "escalation": circuit_breaker._REJECTION_ESCALATION,
 }))
 """
 
 
-def test_off_no_text_the_agent_reads_points_at_a_withheld_signal():
+def test_off_no_text_the_agent_reads_names_a_withheld_number():
     on = json.loads(_fresh(_SURFACE))
     off = json.loads(_fresh(_SURFACE, PETAB_PROGRESS_SIGNALS="0"))
     sent = {k: v for k, v in off["prompts"].items() if k not in _NOT_SENT_OFF}
-    found = {(k, w) for k, v in sent.items() for w in _WITHHELD if w in v}
-    assert not found
-    assert all(any(w in v for v in on["prompts"].values()) for w in ("bottomed out", "KEEP GOING"))
+    assert not {(k, w) for k, v in sent.items() for w in _WITHHELD if w in v}
+    lead = on["prompts"]["petab-lead-system"]
+    assert "chi2_gof_pvalue" in lead and "time is left" in lead
+    assert "fails chi2" in on["prompts"]["petab-finish-description"]
     assert on["groups"]["lead"] != off["groups"]["lead"]
-    assert off["prompts"]["petab-finish-description"].startswith("Ends the run, in one call.")
     assert "left" in on["fit_cost"] and off["fit_cost"] == "FIT COST: this fit took 1 min."
     assert on["notice"] and off["notice"] is None
-    assert "accept the current structure" in on["escalation"]
-    assert "accept the current structure" not in off["escalation"]
 
 
 class _FakeResult:
@@ -129,65 +115,56 @@ class _FakeResult:
 
 
 class _Session:
-    """No stored version to restore, and HEAD's fit summary."""
+    """No stored version to restore, HEAD's fit summary, and an identifiable fit's diagnosis."""
 
     def __init__(self, fit_summary):
         self.fit_summary = fit_summary
-        self.calls: list[str] = []
 
     async def call_tool(self, name, args):
-        self.calls.append(name)
         if name == "list_versions":
             return _FakeResult({"result": []})
         if name == "get_fit_summary":
             return _FakeResult(self.fit_summary)
+        if name == "get_fit_diagnosis":
+            ident = {"available": True, "fim": {"rank_deficient": False}, "flat_directions": []}
+            return _FakeResult({"per_observable": [], "identifiability": ident})
         raise AssertionError(f"unexpected tool {name}")
 
 
-@pytest.fixture
-def off(monkeypatch):
-    pytest.importorskip("langchain_core", reason="harness-only dependency")
-    from gemot import prompts
+#: A fit against GIVEN noise that fails chi2, as the server sends it with signals on.
+_FAILS_CHI2 = {
+    "neg_log_likelihood": 10.0,
+    "bic": 25.0,
+    "criterion_value": 25.0,
+    "version": 3,
+    "noise_sigma_report": {},
+    "chi2_gof_pvalue": 1e-9,
+}
 
-    monkeypatch.setattr(prompts, "PROGRESS_SIGNALS_ENABLED", False)
 
-
-def _finish(fit_summary):
+def _finish(fit_summary, calls=1):
     from gemot import agent
 
     state: dict = {}
-    session = _Session(fit_summary)
-    tool = agent._finish_tool(session, state, adequacy="chi2")
-    reply = asyncio.run(tool.ainvoke({"rationale": "done"}))
-    return reply, state, session
+    tool = agent._finish_tool(_Session(fit_summary), state, adequacy="chi2")
+    replies = [asyncio.run(tool.ainvoke({"rationale": "done"})) for _ in range(calls)]
+    return replies, state
 
 
-def test_off_one_finish_ends_the_run_with_no_refusal_and_no_review(off):
-    """A fit the gate would refuse on its sigma and on chi2, ended in one call."""
-    reply, state, session = _finish(
-        {
-            "neg_log_likelihood": 10.0,
-            "bic": 25.0,
-            "criterion_value": 25.0,
-            "version": 3,
-            "noise_sigma_inflated": True,
-            "chi2_gof_pvalue": 1e-9,
-        }
-    )
-    assert (
-        reply == "Recorded: finish — final bic=25, neg_log_likelihood=10. Report the bic, "
-        "the neg_log_likelihood, and exactly what you changed, then stop."
-    )
-    assert state["confirmed"] is True and not state["refusals"]
-    assert "get_fit_diagnosis" not in session.calls
-
-
-def test_off_a_finish_without_a_fit_ends_the_run_as_no_model_built(off):
+@pytest.mark.parametrize("signals", [True, False])
+def test_off_the_chi2_gate_quotes_no_p_value_and_refuses_nothing(monkeypatch, signals):
+    """Off, the server sends no p-value; the gate does not refuse on one, nor say it is missing."""
+    pytest.importorskip("langchain_core", reason="harness-only dependency")
     from gemot import prompts
 
-    reply, state, _ = _finish({"neg_log_likelihood": None, "bic": None, "version": None})
-    assert reply == prompts.FINISH_ENDED_NO_FIT
-    assert state["gave_up"] is True and state["confirmed"] is False
+    monkeypatch.setattr(prompts, "PROGRESS_SIGNALS_ENABLED", signals)
+    (reply,), state = _finish(_FAILS_CHI2)
+    assert reply.startswith("FINISH REFUSED") is signals
+    assert bool(state["refusals"]) is signals
+    no_p = {k: v for k, v in _FAILS_CHI2.items() if k != "chi2_gof_pvalue"}
+    (_, confirmed), _ = _finish(no_p, calls=2)
+    assert confirmed.startswith("Recorded: finish")
+    assert ("χ²" in confirmed) is signals
 
 
 def test_off_the_cli_gateway_hides_get_progress(monkeypatch):

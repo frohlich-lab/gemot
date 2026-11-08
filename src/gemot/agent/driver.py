@@ -1223,9 +1223,7 @@ async def run_deepagents(
             # applied nothing and must not count as an executed tool.
             *([_statements_only_guard(guard_stats)] if INDRA_STATEMENTS_ENABLED else []),
             _reasoning_runaway_guard(guard_stats),
-            _tool_dispatch_guard(
-                guard_stats, **({} if PROGRESS_SIGNALS_ENABLED else {"max_idle_steps": 0})
-            ),
+            _tool_dispatch_guard(guard_stats),
             _empty_report_guard(guard_stats),
         ]
     else:  # pragma: no cover - guards against a deepagents API drift
@@ -1749,8 +1747,7 @@ async def run_deepagents(
                 model_committed = await _model_committed(progress_probe)
                 past_deadline = _past_last_step()
                 if (
-                    PROGRESS_SIGNALS_ENABLED
-                    and silent_bounces < _MAX_SILENT_BOUNCES
+                    silent_bounces < _MAX_SILENT_BOUNCES
                     and checkpointer is not None
                     and not past_deadline
                 ):

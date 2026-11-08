@@ -140,9 +140,9 @@ dependencies = [
     # Then 92133c8, main: #313: every version's meta keeps its edit's and lint's warnings whole, as
     # `edit_warnings`, which `get_version` returns; a result folds a repeated one to a line (#296).
     # gemot reads nothing of it yet (#286 item 4). #311, #312: CI and tests only.
-    # Then e5a2985, #316's head (re-pinned to its merge commit once it lands):
+    # Then 9c2a5cc, #316's head (re-pinned to its merge commit once it lands):
     # `create_server(progress_signals=False)`, the progress_signals arm's server half.
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@e5a298576d3d2b0526b60de938ba6480e41c2e2c",
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@9c2a5ccec8688703cc23fe88c769d78eeee83865",
     # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
     # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
     # is built on it; 2.3 is the first release fastmcp 4.1 accepts. What 2.0 changed for the code
