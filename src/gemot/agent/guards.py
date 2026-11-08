@@ -54,8 +54,8 @@ _MAX_IDLE_MODEL_STEPS = 3  # consecutive no-tool turns to push back on before gi
 #: Effort ladder for a reasoning runaway. Each retry steps DOWN one rung; the run keeps its
 #: normal (provider-default) effort everywhere else.
 #: Only a run at --reasoning-effort default climbs it (see _effort_is_set); it sets no effort, so
-#: its baseline is the provider default. Starts at "low", NOT "medium": for the gpt-5 family
-#: (luna, luna-pro, terra) that default IS medium.
+#: its baseline is the provider default. Starts at "low", NOT "medium": for OpenAI's luna,
+#: luna-pro and terra, GPT-5.6 and GPT-6 alike, that default IS medium.
 #: A "medium" first rung would re-issue a semantically identical request and burn a second
 #: full-budget call (~25 min, ~65k completion tokens on the measured runaways) with no chance
 #: of recovering from it. "low" is a real change on every model in the panel; the second rung

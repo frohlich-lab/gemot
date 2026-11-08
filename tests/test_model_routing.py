@@ -44,15 +44,17 @@ def test_fallback_is_bounded_by_an_allowlist(model_id):
         )
 
 
-def test_deepseek_flash_excludes_the_fp4_endpoint():
-    """DeepInfra is the cheapest ZDR-eligible endpoint but serves fp4.
+def test_deepseek_flash_is_pinned_to_named_fp8_endpoints():
+    """Every endpoint is named by its fp8 tag.
 
-    Benchmarking across differently-quantized endpoints confounds the model comparison, so
-    the allowlist must keep it out even though it would be cheaper.
+    Benchmarking across differently-quantized endpoints confounds the model comparison. A bare
+    slug would take any variant the provider adds, fp4 included, and an endpoint whose
+    quantization OpenRouter lists as "unknown" (DigitalOcean, the V4 primary) cannot be held to
+    fp8 at all.
     """
-    block = provider_routing("deepseek/deepseek-v4-flash")
+    block = provider_routing(resolve("v4-flash"))
     assert block is not None
-    assert "deepinfra" not in block["only"]
+    assert all(t.split("/")[1:2] == ["fp8"] for t in block["only"]), block["only"]
     assert "deepseek" not in block["only"], "DeepSeek-direct is not ZDR-eligible for this account"
 
 
@@ -76,7 +78,7 @@ def test_every_panel_model_is_pinned():
 
 
 def test_resolve_maps_the_alias_to_the_pinned_id():
-    assert resolve("v4-flash") == "deepseek/deepseek-v4-flash"
+    assert resolve("v4-flash") == "deepseek/deepseek-v4.1-flash-1017"
     assert provider_routing(resolve("v4-flash")) is not None, (
         "the alias resolves to an id with no routing -- see test_every_pinned_id_is_one_we_actually_use"
     )
@@ -109,7 +111,7 @@ def test_models_without_an_entry_keep_the_provider_default():
     get exactly the request it got before."""
     from gemot.models import reasoning_config
 
-    assert reasoning_config("openai/gpt-5.6-luna-pro") is None
+    assert reasoning_config("openai/gpt-6-luna-pro") is None
     assert reasoning_config("some/unknown-model") is None
 
 
@@ -118,7 +120,7 @@ def test_extra_body_carries_routing_and_reasoning_independently():
     every request, so a model with neither sends exactly that."""
     from gemot.agent.driver import _extra_body
 
-    luna = _extra_body("openai/gpt-5.6-luna-pro")
+    luna = _extra_body("openai/gpt-6-luna-pro")
     assert set(luna) == {"provider", "usage"}, (
         "pinned but no reasoning entry -> the pin and the cost flag, nothing else"
     )
@@ -134,8 +136,8 @@ def test_extra_body_includes_reasoning_when_a_model_has_it(monkeypatch):
     from gemot import models as M
     from gemot.agent.driver import _extra_body
 
-    monkeypatch.setitem(M._REASONING, "openai/gpt-5.6-luna-pro", {"effort": "high"})
-    body = _extra_body("openai/gpt-5.6-luna-pro")
+    monkeypatch.setitem(M._REASONING, "openai/gpt-6-luna-pro", {"effort": "high"})
+    body = _extra_body("openai/gpt-6-luna-pro")
     assert body["reasoning"] == {"effort": "high"}
     assert body["provider"]["only"] == ["openai"], "reasoning must not displace the pin"
 
@@ -155,10 +157,10 @@ def test_implicitly_caching_models_ask_for_nothing():
     writes that implicit caching gives us at zero."""
     for model_id in (
         "z-ai/glm-5.3-flash",
-        "openai/gpt-5.6-luna",
-        "deepseek/deepseek-v4-flash",
-        "google/gemini-3.6-flash",
-        "google/gemini-3.1-pro-preview",
+        "openai/gpt-6-luna",
+        "deepseek/deepseek-v4.1-flash-1017",
+        "google/gemini-3.8-flash",
+        "google/gemini-4-argon",
     ):
         assert caching_config(model_id) is None, (
             f"{model_id} caches implicitly -- asking explicitly can only add cost"
@@ -217,7 +219,7 @@ def test_caching_is_not_asked_for_in_the_request_body():
     """The top-level `cache_control` field is never sent (docs/RATIONALE.md)."""
     from gemot.agent.driver import _extra_body
 
-    for model in ("anthropic/claude-sonnet-5.5", "openai/gpt-5.6-luna-pro"):
+    for model in ("anthropic/claude-sonnet-5.5", "openai/gpt-6-luna-pro"):
         assert "cache_control" not in _extra_body(model)
     assert _extra_body("anthropic/claude-sonnet-5.5")["provider"]["only"] == ["anthropic"]
 
@@ -310,7 +312,7 @@ def test_the_request_langchain_builds_actually_carries_the_breakpoints():
     # a model with no caching entry is untouched
     plain = _chat_model_class()(
         name="ChatOpenAI",
-        model="openai/gpt-5.6-luna-pro",
+        model="openai/gpt-6-luna-pro",
         api_key="sk-not-a-real-key",
         base_url="https://openrouter.ai/api/v1",
     )

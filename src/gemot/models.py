@@ -22,21 +22,34 @@ from __future__ import annotations
 
 #: alias -> OpenRouter id. The panel's go-to leads, every one pinned to an endpoint (``_ROUTING``).
 MODELS: dict[str, str] = {
-    "luna": "openai/gpt-5.6-luna",
-    "luna-pro": "openai/gpt-5.6-luna-pro",
-    "v4-flash": "deepseek/deepseek-v4-flash",
-    "v4-pro": "deepseek/deepseek-v4-pro",
-    "minimax-m3": "minimax/minimax-m3",
-    "mimo": "xiaomi/mimo-v2.5",
+    # GPT-6 Luna since 2026-11-07, at $0.10/$0.50, half of GPT-5.6 Luna's price that day. Runs
+    # before then are GPT-5.6, recorded under its own id.
+    "luna": "openai/gpt-6-luna",
+    "luna-pro": "openai/gpt-6-luna-pro",
+    # DeepSeek's newest since 2026-11-07, both dated snapshots: V4.1 Flash of 17 Oct and V4 Pro of
+    # 13 Aug (there is no V4.1 Pro). The aliases keep their names; runs before then are the
+    # floating V4 ids, recorded under those.
+    "v4-flash": "deepseek/deepseek-v4.1-flash-1017",
+    "v4-pro": "deepseek/deepseek-v4-pro-0813",
+    # Each family's newest since 2026-11-07, as luna and v4 above: MiniMax M3.1 Flash (the alias
+    # was `minimax-m3`), MiMo V2.6 Pro (was V2.5), Gemini 3.8 Flash and 4 Argon (were 3.6 Flash
+    # and 3.1 Pro preview), GPT-6.1 Terra (was 5.6) and Grok 4.7 (was 4.20). Earlier runs are
+    # recorded under the ids they ran.
+    "minimax": "minimax/minimax-m3.1-flash",
+    "mimo": "xiaomi/mimo-v2.6-pro",
     "mimo-flash": "xiaomi/mimo-v2.6-flash",
     "glm-flash": "z-ai/glm-5.3-flash",
     # The tier above the panel: ~10x luna per run, added to test whether capability buys
     # anything on the examples the panel cannot solve. Not defaults -- opt in with --models.
-    "terra": "openai/gpt-5.6-terra",
+    "terra": "openai/gpt-6.1-terra",
     "astra": "openai/gpt-6-astra",
-    "grok": "x-ai/grok-4.20",
-    "gemini-flash": "google/gemini-3.6-flash",
-    "gemini-pro": "google/gemini-3.1-pro-preview",
+    "grok": "x-ai/grok-4.7",
+    "gemini-flash": "google/gemini-3.8-flash",
+    "gemini-pro": "google/gemini-4-argon",
+    # Open-weight families added 2026-11-07, at that tier's price (~$2 a median run): Moonshot's
+    # Kimi K3.1 Pro and Qwen 3.8's open-weight 2.4T-A95B, the open variant of Qwen 3.8 Max.
+    "kimi": "moonshotai/kimi-k3.1-pro",
+    "qwen": "qwen/qwen3.8-2.4t-a95b",
     # Anthropic, also opt-in: the only models whose caching is not implicit (``_CACHING``).
     "sonnet": "anthropic/claude-sonnet-5.5",
     "opus": "anthropic/claude-opus-5.5",
@@ -88,6 +101,32 @@ DEFAULT = "glm-flash"
 #: still permits fallback to any other provider. Verified live: three consecutive calls all served
 #: by DigitalOcean, with Novita as the standby if it goes down. AkashML is deliberately absent —
 #: it serves the date-pinned ``-0731`` id but not this floating one.
+#:
+#: Checked again on 2026-11-07, against each model's endpoint list and OpenRouter's list of ZDR
+#: endpoints (``/api/v1/endpoints/zdr``). Six models had lost a pinned tag (Novita, Parasail,
+#: Together, and the bare and ``/eu`` Vertex tags); each lost tag is replaced by a ZDR endpoint at
+#: fp8 or better, with 1M context and tool calls, which answered a live call. The other endpoints
+#: are unchanged.
+#:
+#: Three things that check found:
+#:
+#: * **ZDR has to be read off OpenRouter's ZDR list now.** The account no longer enforces it:
+#:   every endpoint probed answered, including GMICloud, Baidu, StreamLake and
+#:   ``google-ai-studio``, which the notes below record as ZDR-blocked when they were checked.
+#: * **Which pins are not ZDR.** The ``openai`` tag of the OpenAI family is not on the list
+#:   (``azure`` is, at the same price), nor is ``xiaomi/fp8``, nor grok's ``xai`` standby. The
+#:   ``anthropic`` tag of sonnet and haiku isn't either, but it runs through this account's own
+#:   key. Every other pinned tag is on the list.
+#: * **How a bare provider slug matches.** It takes the provider's quantization variants but not
+#:   its service tiers. ``only: [z-ai]`` reached ``z-ai/fp8``, the only Z.AI endpoint left.
+#:   ``only: [openai]`` billed luna's standard rate on 3 of 3 calls, where ``openai/flex`` billed
+#:   half.
+#:
+#: The same day every family moved to its newest model (``MODELS``), and Kimi and Qwen were added.
+#: Each new pin follows the same rules and was verified live: at ``reasoning: {effort: max}``, as
+#: the sweeps send it, every endpoint billed exactly its standard rate and finished a two-step tool
+#: loop with the tool result sent back but not the reasoning. The notes above about v4-flash are
+#: about the V4 id it replaced.
 _ROUTING: dict[str, dict] = {
     # glm-flash: ONE provider (Z.AI itself), so the pin is not about price mirrors -- it is a
     # standing guarantee that a provider added later cannot silently take the traffic. Verified
@@ -101,54 +140,79 @@ _ROUTING: dict[str, dict] = {
     # and 58% below luna's. It needs a >=78% cache hit rate just to break even, and can only
     # afford 1.16x luna's token consumption before it costs MORE. Treat cost parity as unproven
     # until a real sweep reports its own cache_read_tokens.
-    "z-ai/glm-5.3-flash": {"only": ["z-ai"]},
-    "openai/gpt-5.6-luna": {"only": ["openai"]},
-    "openai/gpt-5.6-luna-pro": {"only": ["openai"]},
-    "deepseek/deepseek-v4-flash": {
-        "order": ["digitalocean", "novita"],
-        "only": ["digitalocean", "novita"],
+    #
+    # 2026-11-07: no longer ONE provider. 41 endpoints serve it, and Z.AI's own is now tagged
+    # `z-ai/fp8` (ZDR; $0.15/$0.50, cache read $0.03 -- GPT-5.6 Luna's doubled too, to $0.02).
+    # Named by that tag, so a Z.AI variant added later is not taken by the bare slug. Kept on Z.AI
+    # alone, with no standby: the 2026-08 campaign was measured there.
+    "z-ai/glm-5.3-flash": {"only": ["z-ai/fp8"]},
+    # GPT-6 Luna: the same endpoints and tiers as 5.6's (`openai`, `openai/flex` at half price,
+    # `openai/fast`, Azure, Bedrock), so the same `openai` pin. Verified live 2026-11-07: served
+    # by OpenAI at the standard rate, with a correct tool call.
+    "openai/gpt-6-luna": {"only": ["openai"]},
+    "openai/gpt-6-luna-pro": {"only": ["openai"]},
+    # V4.1 Flash (1017): 51 endpoints. Pinned to the cheapest that is ZDR, NAMED fp8, 1M and
+    # standard tier, `deepinfra/fp8` ($0.098/$0.294, cache read $0.00294: about $0.065 for the
+    # median run above, at 95% cache reads), with `novita/fp8` ($0.165/$0.66, $0.0033; ~$0.12)
+    # the standby. DigitalOcean, the V4 primary, is left out: OpenRouter lists its quantization
+    # for every model as "unknown", and DigitalOcean's own docs do not say either. Named with the
+    # quantization, so DeepInfra's fp4 or its `/flex` and `/priority` tiers are never taken:
+    # verified live 2026-11-07, both endpoints billed their standard rate and made a tool call.
+    "deepseek/deepseek-v4.1-flash-1017": {
+        "order": ["deepinfra/fp8", "novita/fp8"],
+        "only": ["deepinfra/fp8", "novita/fp8"],
     },
-    # mimo: the $0.003-cache-read endpoints at Xiaomi/GMICloud are ZDR-blocked, so Novita is the
-    # cheapest reachable one ($0.066/run) and still carries that cache rate. DeepInfra is excluded
-    # for CONTEXT, not price: it serves this model at 262,144 tokens, and driver.py runs no history
-    # trimmer on the assumption of a 1M window — a run that landed there could wedge on context.
-    "xiaomi/mimo-v2.5": {
-        "order": ["novita/fp8", "parasail/fp8"],
-        "only": ["novita/fp8", "parasail/fp8"],
-    },
+    # mimo (V2.6 Pro): `deepinfra/fp8` (ZDR, 1M; $0.387/$0.783, cache read $0.00324, ~$0.18 a
+    # median run) alone. Its other ZDR endpoint, `primalabs/fp8`, is ten times the price, and
+    # Xiaomi's own and GMICloud's are not on the ZDR list. V2.5, which this replaced, was down to
+    # one endpoint (`venice/fp8`, $0.40/$2.00) by 2026-11-07.
+    "xiaomi/mimo-v2.6-pro": {"only": ["deepinfra/fp8"]},
     # v2.6 Flash: unlike v2.5's, Xiaomi's own endpoint is not ZDR-blocked here (every one of its
-    # eight endpoints answered a tool call, 2026-10-17); first-party fp8, Novita the standby.
-    "xiaomi/mimo-v2.6-flash": {"order": ["xiaomi/fp8", "novita/fp8"], "only": ["xiaomi/fp8", "novita/fp8"]},
-    # v4-pro: Baidu/StreamLake/DeepSeek serve it at ~$0.15/run but are all ZDR-blocked, so Novita
-    # ($0.374) is the floor we can actually reach — the 120x cache discount is NOT available here.
-    "deepseek/deepseek-v4-pro": {
+    # eight endpoints answered a tool call, 2026-10-17); first-party fp8, with a standby.
+    # 2026-11-07: Novita no longer serves it, so the standby is `deepinfra/fp8` (ZDR, 1M, Xiaomi's
+    # own price). `xiaomi/fp8` is not on OpenRouter's ZDR list.
+    "xiaomi/mimo-v2.6-flash": {
+        "order": ["xiaomi/fp8", "deepinfra/fp8"],
+        "only": ["xiaomi/fp8", "deepinfra/fp8"],
+    },
+    # V4 Pro (0813): the cheapest ZDR, named-fp8, 1M endpoint is `novita/fp8` ($0.99/$2.97, cache
+    # read $0.033), with `parasail/fp8` ($1.32/$3.96, $0.044) the standby. Baidu, StreamLake and
+    # DeepSeek itself are cheaper on prompt but not on the ZDR list. Verified live 2026-11-07:
+    # both billed their standard rate and made a tool call.
+    "deepseek/deepseek-v4-pro-0813": {
         "order": ["novita/fp8", "parasail/fp8"],
         "only": ["novita/fp8", "parasail/fp8"],
     },
-    # minimax-m3: pinned for CONTEXT as much as price. Five of its nine endpoints serve 524,288
-    # tokens and Morph 256,000; only GMICloud/Novita/Parasail reach 1M, and GMICloud is ZDR-blocked.
-    # Default routing lands on Venice (524K), so this pin closes a live context exposure. The 1M
-    # pair leads; DeepInfra/Together (524K) are standbys only, so an outage degrades the sweep
-    # instead of stalling it. 524K is deliberate headroom, not a guess — the largest single call
-    # across 210 archived runs was 171k tokens, and the run-level cap is the recursion limit, not
-    # the window. Cost is not the reason for the order: the 524K endpoints save ~$0.03/run.
-    "minimax/minimax-m3": {
-        "order": ["novita/fp8", "parasail/fp8", "deepinfra/fp8", "together"],
-        "only": ["novita/fp8", "parasail/fp8", "deepinfra/fp8", "together"],
+    # minimax (M3.1 Flash): every ZDR endpoint serves 1M and charges the same ($0.15/$0.60, cache
+    # read $0.015, ~$0.15 a median run), so the pin is for precision: the two that name it,
+    # `novita/fp16` then `parasail/fp8`. Four others serve fp4 and four do not say.
+    #
+    # M3, which this replaced, was pinned for CONTEXT: five of its nine endpoints served 524,288
+    # tokens, and default routing landed on one. 524K is deliberate headroom, not a guess -- the
+    # largest single call across 210 archived runs was 171k tokens, and the run-level cap is the
+    # recursion limit, not the window.
+    "minimax/minimax-m3.1-flash": {
+        "order": ["novita/fp16", "parasail/fp8"],
+        "only": ["novita/fp16", "parasail/fp8"],
     },
     # terra: same Azure trap as the rest of the OpenAI family (OpenAI $1.00 vs Azure $2.75, a
-    # 5.5x spread), so the bare `openai` tag is mandatory -- it also excludes `openai/flex` and
-    # `openai/priority`, the undocumented cheap and dear tiers we refuse everywhere else.
-    "openai/gpt-5.6-terra": {"only": ["openai"]},
+    # 5.5x spread, for GPT-5.6 Terra), so the bare `openai` tag is mandatory -- it also excludes
+    # `openai/flex` and `openai/priority`, the undocumented cheap and dear tiers we refuse
+    # everywhere else. GPT-6.1 Terra is $1/$5 on `openai` and `azure` alike.
+    "openai/gpt-6.1-terra": {"only": ["openai"]},
     # astra: the family's standing `openai` tag, which also excludes `openai/flex` (half price,
     # undocumented tier), `openai/fast` (2x) and the Azure mirrors. Verified live: `openai` and
     # `azure` both answer for this account at the same price, so the pin fixes the endpoint
     # rather than the bill.
     "openai/gpt-6-astra": {"only": ["openai"]},
-    # grok: `xai/zdr` and `xai` are the SAME price ($1.25/$0.20/$2.50); pin the zdr tag because it
-    # names the data guarantee in the request rather than leaning on the account policy, and it
-    # excludes the `/priority` tiers which cost exactly double for no benefit here.
-    "x-ai/grok-4.20": {"order": ["xai/zdr", "xai"], "only": ["xai/zdr", "xai"]},
+    # grok: `xai/zdr` and `xai` are the SAME price; pin the zdr tag because it names the data
+    # guarantee in the request rather than leaning on the account policy, and it excludes the
+    # `/priority` tiers which cost exactly double for no benefit here.
+    #
+    # Grok 4.7 has a 500K window, not 4.20's 2M -- inside the 524K headroom accepted for MiniMax
+    # M3 above. It costs more too: $2/$6, cache read $0.50 (4.20: $1.25/$2.50, $0.20), ~$2.84 a
+    # median run against ~$1.23. `amazon-bedrock/global` is ZDR but does not cache.
+    "x-ai/grok-4.7": {"order": ["xai/zdr", "xai"], "only": ["xai/zdr", "xai"]},
     # Gemini: READ THIS BEFORE ADDING ANOTHER GOOGLE MODEL. Google publishes no ZDR-tagged endpoint
     # at all -- grok's `xai/zdr` has no counterpart here, and `data_policy` comes back `{}` for
     # every endpoint (terra's included), so the API cannot answer the retention question either
@@ -172,14 +236,36 @@ _ROUTING: dict[str, dict] = {
     # No _REASONING entry on purpose: both models think by DEFAULT (verified live, 140-210
     # reasoning tokens on a one-shot tool call, tool calls intact). Contrast Flash-Lite below,
     # where thinking was off and had to be asked for.
-    "google/gemini-3.6-flash": {
-        "order": ["google-vertex/global", "google-vertex", "google-vertex/eu"],
-        "only": ["google-vertex/global", "google-vertex", "google-vertex/eu"],
+    #
+    # 2026-11-07: the Vertex tags have changed, and the models with them: Gemini 3.8 Flash ($0.75/
+    # $3.75, as 3.6) and Gemini 4 Argon, Google's flagship reasoning model ($2/$10, as 3.1 Pro).
+    # Neither has a bare `google-vertex` or `google-vertex/eu` endpoint; both have
+    # `google-vertex/global` and `google-vertex/us` (10% dearer), the standby. OpenRouter's ZDR
+    # list now has every standard-tier Vertex endpoint, so the first paragraph above no longer
+    # holds. AI Studio answers but is not on the list.
+    "google/gemini-3.8-flash": {
+        "order": ["google-vertex/global", "google-vertex/us"],
+        "only": ["google-vertex/global", "google-vertex/us"],
     },
-    "google/gemini-3.1-pro-preview": {
-        "order": ["google-vertex/global", "google-vertex", "google-vertex/eu"],
-        "only": ["google-vertex/global", "google-vertex", "google-vertex/eu"],
+    "google/gemini-4-argon": {
+        "order": ["google-vertex/global", "google-vertex/us"],
+        "only": ["google-vertex/global", "google-vertex/us"],
     },
+    # kimi (K3.1 Pro): 23 of its 24 endpoints are ZDR, most at fp4 or mxfp4 -- Moonshot's own
+    # (`moonshotai/mxfp4`) included. Two name fp8 or better: `deepinfra/bf16` ($1.90/$9.50, cache
+    # read $0.19, ~$2.19 a median run), then `morph/fp8` ($1.91/$12, cache read $0.47, ~$3.47),
+    # the standby. DeepInfra answered 429 ("temporarily rate-limited upstream") on 1 of 4 calls,
+    # 2026-11-07. Its default effort is max; it accepts max/high/low/none, so the runaway
+    # ladder's "minimal" rung is refused and handled as for any other provider.
+    "moonshotai/kimi-k3.1-pro": {
+        "order": ["deepinfra/bf16", "morph/fp8"],
+        "only": ["deepinfra/bf16", "morph/fp8"],
+    },
+    # qwen (3.8 2.4T-A95B): `siliconflow/fp8` (ZDR, 1M; $2/$6, cache read $0.25, ~$1.98 a median
+    # run) alone: of its other ZDR endpoints Novita does not name its precision and Venice serves
+    # 262K. Alibaba's own is not on the ZDR list, nor are Qwen 3.8 Max, Plus and Flash at all.
+    # Reasoning is mandatory, at efforts xhigh/medium/low; `max` was accepted live.
+    "qwen/qwen3.8-2.4t-a95b": {"only": ["siliconflow/fp8"]},
     # Anthropic: one tag, no `order` fallback -- pinned for the cache namespace, not the price.
     # `anthropic`, `claude-on-aws` and `azure/*` are ZDR-blocked here (404, verified per tag).
     # Through this account's own Anthropic key (BYOK), which the ZDR block above does not apply to.
