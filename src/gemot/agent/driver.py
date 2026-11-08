@@ -49,6 +49,7 @@ from .circuit_breaker import (
     task_disabled_tools,
 )
 from .finish_gate import _finish_tool
+from .fit_cost import _wrap_fit_cost
 from .guards import (
     _empty_report_guard,
     _leaked_argument_repair,
@@ -890,6 +891,18 @@ async def run_deepagents(
     _bio_names = {nm for nm in (getattr(t, "name", None) for t in bio_tools) if nm}
     _wrap_tools_with_circuit_breaker(
         all_tools, breaker_state, transport_disable_names=_bio_names, fit_tools=_FIT_TOOLS
+    )
+    # Each fit result closes with what the fit took and how much of the run is left (gemot#137),
+    # wrapped outside the breaker so the line closes whatever it returns. Both are on the budget's
+    # clock, which leaves out the time queued for the shared fit pool. `_time_left` belongs to the
+    # run loop below and is first read when a fit returns, inside that loop.
+    _wrap_fit_cost(
+        all_tools,
+        _FIT_TOOLS,
+        spent=lambda: (
+            time.monotonic() - (heartbeats.queue_seconds if heartbeats is not None else 0)
+        ),
+        left=lambda: _time_left(),
     )
     # Provenance: record the biocurator's LITERATURE accesses (query + returned DOIs/PMIDs) for
     # audit + analysis (surfaced as biocurator_literature). Only literature tools are wrapped, and

@@ -195,6 +195,21 @@ _REFIT_TESTS_NO_STRUCTURE = (
     "blame the optimizer: the usual cause is an edit that did not do what you meant."
 )
 
+#: What closes every fit result (``agent.fit_cost``) and what to do with it. A turn waits for its
+#: slowest call, so a delegation sent in a turn of its own runs after a fit instead of beside it:
+#: 14 of 15 runs on the problems whose fits take hours did that, and leads called multi-hour refits
+#: cheap (gemot#137). Deliberately it only MOVES a delegation the lead would make anyway: "do not
+#: leave the analysts idle" invites questions asked to fill a fit's time, each one paid in tokens.
+#: Read by the lead on every arm.
+_FIT_COST_RULE = (
+    "THE RUN'S TIME: a `make_changes` result that ran a fit ends with what the fit took and how "
+    "much of the run's time is left. Read it before you call another fit cheap. A turn lasts as "
+    "long as its slowest call, so a delegation you ALREADY mean to make, on a question the next "
+    "fit will not answer, goes in the SAME turn as a long `make_changes` rather than in a turn of "
+    "its own. A running fit is never a reason to ask the analysts anything: a delegation costs the "
+    "same tokens whenever it runs, and one you would not otherwise make is waste."
+)
+
 #: When the finish gate refuses on chi2 (``finish_gate._MAX_ADEQUACY_FINISH_REFUSALS``), read in
 #: the finish tool's description and in its refusal. Only where the noise is GIVEN: an estimated
 #: sigma pins chi2 near n, and a chi2 gate there chased an unreachable target
@@ -412,7 +427,12 @@ DEFAULT_SYSTEM_PROMPT = (
     "few parameters underfits and too many is charged for nothing, and both lose. Note which side "
     "you are on: while the residuals are still structured you are underfitting, and the arithmetic "
     "above is for pricing what you keep at the end, not for talking yourself out of a mechanism "
-    "the data is asking for." + _FREE_EXPONENTS_GUIDANCE + _DIFF_EDITS_GUIDANCE + "\n"
+    "the data is asking for."
+    + _FREE_EXPONENTS_GUIDANCE
+    + _DIFF_EDITS_GUIDANCE
+    + "\n"
+    + _FIT_COST_RULE
+    + "\n"
     "3. Read the CURRENT HEAD's metrics (never an earlier version's) after each `make_changes` and decide "
     "what to do next. The DEFAULT is to KEEP ITERATING while bic is still improving fit-over-fit "
     "by more than a few units, or while a genuinely different structure is still untried — "
@@ -546,6 +566,8 @@ INDRA_SYSTEM_PROMPT = (
     "the noise sigmas are estimated; judge the mechanism from the residual STRUCTURE "
     "(get_fit_diagnosis). "
     + _SIGMA_CAP_ADVISORY
+    + "\n"
+    + _FIT_COST_RULE
     + "\n"
     "4. REVISE BY ROWS with `statement_edits`, which change the current rows and leave the rest: "
     "`rebind` gives the row with that prefix a new binding, its statement as it was (a new "
@@ -1161,6 +1183,11 @@ FIT_CALL_TIMEOUT_TMPL = (
     "once it ends. Choose fewer starts or a different model."
 )
 
+# Closes a fit result (agent.fit_cost): what the fit took of the run's budget, and what is left of
+# it. The second is for a run without a wall budget.
+FIT_COST_TMPL = "FIT COST: this fit took {took}; {left} of the run's time is left."
+FIT_COST_UNBUDGETED_TMPL = "FIT COST: this fit took {took}."
+
 
 # ------------------------------------------------------------- the lead's finish gate (`finish`)
 # What the gate RETURNS to the model. The gate's own logic -- what it reads, what it counts, when
@@ -1527,6 +1554,8 @@ BIOLOGY_BLIND_SYSTEM_PROMPT = (
     + " "
     + _RESIDUALS_DO_NOT_DECIDE_DONE
     + " "
+    + _FIT_COST_RULE
+    + " "
     "Call finish when the search is complete; the judge selects your best fitted version "
     "automatically. " + BIOLOGY_BLIND_SEMANTICS
 )
@@ -1752,6 +1781,8 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "tool_disabled_repeated": TOOL_DISABLED_REPEATED_TMPL,
             "tool_disabled_transport": TOOL_DISABLED_TRANSPORT_TMPL,
             "fit_call_timeout": FIT_CALL_TIMEOUT_TMPL,
+            "fit_cost": FIT_COST_TMPL,
+            "fit_cost_unbudgeted": FIT_COST_UNBUDGETED_TMPL,
             "disabled_tool_hint_default": _DISABLED_TOOL_HINT_DEFAULT,
             "disabled_tool_hints": _DISABLED_TOOL_HINTS,
         },
