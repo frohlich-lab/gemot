@@ -159,8 +159,8 @@ def test_implicitly_caching_models_ask_for_nothing():
         "z-ai/glm-5.3-flash",
         "openai/gpt-6-luna",
         "deepseek/deepseek-v4.1-flash-1017",
-        "google/gemini-3.6-flash",
-        "google/gemini-3.1-pro-preview",
+        "google/gemini-3.8-flash",
+        "google/gemini-4-argon",
     ):
         assert caching_config(model_id) is None, (
             f"{model_id} caches implicitly -- asking explicitly can only add cost"
