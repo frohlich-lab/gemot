@@ -806,16 +806,18 @@ BAREBONES_SYSTEM_PROMPT_TMPL = (
     "the background (`nohup ... > log 2>&1 &`) and poll its log. You have {n_cpus} CPU cores; a "
     "pyPESTO multistart of {n_starts} starts is the standard fit here.\n\n"
     "DELIVERABLE. When you finish, `problem.yaml` in the working directory must load as a valid "
-    "{contract} Write the model in Antimony and export it to SBML with the `antimony` package — "
-    "do not compose SBML XML by hand. Fit with AMICI + pyPESTO (`pypesto.petab.PetabImporter` on "
+    "{contract} Deliver the model as `model.ant`, in Antimony, beside `problem.yaml`: that file "
+    "is the model scored, and the SBML file the YAML names is regenerated from it when you stop. "
+    "To fit and lint, export it to that SBML file with the `antimony` package — do not compose "
+    "SBML XML by hand. Fit with AMICI + pyPESTO (`pypesto.petab.PetabImporter` on "
     "your problem, a multistart `pypesto.optimize.minimize`), not with a hand-rolled ODE "
     "solver.{scales} Run `petablint problem.yaml` before you stop and fix everything it reports. "
     "Do NOT modify {design}: the experimental design is fixed, and a changed design table fails "
     "the run. Keep the shipped parameter rows — a row that ships fixed ({fixed}) stays fixed at "
     "its value; a row that ships estimated stays estimated.\n\n"
     "KEEP THE BEST ON DISK. As soon as you have a scorable model, always keep your best "
-    "complete, valid PEtab problem on disk, selected by the working directory's `problem.yaml`, "
-    "with its fitted parameter values saved. Develop further candidates separately; replace "
+    "complete, valid PEtab problem on disk — `model.ant` and the files the working directory's "
+    "`problem.yaml` selects — with its fitted parameter values saved. Develop further candidates separately; replace "
     "the delivery only after the saved candidate passes `petablint` and AMICI evaluation and "
     "has a lower BIC. Keep the previous best delivery valid and scorable throughout replacement. "
     "A timeout or exhausted token budget can stop you without another turn: the judge scores "
@@ -839,8 +841,8 @@ BAREBONES_SYSTEM_PROMPT_TMPL = (
     "Lower is better, and the score is compared against a reference mechanism you cannot "
     "see. So fit your parameters well before you finish, write the fitted values back into "
     "`parameters.tsv`, and re-evaluate the likelihood of the SAVED files once more before you "
-    "stop. A model whose SBML fails to import, or whose tables fail `petablint`, scores as no "
-    "model at all. When you are done, reply with a short summary of the model you built and its "
+    "stop. A `model.ant` that does not load, a model whose SBML fails to import, or tables that "
+    "fail `petablint` score as no model at all. When you are done, reply with a short summary of the model you built and its "
     "nll and BIC."
 )
 
@@ -860,8 +862,8 @@ BAREBONES_PETAB_FORMATS = {
         "lists, and an SBML model file) that ships WITHOUT a model: the measurements, observables "
         "and conditions are given, the SBML file is empty.",
         "files": "",
-        "contract": "PEtab v1 problem: its SBML model file contains your model, and "
-        "`parameters.tsv` lists every parameter you estimate with `estimate` = 1, `nominalValue` "
+        "contract": "PEtab v1 problem: its SBML model file is the export of your `model.ant`, "
+        "and `parameters.tsv` lists every parameter you estimate with `estimate` = 1, `nominalValue` "
         "set to YOUR fitted value (a LINEAR value, whatever the `parameterScale`), and sensible "
         "bounds and scale.",
         "scales": "",
@@ -882,8 +884,8 @@ BAREBONES_PETAB_FORMATS = {
         "-inf is a pre-equilibration to steady state before the experiment starts. Each "
         "measurement names the experiment it was taken in (`experimentId`; empty: the model "
         "simulated as is). In `parameters.tsv`, `estimate` is `true` or `false`.",
-        "contract": "PEtab v2 problem: the SBML file it names under `model_files` contains your "
-        "model, and `parameters.tsv` lists every parameter you estimate with `estimate` = `true`, "
+        "contract": "PEtab v2 problem: the SBML file it names under `model_files` is the export "
+        "of your `model.ant`, and `parameters.tsv` lists every parameter you estimate with `estimate` = `true`, "
         "`nominalValue` set to YOUR fitted value (a LINEAR value, whatever the `parameterScale`), "
         "and sensible bounds and scale.",
         "scales": " PEtab v2 itself has no estimation scale: a parameter's scale is the "

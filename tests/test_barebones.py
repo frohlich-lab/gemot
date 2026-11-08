@@ -139,7 +139,7 @@ def test_an_untouched_delivery_is_clean(tmp_path):
     assert out["design_modified"] == [] and out["shipped_rows_violated"] == []
     assert out["petab_lint"]["ok"], out["petab_lint"]
     assert out["model_authored"] is True  # the toy ships a real model
-    assert out["model_ant_set_aside"] is False
+    assert out["model_source"] == "sbml"  # no model.ant: the SBML is scored as delivered
     # reconciled, the toy estimates what it ships estimated, and nothing else
     assert out["estimated"] == ["k1", "k2"] and out["uncharged"] == []
 
@@ -366,16 +366,79 @@ def test_shipped_rows_are_protected(tmp_path):
     )
 
 
-def test_an_agent_model_ant_is_set_aside_before_scoring(tmp_path):
-    """The server prefers a model.ant beside the YAML over the SBML; the deliverable is the PEtab
-    problem the YAML names, so a model.ant the agent wrote is moved out of the way, not scored."""
+def test_the_delivered_model_ant_is_the_model_checked_and_scored(tmp_path):
+    """The deliverable is the agent's model.ant, which the judge's server loads in preference to
+    the SBML: the SBML the YAML names is regenerated from it, so lint and the reconcile read the
+    model the judge scores, and the agent's own SBML is kept beside it."""
     work = _workspace(tmp_path)
     staged = R.stage_workspace(work)
     work = staged["agent_dir"]
-    (work / "model.ant").write_text("model m\nend\n")
+    agent_sbml = (work / "conversion_reaction.xml").read_text()
+    # the toy's model with one more estimated rate, which the SBML on disk does not carry
+    toy = (TOY / "model.ant").read_text()
+    extra = "  r2: B => A; k2 * B;\n  r3: B => ; k3 * B;\n  k3 = 0.2;"
+    (work / "model.ant").write_text(toy.replace("  r2: B => A; k2 * B;", extra))
     out = R.check_delivery(work, staged)
-    assert out["model_ant_set_aside"] is True
-    assert not (work / "model.ant").exists() and (work / "model.ant.agent").is_file()
+    assert out["model_source"] == "antimony"
+    assert out["petab_lint"]["ok"], out["petab_lint"]
+    assert (work / "conversion_reaction.xml.agent").read_text() == agent_sbml
+    assert 'id="k3"' in (work / "conversion_reaction.xml").read_text()
+    # k3 exists only in the model.ant, so the reconcile read that: it estimates the new rate
+    assert out["estimated"] == ["k1", "k2", "k3"]
+
+
+def test_a_model_ant_that_does_not_load_fails_the_delivery(tmp_path):
+    work = _workspace(tmp_path)
+    staged = R.stage_workspace(work)
+    work = staged["agent_dir"]
+    (work / "model.ant").write_text("model m\n  A -> ; k *\nend\n")
+    out = R.check_delivery(work, staged)
+    assert out["model_source"] == "antimony"
+    assert not out["petab_lint"]["ok"]
+    assert out["petab_lint"]["messages"][0].startswith("model.ant does not load")
+    # nothing was written over the agent's SBML
+    assert not (work / "conversion_reaction.xml.agent").exists()
+
+
+def test_the_null_arm_sends_the_runs_reasoning_effort(monkeypatch, tmp_path):
+    """The panel driver sends the run's --reasoning-effort (max by default); the null arm did not,
+    so a glm-flash null ran at the provider's default effort against a max-effort panel."""
+    pytest.importorskip("deepagents")
+    import deepagents
+
+    from gemot.agent import barebones as B
+
+    bodies = []
+    real = B._chat_model_class()
+
+    def _chat(**kw):
+        bodies.append(kw.get("extra_body"))
+        return real(**kw)
+
+    class _Agent:
+        def astream(self, stream_input, config=None, stream_mode=None):
+            async def _gen():
+                yield {"messages": [{"role": "assistant", "content": "done"}]}
+
+            return _gen()
+
+    monkeypatch.setattr(B, "_chat_model_class", lambda: _chat)
+    monkeypatch.setattr(deepagents, "create_deep_agent", lambda **kw: _Agent())
+    out = asyncio.run(
+        B.run_barebones(
+            tmp_path,
+            model="fake/model",
+            base_url="http://x",
+            api_key="sk-test",
+            system_prompt="sp",
+            task="t",
+            recursion_limit=10,
+            reasoning_effort="max",
+            execute_timeout_s=60.0,
+        )
+    )
+    assert bodies and bodies[0]["reasoning"] == {"effort": "max"}
+    assert out["openrouter_extra_body"]["reasoning"] == {"effort": "max"}
 
 
 def test_an_unloadable_problem_fails_lint_not_the_runner(tmp_path):

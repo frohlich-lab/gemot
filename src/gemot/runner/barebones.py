@@ -11,8 +11,9 @@ sees, so the harness's own ``run_live.json``/logs/result stay outside it — and
 tables), :func:`barebones_system_prompt` (the instructions for the problem's PEtab version,
 naming the design tables the check hashes), :func:`barebones_task` (the same known-constants note
 and entity names the panel gets),
-and :func:`check_delivery` (design tables untouched, shipped parameter rows intact, petab lint,
-and the parameters the server's reconcile would estimate, which the judge counts).
+and :func:`check_delivery` (design tables untouched, shipped parameter rows intact, the agent's
+``model.ant`` written as the SBML the YAML names, petab lint, and the parameters the server's
+reconcile would estimate, which the judge counts).
 A tampered or unloadable delivery is recorded as a loss (``unscoreable_reason``), not an abort.
 Reasons are in ``docs/RATIONALE.md`` (the ``#203`` entries).
 
@@ -21,9 +22,9 @@ lists, and ``inputs.tsv`` when the problem ships one. That is an allowlist, and 
 denylist it replaced (``reference.json`` and the ``model.ant`` seed) let everything else in the
 problem directory through, and PEtabAgentBench tracks ``validation_v1_baseline.json`` for
 perelson, crauste, fujita, lucarelli and raimundez: the reference's held-out score, and the
-reference model's parameters by name with their fitted values. The seed stays
-out because the judge's server would load it instead of the delivered SBML. What was withheld is
-recorded in ``result.json`` as ``workspace_withheld``.
+reference model's parameters by name with their fitted values. The seed stays out because the
+agent's own ``model.ant`` is the deliverable: one left in the workspace would be scored as the
+agent's model. What was withheld is recorded in ``result.json`` as ``workspace_withheld``.
 """
 
 from __future__ import annotations
@@ -53,6 +54,7 @@ from ..prompts import (
 )
 from ..scenario import Baseline, Scenario
 from .clock import _make_call, _wrap_call_timeout, _wrap_tool_clock
+from .drive import _reasoning_effort
 from .endpoints import BIO_MCP_URLS
 from .failure import _should_reraise, _summarize_exc, _write_degraded_result
 from .judge import _judge
@@ -74,6 +76,7 @@ _ARCHIVE_SUFFIXES = (
     ".xml",
     ".sbml",
     ".ant",
+    ".agent",
     ".py",
     ".sh",
     ".md",
@@ -137,13 +140,8 @@ def _staged_files(work: Path) -> set[str]:
     from petab_mcp.protocols import FILENAME as INPUTS_FILENAME
 
     doc = yaml.safe_load((work / "problem.yaml").read_text(encoding="utf-8")) or {}
-    if get_major_version(doc) == 1:
-        listed = (doc.get("problems") or [{}])[0]
-        models = list(listed.get("sbml_files") or [])
-    else:
-        listed = doc
-        models = [spec["location"] for spec in (doc.get("model_files") or {}).values()]
-    staged = {"problem.yaml", *models}
+    listed = (doc.get("problems") or [{}])[0] if get_major_version(doc) == 1 else doc
+    staged = {"problem.yaml", *_model_files(doc)}
     for role in _OTHER_ROLES:
         staged.update(listed.get(f"{role}_files") or [])
     for names in _design_files(work).values():
@@ -151,6 +149,16 @@ def _staged_files(work: Path) -> set[str]:
     if (work / INPUTS_FILENAME).is_file():
         staged.add(INPUTS_FILENAME)
     return staged
+
+
+def _model_files(doc: dict) -> list[str]:
+    """The model files a loaded ``problem.yaml`` names: v1's ``sbml_files`` of its first problem,
+    the ``location`` of each of v2's ``model_files``."""
+    from petab.versions import get_major_version
+
+    if get_major_version(doc) == 1:
+        return list(((doc.get("problems") or [{}])[0]).get("sbml_files") or [])
+    return [spec["location"] for spec in (doc.get("model_files") or {}).values()]
 
 
 def _sha256(path: Path) -> str:
@@ -246,22 +254,18 @@ def check_delivery(work: Path, staged: dict) -> dict:
     """What the agent left behind, against the rules it was given: ``design_modified`` (design
     tables whose bytes changed or left the YAML, and any the YAML lists beside them),
     ``shipped_rows_violated`` (shipped parameter rows removed, re-flagged, or — fixed ones —
-    re-valued), ``model_ant_set_aside``, ``petab_lint`` (``{ok, messages}``), ``model_authored``,
-    and, for a delivery that lints, ``estimated`` and ``uncharged`` (:func:`_reconciled`)."""
+    re-valued), ``model_source`` (:func:`_sbml_from_antimony`), ``petab_lint`` (``{ok,
+    messages}``), ``model_authored``, and, for a delivery that lints, ``estimated`` and
+    ``uncharged`` (:func:`_reconciled`)."""
     out: dict = {
         "design_modified": [],
         "shipped_rows_violated": [],
-        "model_ant_set_aside": False,
+        "model_source": None,
         "petab_lint": {"ok": False, "messages": []},
         "model_authored": None,
         "estimated": None,
         "uncharged": [],
     }
-    # a model.ant beside the YAML would be loaded instead of the SBML (session.py prefers it)
-    ant = work / "model.ant"
-    if ant.exists():
-        ant.rename(work / "model.ant.agent")
-        out["model_ant_set_aside"] = True
     try:
         files = _design_files(work)
     except Exception as exc:  # noqa: BLE001 - a broken YAML is a delivery failure, reported below
@@ -288,6 +292,10 @@ def check_delivery(work: Path, staged: dict) -> dict:
             out["shipped_rows_violated"].append(f"{pid}: estimate {est} -> {got[0]}")
         elif est == 0 and got[1] != nominal:
             out["shipped_rows_violated"].append(f"{pid}: fixed value {nominal} -> {got[1]}")
+    out["model_source"], unloadable = _sbml_from_antimony(work)
+    if unloadable:
+        out["petab_lint"] = {"ok": False, "messages": [unloadable]}
+        return out
     out["petab_lint"], out["model_authored"] = _lint(work / "problem.yaml")
     if out["petab_lint"]["ok"] and out["model_authored"]:
         try:
@@ -356,6 +364,37 @@ def _reconciled(yaml_path: Path, shipped) -> "tuple[list[str], list[str]]":
         for pid in sorted((was - estimated) & declared)
     ]
     return sorted(estimated), uncharged
+
+
+def _sbml_from_antimony(work: Path) -> "tuple[str, str | None]":
+    """Write the agent's ``model.ant`` as the SBML file the delivered YAML names, keeping the file
+    the agent left there as ``<name>.agent``, and return ``(model_source, why_unloadable)``.
+
+    The deliverable is the Antimony, as the panel's is: the judge's server loads a ``model.ant``
+    beside the YAML in preference to its SBML (``petab_mcp.session``), so the SBML the tables are
+    linted and reconciled against has to be the one converted from it, or the check and the score
+    would read two different models. The conversion is the server's own
+    (``SbmlModel.from_antimony``). ``("antimony", reason)`` when it does not load, which fails the
+    delivery as an SBML that does not import fails it. Without a ``model.ant`` the SBML is scored
+    as delivered: ``("sbml", None)``."""
+    import yaml
+    from petab.v2.models.sbml_model import SbmlModel
+
+    ant = work / "model.ant"
+    if not ant.is_file():
+        return "sbml", None
+    try:
+        names = _model_files(yaml.safe_load((work / "problem.yaml").read_text(encoding="utf-8")))
+        model = SbmlModel.from_antimony(ant.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - an unloadable model.ant is the delivery's failure
+        return "antimony", f"model.ant does not load: {type(exc).__name__}: {exc}"[:500]
+    if len(names) != 1:
+        return "antimony", f"problem.yaml must name one model file for model.ant, not {len(names)}"
+    target = work / names[0]
+    if target.is_file():
+        target.replace(target.with_name(f"{target.name}.agent"))
+    target.write_text(model.to_sbml_str(), encoding="utf-8")
+    return "antimony", None
 
 
 def _lint(yaml_path: Path) -> "tuple[dict, bool | None]":
@@ -660,6 +699,7 @@ async def _main_async_barebones(scenario: Scenario, args: argparse.Namespace) ->
                         task=task,
                         recursion_limit=args.recursion_limit,
                         temperature=args.temperature,
+                        reasoning_effort=_reasoning_effort(args),
                         execute_timeout_s=execute_timeout_s,
                         n_cpus=FIT_N_WORKERS,
                         max_wall_seconds=agent_wall_s,
