@@ -143,7 +143,9 @@ dependencies = [
     # Then b5c9b35, main: #314: `create_server(fix_pointers=False)` withholds the numbers that point
     # at what to change or where the fit is off; the bootstrap passes it on every launch (the
     # fix_pointers arm).
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@b5c9b35778c033612def06c9b27dbcbbeb5bfcf7",
+    # Then 7ffb364, main: #316: `create_server(progress_signals=False)` withholds the numbers that
+    # rank, compare or judge a fit; the bootstrap passes it on every launch (the progress_signals arm).
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@7ffb3643d5fc034cfacda789e1a6d5674c6e5aed",
     # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
     # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
     # is built on it; 2.3 is the first release fastmcp 4.1 accepts. What 2.0 changed for the code

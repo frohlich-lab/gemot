@@ -478,7 +478,8 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
         # rule says None, never refusing, where a sigma was estimated, the noise report is
         # unreadable, or the p-value is missing or not finite. Ahead of the parsimony gate, so an
         # inadequate model hears that first (gemot#134), and needs no FIM to do so.
-        if adequacy == ADEQUACY_CHI2:
+        # Not on the progress_signals arm's off side, which withholds the p-value it quotes.
+        if adequacy == ADEQUACY_CHI2 and prompts.PROGRESS_SIGNALS_ENABLED:
             p = fit.get("chi2_gof_pvalue")
             if chi2_passes(fit.get("noise_sigma_report"), p) is False:
                 reason = f"chi2 GoF p={p:.3g} < {REFERENCE_FREE_GOF_ALPHA:g}"
@@ -657,7 +658,11 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
         state["armed_token"] = None
         finish_state["confirmed"] = True
         chi2_note = ""
-        if fit.get("chi2_gof_pvalue") is None and fit.get("reduced_chi2") is None:
+        if (
+            prompts.PROGRESS_SIGNALS_ENABLED
+            and fit.get("chi2_gof_pvalue") is None
+            and fit.get("reduced_chi2") is None
+        ):
             chi2_note = prompts.FINISH_CHI2_UNAVAILABLE_NOTE
         print(f"[finish CONFIRMED v={version}] bic={bic:.6g}")
         return prompts.FINISH_CONFIRMED_TMPL.format(bic=bic, nll=nll, chi2_note=chi2_note)

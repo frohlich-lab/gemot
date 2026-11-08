@@ -75,7 +75,7 @@ def test_the_server_is_launched_with_the_arm(monkeypatch, flag, expected):
     uvicorn.Config = object
     monkeypatch.setitem(sys.modules, "petab_mcp.server", server)
     monkeypatch.setitem(sys.modules, "uvicorn", uvicorn)
-    argv = ["-c", "p.yaml", "build", "off", "127.0.0.1", "0", "5", "", "0", "", "", flag]
+    argv = ["-c", "p.yaml", "build", "off", "127.0.0.1", "0", "5", "", "0", "", "", flag, "1"]
     monkeypatch.setattr(sys, "argv", argv)
     exec(_SERVER_BOOTSTRAP, {})
     assert seen["fix_pointers"] is expected

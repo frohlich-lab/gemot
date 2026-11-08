@@ -256,6 +256,36 @@ def test_the_result_counts_silent_bounces(monkeypatch, confirm_after, bounces):
     assert result["idle_nudges"] == 0  # the counter this was mistaken for does not see it
 
 
+class _StoppingProbe(_Probe):
+    """The server says stop after every super-step; records which tools the driver read."""
+
+    def __init__(self):
+        super().__init__(model_authored=True)
+        self.tools: list[str] = []
+
+    async def __call__(self, tool, args):
+        self.tools.append(tool)
+        if tool == "get_progress":
+            payload = {"should_stop": True, "stop_reason": "plateau"}
+            return type("R", (), {"structured_content": payload})()
+        return await super().__call__(tool, args)
+
+
+@requires_harness
+def test_off_the_progress_signals_arm_the_servers_early_stop_does_not_end_the_run(monkeypatch):
+    """On, the server's streak or plateau ends the run; off, the driver never reads it."""
+    from gemot.agent import driver
+
+    mod = _load_agent_module()
+    result, _ = _run(mod, monkeypatch, _StoppingProbe())
+    assert result["stop_reason"] == "early_stop: plateau"
+    monkeypatch.setattr(driver, "PROGRESS_SIGNALS_ENABLED", False)
+    probe = _StoppingProbe()
+    result, _ = _run(mod, monkeypatch, probe)
+    assert result["stop_reason"] == "silent_stop"
+    assert "get_progress" not in probe.tools
+
+
 # --- liveness at the CALL SITE ---------------------------------------------------------------
 # `_server_is_alive` is unit-tested in tests/test_judge_call_timeout.py; these drive the branch
 # in run_deepagents that consumes it, which is where the three-state handling actually matters.

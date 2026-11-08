@@ -22,9 +22,14 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
+from .. import ablations
+
 
 #: The server registers this read solely for the harness's independent held-out evaluation.
 _JUDGE_TOOLS = frozenset({"evaluate_validation_data"})
+#: The early-stop and best-version probe, the harness's alone where the agent is not told how it is
+#: doing (the progress_signals arm).
+_PROGRESS_TOOLS = frozenset({"get_progress"})
 
 
 @dataclass
@@ -123,6 +128,9 @@ async def _listed_tools(session: Any, *, biology_blinded: bool) -> list[Any]:
     """Read every tools/list page before publishing the stable surface for this run."""
     from mcp.types import PaginatedRequestParams
 
+    hidden = _JUDGE_TOOLS | (
+        frozenset() if ablations.enabled("progress_signals") else _PROGRESS_TOOLS
+    )
     tools: dict[str, Any] = {}
     cursor = None
     seen_cursors = set()
@@ -131,7 +139,7 @@ async def _listed_tools(session: Any, *, biology_blinded: bool) -> list[Any]:
             params=PaginatedRequestParams(cursor=cursor) if cursor else None
         )
         for tool in page.tools:
-            if tool.name not in _JUDGE_TOOLS:
+            if tool.name not in hidden:
                 tools[tool.name] = tool
         cursor = page.next_cursor
         if not cursor:

@@ -156,6 +156,19 @@ ABLATIONS: tuple[Ablation, ...] = (
         "verdict flags (create_server(fix_pointers=False)), and the prompt lines that read them. "
         "Every score, total and verdict, and all prose, stay",
     ),
+    Ablation(
+        name="progress_signals",
+        env="PETAB_PROGRESS_SIGNALS",
+        default_on=True,
+        changes_prompt=True,
+        effect="OFF withholds the numbers that tell the agent how well it is doing: the server's "
+        "best version, new-best flags, score differences against the parent or the best, chi2 "
+        "p-value and reduced chi2 (create_server(progress_signals=False)), the time left on FIT "
+        "COST, the subagents' turns-left notices, and the chi2 finish refusal that quotes the "
+        "p-value; and the run no longer stops on the server's streak or plateau. Prose changes only "
+        "where it names a withheld number. Each fit's own nll, criterion, k and chi2 stay, and the "
+        "judge scores as before",
+    ),
 )
 
 _BY_NAME = {a.name: a for a in ABLATIONS}

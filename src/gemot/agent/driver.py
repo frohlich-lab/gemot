@@ -75,7 +75,12 @@ from .tools import (
     _check_statements_editor,
     _select_tools,
 )
-from ..prompts import INDRA_STATEMENTS_ENABLED, _NO_MODEL_NUDGE, _SILENT_FINISH_NUDGE
+from ..prompts import (
+    INDRA_STATEMENTS_ENABLED,
+    PROGRESS_SIGNALS_ENABLED,
+    _NO_MODEL_NUDGE,
+    _SILENT_FINISH_NUDGE,
+)
 from .. import infrastructure, models, prompts
 
 # --- guards on the (input-dominated, occasionally-hanging) LLM loop -----------------------
@@ -1359,7 +1364,7 @@ async def run_deepagents(
     async def _early_stop_reason() -> str | None:
         """The server's early-stop reason if the run should stop now, else ``None`` (fail-open:
         any probe error just means "keep going")."""
-        if progress_probe is None:
+        if progress_probe is None or not PROGRESS_SIGNALS_ENABLED:
             return None
         try:
             data = _structured(await progress_probe("get_progress", {}))

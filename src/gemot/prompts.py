@@ -59,6 +59,13 @@ def _pointing(text: str, off: str = "") -> str:
     """``text``, which reads numbers the server withholds on the ``fix_pointers`` arm (the merge
     hints, a tie's payoff, the per-observable residual tables), or ``off`` on that arm."""
     return text if FIX_POINTERS_ENABLED else off
+PROGRESS_SIGNALS_ENABLED = _ablations.enabled("progress_signals")
+
+
+def _signal(text: str, plain: str = "") -> str:
+    """``text`` where the agent gets the numbers that tell it how well it is doing (the
+    ``progress_signals`` arm, on by default), else ``plain``: text naming a withheld number."""
+    return text if PROGRESS_SIGNALS_ENABLED else plain
 
 
 # The petab-model-building skill, INLINED into the analyst persona prompts. Measured: every
@@ -107,7 +114,9 @@ _PARAMETER_HALF = "get_fit_diagnosis(sections='parameters')"
 #: nothing rejects on it. The load-bearing half is that nothing stops the agent, which is
 #: precisely why the choice is its own.
 _SIGMA_CAP_ADVISORY = (
-    "NEVER free or widen an estimated noise sigma to lower reduced_chi2. Nothing stops you — "
+    "NEVER free or widen an estimated noise sigma to "
+    + _signal("lower reduced_chi2", "absorb misfit")
+    + ". Nothing stops you — "
     "widening one past its data-driven cap only WARNS — which is exactly why it is on you: it "
     "hides a missing mechanism behind inflated noise, and the finish gate refuses a run resting "
     "on one."
@@ -209,9 +218,11 @@ _REFIT_TESTS_NO_STRUCTURE = (
 #: leave the analysts idle" invites questions asked to fill a fit's time, each one paid in tokens.
 #: Read by the lead on every arm.
 _FIT_COST_RULE = (
-    "THE RUN'S TIME: a `make_changes` result that ran a fit ends with what the fit took and how "
-    "much of the run's time is left. Read it before you call another fit cheap. A turn lasts as "
-    "long as its slowest call, so a delegation you ALREADY mean to make, on a question the next "
+    "THE RUN'S TIME: a `make_changes` result that ran a fit ends with what the fit took"
+    + _signal(
+        " and how much of the run's time is left. Read it before you call another fit cheap"
+    )
+    + ". A turn lasts as long as its slowest call, so a delegation you ALREADY mean to make, on a question the next "
     "fit will not answer, goes in the SAME turn as a long `make_changes` rather than in a turn of "
     "its own. A running fit is never a reason to ask the analysts anything: a delegation costs the "
     "same tokens whenever it runs, and one you would not otherwise make is waste."
@@ -474,13 +485,16 @@ DEFAULT_SYSTEM_PROMPT = (
     "place but unscored because this structure already IS a version (make a "
     "genuinely DIFFERENT change). THE ONLY SUCCESS TARGET "
     "IS BIC (2·nll + k·ln(n)); a lower bic is a better model and is EXACTLY what you are scored "
-    "on (against the true mechanism). The fit also reports reduced_chi2 and chi2_gof_pvalue, "
-    "but do NOT treat them as a success gate: they only mean something with a KNOWN noise level, "
-    "and WHENEVER the observable noise sigmas are ESTIMATED (check get_parameters — a sigma_* "
-    "with estimate=1; usually the case here) chi2 pins near the number of data points by "
-    "construction, so reduced_chi2 ≈ 1 and its p-value are UNINFORMATIVE — often stuck at the "
-    "noise floor however wrong the mechanism is. Do NOT "
-    "chase a passing chi2_gof_pvalue, and do NOT restructure or trade away nll/bic to raise it. "
+    "on (against the true mechanism). "
+    + _signal(
+        "The fit also reports reduced_chi2 and chi2_gof_pvalue, but do NOT treat them as a "
+        "success gate: they only mean something with a KNOWN noise level, and WHENEVER the "
+        "observable noise sigmas are ESTIMATED (check get_parameters — a sigma_* with estimate=1; "
+        "usually the case here) chi2 pins near the number of data points by construction, so "
+        "reduced_chi2 ≈ 1 and its p-value are UNINFORMATIVE — often stuck at the noise floor "
+        "however wrong the mechanism is. Do NOT chase a passing chi2_gof_pvalue, and do NOT "
+        "restructure or trade away nll/bic to raise it. "
+    )
     + _SIGMA_CAP_ADVISORY
     + " Judge whether the "
     "mechanism is RIGHT from the residual STRUCTURE — "
@@ -1291,7 +1305,9 @@ FINISH_DESCRIPTION = (
     "first ARMS it and shows you the "
     "current bic and residual-structure diagnosis; review it, then call `finish` AGAIN to "
     "confirm and end. It is refused when there is no valid fit yet (no model built / "
-    "no finite bic). " + _CHI2_GATE_RULE + " Prefer the FEWEST free parameters that fit "
+    "no finite bic). "
+    + _signal(_CHI2_GATE_RULE + " ")
+    + "Prefer the FEWEST free parameters that fit "
     "(lower bic wins). `rationale` is REQUIRED: one line on why this model is done."
 )
 
