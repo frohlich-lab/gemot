@@ -253,34 +253,35 @@ SIGNAL_ENGINEER_READ_TOOLS = (
 
 
 def _analyst_limits() -> str:
-    """What the lead is told an analyst can and cannot do, built from the tuples above."""
+    """What the lead is told an analyst can and cannot do.
+
+    It names no analyst's tool. The `task` tool lists each one's, rendered from the tuples above
+    (`_analyst_reach`), and a tool named in the lead's own prompt is one the lead tries to call
+    (tests/test_agent_tool_dispatch.py). Who can run SQL is read from the same tuples.
+    """
     toolsets = (
         ("mathematician", MATHEMATICIAN_READ_TOOLS),
         ("systems_scientist", SYSTEMS_SCIENTIST_READ_TOOLS),
         ("signal_engineer", SIGNAL_ENGINEER_READ_TOOLS),
     )
-    holdings = "; ".join(
-        f"the {name}: " + ", ".join(f"`{t}`" for t in tools) for name, tools in toolsets
-    )
-    sql = " and ".join(name for name, tools in toolsets if "query_data" in tools)
+    sql = " and the ".join(name for name, tools in toolsets if "query_data" in tools)
     return (
-        "WHAT AN ANALYST CAN DO. Each one works only through its own tools ("
-        + holdings
-        + "). No analyst runs code, simulates a model or fits one. The only computing they can "
-        "do is SQL over the problem's tables (`query_data`, held by the " + sql + "). So ask an "
-        "analyst to READ and JUDGE (the data, the model, the residuals, the fitting log), never "
-        "to solve, integrate, simulate or derive something: a steady state, a stationary "
-        "distribution, a reduced model worked out by hand. It cannot do that, and trying costs "
-        "hours. A candidate model is tested by FITTING it, and only you fit (`make_changes`). "
-        "`get_fit_diagnosis` is yours alone: no analyst holds it, so read it yourself and put "
-        "what an analyst needs from it in the `description`."
+        "WHAT AN ANALYST CAN DO. The `task` tool lists the tools each analyst holds, and those "
+        "are all it has. No analyst runs code, simulates a model or fits one. The only computing "
+        "any of them can do is SQL over the problem's tables, and only the " + sql + " can do "
+        "that. So ask an analyst to READ and JUDGE (the data, the model, the residuals, the "
+        "fitting log), never to solve, integrate, simulate or derive something: a steady state, "
+        "a stationary distribution, a reduced model worked out by hand. It cannot do that, and "
+        "trying costs hours. A candidate model is tested by FITTING it, and only you fit "
+        "(`make_changes`). `get_fit_diagnosis` is yours alone: no analyst holds it, so read it "
+        "yourself and put what an analyst needs from it in the `description`."
     )
 
 
 #: The analysts' reach, told to the lead once in every lead prompt that introduces them. The
-#: `task` tool lists each analyst's tools too (`_analyst_reach`), yet in sweep 63522750 6 of 10
-#: isensee/alkan leads still asked an analyst for `get_fit_diagnosis`, and blasi 7 spent 2.7 of
-#: its 3.4 h waiting on an analyst trying to solve a 16-state CTMC in SQL (gemot#136).
+#: `task` tool listed each analyst's tools already, yet in sweep 63522750 6 of 10 isensee/alkan
+#: leads still asked an analyst for `get_fit_diagnosis`, and blasi 7 spent 2.7 of its 3.4 h
+#: waiting on an analyst trying to solve a 16-state CTMC in SQL (gemot#136).
 _ANALYST_LIMITS = _analyst_limits()
 
 

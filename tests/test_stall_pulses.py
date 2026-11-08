@@ -15,9 +15,11 @@ import pytest
 from conftest import requires_langchain
 from test_run_loop_no_model import _FakeAgent, _Probe, _load_agent_module, _run, requires_harness
 
-#: The window the tests run at, and how often a model call ends inside a step.
-_WINDOW_S = 0.1
-_CALL_S = 0.02
+#: The window the tests run at, and how often a model call ends inside a step. A step runs for
+#: `_STEP_S`, past the window and past the one second the driver's first wait always gets.
+_WINDOW_S = 0.5
+_CALL_S = 0.05
+_STEP_S = 2.0
 
 
 async def _real_sleep(seconds: float) -> None:
@@ -52,7 +54,8 @@ def test_model_calls_that_end_push_the_watchdog_out():
 
     async def run():
         pulses = D._llm_pulses()
-        step = _step(4 * _WINDOW_S, callbacks=[pulses]).__aiter__()
+        await _model_call([pulses])  # the first call imports, off the clock
+        step = _step(_STEP_S, callbacks=[pulses]).__aiter__()
         return await D._next_step(step, _WINDOW_S, pulses=pulses)
 
     assert asyncio.run(run()) == "stepped"
@@ -65,7 +68,7 @@ def test_with_no_call_ending_the_watchdog_still_fires():
 
     async def run():
         pulses = D._llm_pulses()
-        return await D._next_step(_step(4 * _WINDOW_S).__aiter__(), _WINDOW_S, pulses=pulses)
+        return await D._next_step(_step(_STEP_S).__aiter__(), _WINDOW_S, pulses=pulses)
 
     with pytest.raises(D._StepStalled):
         asyncio.run(run())
@@ -86,7 +89,7 @@ class _AnalystRound(_FakeAgent):
 
         async def _gen():
             if first:
-                async for _ in _step(4 * _WINDOW_S, callbacks=callbacks):
+                async for _ in _step(_STEP_S, callbacks=callbacks):
                     pass
             yield {"messages": []}
 
@@ -109,6 +112,7 @@ def test_a_round_still_making_calls_is_not_resumed(monkeypatch, calls):
     control: the same round, silent, is cancelled and resumed (a resume streams from ``None``)."""
     mod = _load_agent_module()
     _short_window(mod, monkeypatch)
+    asyncio.run(_model_call([mod.driver._llm_pulses()]))  # the first call imports, off the clock
     agent = _AnalystRound(calls)
     _run(mod, monkeypatch, _Probe(model_authored=True), agent=agent)
     assert (None in agent.inputs) is not calls
