@@ -145,6 +145,17 @@ ABLATIONS: tuple[Ablation, ...] = (
         "problem's tables, its constants still shipping as named fixed rows, and the biocurator "
         "the measured entities and inputs with their identifiers, derived (`entity_ids`)",
     ),
+    Ablation(
+        name="fix_pointers",
+        env="PETAB_FIX_POINTERS",
+        default_on=True,
+        changes_prompt=True,
+        effect="OFF removes every pointer telling the agent WHAT TO CHANGE, keeping what was refused "
+        "or flagged and why: the server's remedies in refusals and warnings, its merge hints and "
+        "the rename each carries, its stop and diagnosis advice (create_server(fix_pointers=False)), "
+        "and the prompts', finish gate's and circuit breaker's fix menus. Tool-call protocol, "
+        "navigation, the analysts' recommendations and the progress verdicts stay",
+    ),
 )
 
 _BY_NAME = {a.name: a for a in ABLATIONS}
