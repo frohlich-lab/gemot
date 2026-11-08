@@ -214,6 +214,8 @@ async def _petab_server(
         else "",
         # <constraints>: the causal_constraints arm's file, "" off it.
         _constraints(scenario),
+        # <fix_pointers>: "0" on the fix_pointers arm, whose server sends no what-to-change text.
+        "1" if ablations.enabled("fix_pointers") else "0",
     ]
     server_log_path = work / "server.log"
     amici_log_path = work / "amici_build.log"
