@@ -133,6 +133,22 @@ _MERGE_RULE = (
     "settled — finish on the unmerged model instead of re-arguing it."
 )
 
+#: Where the biology limits a priced merge: only on a pair holding a mechanistic RATE CONSTANT.
+#: Stated as "merge only the same physical quantity" for every parameter, it had runs of the
+#: 2026-11-08 sweep decline ties between statistical weights "on biology", and later take them;
+#: one declined tie alone was worth about 3.5 of a run's 14 bic over the bar (gemot#138). A pair
+#: holding a rate constant still gets the test, so it still covers the ties it was written against:
+#: a rate tied to a concentration, a threshold or a gain (gemot#94).
+_MERGE_BIOLOGY = (
+    "The hints price IDENTIFIABILITY, not biology, so you supply the biology for a pair holding a "
+    "mechanistic RATE CONSTANT: tie it only to a rate that could plausibly BE the same physical "
+    "process (dephosphorylation of A at S10 and at T20, B binding two equivalent sites of A), "
+    "never to an unrelated rate, a concentration or a gain, however large its `dscore`: that buys "
+    "the bic penalty by making the model assert something false. Any other pair (statistical "
+    "weights, scales, empirical coefficients) has no physical identity to protect, and its price "
+    "decides."
+)
+
 #: Where the priced ties are. A fit result lists only the ties new since its parent version
 #: (frohlich-lab/PEtab-MCP#211), so one first listed on an earlier version shows on a later fit only
 #: as ``merge_hints: []`` beside ``n_merge_hints``.
@@ -155,13 +171,28 @@ _RESIDUALS_DO_NOT_DECIDE_DONE = (
     "also flag models as good as any found (replicates tighter than the spread between "
     "experiments, an offset per experiment, a cumulative series), and some flags no model clears. "
     "Read a flag for WHERE the fit is off — a place worth a structural try — not as proof that a "
-    "better model exists. Bic has bottomed out only once SEVERAL consecutive "
-    "`make_changes` calls (three or more) have EACH failed to lower it; until then keep going "
-    "while you have budget — genuinely different structures, re-parameterisations, drops, and "
-    "the priced merges you judge sound. This costs you nothing to be wrong about — every fitted "
-    "version is kept and you are scored on your BEST bic wherever you end — while finishing on the "
-    "first adequate model forfeits every bic you had budget left to find. An unspent step budget "
-    "is not thrift."
+    "better model exists. Bic has bottomed out only once the genuinely different changes you can "
+    "still name — other structures, re-parameterisations, drops, the priced merges you judge "
+    "sound — have EACH failed to lower it, which usually takes SEVERAL consecutive "
+    "`make_changes` calls (three or more); until then keep going while you have budget. This "
+    "costs you nothing to be wrong about — every fitted version is kept and you are scored on "
+    "your BEST bic wherever you end — while finishing on the first adequate model forfeits every "
+    "bic you had budget left to find. An unspent step budget is not thrift. Nor is that count a "
+    "quota: a fit you make only to reach it buys nothing."
+)
+
+#: What a refit tests, read in both lead prompts' STRUCTURE BEFORE POLISH. In the 2026-11-08 sweep
+#: about 20 runs narrowed or widened boxes to force a regime they had derived by hand and read the
+#: result as evidence about the structure (6 of one run's 16 fits), and others blamed the optimizer
+#: when a version they meant to be equivalent to an earlier one fit worse, refitting it with
+#: hundreds of starts while the cause was their own edit, a readout typo (4 fits lost; gemot#138).
+#: The lead holds `diff_versions` for that check (agent/tools.py).
+_REFIT_TESTS_NO_STRUCTURE = (
+    "A refit that only changes BOUNDS tests nothing about the structure: a box narrowed to force "
+    "a regime you derived by hand is no evidence for that regime. Test a basin with more starts "
+    "(`n_starts`), and change the model when a parameter keeps re-pinning. When a version you "
+    "meant to be EQUIVALENT to an earlier one fits worse, `diff_versions` the two before you "
+    "blame the optimizer: the usual cause is an edit that did not do what you meant."
 )
 
 #: When the finish gate refuses on chi2 (``finish_gate._MAX_ADEQUACY_FINISH_REFUSALS``), read in
@@ -366,7 +397,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "on being able to pin a known IC that isn't 0 or 1, and spend those free parameters only where "
     "the data can constrain them. Check get_parameters to see which `<species>_init` exist and are "
     "still free — an initial of 0 has no row there at all.\n"
-    "PARAMETER MACHINERY — the one piece of it you must not get wrong: every rate-law parameter you declare is ESTIMATED, and the fit is a MULTISTART over the parameter's BOUNDS — it does NOT use the number you assign in Antimony, which is only a nominal placeholder overwritten by the fitted value. So re-declaring a parameter with a different VALUE changes nothing; to constrain one, change its BOUNDS/SCALE with `make_changes`. Everything else about parameters — which constants you may hold fixed, why a literal or an ultra-narrow box is not a way to fix one, and what to do about a parameter that keeps re-pinning — is in the `petab-model-building` skill, which you have READ (step 0) and which the server ENFORCES."
+    "PARAMETER MACHINERY — the one piece of it you must not get wrong: every rate-law parameter you declare is ESTIMATED, and the fit is a MULTISTART over the parameter's BOUNDS — it does NOT use the number you assign in Antimony, which is only a nominal placeholder overwritten by the fitted value. So re-declaring a parameter with a different VALUE changes nothing; to constrain one, change its BOUNDS/SCALE with `make_changes`. Everything else about parameters — which constants you may hold fixed, and why a literal or an ultra-narrow box is not a way to fix one — is in the `petab-model-building` skill, which you have READ (step 0) and which the server ENFORCES.\n"
     "ADEQUACY BEFORE PARSIMONY — the trade-off rule. Among models that ALL fit adequately, "
     "prefer the lower bic and drop parameters that don't earn their keep. But NEVER trade an "
     "adequate fit for a smaller k: if a simpler structure cannot fit, ADD mechanism. Estimating "
@@ -395,7 +426,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "They are how you finish a model whose residuals are ALREADY clean, not how you fix one that "
     "underfits; the exception is a NUMERICAL fault the diagnosis actually names (a parameter pinned "
     "at a bound, a rank-deficient fit), which you fix and then go straight back to the mechanism. "
-    "And read the SIZE of each gain, not just its sign: getting a structure right buys TENS or "
+    + _REFIT_TESTS_NO_STRUCTURE
+    + " And read the SIZE of each gain, not just its sign: getting a structure right buys TENS or "
     "hundreds of bic, so a run of calls buying a few bic each means you are refining rather than "
     "fixing. What that tells you depends on the residuals. While they are still systematically "
     "structured, small gains are a WRONG structure being polished — 'bic is still improving' is then "
@@ -428,9 +460,11 @@ DEFAULT_SYSTEM_PROMPT = (
     + _MERGE_HINTS_WHERE
     + " name pairs the data cannot tell apart and what tying each would buy. "
     + _MERGE_RULE
-    + " The hints price IDENTIFIABILITY, not biology, so you supply "
-    "the biology: merge ONLY parameters that plausibly ARE the same physical quantity. Finish "
-    "on the LOWEST-bic such model.\n" + _RESIDUALS_DO_NOT_DECIDE_DONE + "\n"
+    + " "
+    + _MERGE_BIOLOGY
+    + " Finish on the LOWEST-bic such model.\n"
+    + _RESIDUALS_DO_NOT_DECIDE_DONE
+    + "\n"
     "Repeat until you call `finish`. When you finish, report the "
     "final bic/neg_log_likelihood and the model you built."
 )
@@ -528,7 +562,8 @@ INDRA_SYSTEM_PROMPT = (
     "`get_model(format='statements')` shows the current rows, `version=N` an earlier one's.\n"
     "STRUCTURE BEFORE POLISH: while the residuals are systematic, change the mechanism (a "
     "statement, a policy, a species); bounds, merges and pinned initials finish a model whose "
-    "residuals are already clean. When bic stalls for a few calls, call "
+    "residuals are already clean. " + _REFIT_TESTS_NO_STRUCTURE + " When bic stalls for a few "
+    "calls, call "
     "`get_fit_diagnosis(sections='all')` and try a genuinely different structure. Every fitted version is kept and the run is scored on the best, so a change that "
     "did not help costs nothing.\n"
     "5. FINISH when bic has bottomed out: nothing "
@@ -536,7 +571,9 @@ INDRA_SYSTEM_PROMPT = (
     + _MERGE_HINTS_WHERE
     + " name pairs the data cannot tell apart. "
     + _MERGE_RULE
-    + " Merge only parameters that plausibly ARE the same physical quantity.\n"
+    + " "
+    + _MERGE_BIOLOGY
+    + "\n"
     # The arm's own stopping rule, in place of _RESIDUALS_DO_NOT_DECIDE_DONE's "three failed calls
     # and bic has bottomed out": Claude Haiku finished after 12-21 minutes of a two-hour budget, on
     # models the fit itself flagged, calling `finish` again after each refusal until the gate
@@ -1155,11 +1192,7 @@ FINISH_DESCRIPTION = (
     + (
         "Take a merge only where the measured design gives the two parameters no distinct role. "
         if BIOLOGY_BLIND_ENABLED
-        else "The hints price IDENTIFIABILITY, not biology — tying A's synthesis rate to B's "
-        "deactivation rate, or the gain on a dose D to an off-rate, buys the bic penalty while "
-        "making the model assert something false, however large its `dscore`. Merge only what "
-        "could plausibly BE one physical quantity (dephosphorylation of A at S10 and at T20, B "
-        "binding two equivalent sites of A). "
+        else _MERGE_BIOLOGY + " "
     )
     + "Finishing takes TWO calls: the "
     "first ARMS it and shows you the "
@@ -1577,6 +1610,8 @@ BIOLOGY_BLIND_TOOL_DESCRIPTIONS = {
     "get_fitting_log": "Read multistart convergence and numerical optimization diagnostics.",
     "list_versions": "List fitted versions and scores. The judge automatically selects the best fit.",
     "get_version": "Inspect one recorded model version, its parameters and score.",
+    "diff_versions": "Compare two recorded versions: the model text diff, the parameter rows "
+    "added, removed or changed, and both fits' scores.",
     "get_model": "Read the current or a recorded model in Antimony or SBML.",
     "make_changes": "Author or edit the ODE model and parameter search space with a justification. "
     "Every call fits and records one coherent change. Start with antimony, then edit "
