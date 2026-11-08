@@ -260,11 +260,13 @@ def _llm_pulses():
 
     An analyst round is ONE super-step of the lead's graph, so before this its calls never moved
     the stall watchdog. A round that ran past the window was cancelled, and the resume ran its
-    unfinished `task` calls again from scratch, under the same tool call: byte-identical `task`
-    calls after one turn, the cancelled one with no output, which no dedup of the model's calls
-    can catch, since the model asked once (gemot#136). Only a call that ENDS counts, so a call
-    hung mid-stream still trips the watchdog, a window after the last call that ended.
-    ``ANALYST_MAX_TURNS`` bounds how long a delegation's calls can hold it open.
+    unfinished `task` calls again under the same tool call, each analyst picking up from its last
+    checkpointed step and losing the call it was in. That left byte-identical `task` calls after
+    one turn, the cancelled one with no output, which no dedup of the model's calls can catch,
+    since the model asked once (gemot#136; tests/test_stall_pulses.py reproduces it on a real
+    panel). Only a call that ENDS counts, so a call hung mid-stream still trips the watchdog, a
+    window after the last call that ended. ``ANALYST_MAX_TURNS`` bounds how long a delegation's
+    calls can hold it open.
     """
     from langchain_core.callbacks import AsyncCallbackHandler
 
