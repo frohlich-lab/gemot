@@ -126,7 +126,18 @@ dependencies = [
     # it minted as a parameter.
     # Then 082938a, main: #280: a fit's problem leaves the server for the dask pool once, as a
     # file under the build root, not pickled with every start (froehlich's is about 0.45 GiB).
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@082938ac1a8711ad9a55db2eb4293e94dfa269fb",
+    # Then 6dbfad8, main, from the 2026-11-08 sweep's review: #304: the best version is the strict
+    # minimum of the criterion, as the judge takes it; 2.0 only resets the non-improving streak.
+    # #293: a one-sided bound edit keeps the other side, and is refused only when the box would
+    # invert (`runner/clock.py`'s bounds bucket follows). #295: the streak-cap nudge claims only
+    # what a streak shows (gemot#134). #299: an error or hint names only the tool that failed
+    # and its companions (#291, from gemot#133). #303: n_starts is capped at 10x the run's default. #305: a failed
+    # fit names its cause. #306: a widening refusal advises by the parameter's role. #298:
+    # `query_data` serves `state_trajectories`. #296, #301, #302: minted parameters are named,
+    # merge hints offer only ties an edit can make, and a rename keeps its fitted value. #300:
+    # a transfer refit whose optimum does not simulate is `non_finite`. #294, #297, #307, #309:
+    # `describe_problem` and wide tables are summarised.
+    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@6dbfad864728825d109388f84147a3268627d6fc",
     # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
     # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
     # is built on it; 2.3 is the first release fastmcp 4.1 accepts. What 2.0 changed for the code

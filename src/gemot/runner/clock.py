@@ -104,7 +104,9 @@ _REJECT_PATTERNS = (
     ("antimony_syntax", "failed to parse antimony"),
     ("invalid_problem", "resulting problem is invalid"),
     ("repeated_widening", "refusing to widen"),
-    ("bad_bounds_usage", "sets only one bound"),
+    # A one-sided bound edit keeps the other side (PEtab-MCP#293) and is refused only when the
+    # kept side would invert the box.
+    ("bad_bounds_usage", "the box would be"),
     ("unknown_key", "unknown key"),
     ("unknown_parameter", "unknown parameter id"),
     ("bad_scale", "invalid parameterscale"),

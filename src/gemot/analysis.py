@@ -617,8 +617,10 @@ def run_digest(run_dir: str | Path) -> dict:
     """A run's op sequence plus the waste signals the trace reviews key on.
 
     ``longest_non_improving_streak`` is the longest run of consecutive versioned ops that were not a
-    new best — the number the early-stop chain was built to bound. ``n_fits`` counts ops whose
-    ``fit_status`` is ``"fit"`` (a real optimizer run), not ops.
+    new best, i.e. no strict improvement in the run's criterion. The server's early-stop streak is
+    not this number: a new best resets it only once the gain since its last reset reaches
+    ``STREAK_RESET_MIN_SCORE_GAIN`` (2.0, PEtab-MCP#304), so it can run longer. ``n_fits`` counts
+    ops whose ``fit_status`` is ``"fit"`` (a real optimizer run), not ops.
     """
     ops = [op_digest(e) for e in provenance_events(run_dir)]
     longest = current = 0
