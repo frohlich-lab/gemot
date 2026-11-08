@@ -66,6 +66,12 @@ ORCHESTRATOR_TOOLS = [
     # stays on the server: the analysts (who never fit) and the harness's own finish gate and
     # final scoring all read the score through it. `describe_problem` covers has_unfit_edits.
     "get_version",  # read a prior version's Antimony + params (to inspect / re-author from)
+    # What changed between two versions: the model diff, the parameter rows, both fits. The check
+    # the lead is told to make (prompts._REFIT_TESTS_NO_STRUCTURE) before blaming the optimizer for
+    # a version it meant to be equivalent to an earlier one: in the 2026-11-08 sweep the cause was
+    # its own edit, a readout typo, found only after 4 refits (gemot#138). Reading two models with
+    # get_model leaves the comparison to the lead, which is the reading that missed the typo.
+    "diff_versions",
     # NOTE: restore_version is deliberately NOT a lead tool. It sets HEAD to a prior version, but
     # make_changes with `antimony=` re-authors the whole model and IGNORES HEAD — so a restore
     # immediately followed by a wholesale re-author (the lead's dominant use: 7 of 9 restores in
