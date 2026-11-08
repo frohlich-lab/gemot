@@ -39,10 +39,10 @@ async def _model_call(callbacks) -> None:
 
 async def _step(seconds: float, callbacks=None):
     """A super-step that takes ``seconds``; with ``callbacks``, model calls keep ending in it."""
-    waited = 0.0
-    while waited < seconds:
+    loop = asyncio.get_running_loop()
+    end = loop.time() + seconds
+    while loop.time() < end:
         await _real_sleep(_CALL_S)
-        waited += _CALL_S
         if callbacks is not None:
             await _model_call(callbacks)
     yield "stepped"
