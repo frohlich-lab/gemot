@@ -150,11 +150,11 @@ ABLATIONS: tuple[Ablation, ...] = (
         env="PETAB_FIX_POINTERS",
         default_on=True,
         changes_prompt=True,
-        effect="OFF removes every pointer telling the agent WHAT TO CHANGE, keeping what was refused "
-        "or flagged and why: the server's remedies in refusals and warnings, its merge hints and "
-        "the rename each carries, its stop and diagnosis advice (create_server(fix_pointers=False)), "
-        "and the prompts', finish gate's and circuit breaker's fix menus. Tool-call protocol, "
-        "navigation, the analysts' recommendations and the progress verdicts stay",
+        effect="OFF withholds the numbers that point the agent at what to change or where the fit is "
+        "off: the merge hints and a tie's payoff, the ranked candidates, the regime grades, the "
+        "per-observable residual tables and outliers, sigma heterogeneity and which observables a "
+        "verdict flags (create_server(fix_pointers=False)), and the prompt lines that read them. "
+        "Every score, total and verdict, and all prose, stay",
     ),
 )
 

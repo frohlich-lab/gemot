@@ -673,11 +673,11 @@ def call_outcomes(state: dict[str, Any], name: str) -> dict[str, Any]:
 
 _REJECTION_ESCALATE_AT = 5  # identical operation rejections before the wording escalates
 
-_REJECTION_ESCALATION = prompts.render_fix_pointers(
+_REJECTION_ESCALATION = (
     "\n\nNOTE: this is the {n}th time this call was rejected for the SAME reason. Re-sending it "
     "with different values will not help — the rejection is about the FORM of the change, not "
-    "its numbers. Re-read the error above⟦, and if you cannot satisfy it, change approach: edit a "
-    "different part of the model, or accept the current structure and stop⟧."
+    "its numbers. Re-read the error above, and if you cannot satisfy it, change approach: edit a "
+    "different part of the model, or accept the current structure and stop."
 )
 
 
