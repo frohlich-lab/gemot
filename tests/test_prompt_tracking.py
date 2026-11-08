@@ -63,6 +63,8 @@ _FRAGMENTS = {
     "_FREE_LITERALS",
     # Closes every analyst description, on both arms.
     "_ANALYST_READS_HEAD",
+    # Read by the lead on every arm, beside the fit cost each fit result closes with.
+    "_FIT_COST_RULE",
 }
 
 
