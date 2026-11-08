@@ -6,8 +6,8 @@
 ``_judge`` with fakes to prove the flag is actually wired into the success verdict end-to-end — a
 good BIC bought with an inflated (or collapsed) estimated sigma must score ``success=False`` even
 though the BIC gate passes, and a rejectable BIC must fail regardless of a plausible sigma. The gate
-is post-run and never shown to the agent, so a regression here would silently start counting gamed
-runs as passes. Importing the harness runner pulls in ``mcp``, so skip where that dep is absent.
+is the server's own flag, the one the agent sees on every fit (gemot#135); the comparison against
+the reference's sigmas is only recorded. Importing the harness runner pulls in ``mcp``, so skip where that dep is absent.
 """
 
 from __future__ import annotations
@@ -65,12 +65,13 @@ class _Scenario:
     bic_threshold = 10.0
     diagnostics = None
 
-    def __init__(self, work: Path):
+    def __init__(self, work: Path, ref: "dict | None" = None):
         # _judge writes result.json into `work` and prints it relative to example_dir.parent.
         self.example_dir = work / "ex"
+        self._ref = dict(_REF if ref is None else ref)
 
     def reference(self):
-        return dict(_REF)
+        return dict(self._ref)
 
 
 class _Baseline:
@@ -113,7 +114,7 @@ def _make_call(summary, calls=None):
     return call
 
 
-def _run_judge(work: Path, nll: float, sigma_report, calls=None):
+def _run_judge(work: Path, nll: float, sigma_report, calls=None, ref=None):
     summary = {
         "neg_log_likelihood": nll,
         "n_data_points": 50,
@@ -122,7 +123,7 @@ def _run_judge(work: Path, nll: float, sigma_report, calls=None):
     }
     return asyncio.run(
         _judge(
-            _Scenario(work),
+            _Scenario(work, ref),
             _make_call(summary, calls),
             _Baseline(),
             work,
@@ -329,6 +330,30 @@ def test_reference_sigma_flag_is_none_without_recorded_reference_sigmas():
     assert _reference_sigma_flag({"s": {"fitted": 0.1}}, {"nll": 1.0, "k": 2, "n": 3}) is None
     assert _reference_sigma_flag({"s": {"fitted": 0.1}}, {"noise_sigma": {}}) is None
     assert _reference_sigma_flag({}, {"noise_sigma": {"s": 0.1}}) is None
+
+
+def test_a_sigma_far_below_the_references_does_not_fail_a_run_the_server_passes(tmp_path):
+    """gemot#135, boehm r39: v21 fitted sigma_pSTAT5B at 0.12x the reference's, inside the server's
+    band (every fit reported noise_sigma_collapsed: false), and the judge passed it over for v13 on
+    that ratio, a rule the agent never saw while the finish gate promised it v21. The server's flag
+    decides now; the ratio is recorded, and decides nothing."""
+    report = {"sigma": {**_sigma_entry(0.12, 1.0, 0.4), "n_points": 50}}
+    code, result = _run_judge(tmp_path, 100.0, report, ref={**_REF, "noise_sigma": {"sigma": 1.0}})
+    assert result["success"] is True and code == 0
+    assert result["noise_sigma_flag"]["collapsed"] is False
+    assert result["noise_sigma_reference"]["collapsed"] is True
+    assert result["noise_sigma_reference"]["min_ratio"] == pytest.approx(0.12)
+
+
+def test_a_sigma_the_server_flags_fails_the_run_however_well_it_matches_the_reference(tmp_path):
+    """The other half: the reference comparison can no longer clear a sigma the server flags, so
+    the judge fails exactly the runs the agent was warned about on every fit."""
+    code, result = _run_judge(
+        tmp_path, 100.0, _COLLAPSED, ref={**_REF, "noise_sigma": {"sigma": _COLLAPSE_FRAC}}
+    )
+    assert result["success"] is False and code == 1
+    assert result["noise_sigma_flag"]["collapsed"] is True
+    assert result["noise_sigma_reference"]["collapsed"] is False
 
 
 def test_reference_sigma_pairs_a_lone_sigma_across_an_id_mismatch():

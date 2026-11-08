@@ -49,7 +49,6 @@ _LAZY = {
     "_judge": ".judge",
     "_restore_best_checkpoint": ".judge",
     "_scoreable_versions": ".judge",
-    "_stored_k_and_n": ".judge",
     "_sigma_flagged": ".judge",
     "_SCORING_SCAN_LIMIT": ".judge",
     "_ToolClock": ".clock",
