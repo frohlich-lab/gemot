@@ -142,8 +142,19 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
+#: How long a launched server may take to start listening before the run is abandoned. 120 s killed
+#: every froehlich run of the 2026-11-09 sweep: its server took 135-147 s to start, most of it
+#: validating the content-free seed against a 97 MB condition table (frohlich-lab/PEtab-MCP#319),
+#: up from 100-108 s the day before. A server that is really stuck now costs 10 minutes, not 2.
+SERVER_LISTEN_TIMEOUT_S = 600.0
+
+
 def _wait_until_listening(
-    host: str, port: int, proc: subprocess.Popen, log: Path, timeout: float = 120.0
+    host: str,
+    port: int,
+    proc: subprocess.Popen,
+    log: Path,
+    timeout: float = SERVER_LISTEN_TIMEOUT_S,
 ) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

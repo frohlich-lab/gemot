@@ -28,6 +28,7 @@ from .provenance import _base_meta, _now_iso
 from ..scenario import Scenario
 from .server import (
     _SERVER_BOOTSTRAP,
+    SERVER_LISTEN_TIMEOUT_S,
     _build_root,
     _free_port,
     _server_env,
@@ -164,7 +165,7 @@ async def _petab_server(
     *,
     scenario: Scenario,
     score_shipped_model: bool = False,
-    listen_timeout: float = 120.0,
+    listen_timeout: float = SERVER_LISTEN_TIMEOUT_S,
     yaml_path: Path | None = None,
     handle_out: dict | None = None,
 ) -> AsyncIterator[_ServerHandle]:
