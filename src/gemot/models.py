@@ -54,6 +54,9 @@ MODELS: dict[str, str] = {
     "sonnet": "anthropic/claude-sonnet-5.5",
     "opus": "anthropic/claude-opus-5.5",
     "haiku": "anthropic/claude-haiku-5.5",
+    # Claude Fable 5.2 (2026-11-09), Anthropic's tier above Opus: $8/$40 per M, cache reads $0.20,
+    # one-hour cache writes $16. Added 2026-11-16 for the Fujita support-ladder cohort.
+    "fable": "anthropic/claude-fable-5.2",
 }
 
 #: Default lead. 1M-token context, single pinned provider (Z.AI), and the best measured accuracy
@@ -273,6 +276,10 @@ _ROUTING: dict[str, dict] = {
     "anthropic/claude-opus-5.5": {"only": ["google-vertex/global"]},
     # The Anthropic endpoint, through this account's own key (BYOK).
     "anthropic/claude-haiku-5.5": {"only": ["anthropic"]},
+    # Fable 5.2 the same way, verified live 2026-11-16: two two-step tool loops through the
+    # `anthropic` tag, both billed upstream to this key (`is_byok`, OpenRouter cost 0), the
+    # reasoning sent back accepted, and at effort max it thought after the tool result too.
+    "anthropic/claude-fable-5.2": {"only": ["anthropic"]},
 }
 
 
@@ -319,6 +326,7 @@ _CACHING: dict[str, dict] = {
     "anthropic/claude-sonnet-5.5": {"type": "ephemeral", "ttl": "1h"},
     "anthropic/claude-opus-5.5": {"type": "ephemeral", "ttl": "1h"},
     "anthropic/claude-haiku-5.5": {"type": "ephemeral", "ttl": "1h"},
+    "anthropic/claude-fable-5.2": {"type": "ephemeral", "ttl": "1h"},
 }
 
 
@@ -348,6 +356,7 @@ _RETURNS_REASONING: frozenset[str] = frozenset(
         "anthropic/claude-sonnet-5.5",
         "anthropic/claude-opus-5.5",
         "anthropic/claude-haiku-5.5",
+        "anthropic/claude-fable-5.2",
     }
 )
 
