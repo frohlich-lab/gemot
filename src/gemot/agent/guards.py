@@ -24,6 +24,7 @@ from typing import Any
 from .. import prompts
 from ..prompts import _IDLE_NUDGE
 from .dedup import _dedupe_raw_tool_calls, _dedupe_tool_calls
+from .thinking import is_runaway_message
 
 #: Set once if appending the turn-budget notice ever fails, so the warning in `_augment` prints
 #: one line per process rather than one per turn. See the comment there for why there is no
@@ -64,81 +65,69 @@ _MAX_IDLE_MODEL_STEPS = 3  # consecutive no-tool turns to push back on before gi
 _RUNAWAY_EFFORT_LADDER = ("low", "minimal")
 
 
-def _is_reasoning_runaway(result: Any) -> bool:
-    """Did the model burn its whole completion budget thinking and emit NOTHING?
+def _terminal_ai(result: Any) -> Any:
+    """The turn's TERMINAL model message: the last AI message in ``result``, or None.
 
-    The signature is exact and cheap to test: ``finish_reason == "length"`` with empty content
-    AND no tool calls. Measured on z-ai/glm-5.3-flash over isensee and lucarelli: four
-    consecutive turns each returning completion_tokens=65536 of which reasoning_tokens=65504,
-    content "", no tool call, ~25 minutes apiece. The provider truncates mid-thought at its own
-    65536 output cap (half the 131072 it advertises) before the model reaches a conclusion.
+    ``result`` is a langchain ModelResponse (fields: ``.result`` -- a list[BaseMessage] -- and
+    ``.structured_response``) or, defensively, a bare AIMessage. Same contract as
+    _dedupe_response below. Reading the wrong attribute here is silent: getattr degrades to the
+    [result] fallback and the runaway detector never fires -- so this is pinned by
+    tests/test_reasoning_runaway.py against the real ModelResponse class.
 
-    Downstream this is indistinguishable from a model that CHOSE to say nothing, so the dispatch
-    guard bounces it as an idle turn and the run ends `no_model_built` with zero make_changes
-    attempted -- a silent, expensive nothing. It is worth catching precisely rather than by
-    lowering reasoning effort globally, which would also remove the reasoning that makes this
-    model good on the examples where it does converge.
+    The verdict on a turn belongs to this message and to nothing before it. ``.result`` may hold
+    more than one message (langchain appends a ToolMessage when a tool produced the structured
+    output), and scanning past a healthy final message to convict on an earlier truncated one
+    made the ladder discard a good answer and re-call the provider. Verified:
+    [truncated(length,""), healthy("...", stop)] read as a runaway before this. Skipped on MESSAGE
+    TYPE, not on whether finish_reason happens to be present: a healthy final AI turn whose
+    provider/middleware set no finish_reason would otherwise be skipped, letting an earlier
+    truncated turn decide.
     """
-    # `result` is a langchain ModelResponse (fields: .result — a list[BaseMessage] — and
-    # .structured_response) or, defensively, a bare AIMessage. Same contract as
-    # _dedupe_response below. Reading the wrong attribute here is silent: getattr degrades to
-    # the [result] fallback and the detector never fires — so this is pinned by
-    # tests/test_reasoning_runaway.py against the real ModelResponse class.
     msgs = getattr(result, "result", None) or ([result] if result is not None else [])
-    # The verdict belongs to the TERMINAL message — the last one carrying a finish_reason —
-    # and to nothing before it. `.result` may hold more than one message (langchain appends a
-    # ToolMessage when a tool produced the structured output), and scanning past a healthy
-    # final message to convict on an earlier truncated one made the ladder discard a good
-    # answer and re-call the provider. Verified: [truncated(length,""), healthy("...", stop)]
-    # read as a runaway before this.
-    for m in reversed(list(msgs)):
-        # Skip on MESSAGE TYPE, not on whether finish_reason happens to be present: a healthy
-        # final AI turn whose provider/middleware set no finish_reason would otherwise be
-        # skipped, letting an earlier truncated turn decide — reinstating the very bug the
-        # terminal-message rule fixed. Only a trailing non-AI message (the ToolMessage
-        # langchain appends for structured output) is skippable.
-        if getattr(m, "type", None) != "ai":
-            continue
-        if getattr(m, "tool_calls", None):
-            return False
-        meta = getattr(m, "response_metadata", None) or {}
-        return meta.get("finish_reason") == "length" and _content_is_empty(
-            getattr(m, "content", None)
-        )
-    return False
+    return next((m for m in reversed(list(msgs)) if getattr(m, "type", None) == "ai"), None)
 
 
-def _content_is_empty(content: Any) -> bool:
-    """Nothing a downstream consumer could act on: None, whitespace, or blocks with no text.
+def _is_reasoning_runaway(result: Any) -> bool:
+    """Did the model spend its whole completion budget without reaching a tool call?
 
-    Reasoning models return content as a LIST of blocks as often as a bare string, and a
-    truncated turn can carry a reasoning block with no text field — both must read as empty or
-    the runaway detector misses exactly the responses it exists to catch.
+    The signature is exact and cheap to test: ``finish_reason == "length"`` and no tool call
+    (:func:`.thinking.is_runaway_message`, the one definition). Measured on z-ai/glm-5.3-flash
+    over isensee and lucarelli: four consecutive turns each returning completion_tokens=65536 of
+    which reasoning_tokens=65504, content "", no tool call, ~25 minutes apiece. The provider
+    truncates mid-thought at its own 65536 output cap (half the 131072 it advertises) before the
+    model reaches a conclusion.
+
+    Downstream this is indistinguishable from a model that CHOSE to stop, so the dispatch guard
+    bounces it as an idle turn, or the driver as a silent stop, and the run loses the whole turn
+    -- a silent, expensive nothing. It is worth catching precisely rather than by lowering
+    reasoning effort globally, which would also remove the reasoning that makes this model good
+    on the examples where it does converge.
+
+    Whatever text the turn wrote before the cut does not exempt it (gemot#161): the reasoning is
+    in :func:`.thinking.is_runaway_message`.
     """
-    if content is None:
-        return True
-    if isinstance(content, str):
-        return not content.strip()
-    if isinstance(content, list):
-        for block in content:
-            if isinstance(block, str):
-                if block.strip():
-                    return False
-            elif isinstance(block, dict):
-                if str(block.get("text") or "").strip():
-                    return False
-        return True
-    return False
+    message = _terminal_ai(result)
+    return message is not None and is_runaway_message(message)
 
 
 def _thinking_handoff(result: Any) -> dict | None:
     """What agent.thinking recorded on the turn's terminal AI message, if it handed thinking back."""
-    msgs = getattr(result, "result", None) or ([result] if result is not None else [])
-    for m in reversed(list(msgs)):
-        if getattr(m, "type", None) == "ai":
-            record = (getattr(m, "response_metadata", None) or {}).get("thinking_handoff")
-            return record if isinstance(record, dict) else None
-    return None
+    meta = getattr(_terminal_ai(result), "response_metadata", None) or {}
+    record = meta.get("thinking_handoff")
+    return record if isinstance(record, dict) else None
+
+
+def _hit_output_cap(result: Any, handoff: dict | None) -> bool:
+    """Did the provider cut this call at its output budget, whatever it had written?
+
+    A hand-off replaces the turn, so its record says why the call was stopped; a turn handed back
+    unanswered carries ``finish_reason == "length"`` even when it was stopped for repetition, so
+    the record decides whenever there is one.
+    """
+    if handoff is not None:
+        return handoff.get("reason") == "length"
+    meta = getattr(_terminal_ai(result), "response_metadata", None) or {}
+    return meta.get("finish_reason") == "length"
 
 
 def _effort_is_set(request) -> bool:
@@ -154,9 +143,9 @@ def _reasoning_runaway_guard(
 ):
     """Retry a truncated-mid-thought turn at reduced reasoning effort, then restore.
 
-    Only the offending CALL is retried, and only while it keeps coming back empty; the request
+    Only the offending CALL is retried, and only while it keeps coming back cut off; the request
     is otherwise untouched, so a run that never trips this never sees a changed effort. Bounded
-    by the ladder length, so a model that returns empty at every effort costs a fixed number of
+    by the ladder length, so a model that is cut off at every effort costs a fixed number of
     extra calls rather than looping.
     """
     from langchain.agents.middleware.types import AgentMiddleware
@@ -176,7 +165,10 @@ def _reasoning_runaway_guard(
         at detection, so ``reasoning_runaways`` counts events and ``reasoning_runaway_recovered``
         the subset that a retry rescued.
         """
-        handoff = _thinking_handoff(result) if rung == 0 else None
+        record = _thinking_handoff(result)
+        if _hit_output_cap(result, record):
+            stats["output_cap_hits"] += 1
+        handoff = record if rung == 0 else None
         if handoff is not None:
             # The model class already stopped this turn's thinking and handed it back
             # (agent.thinking): counted here, from what it recorded.
@@ -195,15 +187,16 @@ def _reasoning_runaway_guard(
         if rung == 0 and handoff is None:
             stats["reasoning_runaways"] += 1
         if rung >= len(ladder) or _effort_is_set(request):
-            # Empty at every effort: hand it back honestly rather than loop. A run that set its
+            # Cut off at every effort: hand it back honestly rather than loop. A run that set its
             # own effort (--reasoning-effort) is never retried at another: effort is then the
             # variable under test, and a max-effort run rescued at "low" is no longer one. The
-            # runaway is counted and the empty turn handed back, which the idle nudge answers.
+            # runaway is counted and the truncated turn handed back, which the idle nudge or the
+            # driver's silent-stop bounce answers.
             return None
         effort = ladder[rung]
         print(
-            f"[reasoning guard] the model spent its whole completion budget thinking "
-            f"and returned nothing — retrying this call at reasoning_effort={effort}"
+            f"[reasoning guard] the model spent its whole completion budget without a "
+            f"tool call — retrying this call at reasoning_effort={effort}"
         )
         try:
             return request.override(model_settings=_retry_settings(request, effort))
@@ -288,6 +281,10 @@ def new_guard_stats() -> dict[str, Any]:
         "reasoning_runaways": 0,
         "reasoning_runaway_recovered": 0,
         "reasoning_runaway_retry_errors": 0,
+        # model calls the provider cut at the output budget (finish_reason "length"), lead and
+        # analysts, ladder retries included, whatever they had written: the ones without a tool
+        # call are runaways too, so this is how often the cap itself was reached.
+        "output_cap_hits": 0,
         # agent.thinking: turns whose thinking was stopped, by why (repetition, budget, or the
         # provider's own length cap), and how many of them a model that would not stream ran.
         "thinking_cutoffs": {},
