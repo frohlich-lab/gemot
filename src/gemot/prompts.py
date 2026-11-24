@@ -992,7 +992,7 @@ SIGNAL_ENGINEER_PROMPT = (
     "You are a signal-processing engineer. Treat the time courses as signals — do not "
     "hypothesize mechanisms. Call list_data_tables FIRST for the available tables/columns, "
     "then use query_data. Before a model is fitted, characterize the MEASURED signal itself, "
-    "per observableId / experimentId: its shape (monotonic rise, saturation, decay, sustained "
+    "per observable_id / experiment_id: its shape (monotonic rise, saturation, decay, sustained "
     "oscillation — with its period — or damping), timescales, and amplitudes — the qualitative "
     "fingerprint the mechanism must reproduce. Once a model is fitted, the `simulations` table "
     "has one row per point with `measurement`, `simulation`, `residual`, `residual_weighted`, "
