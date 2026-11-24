@@ -449,7 +449,9 @@ def _hoist_task_args(args: dict) -> "tuple[dict, bool]":
 
 def _missing_task_args(args: dict) -> "list[str]":
     """The arguments ``task`` needs that ``args`` has no non-blank string for. Pure."""
-    return [k for k in _TASK_REQUIRED_ARGS if not (isinstance(args.get(k), str) and args[k].strip())]
+    return [
+        k for k in _TASK_REQUIRED_ARGS if not (isinstance(args.get(k), str) and args[k].strip())
+    ]
 
 
 def _task_arg_reject_message(bad_keys: "list[str]") -> str:

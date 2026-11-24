@@ -33,7 +33,10 @@ def test_hoist_lifts_luna_wrapped_description_losslessly():
 
 def test_hoist_lifts_both_arguments_out_of_one_wrapper():
     args = {"args": {"description": "d", "subagent_type": "mathematician"}}
-    assert G._hoist_task_args(args) == ({"description": "d", "subagent_type": "mathematician"}, True)
+    assert G._hoist_task_args(args) == (
+        {"description": "d", "subagent_type": "mathematician"},
+        True,
+    )
 
 
 def test_hoist_drops_what_is_not_an_allowed_key_and_says_so():
