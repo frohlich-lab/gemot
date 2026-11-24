@@ -159,8 +159,9 @@ def test_off_a_finish_says_neither_which_version_is_best_nor_whether_head_was():
     """gemot#156: the restore note named the best version on this arm, in 20 of 30 runs, and the
     ARM step quoted its bic, which names it to a lead keeping a ledger of its fits' scores."""
     pytest.importorskip("langchain_core", reason="harness-only dependency")
-    on = json.loads(_fresh(_FINISH))
-    off = json.loads(_fresh(_FINISH, PETAB_PROGRESS_SIGNALS="0"))
+    # The last line: the gate logs to stdout before it.
+    on = json.loads(_fresh(_FINISH).splitlines()[-1])
+    off = json.loads(_fresh(_FINISH, PETAB_PROGRESS_SIGNALS="0").splitlines()[-1])
     assert on["moved"].startswith(on["note"]) and "v4" in on["note"] and "bic=205" in on["moved"]
     assert "restored" not in on["stayed"] and "bic=205" in on["stayed"]
     assert "current bic" in on["description"]
@@ -224,7 +225,8 @@ def test_off_the_chi2_gate_quotes_no_p_value_and_refuses_nothing(monkeypatch, si
     assert bool(state["refusals"]) is signals
     no_p = {k: v for k, v in _FAILS_CHI2.items() if k != "chi2_gof_pvalue"}
     (_, confirmed), _ = _finish(no_p, calls=2)
-    assert confirmed.startswith("Recorded: finish")
+    # Not `startswith`: off, every finish reply opens with the restore sentence (gemot#156).
+    assert "Recorded: finish" in confirmed
     assert ("χ²" in confirmed) is signals
 
 
