@@ -211,6 +211,22 @@ _REFIT_TESTS_NO_STRUCTURE = (
     "blame the optimizer: the usual cause is an edit that did not do what you meant."
 )
 
+#: What the server's fit warnings bind, read by the lead on every arm. In the 2026-11-07 campaign
+#: leads refit a model with hundreds of starts right after its fit said more would not help (one
+#: at 300 starts: the same nll, 113 CPU-h), went back five times to a structure family the server
+#: had flagged as scoring worse, and spent six fits reformulating a version they misremembered
+#: (gemot#165). The server refuses the identical refit (frohlich-lab/PEtab-MCP#345); this is the
+#: rest.
+_FIT_WARNINGS_BIND = (
+    "A fit warning that MORE STARTS WILL NOT HELP (most starts out of time, or an optimum that is "
+    "a needle) is binding: change the bounds or the model it points at, not `n_starts`."
+    + _signal(
+        " A warning that a structure family previously scored WORSE refutes that family; at a "
+        "second one, stop going back to it."
+    )
+    + " Before you reparameterise a version, read it with `get_model`, not from memory."
+)
+
 #: What closes every fit result (``agent.fit_cost``) and what to do with it. A turn waits for its
 #: slowest call, so a delegation sent in a turn of its own runs after a fit instead of beside it:
 #: 14 of 15 runs on the problems whose fits take hours did that, and leads called multi-hour refits
@@ -555,6 +571,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "underfits; the exception is a NUMERICAL fault the diagnosis actually names (a parameter pinned "
     "at a bound, a rank-deficient fit), which you fix and then go straight back to the mechanism. "
     + _REFIT_TESTS_NO_STRUCTURE
+    + " "
+    + _FIT_WARNINGS_BIND
     + " And read the SIZE of each gain, not just its sign: getting a structure right buys TENS or "
     "hundreds of bic, so a run of calls buying a few bic each means you are refining rather than "
     "fixing. What that tells you depends on the residuals. While they are still systematically "
@@ -702,7 +720,11 @@ INDRA_SYSTEM_PROMPT = (
     "`get_model(format='statements')` shows the current rows, `version=N` an earlier one's.\n"
     "STRUCTURE BEFORE POLISH: while the residuals are systematic, change the mechanism (a "
     "statement, a policy, a species); bounds, merges and pinned initials finish a model whose "
-    "residuals are already clean. " + _REFIT_TESTS_NO_STRUCTURE + " When bic stalls for a few "
+    "residuals are already clean. "
+    + _REFIT_TESTS_NO_STRUCTURE
+    + " "
+    + _FIT_WARNINGS_BIND
+    + " When bic stalls for a few "
     "calls, call "
     "`get_fit_diagnosis(sections='all')` and try a genuinely different structure. Every fitted version is kept and the run is scored on the best, so a change that "
     "did not help costs nothing.\n"
@@ -1640,6 +1662,8 @@ BIOLOGY_BLIND_SYSTEM_PROMPT = (
     + _RESIDUALS_DO_NOT_DECIDE_DONE
     + " "
     + _FIT_COST_RULE
+    + " "
+    + _FIT_WARNINGS_BIND
     + " "
     "Call finish when the search is complete; the judge selects your best fitted version "
     "automatically. " + BIOLOGY_BLIND_SEMANTICS

@@ -59,6 +59,7 @@ _FRAGMENTS = {
     "_MERGE_HINTS_WHERE",
     "_RESIDUALS_DO_NOT_DECIDE_DONE",
     "_REFIT_TESTS_NO_STRUCTURE",
+    "_FIT_WARNINGS_BIND",
     "_MODEL_EDIT_OPS",
     "_CHI2_GATE_RULE",
     # Read by the statements lead and the null arm (the barebones template).
