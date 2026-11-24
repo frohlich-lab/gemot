@@ -16,11 +16,17 @@ from ..prompts import _DISABLED_TOOL_HINT_DEFAULT, _DISABLED_TOOL_HINTS
 # A broken tool used to be re-proposed cumulatively hundreds of times across a run (a
 # trace-review swarm saw one query_data call re-proposed ~798× — up to ~100 pending copies in
 # a single step) while the agent learned nothing from the identical failures. This breaker
-# counts every tool failure and, after N CONSECUTIVE IDENTICAL errors from the same tool,
-# DISABLES that tool for the caller (see below): its further calls are short-circuited with a
-# terminal message pointing at the working alternative, so the agent stops hammering a dead tool
-# and moves on. A SUCCESS resets a tool's streak; DIFFERENT errors reset it too (the agent is
-# still exploring), so only a genuinely-stuck tool is cut off.
+# counts every tool failure and, after N CONSECUTIVE model TURNS in which the same tool failed
+# with the same error, DISABLES that tool for the caller (see below): its further calls are
+# short-circuited with a terminal message pointing at the working alternative, so the agent stops
+# hammering a dead tool and moves on. A SUCCESS resets a tool's streak; DIFFERENT errors reset it
+# too (the agent is still exploring), so only a genuinely-stuck tool is cut off.
+#
+# A strike is a turn, not a call. The calls one turn issues together were all written before the
+# agent saw any of their results, so three of them failing alike are one mistake, not a caller
+# that is stuck. Counted per call, one parallel batch of `query_data` calls sharing a bad cast
+# disabled the tool before the signal engineer had read a single error (gemot#163: run
+# 63612603_107 of sweep gemot_pools_20261107).
 #
 # It works at the TOOL-OBJECT layer (wrapping each loaded tool's coroutine), not as agent
 # middleware, deliberately: the heavy data/diagnostic tools (query_data, get_fitting_log, …)
@@ -35,7 +41,7 @@ from ..prompts import _DISABLED_TOOL_HINT_DEFAULT, _DISABLED_TOOL_HINTS
 # (gemot#133: lun 103 and froehlich 106 of sweep 63522750, both in the first analyst round). A
 # tool that is really dead costs a later task three calls to find out again. A server that is
 # gone is the run's, not a caller's, so the transport disable below stays run-wide.
-_TOOL_ERROR_DISABLE_THRESHOLD = 3  # consecutive identical errors from one caller before it is cut
+_TOOL_ERROR_DISABLE_THRESHOLD = 3  # consecutive turns failing alike, for one caller, before a cut
 
 #: The `task` whose subagent is making the call, or ``None`` for the lead. Set by the lead's breaker
 #: middleware around each `task` call (:func:`_disabled_tool_filter`). A context variable, because
@@ -388,27 +394,54 @@ def _verdict_or_error(payload: dict) -> str | None:
     return "tool error"
 
 
+def _turn() -> tuple[str, int] | None:
+    """The model turn that issued the running tool call, or ``None`` outside an agent graph.
+
+    Each call a turn issues is its own Send to the caller's ``tools`` node, and they all run in
+    one superstep, so langgraph's ``langgraph_step`` names the turn. ``langgraph_checkpoint_ns``
+    without the call's own last segment names the caller's graph: the lead's, or one `task`'s
+    subagent's, whose steps count from its own start. A resume continues the thread's steps from
+    the checkpoint, and a superstep it re-runs is the same turn.
+    """
+    from langgraph.config import get_config
+
+    try:
+        metadata = get_config().get("metadata") or {}
+    except RuntimeError:  # not inside a runnable: a coroutine called directly
+        return None
+    step = metadata.get("langgraph_step")
+    if step is None:
+        return None
+    return str(metadata.get("langgraph_checkpoint_ns") or "").rpartition("|")[0], step
+
+
 def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
     """Count a tool error; return True iff it TRIPS the breaker (disables the tool now, for the
-    calling scope)."""
+    calling scope).
+
+    The error is a strike only if it is the first of its kind in its turn (:func:`_turn`). A call
+    made outside a graph is a turn of its own.
+    """
     state["n_tool_errors"] += 1
     scope = _scope(state)
     sig = err[:200]
+    turn = _turn()
     streak = scope["streaks"].get(name)
-    if streak and streak["sig"] == sig:
+    if streak is None or streak["sig"] != sig:
+        streak = scope["streaks"][name] = {"sig": sig, "count": 0, "turn": None}
+    struck = turn is None or turn != streak["turn"]
+    if struck:
         streak["count"] += 1
-    else:
-        streak = {"sig": sig, "count": 1}
-        scope["streaks"][name] = streak
+        streak["turn"] = turn
     if name in _NEVER_DISABLE:
         # Not disabled — but still RECORDED. Returning silently here would leave a run that
         # failed this call 200 times reporting `disabled_tools: []`, no breaker line in the log
         # and nothing in `events`: a run that scored nothing with no recorded reason, which is
         # the exact invisibility the August sweep had to be reverse-engineered from.
-        if streak["count"] == _TOOL_ERROR_DISABLE_THRESHOLD:
+        if struck and streak["count"] == _TOOL_ERROR_DISABLE_THRESHOLD:
             msg = (
-                f"`{name}` has failed {streak['count']} times with the same error but is part "
-                f"of the model-editing loop, so it is NOT disabled; escalating instead: {sig}"
+                f"`{name}` has failed with the same error in {streak['count']} turns but is "
+                f"part of the model-editing loop, so it is NOT disabled; escalating instead: {sig}"
             )
             state["events"].append(msg)
             print(f"[circuit-breaker] {msg}")
@@ -417,7 +450,7 @@ def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
         scope["disabled"].add(name)
         msg = (
             f"disabled `{name}` for {_TASK.get() or 'the lead'} after {streak['count']} "
-            f"consecutive identical errors: {sig}"
+            f"consecutive turns failing with the same error: {sig}"
         )
         state["events"].append(msg)
         print(f"[circuit-breaker] {msg}")
