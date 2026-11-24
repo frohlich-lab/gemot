@@ -1505,6 +1505,17 @@ TASK_ARG_REJECT_TMPL = (
     "`description` string is the subagent's ENTIRE input — there is no `prompt` or message "
     "parameter. Re-call `task` with your full request folded into `description`."
 )
+# Past its last rejection the guard dispatches the call with those arguments dropped, but only if
+# what is left still names both arguments `task` needs. GPT-6 luna's
+# `parameters={"description": ...}` once relented to `{subagent_type}` alone, and the tool's schema
+# refused it with a bare "description: Field required" (gemot#158).
+TASK_ARG_INCOMPLETE_TMPL = (
+    "TASK CALL NOT DISPATCHED — `task` takes exactly two arguments, `description` and "
+    "`subagent_type`, both strings at the top level of the call. Without the unexpected "
+    "argument(s) {bad_keys}, this call has no {missing}. Re-call `task` with `subagent_type` "
+    "naming the subagent and your full request in `description`, neither nested inside another "
+    "argument."
+)
 
 
 # --------------------------------------------------------------------- the empty-report guard
@@ -1855,6 +1866,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
         },
         "petab-guards": {
             "task_arg_reject": TASK_ARG_REJECT_TMPL,
+            "task_arg_incomplete": TASK_ARG_INCOMPLETE_TMPL,
             "statements_only_reject": STATEMENTS_ONLY_REJECT_TMPL,
             "empty_report_nudge": SUBAGENT_EMPTY_REPORT_NUDGE,
             "empty_report_marker": SUBAGENT_EMPTY_REPORT_MARKER,
