@@ -20,7 +20,8 @@ from ..prompts import _DISABLED_TOOL_HINT_DEFAULT, _DISABLED_TOOL_HINTS
 # DISABLES that tool for the caller (see below): its further calls are short-circuited with a
 # terminal message pointing at the working alternative, so the agent stops hammering a dead tool
 # and moves on. A SUCCESS resets a tool's streak; DIFFERENT errors reset it too (the agent is
-# still exploring), so only a genuinely-stuck tool is cut off.
+# still exploring), so only a genuinely-stuck tool is cut off. One parallel batch of calls is one
+# strike (`_batch`).
 #
 # It works at the TOOL-OBJECT layer (wrapping each loaded tool's coroutine), not as agent
 # middleware, deliberately: the heavy data/diagnostic tools (query_data, get_fitting_log, …)
@@ -388,17 +389,40 @@ def _verdict_or_error(payload: dict) -> str | None:
     return "tool error"
 
 
+def _batch() -> int | None:
+    """The graph step this call runs in, or ``None`` outside a graph.
+
+    Every tool call of one model turn runs in the same step of its agent's graph, so the step
+    names the parallel batch, and a caller's streak takes one strike per batch. The caller has
+    seen none of a batch's errors until the whole batch returns. Counting each call as a strike
+    let one batch of three ``query_data`` calls failing on the same SQL error disable the tool
+    before the signal engineer had read any of them (gemot#163; run 63612603_107, "after 3
+    consecutive identical errors"). Outside a graph (a tool called directly) each call is its own
+    batch, as every call was before.
+    """
+    try:
+        from langgraph.config import get_config
+
+        return (get_config().get("metadata") or {}).get("langgraph_step")
+    except (ImportError, RuntimeError):  # no agent stack, or not inside a runnable
+        return None
+
+
 def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
     """Count a tool error; return True iff it TRIPS the breaker (disables the tool now, for the
     calling scope)."""
     state["n_tool_errors"] += 1
     scope = _scope(state)
     sig = err[:200]
+    batch = _batch()
     streak = scope["streaks"].get(name)
     if streak and streak["sig"] == sig:
+        if batch is not None and batch == streak["batch"]:
+            return False  # the same batch as the last strike (see _batch)
         streak["count"] += 1
+        streak["batch"] = batch
     else:
-        streak = {"sig": sig, "count": 1}
+        streak = {"sig": sig, "count": 1, "batch": batch}
         scope["streaks"][name] = streak
     if name in _NEVER_DISABLE:
         # Not disabled — but still RECORDED. Returning silently here would leave a run that
