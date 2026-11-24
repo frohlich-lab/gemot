@@ -176,8 +176,16 @@ async def _sigma_flagged(call_tool, version: int) -> "bool | None":
 
 
 async def _restore_best(call_tool) -> "tuple[int, int] | None":
-    """Make the version the run is scored on HEAD, and return ``(that version, previous HEAD)``
-    when that moved HEAD; ``None`` when HEAD already was it or nothing could say otherwise.
+    """Make the version the run is scored on HEAD, and return ``(HEAD now, HEAD before)``: equal
+    when HEAD already was that version or the restore was refused, ``None`` when nothing could say
+    where HEAD is.
+
+    The gate names the version it judges by the first element, not by ``get_fit_summary``'s
+    ``version``: the server copies that from the HEAD's stored simulation, which a restore brings
+    back without one, so every restored HEAD read ``version=None``. The finish log then printed
+    ``v=None`` (bachmann, armistead, lucarelli in the 2026-11 trace review), and a fit armed while
+    it was fresh (``version`` N) re-armed instead of confirming once the gate restored it (``None``),
+    which the lead took for the confirmation it had just sent (bruno 63612603_50/53; gemot#166).
 
     The finish gate judges the version the run is SCORED on, which is not HEAD wherever the lead
     explored past its best model: lucarelli runs (gemot#94) were refused on a worse HEAD and spent
@@ -202,8 +210,10 @@ async def _restore_best(call_tool) -> "tuple[int, int] | None":
         chosen, _ = await scored_version(ranked, lambda v: _sigma_flagged(call_tool, v))
         desc = _structured(await call_tool("describe_problem", {}))
         head = desc.get("current_version") if isinstance(desc, dict) else None
-        if not isinstance(head, int) or head == chosen:
+        if not isinstance(head, int):
             return None
+        if head == chosen:
+            return head, head
         restored = _structured(
             await call_tool(
                 "restore_version",
@@ -216,5 +226,5 @@ async def _restore_best(call_tool) -> "tuple[int, int] | None":
     except Exception:  # pragma: no cover - never let the check break the run
         return None
     if not isinstance(restored, dict) or restored.get("ok") is False or restored.get("error"):
-        return None
+        return head, head
     return chosen, head

@@ -1007,6 +1007,40 @@ async def test_the_gate_restores_nothing_when_head_is_the_best():
 
 
 @pytest.mark.asyncio
+async def test_a_fit_armed_fresh_confirms_once_the_gate_restores_it(capsys):
+    """gemot#166, bruno 63612603_50/53. The server serves a restored version's summary with
+    ``version: None`` (its stored simulation carries none). Keyed on that version, the fit the lead
+    armed while it was HEAD (v4) re-armed when, after a worse v5, the gate restored it: the lead had
+    sent its confirmation and was handed ARMED again. The gate names HEAD by describe_problem."""
+    mod = _agent
+    best = _fit(version=4, bic=205.0, neg_log_likelihood=90.0)
+    session = _FakeSession(
+        best, versions=_ROWS[:2], head=4, summaries={4: {**best, "version": None}}
+    )
+    tool = mod._finish_tool(session)
+    assert "FINISH ARMED" in await _finish(tool)
+    # The lead tries one more structure, which fits worse, and HEAD moves to it.
+    session.versions, session.head, session.fit_summary = _ROWS, 5, _fit(version=5, bic=260.0)
+    confirmed = await _finish(tool)
+    assert session.restored == [4]
+    assert "Recorded: finish" in confirmed and "bic=205" in confirmed
+    # ...and the log names the version, where it printed `v=None`.
+    assert "[finish CONFIRMED v=4]" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_the_log_names_a_restored_version_the_summary_leaves_unnamed(capsys):
+    mod = _agent
+    worse_head = _fit(version=5, bic=260.0)
+    best = _fit(version=None, bic=205.0, neg_log_likelihood=90.0)
+    session = _FakeSession(worse_head, versions=_ROWS, head=5, summaries={4: best})
+    tool = mod._finish_tool(session)
+    assert "FINISH ARMED" in await _finish(tool)
+    assert "[finish ARMED v=4]" in capsys.readouterr().out
+    assert "Recorded: finish" in await _finish(tool)
+
+
+@pytest.mark.asyncio
 async def test_a_version_the_constraints_now_break_is_never_the_one_judged():
     """The server says such a version cannot be restored and is not the best; ranking it first would
     leave the gate judging HEAD on a refused restore while a restorable best sits beside it."""

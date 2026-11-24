@@ -361,10 +361,11 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
     # `armed_token` identifies the fit a finish was ARMED on (the diagnosis has been shown and a
     # confirming second finish is awaited), or None when not armed. The token is the fit's
     # identity, so an edit + refit between the two calls re-arms (the shown diagnosis would
-    # otherwise be stale). It is NOT the get_fit_summary "version" alone: a restored payload
-    # carries none (the persisted per-version sim blob has no version), and `None != None` would
-    # then skip arming and confirm on the first call — bypassing the gate. bic+nll identify the
-    # scored fit whether or not a version is attached.
+    # otherwise be stale). It is NOT the version alone: one that could not be read is None, and
+    # `None != None` would then skip arming and confirm on the first call — bypassing the gate.
+    # bic+nll identify the scored fit whether or not a version is attached. The version is HEAD's
+    # from describe_problem, never the fit summary's, which a restore leaves at None: keyed on that,
+    # a fit armed fresh re-armed when the gate restored it (see `probe._restore_best`).
     state = {
         "armed_token": None,
         "no_fit_refusals": 0,
@@ -382,19 +383,22 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
     # deliberate argument the old `action` string used to be. An argless call is a schema error the
     # model is handed back, not a first half of the arm->confirm handshake.
     async def finish(rationale: str) -> str:
-        moved = await _restore_best(reader)
-        if moved is None:
-            return await _decide(rationale)
-        print(f"[finish] restored the best version v{moved[0]} as HEAD (was v{moved[1]})")
-        note = prompts.FINISH_RESTORED_BEST_TMPL.format(best=moved[0], head=moved[1])
-        return note + await _decide(rationale)
+        heads = await _restore_best(reader)
+        judged = heads[0] if heads is not None else None
+        if heads is None or heads[0] == heads[1]:
+            return await _decide(rationale, judged)
+        print(f"[finish] restored the best version v{heads[0]} as HEAD (was v{heads[1]})")
+        note = prompts.FINISH_RESTORED_BEST_TMPL.format(best=heads[0], head=heads[1])
+        return note + await _decide(rationale, judged)
 
-    async def _decide(rationale: str) -> str:
+    async def _decide(rationale: str, judged: int | None) -> str:
         print(f"[lead finish] {rationale}")
         fit = await _current_fit(reader)
         nll = fit.get("neg_log_likelihood")
         bic = fit.get("bic")
-        version = fit.get("version")
+        # HEAD's version as describe_problem reports it (`_restore_best`); the fit summary's only
+        # where that could not be read, since a restored HEAD's summary carries none.
+        version = judged if judged is not None else fit.get("version")
         # Require a finite score under the criterion the RUN RANKS BY (`criterion_value`, which
         # equals `bic` under the default BIC), not canonical bic. A finite nll is necessary but not
         # sufficient: get_fit_summary reports no score when n_data_points/k are incomplete, and
