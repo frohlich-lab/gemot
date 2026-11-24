@@ -49,8 +49,10 @@ _MAX_SIGMA_FINISH_REFUSALS = 3
 # model that genuinely cannot be made identifiable still terminates at its honest score instead of
 # spamming finish. An identifiable (full-rank) fit RESETS the counter. FAILS OPEN — an unavailable or
 # STALE diagnosis (no FIM, a diagnosis of a DIFFERENT structure, or the probe returned {}) never
-# refuses a finish. The advice is deliberately GENERAL (name the flat-direction params, point at the
-# simplification menu); the specific fix is the agent's to reason out, not the gate's to hand over.
+# refuses a finish — but such a pass is counted with the relents and said in the text the lead gets
+# (:func:`_parsimony_unchecked`), since it is not a cleared check. The advice is deliberately
+# GENERAL (name the flat-direction params, point at the simplification menu); the specific fix is
+# the agent's to reason out, not the gate's to hand over.
 # A deficiency made only of directions in the problem's OWN observation or noise parameters
 # (:func:`_fixed_table_parameters`) does not count, and such a direction is never named: no model
 # edit reaches one. On schwen (gemot#134) every first refusal led with `[km_nExpID3·1.0]`, a shipped
@@ -188,6 +190,37 @@ def _deficiency_out_of_reach(fim_info: dict, flat_directions, fixed: frozenset[s
 
     deficient = sorted(flat_directions, key=flatness)[:nullity]
     return all(_out_of_reach(d, fixed) for d in deficient)
+
+
+#: What the lead is told for each reason :func:`_parsimony_unchecked` gives.
+_UNCHECKED_WHY = {
+    "stale": prompts.FINISH_PARSIMONY_STALE,
+    "unavailable": prompts.FINISH_PARSIMONY_UNAVAILABLE,
+}
+
+
+def _parsimony_unchecked(ident) -> str | None:
+    """Why the parsimony gate cannot check the version it judges, or ``None`` when it can.
+
+    ``ident`` is the ``identifiability`` section of ``get_fit_diagnosis``. ``"stale"`` where the
+    server labels it a geometry of another structure than the working one; ``"unavailable"`` where
+    there is no usable FIM verdict at all: the read failed (``{}``), the server computed none, or
+    its FIM carries no ``rank_deficient`` to read (which used to pass as full rank and reset the
+    counter).
+
+    The gate fails open on both, by design, and records the pass as a relent under
+    ``parsimony_<reason>``. Recorded because a silent one let a refused version through: raimundez
+    63782292_14 (gemot#162) was refused on v15, then passed on v15 restored as HEAD, with
+    ``relents`` empty and nothing in the text to tell the pass from a cleared check.
+    """
+    if not isinstance(ident, dict) or not ident.get("available"):
+        return "unavailable"
+    if ident.get("stale"):
+        return "stale"
+    fim = ident.get("fim")
+    if not isinstance(fim, dict) or not isinstance(fim.get("rank_deficient"), bool):
+        return "unavailable"
+    return None
 
 
 def _render_merge(hints) -> str:
@@ -340,7 +373,9 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
     cannot be computed at all, the tool SAYS so rather than surfacing it as a fit rejection.
 
     ``finish_state`` also collects how often each refusal fired (``refusals``) and how often a
-    finish went through on a relent (``relents``), by gate, for the run's result.
+    finish went through on a relent (``relents``), by gate, for the run's result. A finish the
+    parsimony gate let through UNCHECKED counts there too, as ``parsimony_stale`` or
+    ``parsimony_unavailable`` (:func:`_parsimony_unchecked`).
     """
     from langchain_core.tools import StructuredTool
 
@@ -520,15 +555,26 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
         # from the same optimum, and the probe is fetched here (not at the arm) because this
         # branch runs on every finish attempt that gets this far while arming does not.
         diag = await _current_diagnosis(reader)
-        ident = diag.get("identifiability") or {}
-        fim_info = ident.get("fim")
+        ident = diag.get("identifiability")
         # `stale` means a DIFFERENT STRUCTURE is in the working state than the one this geometry
         # describes (the server labels it rather than re-pricing, which would mean building the
         # current structure). Refusing on it would refuse this finish over another structure's rank,
         # so it fails open. A de-dup no-op is NOT stale — same structure, same optimum, still HEAD's
         # own fit — so the refusal stands there, which matters: that is the one drift a lead can
         # cause inside a run, and it fires precisely BECAUSE the structure did not change.
-        if ident.get("available") and not ident.get("stale") and isinstance(fim_info, dict):
+        # Either way the pass is a relent of its own and the reply says so (gemot#162).
+        unchecked = _parsimony_unchecked(ident)
+        unchecked_note = ""
+        if unchecked is not None:
+            said = ident if isinstance(ident, dict) else {}
+            why = said.get("stale_note") or said.get("note") or "no payload"
+            print(f"[finish UNCHECKED] parsimony: diagnosis {unchecked} ({why}) — not refusing")
+            _count("relents", f"parsimony_{unchecked}")
+            unchecked_note = prompts.FINISH_PARSIMONY_UNCHECKED_TMPL.format(
+                why=_UNCHECKED_WHY[unchecked]
+            )
+        else:
+            fim_info = ident["fim"]
             # Gate on RANK DEFICIENCY only (rank < n_estimated), NOT on the mere presence of a
             # flat_direction. Calibration across the reference structures showed the latter
             # over-refuses: a legitimate, identifiable fit routinely carries a flat_direction
@@ -643,7 +689,7 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
                 f"[finish ARMED v={version}] bic={bic:.6g} — presented diagnosis, "
                 "awaiting confirming finish"
             )
-            return prompts.FINISH_ARMED_TMPL.format(
+            armed = prompts.FINISH_ARMED_TMPL.format(
                 bic=bic,
                 nll=nll,
                 struct=struct,
@@ -653,6 +699,7 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
                 merge_line=merge_line,
                 invalid_line=invalid_line,
             )
+            return armed + unchecked_note
         # Second finish on the same fit -> confirmed. Record it so the driver does not bounce
         # a legitimately-finished run back into the gate.
         state["armed_token"] = None
@@ -665,7 +712,8 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
         ):
             chi2_note = prompts.FINISH_CHI2_UNAVAILABLE_NOTE
         print(f"[finish CONFIRMED v={version}] bic={bic:.6g}")
-        return prompts.FINISH_CONFIRMED_TMPL.format(bic=bic, nll=nll, chi2_note=chi2_note)
+        confirmed = prompts.FINISH_CONFIRMED_TMPL.format(bic=bic, nll=nll, chi2_note=chi2_note)
+        return confirmed + unchecked_note
 
     return StructuredTool.from_function(
         coroutine=finish,

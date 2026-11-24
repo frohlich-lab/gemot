@@ -1954,7 +1954,8 @@ async def run_deepagents(
         "max_input_tokens": max_input_tokens,
         "prompt_cache_key": prompt_cache_key,
         # How often each finish-gate refusal fired, and how often a finish went through on a
-        # relent, by gate (no_fit, sigma, parsimony, adequacy): whether the gate changed how the
+        # relent, by gate (no_fit, sigma, parsimony, adequacy; parsimony_stale and
+        # parsimony_unavailable where that check could not run): whether the gate changed how the
         # run ended is otherwise only in the log.
         "finish_gate": {
             "refusals": dict(finish_state.get("refusals", {})),
