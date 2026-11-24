@@ -606,7 +606,15 @@ async def _judge_delivered(
     # No baseline, as for a zero-shot build; every species the agent declared is "new".
     baseline = Baseline(nll=None, species=set(), structure={})
     return await _judge(
-        scenario, call, baseline, work, meta, clock, t0, estimated=delivery["estimated"]
+        scenario,
+        call,
+        baseline,
+        work,
+        meta,
+        clock,
+        t0,
+        estimated=delivery["estimated"],
+        own_server=True,
     )
 
 

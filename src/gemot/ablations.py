@@ -63,6 +63,10 @@ class Ablation:
     ``changes_prompt`` is the field to read when planning a comparison. A switch that alters prompt
     TEXT moves ``prompt_version``, so it must not share a sweep with any unrelated prompt edit: the
     two become inseparable in the record, and no later analysis can attribute the difference.
+
+    ``null_arm`` says whether the null arm (``--driver barebones``) reads the switch too. It has
+    none of the panel's design, so most switches have nothing there to change, and its record
+    lists only these (``arm(null_arm=True)``).
     """
 
     name: str
@@ -70,6 +74,7 @@ class Ablation:
     default_on: bool
     changes_prompt: bool
     effect: str  # what the NON-DEFAULT side does, in one line
+    null_arm: bool = False
 
     @property
     def setting(self) -> str:
@@ -94,6 +99,7 @@ ABLATIONS: tuple[Ablation, ...] = (
         "panel could surface its withheld source paper; the structured knowledge "
         "(interactions/pathways/ontologies/OmniPath) is general biology. On the panel, "
         "biocurator=off or biology_blind=on disables both kinds of knowledge access",
+        null_arm=True,
     ),
     Ablation(
         name="biology_blind",
@@ -144,6 +150,7 @@ ABLATIONS: tuple[Ablation, ...] = (
         "known-constants note and the entity names curated for the biocurator. The agent has the "
         "problem's tables, its constants still shipping as named fixed rows, and the biocurator "
         "the measured entities and inputs with their identifiers, derived (`entity_ids`)",
+        null_arm=True,
     ),
     Ablation(
         name="fix_pointers",
@@ -182,28 +189,44 @@ def enabled(name: str) -> bool:
         raise KeyError(f"unknown ablation {name!r}; registered: {sorted(_BY_NAME)}") from None
 
 
-def state() -> dict[str, bool]:
-    """Every ablation's resolved value, for ``result.json``.
+def _read_by(null_arm: bool) -> tuple[Ablation, ...]:
+    """The switches a run reads: all of them on the panel, the ``null_arm`` ones on the null arm."""
+    return tuple(a for a in ABLATIONS if a.null_arm) if null_arm else ABLATIONS
+
+
+def state(*, null_arm: bool = False) -> dict[str, bool]:
+    """Every ablation's resolved value, for ``result.json``; on the null arm, every one it reads.
 
     Records ALL of them, not only the non-default ones: a run silent about ``bio_literature`` is
     indistinguishable from one recorded before the field existed, and "absent" would then have to
     be read as "probably the default", which is how provenance rots.
     """
-    return {a.name: a.enabled() for a in ABLATIONS}
+    return {a.name: a.enabled() for a in _read_by(null_arm)}
 
 
-def arm() -> str:
+def arm(*, null_arm: bool = False) -> str:
     """A compact canonical name for this configuration — the flat column a sweep groups by.
 
     ``"baseline"`` when every switch sits at its default, otherwise the deviations joined in
     registry order (``"biocurator=off"``). Naming only the DEVIATIONS keeps the string stable when
     a new ablation is added at its default, so old runs stay comparable to new ones.
+
+    The null arm is ``"barebones"``, followed by the deviations among the switches it reads
+    (``"barebones,reference_handoff=off"``). Deliberately not ``"baseline"``, though no switch
+    selects it: under that name its runs pooled with the panel's in every table grouped by this
+    column, which was the only one that table had (#164).
     """
-    off = [f"{a.name}={'on' if a.enabled() else 'off'}" for a in ABLATIONS if not a.is_default()]
+    off = [
+        f"{a.name}={'on' if a.enabled() else 'off'}"
+        for a in _read_by(null_arm)
+        if not a.is_default()
+    ]
+    if null_arm:
+        return ",".join(["barebones", *off])
     return ",".join(off) if off else "baseline"
 
 
-def state_key() -> str:
+def state_key(*, null_arm: bool = False) -> str:
     """EVERY switch's resolved value, in registry order — the default-INDEPENDENT column.
 
     :func:`arm` names only the deviations, which is what you want to group by but is defined
@@ -216,7 +239,9 @@ def state_key() -> str:
     any default change (and a new arm appended at its default, or a retired one removed, DOES move
     it, which is the trade — group by `arm` for continuity, by this for correctness).
     """
-    return ",".join(f"{name}={'on' if on else 'off'}" for name, on in state().items())
+    return ",".join(
+        f"{name}={'on' if on else 'off'}" for name, on in state(null_arm=null_arm).items()
+    )
 
 
 def describe(*, use_color: bool = False) -> str:
@@ -226,6 +251,7 @@ def describe(*, use_color: bool = False) -> str:
     for a in ABLATIONS:
         mark = "" if a.is_default() else "   <- NOT the default"
         prompt = "moves prompt_version" if a.changes_prompt else "prompt unchanged"
+        null = "; the null arm reads it too" if a.null_arm else ""
         # `setting` is derived per-switch rather than hard-coded to `=0`: the default sides differ,
         # so the value that flips an arm depends on which way it points. A catalogue whose printed
         # instructions silently no-op is worse than none, so `test_ablations.py` executes every one
@@ -233,7 +259,7 @@ def describe(*, use_color: bool = False) -> str:
         rows.append(
             f"{bold}{a.name}{reset}  [{'on ' if a.enabled() else 'off'}]{mark}\n"
             f"  {dim}set{reset}     {a.setting}   "
-            f"(default {'on' if a.default_on else 'off'}; {prompt})\n"
+            f"(default {'on' if a.default_on else 'off'}; {prompt}{null})\n"
             f"  {dim}does{reset}    {a.effect}\n"
         )
     return (
@@ -275,6 +301,7 @@ def _main(argv: "list[str] | None" = None) -> int:
                             "default_on": a.default_on,
                             "current": a.enabled(),
                             "changes_prompt": a.changes_prompt,
+                            "null_arm": a.null_arm,
                             "effect": a.effect,
                         }
                         for a in ABLATIONS

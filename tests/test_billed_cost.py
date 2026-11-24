@@ -68,7 +68,7 @@ def _completion(request: _httpx.Request) -> _httpx.Response:
     )
 
 
-def _stream(request: _httpx.Request) -> _httpx.Response:
+def _stream(request: _httpx.Request, usage: dict = USAGE) -> _httpx.Response:
     body = json.loads(request.content)
     assert body["stream"] is True and body["usage"] == {"include": True}
 
@@ -91,7 +91,7 @@ def _stream(request: _httpx.Request) -> _httpx.Response:
     text = (
         event({"role": "assistant", "content": "h"})
         + event({"content": "i"}, finish="stop")
-        + event(usage=USAGE)
+        + event(usage=usage)
         + "data: [DONE]\n\n"
     )
     return _httpx.Response(
@@ -142,6 +142,26 @@ async def test_streamed_response_records_the_billed_cost():
     assert t["cost_usd"] == pytest.approx(0.00123)
     assert t["n_llm_calls"] == 1 and t["n_uncosted_calls"] == 0
     assert t["cache_read_tokens"] == 800
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_byok_call_records_its_upstream_bill():
+    """#164: through the account's own key OpenRouter's `cost` is its fee alone, and the stream's
+    usage chunk must reach the accountant whole, `is_byok` and `cost_details` included, for the
+    bill to be counted rather than read as nearly free."""
+    usage = {
+        **USAGE,
+        "cost": 0.0,
+        "is_byok": True,
+        "cost_details": {"upstream_inference_cost": 0.0187},
+    }
+    acc = _token_accountant()
+    llm = _llm(lambda request: _stream(request, usage))
+    async for _ in llm.astream([HumanMessage("x")], config={"callbacks": [acc]}):
+        pass
+    t = acc.totals()
+    assert t["cost_usd"] == pytest.approx(0.0187)
+    assert t["n_llm_calls"] == 1 and t["n_uncosted_calls"] == 0
 
 
 @pytest.mark.parametrize("model_id", sorted(models._CACHING))
