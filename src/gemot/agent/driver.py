@@ -1665,9 +1665,10 @@ async def run_deepagents(
             elif (filtered := _content_filter_stop_reason(exc)) is not None:
                 stop_reason = filtered
             elif _is_call_timeout(exc):
-                # A per-call timeout that escaped the breaker: a read's (e.g. raised at the
-                # `task` subagent boundary), since a fit's own goes to the lead and a timeout
-                # behind one ends the run (circuit_breaker._fit_wedged). The server may be busy
+                # A per-call timeout that escaped the breaker: a read's on a silent server (e.g.
+                # raised at the `task` subagent boundary), since a fit's own goes to the lead, a
+                # call cut behind a compile goes to its caller, and a silent server behind a
+                # timed-out fit ends the run (circuit_breaker._fit_wedged). The server may be busy
                 # with a fit, so RESUME from the checkpoint rather than ending the run. It cannot
                 # join _TRANSIENT_ERRORS because that is a tuple of CLASSES and this is one status
                 # code within MCPError.

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import math
 import time
 
@@ -174,11 +175,14 @@ def test_a_silent_server_takes_the_wedged_fit_path():
 
 def test_a_compile_past_its_margin_ends_the_call():
     """The plan's third check: the server keeps beating while a build hangs, so a heartbeat that
-    shows a compile past `FIT_COMPILE_MARGIN_S` counts as none."""
+    shows a compile past `FIT_COMPILE_MARGIN_S` counts as none. The cut carries that heartbeat:
+    the server was working, so the cut is no wedge (gemot#160)."""
     error, took, _, _ = _call({"beats": [_STUCK] * round(6 * _WINDOW_S / _BEAT_S)})
     assert isinstance(error, MCPError) and error.code == REQUEST_TIMEOUT
     assert _STUCK in str(error)
     assert took < 4 * _WINDOW_S
+    assert error.data == {"heartbeat": _STUCK}
+    assert B._still_compiling(error) == _STUCK
 
 
 def test_a_compile_inside_its_margin_is_alive():
@@ -186,6 +190,156 @@ def test_a_compile_inside_its_margin_is_alive():
     result, took, _, _ = _call({"beats": ["compiling for 10s"] * round(3 * _WINDOW_S / _BEAT_S)})
     assert C._unwrap(result) == "fitted"
     assert took > 2 * _WINDOW_S
+
+
+def test_a_silent_servers_cut_carries_no_heartbeat():
+    """The control: silence is what `_fit_wedged` reads as a server holding its fit."""
+    error, _, _, _ = _call({"beats": [], "silent": 10.0})
+    assert error.data is None
+    assert B._still_compiling(error) is None
+
+
+# -- a first compile past the margin (gemot#160) -----------------------------------------------
+#: The server's refusal of a change sent while another still runs (PEtab-MCP's `_fit_in_progress`).
+_IN_PROGRESS = (
+    "make_changes: fit_in_progress: a fit is still running on this session (its change began "
+    "{age:.0f}s ago), so NOTHING was applied. Its result becomes the next version when it ends: "
+    "call wait_for_fit, which answers once it is committed, rather than resending this change or "
+    "polling another tool."
+)
+
+
+def _compiling_server(*compile_s: float):
+    """A server whose changes compile for ``compile_s[i]`` seconds each (none after the last), as
+    luna froehlich's first change did in 63982610_55. Like PEtab-MCP's:
+
+    * a change runs on its own, so a call cut on the client leaves it running;
+    * each call beats every `_BEAT_S` with the session's change, here ``compiling`` and past
+      `FIT_COMPILE_MARGIN_S` from its second beat on, and with none once no change runs;
+    * `make_changes` sent while a change runs is refused with `fit_in_progress`, and
+      `wait_for_fit` waits for the change to end.
+    """
+    import anyio
+    from mcp.server import MCPServer
+
+    srv = MCPServer("compiling")
+    compiles = list(compile_s)
+    change: dict = {"began": None, "version": 0, "runs": []}
+
+    def phase() -> str | None:
+        if change["began"] is None:
+            return None
+        return "compiling for 10s" if time.monotonic() - change["began"] < _BEAT_S else _STUCK
+
+    async def beat_until(ctx: Context, done) -> None:
+        began = time.monotonic()
+        while not done():
+            await anyio.sleep(_BEAT_S)
+            await ctx.report_progress(time.monotonic() - began, message=phase())
+
+    @srv.tool()
+    async def make_changes(ctx: Context) -> dict:
+        if change["began"] is not None:
+            age = time.monotonic() - change["began"]
+            return {
+                "applied": False,
+                "error": _IN_PROGRESS.format(age=age),
+                "error_cause": "fit_in_progress",
+            }
+        change["began"] = time.monotonic()
+
+        async def compile_and_fit() -> None:
+            await asyncio.sleep(compiles.pop(0) if compiles else 0.0)
+            change["version"] += 1
+            change["began"] = None
+
+        run = asyncio.get_running_loop().create_task(compile_and_fit())
+        change["runs"].append(run)
+        await beat_until(ctx, run.done)
+        return {"applied": True, "committed": True, "version": change["version"]}
+
+    @srv.tool()
+    async def wait_for_fit(ctx: Context, timeout_s: float = 240.0) -> dict:
+        deadline = time.monotonic() + timeout_s
+        await beat_until(ctx, lambda: change["began"] is None or time.monotonic() > deadline)
+        if change["began"] is not None:
+            return {"status": "still_running", "phase": "compiling"}
+        return {"status": "committed", "version": change["version"]}
+
+    return srv
+
+
+def _text(message) -> str:
+    """A ToolMessage's text, as the lead reads it."""
+    content = message.content
+    if isinstance(content, str):
+        return content
+    return "".join(block.get("text", "") for block in content if isinstance(block, dict))
+
+
+def test_a_slow_first_compile_reaches_its_fit(monkeypatch):
+    """gemot#160, 63982610_55 replayed: the first compile runs past the margin while the server
+    beats, and the fit call is cut. The lead used to read "result unknown ... choose fewer starts",
+    resend, and get `fit_in_progress`, which ended the run as `fit_wedged` with no fit. Now the cut
+    says the fit runs on, the resend's `fit_in_progress` reaches the lead as the server's reply, and
+    `wait_for_fit` gets it the version the compile ends in, after which its next change fits.
+
+    Through everything the driver puts between the lead and the server: the tool bridge, the
+    circuit breaker, and the heartbeat timeout on a real ClientSession. The window is widened so
+    the compile ends well inside the wait's.
+    """
+    from mcp import Client
+
+    from gemot.agent.mcp_tools import load_mcp_tools
+
+    window = 2 * _WINDOW_S
+    monkeypatch.setattr(C, "CALL_IDLE_WINDOW_S", window)
+
+    def call(tool, **args):
+        return {
+            "name": tool.name,
+            "args": args,
+            "id": f"c{time.monotonic_ns()}",
+            "type": "tool_call",
+        }
+
+    async def go():
+        async with Client(_compiling_server(window + 4 * _BEAT_S), mode="legacy") as client:
+            C._wrap_call_timeout(client.session)
+            tools = await load_mcp_tools(client.session)
+            state = B._new_breaker_state()
+            B._wrap_tools_with_circuit_breaker(tools, state, fit_tools=frozenset({"make_changes"}))
+            by_name = {t.name: t for t in tools}
+            fit, wait = by_name["make_changes"], by_name["wait_for_fit"]
+            replies = {}
+            replies["cut"] = await fit.ainvoke(call(fit))
+            outstanding = state["fit_timeout"]
+            replies["resend"] = await fit.ainvoke(call(fit))
+            still_outstanding = state["fit_timeout"]
+            replies["wait"] = await wait.ainvoke(call(wait))
+            replies["next"] = await fit.ainvoke(call(fit))
+            return replies, outstanding, still_outstanding, state
+
+    replies, outstanding, still_outstanding, state = asyncio.run(go())
+    cut = _text(replies["cut"])
+    assert cut == prompts.FIT_STILL_COMPILING_TMPL.format(name="make_changes", heartbeat=_STUCK)
+    assert "fewer starts" not in cut and "wait_for_fit" in cut
+    assert outstanding is not None
+    # The resend is refused by the server and the lead reads why: not a wedge.
+    assert "fit_in_progress" in _text(replies["resend"])
+    assert "call wait_for_fit" in _text(replies["resend"])
+    assert still_outstanding == outstanding
+    # The wait ends with the version the slow compile went on to fit, and clears the timeout.
+    assert json.loads(_text(replies["wait"])) == {"status": "committed", "version": 1}
+    # ...and the lead's next change fits.
+    assert json.loads(_text(replies["next"])) == {"applied": True, "committed": True, "version": 2}
+    assert state["fit_timeout"] is None
+    assert state["infrastructure"] == {"tool_calls": 0, "evidence": None}
+    assert B.call_outcomes(state, "make_changes")["by_outcome"] == {
+        "tool_error": 1,
+        "server_rejected": 1,
+        "ok": 1,
+    }
 
 
 # -- the call's arguments --------------------------------------------------------------------

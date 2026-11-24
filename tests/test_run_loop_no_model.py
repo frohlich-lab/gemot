@@ -30,8 +30,7 @@ def _have(mod: str) -> bool:
 
 requires_harness = pytest.mark.skipif(
     not all(
-        _have(m)
-        for m in ("deepagents", "langchain_openai", "langchain.mcp", "openai", "langgraph")
+        _have(m) for m in ("deepagents", "langchain_openai", "langchain.mcp", "openai", "langgraph")
     ),
     reason="examples-harness deps (deepagents/langchain/openai) not installed",
 )
@@ -395,6 +394,46 @@ def test_a_fit_timeout_reaches_the_lead_instead_of_a_resume(monkeypatch):
     assert len(agent.inputs) == 1  # never resumed
     assert agent.results[0][0].startswith("FIT TIMED OUT: `make_changes` did not return in time")
     assert agent.results[1][0][0]["text"] == '{"applied": true}'  # the lead's next fit ran
+    assert result["stop_reason"] == "completed"
+
+
+@requires_harness
+def test_a_slow_first_compile_goes_on_to_its_fit(monkeypatch):
+    """gemot#160, 63982610_55: the first compile ran past its margin, and the lead's resend got
+    `fit_in_progress`, which ended the run as `infrastructure_error: fit_wedged` with no fit. Both
+    reach the lead now, and its next fit runs."""
+    from mcp import MCPError
+    from mcp.types import REQUEST_TIMEOUT
+
+    replies = [
+        MCPError(
+            code=REQUEST_TIMEOUT,
+            message="Request 'make_changes' timed out: its change has been compiling for 877s",
+            data={"heartbeat": "compiling for 877s"},
+        ),
+        '{"applied": false, "error": "make_changes: fit_in_progress: a fit is still running"}',
+        '{"applied": true}',
+    ]
+
+    async def _make_changes(**kw):
+        reply = replies.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        return ([{"type": "text", "text": reply}], None)
+
+    mod = _load_agent_module()
+    result, agent = _run(
+        mod,
+        monkeypatch,
+        _Probe(model_authored=True),
+        agent=_FitAgent(fits=3),
+        coroutines={"make_changes": _make_changes},
+    )
+
+    assert len(agent.inputs) == 1  # never resumed
+    assert agent.results[0][0].startswith("FIT STILL RUNNING: the server is still compiling")
+    assert "fit_in_progress" in agent.results[1][0][0]["text"]
+    assert agent.results[2][0][0]["text"] == '{"applied": true}'
     assert result["stop_reason"] == "completed"
 
 
