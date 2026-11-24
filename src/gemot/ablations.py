@@ -153,8 +153,9 @@ ABLATIONS: tuple[Ablation, ...] = (
         effect="OFF withholds the numbers that point the agent at what to change or where the fit is "
         "off: the merge hints and a tie's payoff, the ranked candidates, the regime grades, the "
         "per-observable residual tables and outliers, sigma heterogeneity and which observables a "
-        "verdict flags (create_server(fix_pointers=False)), and the prompt lines that read them. "
-        "Every score, total and verdict, and all prose, stay",
+        "verdict flags (create_server(fix_pointers=False)), and the prompt lines that read them or "
+        "ask an analyst to rebuild them from the residuals. Every score, total and verdict, the "
+        "residual columns query_data reads, and all prose, stay",
     ),
     Ablation(
         name="progress_signals",
@@ -164,10 +165,11 @@ ABLATIONS: tuple[Ablation, ...] = (
         effect="OFF withholds the numbers that tell the agent how well it is doing: the server's "
         "best version, new-best flags, score differences against the parent or the best, chi2 "
         "p-value and reduced chi2 (create_server(progress_signals=False)), the time left on FIT "
-        "COST, the subagents' turns-left notices, and the chi2 finish refusal that quotes the "
-        "p-value; and the run no longer stops on the server's streak or plateau. Prose changes only "
-        "where it names a withheld number. Each fit's own nll, criterion, k and chi2 stay, and the "
-        "judge scores as before",
+        "COST, which version the finish gate restored and the score it arms on, and the chi2 "
+        "finish refusal that quotes the p-value; and the run no longer stops on the server's streak "
+        "or plateau. Prose changes only where it names a withheld number. Each fit's own nll, "
+        "criterion, k and chi2 stay, as do the subagents' turns-left notices, and the judge scores "
+        "as before",
     ),
 )
 

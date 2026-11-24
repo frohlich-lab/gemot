@@ -424,8 +424,9 @@ DEFAULT_SYSTEM_PROMPT = (
     + ") — "
     "get_fit_diagnosis covers the residual detail and, as " + _PARAMETER_HALF + ", the parameter "
     "identifiability; "
-    "for the raw DATA and any DEEP diagnosis (a full residual breakdown, the optimizer/fitting "
-    "log) you DELEGATE to the analysts — they read the bulky data in "
+    "for the raw DATA and any DEEP diagnosis ("
+    + _pointing("a full residual breakdown, ")
+    + "the optimizer/fitting log) you DELEGATE to the analysts — they read the bulky data in "
     "their OWN context and hand you back summaries, so your context stays lean. "
     + _ANALYST_LIMITS
     + "\n\n"
@@ -497,9 +498,12 @@ DEFAULT_SYSTEM_PROMPT = (
     )
     + _SIGMA_CAP_ADVISORY
     + " Judge whether the "
-    "mechanism is RIGHT from the residual STRUCTURE — "
-    + _pointing("get_fit_diagnosis's per-observable bias + worst-fit points, or ")
-    + "a signal_engineer time-trend read: SYSTEMATIC (non-random) residuals "
+    "mechanism is RIGHT from the residual STRUCTURE"
+    + _pointing(
+        " — get_fit_diagnosis's per-observable bias + worst-fit points, or "
+        "a signal_engineer time-trend read"
+    )
+    + ": SYSTEMATIC (non-random) residuals "
     "mean a mechanism is still missing; clean random scatter means it isn't. INITIAL CONDITIONS "
     "— the server AUTO-GENERATES an `<species>_init` parameter for most species you declare, "
     "ESTIMATED by default, whether or not you write one: every species you add silently adds a "
@@ -577,8 +581,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "bic has stalled; the default `sections='residuals'` is the cheap read for 'where is the fit "
     "off'. If that is not enough, "
     "DELEGATE the deep dive — the `mathematician` reads the fitting log (parameters pinned at a "
-    "bound, non-identifiability, optimizer convergence) and the `signal_engineer` gives a full "
-    "residual breakdown — then act on it (widen a binding bound with make_changes, or "
+    "bound, non-identifiability, optimizer convergence)"
+    + _pointing(" and the `signal_engineer` gives a full residual breakdown")
+    + " — then act on it (widen a binding bound with make_changes, or "
     "drop/merge an ill-determined free parameter), and (b) try a "
     "genuinely DIFFERENT structure — a different rate-law form or topology. If a LARGER model "
     "fits but a smaller one won't, the smaller one is usually "
@@ -619,7 +624,9 @@ INDRA_SYSTEM_PROMPT = (
     "ANALYSTS are available through `task`, when a question needs one (pass `subagent_type`; the "
     "`description` string is a subagent's ENTIRE input): `mathematician` (rate-law forms, "
     "identifiability, the fitting log), `systems_scientist` (mechanistic plausibility), "
-    "`signal_engineer` (the measured data and the residuals, which you do not read yourself)"
+    "`signal_engineer` (the measured data"
+    + _pointing(" and the residuals")
+    + ", which you do not read yourself)"
     + (
         ", `biocurator` (it HOLDS the problem's entities: what each assay measures, in which "
         "modified forms, and which inputs the conditions set, with database identifiers; ask it "
@@ -988,19 +995,28 @@ SYSTEMS_SCIENTIST_PROMPT = (
     + _PETAB_SKILL_INLINE
 )
 
+# The residual breakdowns are what the fix_pointers arm's off side withholds (the per-observable tables,
+# the worst points), so there the persona stops at the measured signal. Told to rebuild them in SQL,
+# analysts did so in every such run, with up to ten times the full arm's `simulations` queries
+# (gemot#157). The columns stay queryable: they are the simulation itself, not a pointer.
 SIGNAL_ENGINEER_PROMPT = (
     "You are a signal-processing engineer. Treat the time courses as signals — do not "
     "hypothesize mechanisms. Call list_data_tables FIRST for the available tables/columns, "
     "then use query_data. Before a model is fitted, characterize the MEASURED signal itself, "
     "per observableId / experimentId: its shape (monotonic rise, saturation, decay, sustained "
     "oscillation — with its period — or damping), timescales, and amplitudes — the qualitative "
-    "fingerprint the mechanism must reproduce. Once a model is fitted, the `simulations` table "
-    "has one row per point with `measurement`, `simulation`, `residual`, `residual_weighted`, "
-    "and `noise`: compute breakdowns in SQL — grouped by observable_id / experiment_id / time, "
-    "the worst-fit points (`ORDER BY abs(residual_weighted) DESC`), per-group bias "
-    "(`avg(residual_weighted)`), and time-trend (`corr(time, residual_weighted)`) — and say "
-    "whether the residuals look like noise (the fit is adequate) or systematic (the structure "
-    "is still wrong). Localize; leave the WHY to the mathematician and systems scientist."
+    "fingerprint the mechanism must reproduce. "
+    + _pointing(
+        "Once a model is fitted, the `simulations` table "
+        "has one row per point with `measurement`, `simulation`, `residual`, `residual_weighted`, "
+        "and `noise`: compute breakdowns in SQL — grouped by observable_id / experiment_id / time, "
+        "the worst-fit points (`ORDER BY abs(residual_weighted) DESC`), per-group bias "
+        "(`avg(residual_weighted)`), and time-trend (`corr(time, residual_weighted)`) — and say "
+        "whether the residuals look like noise (the fit is adequate) or systematic (the structure "
+        "is still wrong). Localize; leave",
+        "Leave",
+    )
+    + " the WHY to the mathematician and systems scientist."
     + _REPORT_CONTRACT
     + _PETAB_SKILL_INLINE
 )
@@ -1043,8 +1059,11 @@ SYSTEMS_SCIENTIST_DESCRIPTION = (
 
 SIGNAL_ENGINEER_DESCRIPTION = (
     "Signal-processing engineer: characterizes the measured signal (shape, "
-    "periodicity, timescales) and — once a model is fitted — the residuals (bias, "
-    "drift, shape/timing mismatch), with no mechanistic claim."
+    "periodicity, timescales)"
+    + _pointing(
+        " and — once a model is fitted — the residuals (bias, drift, shape/timing mismatch)"
+    )
+    + ", with no mechanistic claim."
     + _analyst_reach(SIGNAL_ENGINEER_READ_TOOLS)
 )
 
@@ -1282,8 +1301,9 @@ FINISH_DESCRIPTION = (
     + " Read where the fit is off from the residual_structure verdict "
     "the fit already returned, not from chi2: its sign_test / runs_test read residual SIGNS, and "
     "where design points REPEAT its replicate_lack_of_fit measures each prediction against that "
-    "point's own replicate scatter — a flagged point there is one your current form does not "
-    "reach. Its PASS is worth only its lof_df "
+    "point's own replicate scatter"
+    + _pointing(" — a flagged point there is one your current form does not reach")
+    + ". Its PASS is worth only its lof_df "
     "(replicated points minus your estimated structural parameters): a pass carrying weak: true, or "
     "carrying no lof_df at all, does not show the form is right. "
     + _pointing(
@@ -1305,7 +1325,8 @@ FINISH_DESCRIPTION = (
     )
     + "Finishing takes TWO calls: the "
     "first ARMS it and shows you the "
-    "current bic and residual-structure diagnosis; review it, then call `finish` AGAIN to "
+    + _signal("current bic and ")
+    + "residual-structure diagnosis; review it, then call `finish` AGAIN to "
     "confirm and end. It is refused when there is no valid fit yet (no model built / "
     "no finite bic). "
     + _signal(_CHI2_GATE_RULE + " ")
@@ -1387,19 +1408,32 @@ FINISH_REFUSED_ADEQUACY_TMPL = (
 # Put before whatever the gate returns when it made the run's best version HEAD first, so a lead that
 # keeps working knows where it now stands. The gate used to judge HEAD while the run is scored on its
 # best version, and lucarelli runs (gemot#94) spent fits rebuilding a clean model at HEAD to finish.
-FINISH_RESTORED_BEST_TMPL = (
+#
+# The progress_signals arm's off side withholds the server's best version, and naming it here told
+# 20 of 30 such runs which version was best, one after it had lost track of it for 15 h (gemot#156).
+# There the gate sends one sentence on EVERY call (finish_gate._finish_tool), naming no version, so
+# a finish says neither which version is best nor whether HEAD was it.
+FINISH_RESTORED_BEST_TMPL = _signal(
     "The finish gate judges v{best}, the version the run is scored on (your best-scoring one, "
     "passing over any whose noise sigma is implausible where another's is not), and has restored "
-    "it as HEAD (HEAD was v{head}): what follows is about v{best}. "
+    "it as HEAD (HEAD was v{head}): what follows is about v{best}. ",
+    "The finish gate judges the version this run is scored on, and first makes it HEAD if it was "
+    "not: what follows is about that version. ",
 )
 
 # `{caveat}` is the server's `structure_tests_caveat`, quoted as it states it after the summary it
 # qualifies: present only where nothing is flagged while sigmas or observable scales/offsets are
 # estimated (frohlich-lab/PEtab-MCP#212), so on bachmann and fiedler a clean summary no longer
 # reads as adequacy at the moment of finishing (gemot#111).
+#
+# Without its score on the progress_signals arm's off side: the fit armed on is the version the run
+# is scored on, so after a restore its bic is the best bic, and quoting it names the best version to
+# any lead keeping a ledger of its fits' scores (gemot#156). The confirmation still quotes it: the
+# run ends there.
 FINISH_ARMED_TMPL = (
-    "FINISH ARMED — review before confirming. Current fit: bic={bic:.6g}, "
-    "neg_log_likelihood={nll:.6g}. Residual structure: {struct}{caveat}{worst_line}"
+    "FINISH ARMED — review before confirming. "
+    + _signal("Current fit: bic={bic:.6g}, neg_log_likelihood={nll:.6g}. ")
+    + "Residual structure: {struct}{caveat}{worst_line}"
     "{sigma_line}{merge_line}{invalid_line} " + _RESIDUALS_DO_NOT_DECIDE_DONE + " If you have "
     "genuinely bottomed out BIC, call finish AGAIN to confirm and end the run."
 )
@@ -1526,12 +1560,28 @@ SUBAGENT_EMPTY_REPORT_NUDGE = (
 # read as "the analyst found nothing".
 SUBAGENT_EMPTY_REPORT_MARKER = "[analyst returned no report]"
 
+# What the lead receives from a delegation the turn limit (`agent.guards._subagent_turn_limit`) cut
+# off while it was still calling tools. Its report used to be its last text, a sentence written
+# mid-work ("Now the high-dose long-observation series ...") that leads took for a finding ("All
+# four reads are in"): 24 such cut-offs in 15 of 35 runs where the turn notices were withheld
+# (gemot#159), and _EmptyReportGuard catches only a blank one. `{cap}` is the limit, `{last}` that
+# text, or SUBAGENT_TURN_CAP_NOTHING_WRITTEN.
+SUBAGENT_TURN_CAP_REPORT_TMPL = (
+    "[REPORT INCOMPLETE — the analyst used all {cap} of its turns while still working and was cut "
+    "off before it wrote its report. Its last message follows: a note written mid-work, not its "
+    "finding.]\n\n{last}"
+)
+SUBAGENT_TURN_CAP_NOTHING_WRITTEN = "(It had written nothing.)"
+
 # Escalating notice as a subagent delegation nears its turn cap, injected into the OUTGOING request
 # by `agent.guards._subagent_turn_limit`. Lives HERE, not in guards.py, because it is model-facing
 # text: `prompt_version()` hashes `all_prompts()`, so a reword in guards.py would change every
 # analyst's system prompt while `prompt_version` and `prompt_group_versions` stayed identical — and a
 # sweep spanning that edit would pool both versions into one cell with no column to split them on.
 # `{left}`/`{cap}` are filled per turn. The sibling hard-limit wording is in _REPORT_CONTRACT.
+# Sent on every arm: a turn left is the harness's budget, not a measure of how the fit is doing.
+# Withheld on the progress_signals arm's off side, delegations ran into the limit there and nowhere
+# else (gemot#159).
 SUBAGENT_TURN_NOTICES = (
     (
         10,
@@ -1614,7 +1664,9 @@ BIOLOGY_BLIND_SYSTEM_PROMPT = (
     "You are the MODELING LEAD building an ODE model for an anonymous PEtab v2 problem. "
     "You have three independent analysts through task(subagent_type=..., description=...): "
     "mathematician for equations and estimation, systems_scientist for dynamical structure, "
-    "and signal_engineer for measured signals and residuals. Put the complete question in "
+    "and signal_engineer for measured signals"
+    + _pointing(" and residuals")
+    + ". Put the complete question in "
     "description. The analysts inspect and advise; only you author and fit. "
     + _ANALYST_LIMITS
     + " Delegate bulky "
@@ -1707,11 +1759,19 @@ BIOLOGY_BLIND_ANALYSTS = {
         "and one concrete change the lead can test. You cannot edit. " + BIOLOGY_BLIND_SEMANTICS,
     },
     "signal_engineer": {
-        "description": "Measured signal shapes, time scales, replicates and residual structure."
+        "description": "Measured signal shapes, time scales, replicates"
+        + _pointing(" and residual structure", " and input responses")
+        + "."
         + _analyst_reach(SIGNAL_ENGINEER_READ_TOOLS),
-        "prompt": "You analyze measurements and residuals as numerical signals. Use your tools to "
-        "locate systematic timing, shape, amplitude or input-response errors relative "
-        "to the supplied noise model. Report what is established, what is uncertain, "
+        # Gated like SIGNAL_ENGINEER_PROMPT, which says why.
+        "prompt": _pointing(
+            "You analyze measurements and residuals as numerical signals. Use your tools to "
+            "locate systematic timing, shape, amplitude or input-response errors relative "
+            "to the supplied noise model.",
+            "You analyze measurements as numerical signals. Use your tools to characterize their "
+            "timing, shape, amplitude and input response.",
+        )
+        + " Report what is established, what is uncertain, "
         "and one concrete diagnostic or change for the lead. You cannot edit. "
         + BIOLOGY_BLIND_SEMANTICS,
     },
@@ -1858,6 +1918,8 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "statements_only_reject": STATEMENTS_ONLY_REJECT_TMPL,
             "empty_report_nudge": SUBAGENT_EMPTY_REPORT_NUDGE,
             "empty_report_marker": SUBAGENT_EMPTY_REPORT_MARKER,
+            "turn_cap_report": SUBAGENT_TURN_CAP_REPORT_TMPL,
+            "turn_cap_nothing_written": SUBAGENT_TURN_CAP_NOTHING_WRITTEN,
             # One entry PER notice, not a joined blob: each is injected verbatim into a subagent's
             # system prompt on its own, so each must be a tracked LEAF (see
             # tests/test_prompt_tracking.py). A concatenation would leave the individual texts

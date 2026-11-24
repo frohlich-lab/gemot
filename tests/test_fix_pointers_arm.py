@@ -1,5 +1,5 @@
 """The `fix_pointers` arm: off, the server withholds the numbers that point at what to change, and
-no prompt tells the agent to read them.
+no prompt tells the agent to read them, or an analyst to rebuild them from the residuals.
 
 Prompts read the arm when `gemot.prompts` is imported, so each side is read in a fresh interpreter.
 """
@@ -24,6 +24,14 @@ _POINTERS = (
     "A priced merge is an OPTION",
     "get_fit_diagnosis's per-observable bias + worst-fit points",
     "flat_directions and ranked candidates",
+    "a flagged point there is one your current form does not reach",
+    # What had analysts rebuild the withheld residual tables in SQL in every run of the arm,
+    # at up to ten times the full arm's `simulations` queries (gemot#157).
+    "`ORDER BY abs(residual_weighted) DESC`",
+    "the residuals (bias, drift, shape/timing mismatch)",
+    "a full residual breakdown",
+    "a signal_engineer time-trend read",
+    "measured data and the residuals",
 )
 _FACTS = (
     "THE RESIDUAL TESTS DO NOT DECIDE WHEN YOU ARE DONE",
