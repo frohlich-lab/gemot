@@ -1526,6 +1526,17 @@ SUBAGENT_EMPTY_REPORT_NUDGE = (
 # read as "the analyst found nothing".
 SUBAGENT_EMPTY_REPORT_MARKER = "[analyst returned no report]"
 
+# An analyst's report when its model provider refuses one of its requests outright (a content
+# filter, a request rejected as malformed or too large; agent/provider_refusals.py). The refusal
+# used to escape the analyst's `task` call, which cancelled the other analysts' rounds and ended
+# the run (gemot#166). The lead reads that this analyst's work is lost and why, not that it found
+# nothing.
+SUBAGENT_PROVIDER_REFUSAL_TMPL = (
+    "[analyst stopped: the model provider refused its request ({reason}). This analyst's findings "
+    "are lost; the other analysts' reports are not affected. Delegate again, worded differently, "
+    "if you still need them.]"
+)
+
 # Escalating notice as a subagent delegation nears its turn cap, injected into the OUTGOING request
 # by `agent.guards._subagent_turn_limit`. Lives HERE, not in guards.py, because it is model-facing
 # text: `prompt_version()` hashes `all_prompts()`, so a reword in guards.py would change every
@@ -1858,6 +1869,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "statements_only_reject": STATEMENTS_ONLY_REJECT_TMPL,
             "empty_report_nudge": SUBAGENT_EMPTY_REPORT_NUDGE,
             "empty_report_marker": SUBAGENT_EMPTY_REPORT_MARKER,
+            "provider_refusal": SUBAGENT_PROVIDER_REFUSAL_TMPL,
             # One entry PER notice, not a joined blob: each is injected verbatim into a subagent's
             # system prompt on its own, so each must be a tracked LEAF (see
             # tests/test_prompt_tracking.py). A concatenation would leave the individual texts

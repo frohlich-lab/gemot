@@ -17,6 +17,7 @@ from ..prompts import (
     _biocurator_entity_block,
 )
 from .guards import _reasoning_runaway_guard, _subagent_turn_limit
+from .provider_refusals import _provider_refusal_report
 from .subagents import ACTIVE_SPECS, _builtin_tool_filter, _subagent_prompt_key
 
 #: Model calls one biocurator delegation may make before it must report.
@@ -231,10 +232,15 @@ def _build_biocurator_subagent(
         # list at once, so its floor scales with that list rather than being a single question.
         # Runaway-guarded like the analysts, and for the same measured reason -- 3 of the 11
         # subagent-side truncations were the biocurator's (see _build_subagents). And stripped of
-        # deepagents' filesystem built-ins like them, its lookups being all it has to do.
+        # deepagents' filesystem built-ins like them, its lookups being all it has to do. And a
+        # provider refusal ends its round, not the run, like theirs (agent/provider_refusals.py).
         "middleware": (
             [_builtin_tool_filter(), _subagent_turn_limit(BIOCURATOR_MAX_TURNS)]
-            + ([_reasoning_runaway_guard(stats)] if stats is not None else [])
+            + (
+                [_reasoning_runaway_guard(stats), _provider_refusal_report(stats, BIOCURATOR_NAME)]
+                if stats is not None
+                else []
+            )
         ),
     }
     # deepagents reads `model` off the spec and falls back to the lead's, so an unset key is the

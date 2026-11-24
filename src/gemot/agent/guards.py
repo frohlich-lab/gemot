@@ -288,6 +288,8 @@ def new_guard_stats() -> dict[str, Any]:
         "reasoning_runaways": 0,
         "reasoning_runaway_recovered": 0,
         "reasoning_runaway_retry_errors": 0,
+        # agent.provider_refusals: analyst rounds a provider refusal ended, in place of the run
+        "subagent_provider_refusals": 0,
         # agent.thinking: turns whose thinking was stopped, by why (repetition, budget, or the
         # provider's own length cap), and how many of them a model that would not stream ran.
         "thinking_cutoffs": {},
