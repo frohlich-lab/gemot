@@ -106,7 +106,69 @@ def test_off_no_text_the_agent_reads_names_a_withheld_number():
     assert "fails chi2" in on["prompts"]["petab-finish-description"]
     assert on["groups"]["lead"] != off["groups"]["lead"]
     assert "left" in on["fit_cost"] and off["fit_cost"] == "FIT COST: this fit took 1 min."
-    assert on["notice"] and off["notice"] is None
+    # Turns left are the harness's budget, not progress: withheld, delegations ran into the hard
+    # cap on this arm and nowhere else (gemot#159).
+    assert on["notice"] == off["notice"] and "FINAL TURN" in off["notice"]
+
+
+#: The finish gate, armed once with HEAD at v5 (the gate restores v4, the best) and once with HEAD
+#: already at v4.
+_FINISH = r"""
+import asyncio
+import json
+from gemot import agent, prompts
+
+class R:
+    def __init__(self, payload):
+        self.structured_content = payload
+
+BIC = {4: 205.0, 5: 260.0}
+
+class Session:
+    def __init__(self, head):
+        self.head = head
+
+    async def call_tool(self, name, args):
+        if name == "list_versions":
+            return R({"result": [{"version": v, "criterion_value": b, "bic": b} for v, b in BIC.items()]})
+        if name == "describe_problem":
+            return R({"current_version": self.head})
+        if name == "get_version":
+            return R({"version": args["version"]})
+        if name == "restore_version":
+            self.head = args["version"]
+            return R({"version": self.head})
+        if name == "get_fit_summary":
+            b = BIC[self.head]
+            return R({"neg_log_likelihood": b / 2 - 10, "bic": b, "criterion_value": b,
+                      "version": self.head, "noise_sigma_report": {}})
+        if name == "get_fit_diagnosis":
+            ident = {"available": True, "fim": {"rank_deficient": False}, "flat_directions": []}
+            return R({"per_observable": [], "identifiability": ident})
+        raise AssertionError(name)
+
+def armed(head):
+    return asyncio.run(agent._finish_tool(Session(head)).ainvoke({"rationale": "done"}))
+
+print(json.dumps({"moved": armed(5), "stayed": armed(4), "description": prompts.FINISH_DESCRIPTION,
+                  "note": prompts.FINISH_RESTORED_BEST_TMPL.format(best=4, head=5)}))
+"""
+
+
+def test_off_a_finish_says_neither_which_version_is_best_nor_whether_head_was():
+    """gemot#156: the restore note named the best version on this arm, in 20 of 30 runs, and the
+    ARM step quoted its bic, which names it to a lead keeping a ledger of its fits' scores."""
+    pytest.importorskip("langchain_core", reason="harness-only dependency")
+    # The last line: the gate logs to stdout before it.
+    on = json.loads(_fresh(_FINISH).splitlines()[-1])
+    off = json.loads(_fresh(_FINISH, PETAB_PROGRESS_SIGNALS="0").splitlines()[-1])
+    assert on["moved"].startswith(on["note"]) and "v4" in on["note"] and "bic=205" in on["moved"]
+    assert "restored" not in on["stayed"] and "bic=205" in on["stayed"]
+    assert "current bic" in on["description"]
+    assert off["moved"] == off["stayed"]
+    assert off["moved"].startswith(off["note"]) and "FINISH ARMED" in off["moved"]
+    assert not [w for w in ("v4", "v5", "205", "best-scoring") if w in off["moved"]]
+    assert "current bic" not in off["description"]
 
 
 class _FakeResult:
@@ -163,7 +225,8 @@ def test_off_the_chi2_gate_quotes_no_p_value_and_refuses_nothing(monkeypatch, si
     assert bool(state["refusals"]) is signals
     no_p = {k: v for k, v in _FAILS_CHI2.items() if k != "chi2_gof_pvalue"}
     (_, confirmed), _ = _finish(no_p, calls=2)
-    assert confirmed.startswith("Recorded: finish")
+    # Not `startswith`: off, every finish reply opens with the restore sentence (gemot#156).
+    assert "Recorded: finish" in confirmed
     assert ("χ²" in confirmed) is signals
 
 

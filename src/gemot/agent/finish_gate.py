@@ -316,7 +316,9 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
 
     Every call first makes the version the run is scored on HEAD (:func:`probe._restore_best`): the
     gate judges that model, not wherever the lead's last experiment left HEAD, and the reply says so
-    where that moved HEAD.
+    where that moved HEAD. On the progress_signals arm's off side the reply says so on every call,
+    without naming a version, and the ARM step quotes no score: either would tell the lead which
+    version is its best.
 
     ``finish`` is the ONLY legitimate way to end a run: a run that silently stops (a no-tool
     turn) is bounced back into this gate by the driver (see run_deepagents), so the gate cannot
@@ -385,10 +387,15 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
     async def finish(rationale: str) -> str:
         heads = await _restore_best(reader)
         judged = heads[0] if heads is not None else None
-        if heads is None or heads[0] == heads[1]:
+        moved = heads if heads is not None and heads[0] != heads[1] else None
+        if moved is not None:
+            print(f"[finish] restored the best version v{moved[0]} as HEAD (was v{moved[1]})")
+        elif prompts.PROGRESS_SIGNALS_ENABLED:
             return await _decide(rationale, judged)
-        print(f"[finish] restored the best version v{heads[0]} as HEAD (was v{heads[1]})")
-        note = prompts.FINISH_RESTORED_BEST_TMPL.format(best=heads[0], head=heads[1])
+        # Off the progress_signals arm, the note names no version and goes with every call, moved
+        # or not, so that whether HEAD was the best is not told either (gemot#156).
+        best, head = moved or (None, None)
+        note = prompts.FINISH_RESTORED_BEST_TMPL.format(best=best, head=head)
         return note + await _decide(rationale, judged)
 
     async def _decide(rationale: str, judged: int | None) -> str:

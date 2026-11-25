@@ -173,7 +173,7 @@ def test_a_model_that_will_not_stream_is_called_whole_and_its_truncated_thinking
         assert "test/model" in thinking.NO_STREAM
         assert plain_calls[1][-2].content == "deliberating..."
         record = msg.response_metadata["thinking_handoff"]
-        assert record == {"reason": "length", "thinking_chars": 15, "streamed": False, "recovered": True, "thinking_off": {"enabled": False}}
+        assert record == {"reason": "length", "thinking_chars": 15, "text_chars": 0, "streamed": False, "recovered": True, "thinking_off": {"enabled": False}}
         assert msg.response_metadata["token_usage"]["cost"] == pytest.approx(0.101)
     finally:
         thinking.NO_STREAM.discard("test/model")
@@ -191,6 +191,71 @@ def test_a_hand_off_that_runs_away_too_hands_the_empty_turn_back(monkeypatch):
     monkeypatch.setattr(thinking, "generation_usage", usage)
     msg = asyncio.run(thinking.generate(_LLM(), None, stream, [HumanMessage(content="x")])).generations[0].message
     assert msg.content == "" and msg.response_metadata["finish_reason"] == "length"
+    assert msg.response_metadata["thinking_handoff"]["recovered"] is False
+
+
+def _cut_off_stream(thought, text, piece=400):
+    """A call the provider cuts at its output budget after ``thought`` and part of an answer."""
+    async def gen():
+        for i in range(0, len(thought), piece):
+            yield _chunk({"id": "gen-1", "provider": "Z.AI", "choices": [{"delta": {"reasoning": thought[i : i + piece]}}]})
+        yield _chunk({
+            "id": "gen-1",
+            "choices": [{"delta": {"content": text}, "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 131072, "cost": 0.5},
+        })
+    return gen()
+
+
+def test_a_turn_cut_off_mid_answer_is_handed_off_with_what_it_wrote():
+    # gemot#161: the lead thought 130k tokens, wrote a few hundred of prose and was cut off; with
+    # text on it the turn was neither handed off nor counted, and the driver bounced it as a silent
+    # stop. Now it is handed off like an empty one, and the hand-off reads the text after the
+    # thinking, so the answer need not re-derive either.
+    thought, text = _words(3000), "So the readout needs a nuclear pool, and I will add"
+    thinking.THINKING_OFF["test/model"] = {"enabled": False}
+    sent = []
+
+    def stream(messages, stop, run_manager, **kwargs):
+        sent.append(messages)
+        return _cut_off_stream(thought, text) if len(sent) == 1 else _answer_stream([])
+
+    msg = asyncio.run(thinking.generate(_LLM(), None, stream, [HumanMessage(content="x")])).generations[0].message
+    assert [c["name"] for c in msg.tool_calls] == ["make_changes"]
+    assert sent[1][-2].content == f"{thought}\n\n{text}"
+    record = msg.response_metadata["thinking_handoff"]
+    assert record["reason"] == "length" and record["recovered"]
+    assert (record["thinking_chars"], record["text_chars"]) == (len(thought), len(text))
+    assert msg.response_metadata["token_usage"]["cost"] == pytest.approx(0.502)
+
+
+def test_text_alone_cut_off_is_handed_off_too():
+    # A model that wrote, rather than thought, to the cap has no thinking to hand back; its text is
+    # what the hand-off reads.
+    thinking.THINKING_OFF["test/model"] = {"enabled": False}
+    sent = []
+
+    def stream(messages, stop, run_manager, **kwargs):
+        sent.append(messages)
+        return _cut_off_stream("", "Step 1: fit. Step 2: compare. Step 3:") if len(sent) == 1 else _answer_stream([])
+
+    msg = asyncio.run(thinking.generate(_LLM(), None, stream, [HumanMessage(content="x")])).generations[0].message
+    assert [c["name"] for c in msg.tool_calls] == ["make_changes"]
+    assert sent[1][-2].content == "Step 1: fit. Step 2: compare. Step 3:"
+
+
+def test_a_failed_hand_off_hands_back_the_text_the_turn_had_written():
+    # Nothing here may end a run, and nothing the turn wrote is thrown away: the turn handed back
+    # unanswered keeps its text for the next turn to read.
+    thinking.THINKING_OFF["test/model"] = {"enabled": False}
+    text = "The residuals point at a missing degradation term in"
+
+    def stream(messages, stop, run_manager, **kwargs):
+        return _cut_off_stream(_words(3000), text)  # the hand-off is cut off too
+
+    msg = asyncio.run(thinking.generate(_LLM(), None, stream, [HumanMessage(content="x")])).generations[0].message
+    assert msg.content == text and not msg.tool_calls
+    assert msg.response_metadata["finish_reason"] == "length"
     assert msg.response_metadata["thinking_handoff"]["recovered"] is False
 
 
@@ -235,3 +300,6 @@ def test_the_guard_counts_a_hand_off_once():
     assert stats["reasoning_runaways"] == 2
     assert stats["reasoning_runaway_recovered"] == 1
     assert stats["thinking_cutoffs"] == {"length": 1, "repetition": 1}
+    # A repetition stop handed back unanswered says "length" on its message, but it was this side
+    # that stopped it, not the provider's cap; the record decides.
+    assert stats["output_cap_hits"] == 1

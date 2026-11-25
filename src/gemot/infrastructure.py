@@ -54,10 +54,11 @@ STOP_PREFIX = "infrastructure_error"
 #: A full disk (``petab_mcp.errors.DISK_FULL``).
 DISK_FULL = "disk_full"
 
-#: A server wedged on a fit (gemot#56, PEtab-MCP#108): a fit outran its call timeout, and then a
-#: further call timed out too, or the server answered that the fit is still running. The tool
-#: wrapper is its witness (``agent.circuit_breaker._fit_wedged``). Every call the run, or a
-#: judge, would make next queues behind the same fit.
+#: A server wedged on a fit (gemot#56, PEtab-MCP#108): a fit outran its call timeout, and then the
+#: server went silent on a further call too. A server answering that the fit is still running, or
+#: still compiling it, is working, and is not wedged (gemot#160). The tool wrapper is its witness
+#: (``agent.circuit_breaker._fit_wedged``). Every call the run, or a judge, would make next queues
+#: behind the same fit.
 FIT_WEDGED = "fit_wedged"
 
 #: A sweep's fit pool lost or unusable (``petab_mcp.errors.FIT_POOL``, PEtab-MCP#226): the server's

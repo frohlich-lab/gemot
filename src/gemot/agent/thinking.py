@@ -9,13 +9,14 @@ usable action, in seconds.
 1. Every call is STREAMED, and the thinking text kept as it arrives. The stream is stopped when the
    thinking repeats itself (:class:`RepetitionDetector`: half of the trailing window's 8-word
    sequences already said, ``work/models/repetition.py``); a call the provider truncates
-   (``finish_reason == "length"``, nothing said) is handed back too. There is no thinking budget:
-   one would mostly cut calls that answer on their own (in sweep_indra_glm13, 64 of the 66 GLM
-   calls that thought past 32k tokens ended in a tool call).
-2. The HAND-OFF: the same conversation, the thinking so far as the model's own text, and one
-   instruction (:data:`HANDOFF`) -- state the gist, then make the next tool call -- with thinking
-   off and the call's own output budget: no cap of its own. Its answer becomes the model's turn,
-   so the next turn need not re-derive the analysis.
+   (``finish_reason == "length"``, no tool call) is handed back too, whatever text it had written
+   (:func:`is_runaway_message`). There is no thinking budget: one would mostly cut calls that
+   answer on their own (in sweep_indra_glm13, 64 of the 66 GLM calls that thought past 32k tokens
+   ended in a tool call).
+2. The HAND-OFF: the same conversation, the thinking and any text so far as the model's own text,
+   and one instruction (:data:`HANDOFF`) -- state the gist, then make the next tool call -- with
+   thinking off and the call's own output budget: no cap of its own. Its answer becomes the model's
+   turn, so the next turn need not re-derive the analysis.
 3. A model whose host refuses to stream is called whole, once refused (:data:`NO_STREAM`): it cannot
    be stopped early, but a truncated call's thinking (OpenRouter's ``reasoning``) is handed back
    all the same.
@@ -186,15 +187,16 @@ def is_stream_refusal(exc: BaseException) -> bool:
 
 
 def is_runaway_message(message: Any) -> bool:
-    """Truncated with nothing said: ``finish_reason == "length"``, no text, no tool call."""
-    from .guards import _content_is_empty
+    """Cut at the output budget before a tool call: ``finish_reason == "length"`` and no tool
+    call, whatever text the turn had written.
 
+    Deliberately NOT "and no text" (gemot#161). A lead turn that spent 131072 tokens thinking and
+    then wrote a few hundred tokens of prose was neither handed off nor counted; the driver bounced
+    it as a silent stop after 48 minutes, and the next turn took another 18.5 to re-derive what it
+    had lost (armistead 63612603_22). Text cut mid-sentence is not an answer either.
+    """
     meta = getattr(message, "response_metadata", None) or {}
-    return (
-        meta.get("finish_reason") == "length"
-        and not getattr(message, "tool_calls", None)
-        and _content_is_empty(getattr(message, "content", None))
-    )
+    return meta.get("finish_reason") == "length" and not getattr(message, "tool_calls", None)
 
 
 async def generation_usage(llm: Any, generation_id: str | None, tries: int = 5) -> dict | None:
@@ -331,19 +333,33 @@ async def generate(llm: Any, plain, stream, messages, stop=None, run_manager=Non
             gen.message.additional_kwargs["reasoning_details"] = merge_details(cap.details)
         return finish(gen, cap.usage, cap.provider, combined=False)
 
+    from .guards import _report_text
+
     usage = cap.usage if stopped is None else await generation_usage(llm, cap.generation_id)
     thinking = cap.thinking
-    record = {"reason": reason, "thinking_chars": len(thinking), "streamed": llm.model_name not in NO_STREAM}
+    # What the turn had written before it was cut: the hand-off reads it after the thinking, and a
+    # turn handed back unanswered keeps it, so the next turn need not write it again.
+    said = _report_text(gen.message.content).strip() if gen is not None else ""
+    so_far = "\n\n".join(part for part in (thinking, said) if part.strip())
+    record = {
+        "reason": reason,
+        "thinking_chars": len(thinking),
+        "text_chars": len(said),
+        "streamed": llm.model_name not in NO_STREAM,
+    }
 
-    def empty(usages, recovered=False):
-        msg = AIMessage(content="", response_metadata={"finish_reason": "length", "thinking_handoff": {**record, "recovered": recovered}})
+    def truncated(usages, recovered=False):
+        msg = AIMessage(content=said, response_metadata={"finish_reason": "length", "thinking_handoff": {**record, "recovered": recovered}})
         return finish(ChatGeneration(message=msg), _add_usage(usages), cap.provider, combined=True)
 
-    if not thinking.strip():
-        print(f"[thinking] {reason}: no thinking to hand back; handing the empty turn back")
-        return empty([usage])
-    print(f"[thinking] stopped on {reason} after {len(thinking)} characters of thinking; handing it back")
-    handoff = [*messages, AIMessage(content=thinking), HumanMessage(content=HANDOFF)]
+    if not so_far:
+        print(f"[thinking] {reason}: nothing to hand back; handing the empty turn back")
+        return truncated([usage])
+    print(
+        f"[thinking] stopped on {reason} after {len(thinking)} characters of thinking and "
+        f"{len(said)} of text; handing them back"
+    )
+    handoff = [*messages, AIMessage(content=so_far), HumanMessage(content=HANDOFF)]
     known = llm.model_name in THINKING_OFF
     for setting in (THINKING_OFF[llm.model_name],) if known else OFF_SETTINGS:
         body = {**(llm.extra_body or {}), **(kwargs.get("extra_body") or {}), "reasoning": setting}
@@ -355,17 +371,17 @@ async def generate(llm: Any, plain, stream, messages, stop=None, run_manager=Non
         except Exception as exc:
             if not known and _is_bad_request(exc):
                 continue  # this way of turning thinking off is refused: the next
-            print(f"[thinking] the hand-off failed ({type(exc).__name__}: {exc}); handing the empty turn back")
-            return empty([usage])
+            print(f"[thinking] the hand-off failed ({type(exc).__name__}: {exc}); handing the truncated turn back")
+            return truncated([usage])
         THINKING_OFF[llm.model_name] = setting
         reply_usage = hcap.usage if hstopped is None else await generation_usage(llm, hcap.generation_id)
         if hstopped is not None or reply is None or is_runaway_message(reply.message):
-            print("[thinking] the hand-off ran away too; handing the empty turn back")
-            return empty([usage, reply_usage])
+            print("[thinking] the hand-off ran away too; handing the truncated turn back")
+            return truncated([usage, reply_usage])
         reply.message.response_metadata["thinking_handoff"] = {**record, "recovered": True, "thinking_off": setting}
         return finish(reply, _add_usage([usage, reply_usage]), hcap.provider or cap.provider, combined=True)
-    print("[thinking] no way of turning thinking off is accepted; handing the empty turn back")
-    return empty([usage])
+    print("[thinking] no way of turning thinking off is accepted; handing the truncated turn back")
+    return truncated([usage])
 
 
 def _is_bad_request(exc: BaseException) -> bool:

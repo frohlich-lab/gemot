@@ -622,8 +622,9 @@ def test_the_judge_is_handed_the_reconciled_estimates(monkeypatch, tmp_path):
     async def call(name, **_):
         return {"model_id": "m", "model_authored": True}
 
-    async def judge(*_, estimated=None):
+    async def judge(*_, estimated=None, own_server=False):
         seen["estimated"] = estimated
+        seen["own_server"] = own_server
         return 0, {}
 
     monkeypatch.setattr(R, "_wrap_call_timeout", lambda *_, **__: None)
@@ -636,6 +637,7 @@ def test_the_judge_is_handed_the_reconciled_estimates(monkeypatch, tmp_path):
     scenario = SimpleNamespace(example_dir=tmp_path)
     asyncio.run(R._judge_delivered(scenario, None, tmp_path, args, meta, 0.0, 0.0))
     assert seen["estimated"] == ["k1", "kx"]
+    assert seen["own_server"] is True, "the judge's session counts would be the agent's (#164)"
 
 
 # --------------------------------------------------------------------------- timing
@@ -649,30 +651,28 @@ def test_the_scoring_reserve_comes_out_of_the_agents_wall_budget():
     assert R._split_wall_budget(None) == (None, R._SCORE_UNBUDGETED_S)  # nothing to finish inside
 
 
-def test_the_null_arms_sandbox_and_scoring_time_is_compute_not_llm(tmp_path):
-    """The judge's clock used to start once the server had compiled and scored the delivery, and
-    never saw the agent's sandboxed fits, so `llm_seconds` (wall - compute) carried both and the
-    null arm read as near-zero compute (#8). Here the run is 1000 s old, the agent's commands kept
-    the sandbox busy for 500 s, and it stopped 300 s ago."""
+#: What the judge's server answers about a delivery it scored: one compile, no fit, one error.
+_JUDGE_SERVER = {
+    "describe_problem": {"current_version": 1, "model_authored": True},
+    "get_progress": {"best_version": 1},
+    "get_model_structure": {"reactions": [{"id": "r1"}], "species": ["A"]},
+    "get_fit_summary": {"neg_log_likelihood": 100.0, "n_data_points": 50, "chi2": 47.0},
+    "get_parameters": [{"estimate": 1}] * 3,
+    "get_errors": [{"tool": "get_residuals", "error": "no fit to read"}],
+    "get_run_timing": {"compile_seconds": 41.0, "fit_seconds": 0.0, "n_compiles": 1, "n_fits": 0},
+}
+
+
+def _judge_a_delivery(tmp_path, meta, *, age_s=1000.0, stopped_s=300.0):
+    """``_judge_delivered`` over the whole ``_judge``, on a server answering ``_JUDGE_SERVER``."""
     import argparse
-    import asyncio
     import time
-    from types import SimpleNamespace
 
     from gemot import scenario as S
 
-    canned = {
-        "describe_problem": {"current_version": 1, "model_authored": True},
-        "get_progress": {"best_version": 1},
-        "get_model_structure": {"reactions": [{"id": "r1"}], "species": ["A"]},
-        "get_fit_summary": {"neg_log_likelihood": 100.0, "n_data_points": 50, "chi2": 47.0},
-        "get_parameters": [{"estimate": 1}] * 3,
-        "get_errors": [],
-    }
-
     class _Session:
         async def call_tool(self, name, arguments=None, read_timeout_seconds=None, **_):
-            return SimpleNamespace(structured_content=canned.get(name, {}))
+            return SimpleNamespace(structured_content=_JUDGE_SERVER.get(name, {}))
 
     async def _no_fix(call, n_starts):  # pragma: no cover - never driven here
         return None
@@ -685,17 +685,129 @@ def test_the_null_arms_sandbox_and_scoring_time_is_compute_not_llm(tmp_path):
         reference_free=True,
         adequacy=S.ADEQUACY_CHI2,
     )
-    meta = {
-        "workspace_audit": {"shell_busy_seconds": 500.0},
-        "delivery": {"estimated": None, "uncharged": []},
-    }
     args = argparse.Namespace(n_starts=10)
     now = time.monotonic()
-    judged = R._judge_delivered(scenario, _Session(), tmp_path, args, meta, now - 1000, now - 300)
-    _, result = asyncio.run(judged)
+    meta = {"delivery": {"estimated": None, "uncharged": []}, **meta}
+    judged = R._judge_delivered(
+        scenario, _Session(), tmp_path, args, meta, now - age_s, now - stopped_s
+    )
+    return asyncio.run(judged)[1]
+
+
+def test_the_null_arms_sandbox_and_scoring_time_is_compute_not_llm(tmp_path):
+    """The judge's clock used to start once the server had compiled and scored the delivery, and
+    never saw the agent's sandboxed fits, so `llm_seconds` (wall - compute) carried both and the
+    null arm read as near-zero compute (#8). Here the run is 1000 s old, the agent's commands kept
+    the sandbox busy for 500 s, and it stopped 300 s ago."""
+    result = _judge_a_delivery(tmp_path, {"workspace_audit": {"shell_busy_seconds": 500.0}})
     assert result["scoring_seconds"] == pytest.approx(300, abs=5)
     assert result["compute_seconds"] == pytest.approx(800, abs=5)
     assert result["llm_seconds"] == pytest.approx(200, abs=5)
+
+
+def test_a_null_result_counts_the_agents_work_and_files_the_judges_apart(tmp_path):
+    """#164: `tool_calls`, `tool_call_counts` and `n_errors` were the judge's dozen-odd calls on
+    the server it scored the delivery with, and `n_fits` its 0, beside an agent that had run a
+    hundred shell commands. The agent's counts come from its shell audit; the judge's are
+    `judge_*`; the server's fit counts say nothing about fits the agent ran in its shell."""
+    from gemot.agent.barebones import _agent_counts
+
+    audit = {
+        "n_shell_commands": 120,
+        "n_nonzero_exits": 7,
+        "n_timeouts": 1,
+        "shell_busy_seconds": 500.0,
+    }
+    result = _judge_a_delivery(tmp_path, {"workspace_audit": audit, **_agent_counts(audit)})
+    assert result["tool_calls"] == 120 and result["tool_call_counts"] == {"execute": 120}
+    assert result["n_errors"] == 7
+    assert result["n_fits"] is None and result["n_compiles"] is None
+    assert result["compile_seconds"] is None and result["edit_rejects"] is None
+
+    judge_calls = result["judge_tool_call_counts"]
+    assert judge_calls["describe_problem"] >= 1 and "execute" not in judge_calls
+    assert result["judge_tool_calls"] == sum(judge_calls.values())
+    assert result["judge_n_errors"] == 1
+    assert result["judge_n_fits"] == 0 and result["judge_n_compiles"] == 1
+    assert result["judge_compile_seconds"] == 41.0
+    assert json.loads((tmp_path / "result.json").read_text())["tool_calls"] == 120
+
+
+def test_a_null_run_is_recorded_under_its_own_arm(monkeypatch, tmp_path):
+    """#164: the null arm read `ablation_arm: baseline` with every panel switch `on`, so a table
+    grouped by the arm pooled it with the panel, and its state listed switches it never reads."""
+    from gemot import ablations
+    from gemot.runner import provenance
+
+    class _S:
+        name = "toy"
+        example_dir = tmp_path / "ex"
+        version = 1
+        reference_free = False
+
+        def amici_tolerance_env(self):
+            return {}
+
+    monkeypatch.setattr(provenance, "_omnipath_provenance", lambda: None)
+    for name in ("PETAB_FIX_POINTERS", "PETAB_REFERENCE_HANDOFF", "PETAB_BIO_LITERATURE"):
+        monkeypatch.delenv(name, raising=False)
+    args = SimpleNamespace(
+        driver="barebones", model="m", recursion_limit=10, n_starts=1, temperature=1.0
+    )
+    meta = provenance._base_meta(_S(), args)
+    read = {a.name for a in ablations.ABLATIONS if a.null_arm}
+    assert read == {"bio_literature", "reference_handoff"}
+    assert meta["ablation_arm"] == "barebones"
+    assert set(meta["ablations"]) == read
+    assert meta["ablation_state"] == "bio_literature=off,reference_handoff=on"
+
+    # A switch it reads is named; a panel switch it does not read is not.
+    monkeypatch.setenv("PETAB_REFERENCE_HANDOFF", "0")
+    monkeypatch.setenv("PETAB_FIX_POINTERS", "0")
+    meta = provenance._base_meta(_S(), args)
+    assert meta["ablation_arm"] == "barebones,reference_handoff=off"
+    assert "fix_pointers" not in meta["ablation_state"]
+
+
+def test_the_null_arm_counts_its_tool_dispatches(monkeypatch, tmp_path):
+    """#164: `tools_executed` is the panel's dispatch guard's count, which this arm does not
+    install, so it recorded the seeded 0 whatever the agent did."""
+    pytest.importorskip("deepagents")
+    import deepagents
+
+    from gemot.agent import barebones as B
+
+    class _Agent:
+        def __init__(self, middleware):
+            self.counter = next(m for m in middleware if type(m).__name__ == "_ToolCounter")
+
+        def astream(self, stream_input, config=None, stream_mode=None):
+            async def _gen():
+                for _ in range(3):
+                    await self.counter.awrap_tool_call(object(), _ran)
+                yield {"messages": [{"role": "assistant", "content": "done"}]}
+
+            return _gen()
+
+    async def _ran(request):
+        return "ok"
+
+    monkeypatch.setattr(deepagents, "create_deep_agent", lambda **kw: _Agent(kw["middleware"]))
+    out = asyncio.run(
+        B.run_barebones(
+            tmp_path,
+            model="fake/model",
+            base_url="http://x",
+            api_key="sk-test",
+            system_prompt="sp",
+            task="t",
+            recursion_limit=10,
+            execute_timeout_s=60.0,
+        )
+    )
+    assert out["tools_executed"] == 3
+    # No shell command ran, and the agent's counts say so rather than being absent.
+    assert out["tool_calls"] == 0 and out["tool_call_counts"] == {} and out["n_errors"] == 0
 
 
 # --------------------------------------------------------------------------- wiring

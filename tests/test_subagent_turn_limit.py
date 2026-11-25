@@ -39,23 +39,24 @@ def test_under_the_limit_does_not_interfere():
 
 
 def test_past_the_limit_ends_the_delegation():
-    assert _subagent_turn_limit(CAP).after_model(_state(CAP + 1), None) == {"jump_to": "end"}
+    assert _subagent_turn_limit(CAP).after_model(_state(CAP + 1), None)["jump_to"] == "end"
 
 
 def test_the_hard_stop_never_returns_to_the_model():
     """`jump_to: model` with a tool call outstanding would leave an AIMessage carrying
     `tool_calls` followed by a non-tool message — a sequence providers reject. Ending is the
-    only safe jump at a boundary that can land mid tool-call."""
+    only safe jump at a boundary that can land mid tool-call; the report it appends is never
+    sent to a provider."""
     out = _subagent_turn_limit(CAP).after_model(_state(CAP + 1), None)
-    assert out == {"jump_to": "end"}
-    assert "messages" not in out  # nothing appended to state
+    assert out["jump_to"] == "end"
+    assert [m.tool_calls for m in out["messages"]] == [[]]
 
 
 def test_budget_is_per_delegation_not_cumulative():
     """The spec is built ONCE and reused for every `task` call, so a counter on the middleware
     instance would leak the first delegation's turns into the second and starve it."""
     mw = _subagent_turn_limit(CAP)
-    assert mw.after_model(_state(CAP + 1), None) == {"jump_to": "end"}
+    assert mw.after_model(_state(CAP + 1), None)["jump_to"] == "end"
     assert mw.after_model(_state(2), None) is None
 
 
@@ -63,7 +64,66 @@ def test_budget_is_per_delegation_not_cumulative():
 async def test_async_hook_matches_the_sync_one():
     mw = _subagent_turn_limit(CAP)
     assert await mw.aafter_model(_state(3), None) is None
-    assert await mw.aafter_model(_state(CAP + 1), None) == {"jump_to": "end"}
+    assert await mw.aafter_model(_state(CAP + 1), None) == mw.after_model(_state(CAP + 1), None)
+
+
+# --- what the lead receives from a delegation cut off at the limit -------------------------
+# Without the turn notices (progress_signals off) delegations hit the cap 24 times in 15 of 35
+# runs, and each report was the last text written between tool calls ("Now the high-dose
+# long-observation series ..."), which leads read as a finding ("All four reads are in";
+# gemot#159). _EmptyReportGuard passes such a report: it is not blank.
+def test_a_cut_off_delegation_reports_itself_incomplete_with_its_last_words():
+    state = _state(CAP)
+    state["messages"][-2].content = "Now the high-dose long-observation series"
+    (report,) = _subagent_turn_limit(CAP).after_model(state, None)["messages"]
+    assert report.text.startswith("[REPORT INCOMPLETE") and f"all {CAP} of its turns" in report.text
+    assert report.text.endswith("Now the high-dose long-observation series")
+
+
+def test_a_cut_off_delegation_that_wrote_nothing_says_so():
+    (report,) = _subagent_turn_limit(CAP).after_model(_state(CAP), None)["messages"]
+    assert report.text.startswith("[REPORT INCOMPLETE")
+    assert report.text.endswith("(It had written nothing.)")
+
+
+def test_a_report_written_on_the_last_turn_is_not_marked():
+    """A delegation whose last turn is its report has finished, not been cut off."""
+    state = _state(CAP - 1)
+    state["messages"].append(AIMessage(content="The residuals are white noise."))
+    assert _subagent_turn_limit(CAP).after_model(state, None) == {"jump_to": "end"}
+
+
+def test_the_lead_gets_the_incomplete_report_from_a_real_agent_loop():
+    """Through langchain's own agent loop, with a model that never stops calling tools: the state
+    update and the jump land together, and the delegation's report (deepagents forwards the LAST
+    AIMessage with text, ``middleware/subagents.py``) is the one marked incomplete."""
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.tools import tool
+
+    @tool
+    def query_data(sql: str) -> str:
+        """Run a query."""
+        return "rows"
+
+    class _Model(GenericFakeChatModel):
+        def bind_tools(self, tools, **kw):
+            return self
+
+    turns = (
+        AIMessage(
+            content=f"step {i}",
+            tool_calls=[{"name": "query_data", "args": {"sql": "x"}, "id": f"c{i}"}],
+        )
+        for i in range(100)
+    )
+    agent = create_agent(
+        _Model(messages=turns), tools=[query_data], middleware=[_subagent_turn_limit(3)]
+    )
+    messages = agent.invoke({"messages": [HumanMessage(content="investigate")]})["messages"]
+    report = next(m.text for m in reversed(messages) if isinstance(m, AIMessage) and m.text)
+    assert sum(isinstance(m, AIMessage) for m in messages) == 4  # three turns and the report
+    assert report.startswith("[REPORT INCOMPLETE") and report.endswith("step 2")
 
 
 # --- the approach warnings ----------------------------------------------------------------

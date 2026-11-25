@@ -232,6 +232,59 @@ async def test_partial_cost_coverage_is_visible():
     assert t["n_llm_calls"] == 3 and t["n_uncosted_calls"] == 2
 
 
+def _byok(fee, upstream):
+    """A BYOK call's usage block: OpenRouter's fee as `cost`, the key's bill as the upstream cost."""
+    return {
+        **_tu(fee),
+        "is_byok": True,
+        "cost_details": {"upstream_inference_cost": upstream},
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_byok_call_costs_its_upstream_bill_plus_the_fee():
+    """#164: a Haiku call through the account's own Anthropic key reports `cost` 0 (or OpenRouter's
+    few-percent fee), and summing that recorded `cost_usd` 0.0 for a run billed dollars."""
+    acc = _token_usage._token_accountant()
+    await acc.on_llm_end(_resp([_um(1000, 50)], llm_output={"token_usage": _byok(0, 0.0123)}))
+    await acc.on_llm_end(_resp([_um(1000, 50)], llm_output={"token_usage": _byok(0.0005, 0.01)}))
+    t = acc.totals()
+    assert t["cost_usd"] == pytest.approx(0.0228)
+    assert t["n_uncosted_calls"] == 0
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        _byok(0, None),
+        {**_tu(0), "is_byok": True},
+        {**_tu(0), "is_byok": True, "cost_details": "n/a"},
+        _byok(None, 0.01),
+    ],
+    ids=["upstream-null", "no-cost-details", "malformed-details", "no-fee"],
+)
+@pytest.mark.asyncio
+async def test_a_byok_call_without_its_upstream_cost_is_uncosted(usage):
+    """A BYOK call's `cost` is not its bill, so without the upstream half it is uncosted, not $0:
+    `cost_usd` is a lower bound and `n_uncosted_calls` says so."""
+    acc = _token_usage._token_accountant()
+    await acc.on_llm_end(_resp([_um(1000, 50)], llm_output={"token_usage": _tu(0.004)}))
+    await acc.on_llm_end(_resp([_um(1000, 50)], llm_output={"token_usage": usage}))
+    t = acc.totals()
+    assert t["cost_usd"] == pytest.approx(0.004)
+    assert t["n_llm_calls"] == 2 and t["n_uncosted_calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_non_byok_upstream_cost_is_already_in_the_bill():
+    """Off BYOK, OpenRouter's `cost` already includes what it paid upstream; adding it would bill
+    the inference twice."""
+    acc = _token_usage._token_accountant()
+    usage = {**_tu(0.004), "is_byok": False, "cost_details": {"upstream_inference_cost": 0.0038}}
+    await acc.on_llm_end(_resp([_um(1000, 50)], llm_output={"token_usage": usage}))
+    assert acc.totals()["cost_usd"] == pytest.approx(0.004)
+
+
 async def _start(acc, agent="lead", node="model"):
     run_id = uuid4()
     await acc.on_chat_model_start(

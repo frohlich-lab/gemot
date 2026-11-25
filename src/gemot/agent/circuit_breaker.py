@@ -16,11 +16,17 @@ from ..prompts import _DISABLED_TOOL_HINT_DEFAULT, _DISABLED_TOOL_HINTS
 # A broken tool used to be re-proposed cumulatively hundreds of times across a run (a
 # trace-review swarm saw one query_data call re-proposed ~798× — up to ~100 pending copies in
 # a single step) while the agent learned nothing from the identical failures. This breaker
-# counts every tool failure and, after N CONSECUTIVE IDENTICAL errors from the same tool,
-# DISABLES that tool for the caller (see below): its further calls are short-circuited with a
-# terminal message pointing at the working alternative, so the agent stops hammering a dead tool
-# and moves on. A SUCCESS resets a tool's streak; DIFFERENT errors reset it too (the agent is
-# still exploring), so only a genuinely-stuck tool is cut off.
+# counts every tool failure and, after N CONSECUTIVE model TURNS in which the same tool failed
+# with the same error, DISABLES that tool for the caller (see below): its further calls are
+# short-circuited with a terminal message pointing at the working alternative, so the agent stops
+# hammering a dead tool and moves on. A SUCCESS resets a tool's streak; DIFFERENT errors reset it
+# too (the agent is still exploring), so only a genuinely-stuck tool is cut off.
+#
+# A strike is a turn, not a call. The calls one turn issues together were all written before the
+# agent saw any of their results, so three of them failing alike are one mistake, not a caller
+# that is stuck. Counted per call, one parallel batch of `query_data` calls sharing a bad cast
+# disabled the tool before the signal engineer had read a single error (gemot#163: run
+# 63612603_107 of sweep gemot_pools_20261107).
 #
 # It works at the TOOL-OBJECT layer (wrapping each loaded tool's coroutine), not as agent
 # middleware, deliberately: the heavy data/diagnostic tools (query_data, get_fitting_log, …)
@@ -35,7 +41,7 @@ from ..prompts import _DISABLED_TOOL_HINT_DEFAULT, _DISABLED_TOOL_HINTS
 # (gemot#133: lun 103 and froehlich 106 of sweep 63522750, both in the first analyst round). A
 # tool that is really dead costs a later task three calls to find out again. A server that is
 # gone is the run's, not a caller's, so the transport disable below stays run-wide.
-_TOOL_ERROR_DISABLE_THRESHOLD = 3  # consecutive identical errors from one caller before it is cut
+_TOOL_ERROR_DISABLE_THRESHOLD = 3  # consecutive turns failing alike, for one caller, before a cut
 
 #: The `task` whose subagent is making the call, or ``None`` for the lead. Set by the lead's breaker
 #: middleware around each `task` call (:func:`_disabled_tool_filter`). A context variable, because
@@ -184,10 +190,43 @@ def _is_client_mcp_error(exc: BaseException) -> bool:
     return isinstance(exc, MCPError)
 
 
-#: How the server says a fit is still running when another call arrives behind it
-#: (PEtab-MCP#108). Read only while a fit's call timeout is outstanding: before one, it can only
-#: answer a fit batched beside another, and goes to the lead like any other reply.
+#: How the server refuses a ``make_changes`` that arrives while another change's fit still runs
+#: (PEtab-MCP#108). The refusal goes to the lead like any other reply: it says how long the fit has
+#: run and to call ``wait_for_fit``. It only keeps an outstanding fit timeout outstanding.
 _FIT_IN_PROGRESS = re.compile(r"\bfit_in_progress\b")
+
+#: The server's wait on the change it is fitting (PEtab-MCP#177), the lead's answer to a fit call
+#: that came back without its result.
+_WAIT_TOOL = "wait_for_fit"
+
+#: ``wait_for_fit``'s answers once no change is running: the fit the lead waited on has ended.
+_WAIT_ENDED = frozenset({"committed", "no_version", "idle"})
+
+
+def _still_compiling(exc: BaseException) -> str | None:
+    """The heartbeat a call was cut on while the server was still compiling the session's change,
+    or ``None`` for a call cut on a silent server, or not cut at all.
+
+    ``runner.clock._wrap_call_timeout`` cuts a call whose heartbeats show a compile past
+    ``fit_budget.FIT_COMPILE_MARGIN_S``, and puts the last one in the error's
+    ``data["heartbeat"]``. The server was alive and goes on with the change, so the cut says
+    nothing of a wedge: on luna froehlich a first compile ran past the margin, the lead was told
+    the fit was lost, and the run ended as ``fit_wedged`` with no fit (gemot#160).
+    """
+    if not _is_call_timeout(exc):
+        return None
+    data = getattr(exc, "data", None)
+    heartbeat = data.get("heartbeat") if isinstance(data, dict) else None
+    return heartbeat if isinstance(heartbeat, str) else None
+
+
+def _wait_ended(text: str) -> bool:
+    """Whether ``text``, a ``wait_for_fit`` reply, says no change is running any more."""
+    try:
+        reply = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(reply, dict) and reply.get("status") in _WAIT_ENDED
 
 
 def _fit_wedged(state: dict[str, Any], text: str, timed_out: bool) -> Evidence | None:
@@ -197,12 +236,17 @@ def _fit_wedged(state: dict[str, Any], text: str, timed_out: bool) -> Evidence |
     the fit ends. A resume used to re-send the identical fit into it, and each resend waited out
     the full timeout again: 8.4 h of one INDRA run's last 9 h, against a fit that had hung on the
     server (gemot#56, PEtab-MCP#108). The wrapper hands the lead that first timeout instead, as
-    its tool result. Once one is outstanding, a further call that times out (``timed_out``), or
-    the server answering that the fit is still running, means the server is holding it still:
-    the run stops with ``infrastructure_error: fit_wedged``. A fit call that returns clears it.
+    its tool result. Once one is outstanding, a further call that the server goes silent on
+    (``timed_out``) means it is holding the fit still and sends nothing: the run stops with
+    ``infrastructure_error: fit_wedged``.
+
+    Only silence counts. A call cut while the server's heartbeats show the change still compiling
+    (:func:`_still_compiling`), and the server answering ``fit_in_progress``, both come from a
+    server that is working, and go back to the caller (gemot#160). A fit call answered, or
+    ``wait_for_fit`` saying the change has ended, clears the timeout.
     """
     held = state["fit_timeout"]
-    if held is None or not (timed_out or _FIT_IN_PROGRESS.search(text)):
+    if held is None or not timed_out:
         return None
     return Evidence(infrastructure.FIT_WEDGED, " ".join(f"{text[:300]}; behind {held}".split()))
 
@@ -388,27 +432,54 @@ def _verdict_or_error(payload: dict) -> str | None:
     return "tool error"
 
 
+def _turn() -> tuple[str, int] | None:
+    """The model turn that issued the running tool call, or ``None`` outside an agent graph.
+
+    Each call a turn issues is its own Send to the caller's ``tools`` node, and they all run in
+    one superstep, so langgraph's ``langgraph_step`` names the turn. ``langgraph_checkpoint_ns``
+    without the call's own last segment names the caller's graph: the lead's, or one `task`'s
+    subagent's, whose steps count from its own start. A resume continues the thread's steps from
+    the checkpoint, and a superstep it re-runs is the same turn.
+    """
+    from langgraph.config import get_config
+
+    try:
+        metadata = get_config().get("metadata") or {}
+    except RuntimeError:  # not inside a runnable: a coroutine called directly
+        return None
+    step = metadata.get("langgraph_step")
+    if step is None:
+        return None
+    return str(metadata.get("langgraph_checkpoint_ns") or "").rpartition("|")[0], step
+
+
 def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
     """Count a tool error; return True iff it TRIPS the breaker (disables the tool now, for the
-    calling scope)."""
+    calling scope).
+
+    The error is a strike only if it is the first of its kind in its turn (:func:`_turn`). A call
+    made outside a graph is a turn of its own.
+    """
     state["n_tool_errors"] += 1
     scope = _scope(state)
     sig = err[:200]
+    turn = _turn()
     streak = scope["streaks"].get(name)
-    if streak and streak["sig"] == sig:
+    if streak is None or streak["sig"] != sig:
+        streak = scope["streaks"][name] = {"sig": sig, "count": 0, "turn": None}
+    struck = turn is None or turn != streak["turn"]
+    if struck:
         streak["count"] += 1
-    else:
-        streak = {"sig": sig, "count": 1}
-        scope["streaks"][name] = streak
+        streak["turn"] = turn
     if name in _NEVER_DISABLE:
         # Not disabled — but still RECORDED. Returning silently here would leave a run that
         # failed this call 200 times reporting `disabled_tools: []`, no breaker line in the log
         # and nothing in `events`: a run that scored nothing with no recorded reason, which is
         # the exact invisibility the August sweep had to be reverse-engineered from.
-        if streak["count"] == _TOOL_ERROR_DISABLE_THRESHOLD:
+        if struck and streak["count"] == _TOOL_ERROR_DISABLE_THRESHOLD:
             msg = (
-                f"`{name}` has failed {streak['count']} times with the same error but is part "
-                f"of the model-editing loop, so it is NOT disabled; escalating instead: {sig}"
+                f"`{name}` has failed with the same error in {streak['count']} turns but is "
+                f"part of the model-editing loop, so it is NOT disabled; escalating instead: {sig}"
             )
             state["events"].append(msg)
             print(f"[circuit-breaker] {msg}")
@@ -417,7 +488,7 @@ def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
         scope["disabled"].add(name)
         msg = (
             f"disabled `{name}` for {_TASK.get() or 'the lead'} after {streak['count']} "
-            f"consecutive identical errors: {sig}"
+            f"consecutive turns failing with the same error: {sig}"
         )
         state["events"].append(msg)
         print(f"[circuit-breaker] {msg}")
@@ -451,8 +522,10 @@ def _wrap_tools_with_circuit_breaker(
     The external tools are exempt: a hosted server's disk is not this run's to stop on.
 
     ``fit_tools`` are the tools whose call runs a multistart. The first of their calls to time out
-    returns a note saying so, and a server still holding that fit raises the same error
-    (:func:`_fit_wedged`).
+    returns a note saying so, and a server that then goes silent on a further call raises the same
+    error (:func:`_fit_wedged`). A call of any of the run's own tools cut while the server's
+    heartbeats show its change still compiling returns a note saying that instead
+    (:func:`_still_compiling`).
     """
     import inspect
     from functools import wraps
@@ -493,7 +566,9 @@ def _wrap_tools_with_circuit_breaker(
                         raise _infrastructure_error(state, name, hit) from exc
                     sig = f"{type(exc).__name__}: {exc}"
                     timed_out = _is_call_timeout(exc)
-                    if ours and (hit := _fit_wedged(state, sig, timed_out)) is not None:
+                    compiling = _still_compiling(exc) if ours else None
+                    silent = timed_out and compiling is None
+                    if ours and (hit := _fit_wedged(state, sig, silent)) is not None:
                         raise _infrastructure_error(state, name, hit) from exc
                     _note_call(
                         state,
@@ -507,7 +582,20 @@ def _wrap_tools_with_circuit_breaker(
                         # The lead hears of it rather than a resume re-sending the same fit into
                         # the server still running it (_fit_wedged).
                         state["fit_timeout"] = f"{name}: {sig}"
-                        return (prompts.FIT_CALL_TIMEOUT_TMPL.format(name=name, error=sig), None)
+                        if compiling is not None:
+                            note = prompts.FIT_STILL_COMPILING_TMPL.format(
+                                name=name, heartbeat=compiling
+                            )
+                        else:
+                            note = prompts.FIT_CALL_TIMEOUT_TMPL.format(name=name, error=sig)
+                        return (note, None)
+                    if compiling is not None:
+                        # A call waiting on the change the server is still compiling: the server
+                        # is working, so the caller hears so, not a resume (gemot#160).
+                        return (
+                            prompts.CALL_BEHIND_COMPILE_TMPL.format(name=name, heartbeat=compiling),
+                            None,
+                        )
                     # A TRANSPORT failure is exempt from the never-disable return below. The model
                     # cannot fix a closed session or an unreachable server by changing its
                     # arguments, so handing it "ClosedResourceError: ..." as a successful tool
@@ -577,9 +665,9 @@ def _wrap_tools_with_circuit_breaker(
                 text = _content_text(content)
                 if ours and (hit := infrastructure.find(text)) is not None:
                     raise _infrastructure_error(state, name, hit)
-                if ours and (hit := _fit_wedged(state, text, False)) is not None:
-                    raise _infrastructure_error(state, name, hit)
-                if name in fit_tools:
+                if (name in fit_tools and not _FIT_IN_PROGRESS.search(text)) or (
+                    name == _WAIT_TOOL and _wait_ended(text)
+                ):
                     state["fit_timeout"] = None  # answered, so the timed-out fit has ended
                 err = _result_error(content, artifact)
                 if err is None:
