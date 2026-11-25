@@ -1292,6 +1292,14 @@ TOOL_DISABLED_TRANSPORT_TMPL = (
     "disabled for the rest of this run. Do NOT call it again — {hint}"
 )
 
+# The same cut on a hosted bio tool whose session is being reopened (bio_sessions): it comes back,
+# so "for the rest of this run" would be false.
+TOOL_REOPENING_TMPL = (
+    "TOOL DISABLED: `{name}`'s server closed its connection (transport error), and the session "
+    "to it is being reopened in the background. Until it is, a call returns this notice without "
+    "reaching the server; once it is, the tool works again. Do not wait for it — {hint}"
+)
+
 # What a fit call that came back without its result still does on the server, and how the lead
 # waits for it (agent/circuit_breaker.py). Nothing cancels the fit, and the server refuses every
 # other change until it ends (PEtab-MCP#108), so a resend only costs a turn. Deliberately no advice
@@ -2021,6 +2029,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             **{f"turn_notice_{threshold}": text for threshold, text in SUBAGENT_TURN_NOTICES},
             "tool_disabled_repeated": TOOL_DISABLED_REPEATED_TMPL,
             "tool_disabled_transport": TOOL_DISABLED_TRANSPORT_TMPL,
+            "tool_reopening": TOOL_REOPENING_TMPL,
             "fit_call_timeout": FIT_CALL_TIMEOUT_TMPL,
             "fit_still_compiling": FIT_STILL_COMPILING_TMPL,
             "call_behind_compile": CALL_BEHIND_COMPILE_TMPL,

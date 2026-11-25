@@ -312,9 +312,10 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
             # SUPERVISED, ISOLATED task by open_bio_sessions, kept separate from the petab session
             # (which the _ToolClock shadows) and from the run's fatal scope: a transport failure on
             # a bio session — unreachable, a slow/hung connect, or a mid-run ClosedResourceError —
-            # is contained and degrades the biocurator to "dumb", NEVER aborting the run (issue
-            # #86). Empty for scripted or a disabled curator. An enabled curator stays on the
-            # panel even if no bio tools resolve, using the model's own knowledge.
+            # is contained, NEVER aborting the run (issue #86). A server unreachable at connect is
+            # skipped; a session that closes mid-run is reopened, and its tools come back. Empty
+            # for scripted or a disabled curator. An enabled curator stays on the panel even if no
+            # bio tools resolve, using the model's own knowledge.
             bio_urls = (
                 BIO_MCP_URLS if args.driver == "deepagents" and prompts.BIOCURATOR_ENABLED else ()
             )
