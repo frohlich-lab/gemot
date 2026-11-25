@@ -123,9 +123,10 @@ _SIGMA_CAP_ADVISORY = (
 )
 
 #: The numerals ``petab_mcp.literals`` charges nothing for (its ``STRUCTURAL_VALUES``); every
-#: other distinct number in a model's math costs a parameter. The statements lead and the null are
-#: both told it.
-_FREE_LITERALS = "0, ±1, 2, 3, 4, 6, 100 and their reciprocals"
+#: other distinct number in a model's math costs a parameter. 100 is free only as the factor of a
+#: whole readout, an output rule nothing in the dynamics reads (PEtab-MCP#356). The statements lead
+#: and the null are both told it.
+_FREE_LITERALS = "0, ±1, 2, 3, 4, 6 and their reciprocals, and 100 where it scales a whole readout,"
 
 #: ``dscore`` is 2·(dnll − price) and so NEGATIVE when the merge is worth taking. Stated as the
 #: sign convention rather than as a direction of change: "lowers the score by dscore" reads, for
@@ -165,12 +166,12 @@ _MERGE_BIOLOGY = _pointing(
     "decides."
 )
 
-#: Where the priced ties are. A fit result lists only the ties new since its parent version
-#: (frohlich-lab/PEtab-MCP#211), so one first listed on an earlier version shows on a later fit only
-#: as ``merge_hints: []`` beside ``n_merge_hints``.
+#: Where the priced ties are. A fit result lists only the ties new or re-priced since its parent
+#: version (frohlich-lab/PEtab-MCP#211, #353), so one listed earlier at the same price shows on a
+#: later fit only in ``n_merge_hints``; ``get_fit_summary`` serves every tie the current fit priced.
 _MERGE_HINTS_WHERE = _pointing(
-    "`merge_hints` on your last fit, or on the earlier fit where they first appeared "
-    "(`n_merge_hints` counts every tie that still stands),"
+    "`merge_hints` in `get_fit_summary` (every tie the current fit priced; a fit result lists only "
+    "the ones new or re-priced since its parent, and `n_merge_hints` counts them all),"
 )
 
 #: The residual tests decide neither way when a run is done, and the actionable consequence in ops
@@ -1365,8 +1366,8 @@ FINISH_DESCRIPTION = (
     + _pointing(
         _MERGE_HINTS_WHERE
         + " which the ARM message lists as PRICED MERGES, are pairs of parameters the data cannot "
-        "tell apart: tying one into one symbol costs `dnll` in fit and changes the score by its "
-        "`dscore` — "
+        "tell apart: tying one into one symbol is estimated to cost `dnll` in fit and to change the "
+        "score by its `dscore` (a refit decides) — "
         + _DSCORE_SIGN
         + ". "
         + _MERGE_RULE
@@ -1410,9 +1411,7 @@ FINISH_GAVE_UP_NO_FIT_TMPL = (
 # model that fixes one is not silently re-blocked on the other.
 FINISH_REFUSED_SIGMA_TMPL = (
     "FINISH REFUSED — this fit's bic rests on an implausible noise model: "
-    "{advice} Fix the model FORM and refit; a finish resting on {which} noise "
-    "is not accepted. (the fit result's noise_sigma_report, and "
-    "get_fit_diagnosis, flag which observable.)"
+    "{advice} A finish resting on {which} noise is not accepted."
 )
 
 FINISH_SIGMA_FALLBACK_ADVICE = "the estimated noise sigma is implausible."
@@ -1558,9 +1557,10 @@ FINISH_ARMED_MERGE_TMPL = (
 
 #: One tie inside :data:`FINISH_ARMED_MERGE_TMPL`.
 FINISH_ARMED_MERGE_TIE_TMPL = (
-    " {parameters} — tying them into ONE symbol costs {dnll} of neg_log_likelihood and LOWERS the "
-    "score by {dscore} (it moves a parameter {move} on its estimation scale — many decades there means a "
-    "flat direction, not an edit that survives a refit)."
+    " {parameters} — tying them into ONE symbol is estimated to cost {dnll} of neg_log_likelihood "
+    "and to LOWER the score by {dscore} (it moves a parameter {move} on its estimation scale — a "
+    "move of 1 or more there, a decade on log10, makes the estimate unreliable, and many decades "
+    "mean a flat direction, not an edit that survives a refit)."
 )
 
 # Appended to the ARM text when the run's last "does adding structure help?" experiment was

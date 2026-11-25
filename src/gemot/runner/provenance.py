@@ -95,10 +95,11 @@ def _git_diff_digest(path: Path) -> dict | None:
 
 
 def _installed_provenance(name: str) -> dict | None:
-    """Which code of the installed distribution ``name`` ran. gemot and the server are installed
-    from their own repositories, so ``git_sha`` (the checkout's) covers neither: record the commit a
-    git install was made from, or an editable checkout's own ``git_sha`` and ``git_diff``. ``None``
-    when it is not installed. Best-effort, like the git helpers above."""
+    """Which code of the installed distribution ``name`` ran. Neither gemot nor the server is the
+    checkout ``git_sha`` names: record the version, which names a release from an index (the
+    server's), plus the commit a git install was made from, or an editable checkout's own
+    ``git_sha`` and ``git_diff``. ``None`` when it is not installed. Best-effort, like the git
+    helpers above."""
     import urllib.parse
     from importlib.metadata import PackageNotFoundError, distribution
 

@@ -34,7 +34,7 @@ from the running script or the working directory, or from `PETAB_MCP_REPO_ROOT` 
 Python 3.12+ and a C++ toolchain for AMICI (see [Troubleshooting](#troubleshooting)).
 
 ```bash
-pip install -e .              # gemot + the pinned server
+pip install -e .              # gemot + the pinned server release from PyPI
 pip install -e '.[harness]'   # + the deepagents panel and Phoenix tracing, for LLM-driven runs
 ```
 
@@ -145,9 +145,3 @@ MIT
 AMICI compiles generated C++ and needs a toolchain: a C++ compiler, CMake, Ninja, and the
 pip `swig` binary on `PATH` (OpenBLAS ships in the AMICI wheel).
 
-The server repository is private, and pip fetches it with `git`, so `git` needs read access
-to it — through `gh auth setup-git`, or by fetching that one URL over SSH:
-
-```bash
-git config --global url."git@github.com:frohlich-lab/PEtab-MCP".insteadOf https://github.com/frohlich-lab/PEtab-MCP
-```

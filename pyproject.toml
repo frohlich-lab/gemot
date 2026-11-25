@@ -21,9 +21,10 @@ classifiers = [
 ]
 
 dependencies = [
-    # The server this harness drives, from its own repository. Pinned to a commit so a checkout
-    # here names the server it was tested against: bump it deliberately, and see the README for
-    # developing both at once.
+    # The server this harness drives, from PyPI. Pinned to one release so a checkout here names the
+    # server it was tested against: bump it deliberately, and see the README for developing both at
+    # once. A server fix gemot needs before it is released can be pinned by commit
+    # (`petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@<sha>`) until the next release.
     # PEtab-MCP main (4024358), with frohlich-lab/PEtab-MCP#49: held-out sets are PEtab v2 only,
     # so `read_held_out` refuses a v1 set and `validation_data.as_v2` is gone. PEtabAgentBench
     # converts each problem's training and held-out sets together and ships both as v2. #81: AMICI
@@ -145,7 +146,26 @@ dependencies = [
     # fix_pointers arm).
     # Then 7ffb364, main: #316: `create_server(progress_signals=False)` withholds the numbers that
     # rank, compare or judge a fit; the bootstrap passes it on every launch (the progress_signals arm).
-    "petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@7ffb3643d5fc034cfacda789e1a6d5674c6e5aed",
+    # Then 0.1.0 from PyPI, which is main at ced6cb1 (#318-#370, from the 2026-11 trace review).
+    # #353: a merge hint's price is an estimate, stamped with `priced_at_version`, and a re-priced
+    # hint is listed again; gemot's texts say "estimated" and point at `get_fit_summary`, which
+    # serves every standing tie. #354: the noise-sigma advice names every flagged sigma and says
+    # when no model can meet the cap, so the finish gate's refusal no longer adds "fix the model
+    # FORM". #356: 100 is free only as the factor of a whole readout, and the FIM rank and flat
+    # directions skip pinned parameters. #349: `query_data` columns are snake_case (gemot#176
+    # follows). #351, #352, #360, #366: new refusal causes for `edit_rejects`, and #366's `pin` op.
+    # #370: the server's git pins leave its published metadata (below). The rest change texts and
+    # fields gemot does not read.
+    "petab-mcp==0.1.0",
+    # The server's two git pins, which PyPI does not allow in its published metadata
+    # (PEtab-MCP#370), so they are declared here instead; drop each once its release is out.
+    # petab at PEtab-dev/libpetab-python#579 (open), which keeps per-experiment constants in the
+    # condition table: without it Froehlich_CellSystems2018 does not import. It also stands for
+    # the `petab` gemot imports directly (see below).
+    "petab @ git+https://github.com/PEtab-dev/libpetab-python.git@08a13908b060dd605df09f3a58c65ac01464520b",
+    # pysb with pysb/pysb#611 (merged, unreleased): 1.17.0 caps `sympy<1.12`, and amici 1.2.0
+    # needs `sympy>=1.12.1`, so without it the install does not resolve.
+    "pysb @ git+https://github.com/pysb/pysb.git@9fc6bcb118683ad851e0a4d5604abe646f77cae3",
     # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
     # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
     # is built on it; 2.3 is the first release fastmcp 4.1 accepts. What 2.0 changed for the code
@@ -164,7 +184,6 @@ dependencies = [
     # Imported directly here too (judge, simulate, the neural route), or promised to the
     # barebones agent's sandbox (pyPESTO, which its prompt tells the agent to fit with), so named
     # rather than left to arrive through petab-mcp, whose pyproject says why each floor.
-    "petab>=0.10.0",
     "python-libsbml>=5.19",
     "antimony>=3.2",
     "pandas>=1.5",
@@ -327,10 +346,10 @@ Homepage = "https://github.com/frohlich-lab/gemot"
 Repository = "https://github.com/frohlich-lab/gemot"
 
 [tool.hatch.metadata]
-# Two dependencies are git pins: petab-mcp itself, and the `neural` extra's petab-sciml (see the
-# comment there: the curriculum multiple shooting rewrite is unreleased). Hatchling refuses a direct
-# reference in metadata unless this says so, so WITHOUT it every `pip install -e .` fails at metadata
-# generation -- CI never reaches the test step.
+# Three dependencies are git pins: petab and pysb, the server's two (see the comment at petab-mcp),
+# and the `neural` extra's petab-sciml (see the comment there: the curriculum multiple shooting
+# rewrite is unreleased). Hatchling refuses a direct reference in metadata unless this says so, so
+# WITHOUT it every `pip install -e .` fails at metadata generation -- CI never reaches the test step.
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
