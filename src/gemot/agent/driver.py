@@ -817,6 +817,7 @@ async def run_deepagents(
     n_starts: int = 1,
     max_wall_seconds: float | None = None,
     heartbeats: Any | None = None,
+    fit_pool: bool = False,
     max_run_tokens: int | None = _MAX_RUN_TOKENS,
     progress_probe: Any | None = None,
     server_poll: Any | None = None,
@@ -850,6 +851,10 @@ async def run_deepagents(
     watchdog out (:func:`_next_step`), and the time its fits spent queued for the shared fit pool
     (``queue_seconds``) is left out of ``max_wall_seconds``: waiting for a worker is not the run's
     time, so it is not left less time to think. ``None`` does neither.
+
+    ``fit_pool`` says the run's fits go to a sweep's fit pool (``PETAB_MCP_FIT_POOL``), where a fit
+    takes one wave of starts, not the waves the job's own CPUs would take: the step reserved at
+    the end of ``max_wall_seconds`` is then one wave (``fit_budget.fit_time_budget``, gemot#117).
 
     ``progress_probe`` (optional) is an un-timed ``await probe(tool, args)`` handle used to poll
     the server's ``get_progress`` between super-steps: when the early-stop chain reports
@@ -1328,8 +1333,12 @@ async def run_deepagents(
     # reserved unconditionally, 12% of an isensee budget. A certain 12% tax against an occasional
     # lost last fit is the wrong trade. The residual risk is real and accepted: an agent that
     # doubles n_starts on the final step can still have it cancelled.
+    # On a fit pool, one wave rather than the watchdog's estimate, which counts the job's own CPUs:
+    # alkan reserved 13 waves of 2,400 s for fits that took one and stopped at 15.4 h of 27.8 h
+    # (gemot#117). A fit that contention stretches past one wave risks the same cancelled last
+    # step as above, never the run's result.
     step_headroom = (
-        min(fit_time_budget(n_starts), max_wall_seconds * 0.5)
+        min(fit_time_budget(n_starts, pool=fit_pool), max_wall_seconds * 0.5)
         if max_wall_seconds is not None
         else 0.0
     )

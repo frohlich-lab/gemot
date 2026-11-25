@@ -11,6 +11,9 @@ call itself is no longer sized from its fit: it lives on the server's heartbeats
 
 from __future__ import annotations
 
+import pytest
+
+from gemot import fit_budget as B
 from gemot.agent.driver import _pending_fit_starts
 from gemot.fit_budget import (
     FIT_BUDGET_CEILING_S,
@@ -278,3 +281,27 @@ def test_a_fit_timeout_abort_scores_as_infrastructure_not_as_a_failed_model():
         }
     )
     assert not _is_infra_abort({"stop_reason": "completed"})
+
+
+# -- a fit on a sweep's fit pool (gemot#117) -------------------------------------------------
+def alkan(monkeypatch) -> None:
+    """gemot#117's run: a 2,400 s per-start cap on a job of 8 CPUs, at the default margins. Also
+    used by tests/test_run_loop_no_model.py, which replays the run's stop."""
+    for name, value in (
+        ("FIT_PER_START_TIMEOUT_S", 2400.0),
+        ("FIT_N_WORKERS", 8),
+        ("FIT_COMPILE_MARGIN_S", 600.0),
+        ("FIT_BUDGET_MARGIN", 1.4),
+    ):
+        monkeypatch.setattr(B, name, value)
+
+
+def test_a_fit_on_the_pool_is_one_wave_and_the_timeouts_keep_the_jobs_waves(monkeypatch):
+    """alkan's 100 starts on the job's 8 CPUs are 13 waves: the 44,520 s of headroom its log
+    named when it stopped at 15.4 h of 27.8 h. On the pool's 384 workers they run at once, and
+    its fits took 2,400-3,000 s. One wave (4,200 s) covers that; the 13 waves stay on every
+    timeout, which a live heartbeat moves out anyway."""
+    alkan(monkeypatch)
+    assert B.fit_time_budget(100) == pytest.approx(44_520)
+    assert B.fit_time_budget(100, pool=True) == pytest.approx(4_200)
+    assert B.fit_time_budget_for(None, 100) == pytest.approx(44_520)
