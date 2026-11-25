@@ -29,6 +29,9 @@ from ..prompts import _DISABLED_TOOL_HINT_DEFAULT, _DISABLED_TOOL_HINTS
 # disabled the tool before the signal engineer had read a single error (gemot#163: run
 # 63612603_107 of sweep gemot_pools_20261107).
 #
+# For the same reason a cut lands between turns: the calls of the turn that trips the breaker all
+# reach the tool, and only a later turn's are refused (see `_refused`).
+#
 # It works at the TOOL-OBJECT layer (wrapping each loaded tool's coroutine), not as agent
 # middleware, deliberately: the heavy data/diagnostic tools (query_data, get_fitting_log, …)
 # run INSIDE the analyst subagents, and deepagents 0.6.12's declarative subagents don't
@@ -278,9 +281,11 @@ def _is_transport_error(exc: BaseException) -> bool:
 def _new_breaker_state() -> dict[str, Any]:
     """Mutable, run-scoped state shared by the wrapped tools and the lead's tool filter."""
     return {
-        # The LEAD's scope: the tools it has had disabled, and its error streaks. Each `task`
-        # has the same two under `tasks` (see `_scope`).
+        # The LEAD's scope: the tools it has had disabled, the turn that disabled each (see
+        # `_refused`), and its error streaks. Each `task` has the same three under `tasks` (see
+        # `_scope`).
         "disabled": set(),
+        "disabled_in": {},
         "streaks": {},
         "tasks": {},
         # Tools whose server went away (a transport error on a bio tool): cut for every caller.
@@ -312,12 +317,28 @@ def _new_breaker_state() -> dict[str, Any]:
 
 
 def _scope(state: dict[str, Any]) -> dict[str, Any]:
-    """The calling scope's ``{"disabled", "streaks"}``: the lead's (the run's state itself), or
-    the current `task`'s."""
+    """The calling scope's ``{"disabled", "disabled_in", "streaks"}``: the lead's (the run's state
+    itself), or the current `task`'s."""
     task = _TASK.get()
     if task is None:
         return state
-    return state["tasks"].setdefault(task, {"disabled": set(), "streaks": {}})
+    return state["tasks"].setdefault(task, {"disabled": set(), "disabled_in": {}, "streaks": {}})
+
+
+def _refused(scope: dict[str, Any], name: str) -> bool:
+    """Whether the breaker refuses this call of ``name``: the calling scope has it disabled, and
+    the call is not of the turn that disabled it.
+
+    That turn's calls were all written before the agent saw any of their results, so they reach
+    the tool like the rest of their turn. Refusing them made which of them did a race: the first
+    call whose error tripped the breaker cut every call of its turn that had not yet passed this
+    check, and how many had depended on how the tool node scheduled them (CI's py3.13 job of
+    gemot's main at 6530722). A call outside a graph has no turn and is refused.
+    """
+    if name not in scope["disabled"]:
+        return False
+    turn = _turn()
+    return turn is None or turn != scope["disabled_in"].get(name)
 
 
 def disabled_tools(state: dict[str, Any]) -> list[str]:
@@ -520,6 +541,7 @@ def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
         return False
     if streak["count"] >= _TOOL_ERROR_DISABLE_THRESHOLD and name not in scope["disabled"]:
         scope["disabled"].add(name)
+        scope["disabled_in"][name] = turn
         msg = (
             f"disabled `{name}` for {_TASK.get() or 'the lead'} after {streak['count']} "
             f"consecutive turns failing with the same error: {sig}"
@@ -587,7 +609,7 @@ def _wrap_tools_with_circuit_breaker(
                 if name in state["unreachable"]:
                     _note_call(state, name, _CALL_DISABLED)
                     return (_transport_breaker_message(state, name, hint), None)
-                if name in _scope(state)["disabled"]:
+                if _refused(_scope(state), name):
                     _note_call(state, name, _CALL_DISABLED)
                     return (_breaker_message(name, hint), None)  # short-circuit, no server hit
                 arguments = _coerce_json_string_args(arguments, containers)
