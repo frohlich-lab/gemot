@@ -73,7 +73,11 @@ def run_cost(token_usage: dict | None) -> float | None:
     from its token counts; it carried no date, went stale unnoticed, and was removed in #170. A
     run archived before the figure was recorded, or one whose provider reported none, reads
     ``None`` — never 0.0, which would read as "free" in a mean — and its cost column prints ``-``.
+    So does a run with any call that reported no figure (``n_uncosted_calls``): its ``cost_usd``
+    is a lower bound, which reads as cheap in a mean for the same reason.
     """
+    if (token_usage or {}).get("n_uncosted_calls"):
+        return None
     cost = (token_usage or {}).get("cost_usd")
     try:
         return float(cost) if cost is not None else None
@@ -406,7 +410,8 @@ def timing_split(row: dict) -> dict[str, float | None]:
     the client could not have measured itself. ``tool_wall`` is the raw client-side busy interval. On the null arm ``compute`` is the agent's
     sandboxed commands plus the compile and nominal score of its delivery (``scoring_seconds``) and
     the judge's reads; null rows without ``scoring_seconds`` predate that and booked all of it as
-    ``llm`` (#8).
+    ``llm`` (#8). Its server served only the judge, so the compile/fit split and counts are the
+    judge's, recorded as ``judge_*``, and blank here: the agent's fits ran in its shell (#164).
     """
 
     def _f(k: str) -> float | None:

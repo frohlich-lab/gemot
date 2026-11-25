@@ -155,6 +155,13 @@ def test_run_cost_is_none_not_zero_when_unrecorded():
     assert A.run_cost({"cost_usd": "n/a"}) is None
 
 
+def test_run_cost_is_none_when_a_call_was_uncosted():
+    """#164: Haiku's BYOK calls summed to 0.0-0.3 of the bill; a partial sum is a lower bound and
+    must not average in as the run's cost."""
+    assert A.run_cost({**_usage(), "cost_usd": 0.42, "n_uncosted_calls": 3}) is None
+    assert A.run_cost({**_usage(), "cost_usd": 0.42, "n_uncosted_calls": 0}) == pytest.approx(0.42)
+
+
 def test_cache_fraction_pools_prompt_tokens():
     rows = [{"token_usage": _usage(1000, 900)}, {"token_usage": _usage(1000, 100)}]
     assert A.cache_fraction(rows) == pytest.approx(0.5)

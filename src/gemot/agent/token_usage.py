@@ -10,6 +10,38 @@ from uuid import UUID
 _LEAD_AGENT_NAME = "lead"
 
 
+def _as_float(x) -> float | None:
+    """A billed amount, or None when absent, unparseable, boolean or non-finite — a NaN or an inf
+    would propagate into ``cost_usd`` and poison every aggregate taken over it."""
+    if x is None or isinstance(x, bool):
+        return None
+    try:
+        value = float(x)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _billed_cost(usage: dict) -> float | None:
+    """What one call cost, from OpenRouter's usage block; None when it does not say.
+
+    ``cost`` is what OpenRouter charged this account. On a call through the account's own provider
+    key (``is_byok``, as every Anthropic model in :data:`gemot.models._ROUTING` is) that is only
+    OpenRouter's fee, 0 or near it, and the inference is billed to the key, reported as
+    ``cost_details.upstream_inference_cost``. Such a call costs the two together, and is uncosted
+    when the upstream half is missing: ``cost`` alone summed Haiku runs to 0.0 with every call
+    counted as costed (#164).
+    """
+    cost = _as_float(usage.get("cost"))
+    if usage.get("is_byok") is not True:
+        return cost
+    details = usage.get("cost_details")
+    upstream = (
+        _as_float(details.get("upstream_inference_cost")) if isinstance(details, dict) else None
+    )
+    return None if cost is None or upstream is None else cost + upstream
+
+
 def _token_accountant():
     """A LangChain callback that sums token usage across EVERY LLM call in a run.
 
@@ -18,8 +50,9 @@ def _token_accountant():
     Phoenix's per-trace rollup, but in-process so the counts can be written straight to
     result.json without re-deriving them from the (huge) span database. Records prompt,
     completion, both cache columns (``usage_metadata.input_token_details.cache_read`` and
-    ``.cache_creation``) and the billed cost (OpenRouter's per-response ``usage.cost``, summed
-    into ``cost_usd``). The cache columns explain the bill; ``cost_usd`` is the bill. One instance
+    ``.cache_creation``) and the billed cost (each response's :func:`_billed_cost`, summed into
+    ``cost_usd``). The cache columns explain the bill; ``cost_usd`` is the bill, or a lower bound on
+    it when ``n_uncosted_calls`` counts calls that reported none. One instance
     is reused across resume iterations so the totals cover the whole run. Never raises — token
     accounting must not break a run.
 
@@ -42,17 +75,6 @@ def _token_accountant():
             return max(0, int(x or 0))
         except (TypeError, ValueError):
             return 0
-
-    def _as_float(x) -> float | None:
-        """A billed amount, or None when absent, unparseable, boolean or non-finite — a NaN or an
-        inf would propagate into ``cost_usd`` and poison every aggregate taken over it."""
-        if x is None or isinstance(x, bool):
-            return None
-        try:
-            value = float(x)
-        except (TypeError, ValueError):
-            return None
-        return value if math.isfinite(value) else None
 
     def _reported_prompt(x) -> int | None:
         """Missing or malformed lead usage is unknown, not a zero-sized prompt."""
@@ -133,7 +155,7 @@ def _token_accountant():
             self.served[key] = self.served.get(key, 0) + 1
 
         def _response_cost(self, response) -> float | None:
-            """OpenRouter's ``usage.cost`` for this response, from the ``token_usage`` block of
+            """This response's :func:`_billed_cost`, from the ``token_usage`` block of
             ``llm_output`` or of a generation's ``response_metadata``, whichever carries it first;
             None if none does."""
             out = getattr(response, "llm_output", None)
@@ -144,7 +166,7 @@ def _token_accountant():
                     if isinstance(meta, dict):
                         blocks.append(meta.get("token_usage"))
             for tu in blocks:
-                if isinstance(tu, dict) and (cost := _as_float(tu.get("cost"))) is not None:
+                if isinstance(tu, dict) and (cost := _billed_cost(tu)) is not None:
                     return cost
             return None
 
@@ -242,9 +264,9 @@ def _token_accountant():
                 "final_lead_prompt_tokens": self.final_lead_prompt,
                 "max_lead_prompt_tokens": self.max_lead_prompt,
                 "n_llm_calls": self.n_calls,
-                "cost_usd": self.cost
-                if self.n_costed
-                else None,  # billed USD; None if none reported
+                # Billed USD over the costed calls; None if none reported. A lower bound whenever
+                # n_uncosted_calls is not 0.
+                "cost_usd": self.cost if self.n_costed else None,
                 "n_uncosted_calls": max(self.n_calls - self.n_costed, 0),
             }
 
