@@ -279,7 +279,10 @@ def new_guard_stats() -> dict[str, Any]:
         "gave_up_no_tools": False,
         # task-arg guard
         "unexpected_task_kwargs": [],
+        "task_arg_hoists": 0,
         "task_arg_rejections": 0,
+        "task_arg_relents": 0,
+        "task_arg_relent_failures": 0,
         # empty-report guard
         "empty_subagent_reports": 0,
         "empty_subagent_retries": 0,
@@ -397,7 +400,16 @@ def _tool_dispatch_guard(stats: dict[str, Any], *, max_idle_steps: int = _MAX_ID
 # everything in `description` (this protects the analysts' `prompt=` drops too). deepagents 0.7.18
 # refuses such a call itself now; the guard stays for what upstream does not do: count it
 # (`task_arg_rejections`, in result.json), keep it out of `tools_executed`, and relent after a bound.
-_TASK_ALLOWED_ARGS = frozenset({"description", "subagent_type"})
+#
+# GPT-6 luna wraps the arguments instead: `task(subagent_type=X, parameters={"description": ...})`.
+# The relent kept the top-level keys only, so it dispatched `{subagent_type}` alone, and the task
+# tool's schema refused every one of those calls: 108 in 16 luna runs, a lead turn each (gemot#158).
+# So the guard lifts an allowed key out of such a wrapper, and a wrapper that held nothing else is
+# dispatched at once: nothing is lost, so there is nothing to bounce. A call it changes is
+# dispatched only with both arguments `task` needs; otherwise it goes back to the lead naming the
+# missing one.
+_TASK_REQUIRED_ARGS = ("description", "subagent_type")
+_TASK_ALLOWED_ARGS = frozenset(_TASK_REQUIRED_ARGS)
 _MAX_TASK_ARG_REJECTIONS = 3  # bounded push-back on unexpected task kwargs per run, then relent
 
 
@@ -409,9 +421,49 @@ def _unexpected_task_kwargs(args: "dict | None") -> "list[str]":
     return [k for k in args if k not in _TASK_ALLOWED_ARGS]
 
 
+def _hoist_task_args(args: dict) -> "tuple[dict, bool]":
+    """The ``task`` arguments a call meant, and whether getting them lost nothing. Pure.
+
+    An allowed key nested one level down in an unexpected dict (luna's ``parameters=``) is lifted
+    to the top level, where a key the call already has wins. Every other unexpected key is dropped.
+    Nothing is lost when each unexpected key is such a dict and holds only allowed keys that agree
+    with the top level.
+    """
+    kept = {k: v for k, v in args.items() if k in _TASK_ALLOWED_ARGS}
+    lossless = True
+    for key, wrapper in args.items():
+        if key in _TASK_ALLOWED_ARGS:
+            continue
+        if not isinstance(wrapper, dict):
+            lossless = False
+            continue
+        for k, v in wrapper.items():
+            if k not in _TASK_ALLOWED_ARGS:
+                lossless = False
+            elif k not in kept:
+                kept[k] = v
+            elif kept[k] != v:
+                lossless = False
+    return kept, lossless
+
+
+def _missing_task_args(args: dict) -> "list[str]":
+    """The arguments ``task`` needs that ``args`` has no non-blank string for. Pure."""
+    return [
+        k for k in _TASK_REQUIRED_ARGS if not (isinstance(args.get(k), str) and args[k].strip())
+    ]
+
+
 def _task_arg_reject_message(bad_keys: "list[str]") -> str:
     """The corrective error returned to the model in place of dispatching a mis-called ``task``."""
     return prompts.TASK_ARG_REJECT_TMPL.format(bad_keys=bad_keys)
+
+
+def _task_arg_incomplete_message(bad_keys: "list[str]", missing: "list[str]") -> str:
+    """The error returned in place of a relented ``task`` call that still lacks ``missing``."""
+    return prompts.TASK_ARG_INCOMPLETE_TMPL.format(
+        bad_keys=bad_keys, missing=" or ".join(f"`{k}`" for k in missing)
+    )
 
 
 #: The model routes the indra_statements arm refuses: each authors or edits the model other than
@@ -564,18 +616,26 @@ def _task_arg_guard(stats: dict[str, Any], *, max_rejections: int = _MAX_TASK_AR
     """Lead-only middleware: reject a ``task`` call that carries unexpected kwargs (see above).
 
     ``stats`` is a caller-owned dict the middleware mutates so run_deepagents can report the
-    outcome: ``unexpected_task_kwargs`` (the offending keys seen across the run) and
-    ``task_arg_rejections`` (how many calls were bounced). It works by returning an error
-    ``ToolMessage`` in place of dispatching (the same short-circuit shape the circuit breaker
-    uses) — it does NOT call ``handler``, so the subagent never runs on truncated input. The
-    push-back is bounded: once ``max_rejections`` is hit it RELENTS and dispatches the call with the
-    extras dropped, so a stubborn model still makes progress; the occurrence is still recorded. The
-    guard drops them itself: the task tool did until deepagents 0.7.18, and now refuses unknown keys,
-    so a call let through unchanged would only trade this rejection for its own. Defined lazily so
-    importing this module doesn't require langchain — only the deepagents driver does.
+    outcome: ``unexpected_task_kwargs`` (the offending keys seen across the run),
+    ``task_arg_hoists`` (calls dispatched at once with their arguments lifted out of a wrapper),
+    ``task_arg_rejections`` (how many calls were bounced), ``task_arg_relents`` (calls past the
+    bound) and ``task_arg_relent_failures`` (those it could not dispatch, for want of a
+    ``description`` or ``subagent_type``). It bounces a call by returning an error ``ToolMessage``
+    in place of dispatching (the same short-circuit shape the circuit breaker uses) — it does NOT
+    call ``handler``, so the subagent never runs on truncated input. The push-back is bounded: once
+    ``max_rejections`` is hit it RELENTS and dispatches the call with the extras dropped (lifting
+    what it can out of a wrapper), so a stubborn model still makes progress; the occurrence is still
+    recorded. The guard drops them itself: the task tool did until deepagents 0.7.18, and now
+    refuses unknown keys, so a call let through unchanged would only trade this rejection for its
+    own. Defined lazily so importing this module doesn't require langchain — only the deepagents
+    driver does.
     """
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.messages import ToolMessage
+
+    def _count(key: str) -> int:
+        stats[key] = stats.get(key, 0) + 1
+        return stats[key]
 
     def _check(request):
         """An error ToolMessage to bounce this call, else the request to dispatch."""
@@ -588,14 +648,31 @@ def _task_arg_guard(stats: dict[str, Any], *, max_rejections: int = _MAX_TASK_AR
         stats["unexpected_task_kwargs"] = sorted(
             set(stats.get("unexpected_task_kwargs") or []) | set(bad)
         )
+        args, lossless = _hoist_task_args(tc["args"])
+        missing = _missing_task_args(args)
+        if lossless and not missing:
+            _count("task_arg_hoists")
+            print(f"[task-arg guard] lifting task args out of {bad}; dispatching.")
+            return request.override(tool_call={**tc, "args": args})
         if stats.get("task_arg_rejections", 0) >= max_rejections:
+            _count("task_arg_relents")
+            if missing:
+                _count("task_arg_relent_failures")
+                print(
+                    f"[task-arg guard] unexpected task kwargs {bad} — past {max_rejections} "
+                    f"rejections, but without them the call has no {missing}; not dispatching."
+                )
+                return ToolMessage(
+                    content=_task_arg_incomplete_message(bad, missing),
+                    tool_call_id=tc.get("id") or "",
+                    status="error",
+                )
             print(
                 f"[task-arg guard] unexpected task kwargs {bad} — relenting after "
                 f"{max_rejections} rejections; dispatching without them."
             )
-            args = {k: v for k, v in tc["args"].items() if k in _TASK_ALLOWED_ARGS}
             return request.override(tool_call={**tc, "args": args})
-        stats["task_arg_rejections"] = stats.get("task_arg_rejections", 0) + 1
+        _count("task_arg_rejections")
         print(
             f"[task-arg guard] rejecting task(...) with unexpected kwargs {bad} "
             f"({stats['task_arg_rejections']}/{max_rejections})"
