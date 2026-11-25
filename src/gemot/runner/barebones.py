@@ -545,8 +545,9 @@ def barebones_task(scenario: Scenario) -> str:
     """``BAREBONES_TASK`` (which carries its own tool-free readout instruction) plus the
     scenario's ``known_constants`` and the entities the biocurator is handed: its derived
     ``entity_ids``, else its curated ``biocurator_entities``. The reference_handoff ablation off
-    withholds the note and the curated names, not the derived ones (``Scenario.agent_entities``)."""
-    from .. import ablations
+    withholds the note and the curated names, not the derived ones (``Scenario.agent_entities``).
+    The adversarial_prior arm's note comes last, as on the lead's task."""
+    from .. import ablations, prior_run
 
     handoff = ablations.enabled("reference_handoff")
     task = BAREBONES_TASK
@@ -557,7 +558,7 @@ def barebones_task(scenario: Scenario) -> str:
     )
     if names:
         task += BAREBONES_ENTITIES_TMPL.format(names=", ".join(str(n) for n in names))
-    return task
+    return task + prior_run.note(scenario)
 
 
 # --------------------------------------------------------------------------- pipeline

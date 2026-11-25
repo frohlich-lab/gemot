@@ -117,6 +117,10 @@ _RESULT_FIELDS = (
     # free_exponents on and off. Group by `ablation_arm` for continuity across an added arm, by
     # `ablation_state` when correctness across a default flip matters.
     "ablation_state",
+    # The adversarial_prior arm's PAIRING key: the archived run whose model this run was told to
+    # assume wrong, flattened out of result.json's `prior_run` (gemot.prior_run). Empty off the
+    # arm. Without it, a row of the arm cannot be joined to the run it argues against.
+    "prior_run_id",
     # Which upstream endpoint actually served the run, flattened out of `openrouter_endpoints`.
     # `openrouter_extra_body` records what routing ASKED for; these record what it GOT, and the two
     # differ whenever `provider.only` names more than one endpoint. `served_drifted` is the column
@@ -439,6 +443,15 @@ def _flatten_server_code(row: dict) -> dict:
     return {**row, "server_sha": code.get("git_sha") or code.get("commit")}
 
 
+def _flatten_prior_run(row: dict) -> dict:
+    """``prior_run_id`` out of result.json's nested ``prior_run``. Absent or ``None`` (off the
+    adversarial_prior arm, or older runs) passes through."""
+    prior = row.get("prior_run")
+    if not isinstance(prior, dict):
+        return row
+    return {**row, "prior_run_id": prior.get("run_id")}
+
+
 def _is_subsequence(old: "tuple[str, ...]", new: "tuple[str, ...]") -> bool:
     """Whether every column of ``old`` appears in ``new`` in the same relative order.
 
@@ -681,6 +694,7 @@ def append_history(rows: list[dict[str, Any]], history_path: Path = DEFAULT_HIST
                     skipped += 1
                     continue
                 seen.add(key)
+            row = _flatten_prior_run(row)
             row = _flatten_served_endpoints(
                 _flatten_server_code(
                     _flatten_git_diff(_flatten_replicate_lof(_flatten_edit_rejects(row)))

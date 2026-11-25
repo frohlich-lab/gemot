@@ -172,6 +172,9 @@ _NOT_ABLATIONS = {
     "PETAB_MCP_WORK_ROOT": "the shared-server refactor's name for PETAB_MCP_SCRATCH; same path, "
     "same read-side-only role",
     "PETAB_MCP_YAML": "path to the PEtab problem",
+    "PETAB_PRIOR_RUN": "the adversarial_prior arm's input: WHICH archived run it shows the agent. "
+    "Whether a prior is shown is the arm; which one is data, recorded as `prior_run` in "
+    "result.json (gemot.prior_run), and refused with the arm off so it never acts alone",
     "PETAB_REQUIRE_COLLECTOR": "refuse to fall back to a throwaway in-process Phoenix when no "
     "shared collector is configured — a safety interlock on the "
     "RECORD of a run, not on what the agent does, so it cannot move "

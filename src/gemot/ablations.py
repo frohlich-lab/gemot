@@ -169,6 +169,17 @@ ABLATIONS: tuple[Ablation, ...] = (
         "where it names a withheld number. Each fit's own nll, criterion, k and chi2 stay, and the "
         "judge scores as before",
     ),
+    Ablation(
+        name="adversarial_prior",
+        env="PETAB_ADVERSARIAL_PRIOR",
+        default_on=False,
+        changes_prompt=True,
+        effect="ON shows the agent the scored model of an earlier run on the same problem (the "
+        "archived run PETAB_PRIOR_RUN names, recorded in result.json as `prior_run`) and tells it "
+        "to assume that mechanism is wrong and build a rival, or report that none fits as well. "
+        "Refused without a prior, with one from another problem or another arm setting, and on "
+        "biology_blind. Nothing enforces that the model differs; see gemot.prior_run",
+    ),
 )
 
 _BY_NAME = {a.name: a for a in ABLATIONS}

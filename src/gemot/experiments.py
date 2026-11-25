@@ -65,6 +65,7 @@ _PROMPT_ROLES = {
     "petab-lead-indra-no-model": "user",  # the arm's no-model nudge
     "petab-lead-indra-task": "user",  # the arm's task, without the Antimony readout paragraph
     "petab-lead-indra-constraints": "user",  # appended to it on the causal_constraints arm
+    "petab-lead-adversarial-prior": "user",  # appended to the task on the adversarial_prior arm
     "petab-lead-task": "user",
     "petab-lead-readout-note": "user",
     # the null arm's single agent (see agent/barebones.py): same two roles as the lead's pair

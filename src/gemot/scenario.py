@@ -359,8 +359,9 @@ class Scenario:
         On the indra_statements arm the task is the arm's own and the readout note is left off:
         both teach the Antimony route's assignment rules; on the causal_constraints arm it says
         what the constraints are. With the reference_handoff ablation off the note is left off
-        altogether."""
-        from . import ablations, prompts
+        altogether. On the adversarial_prior arm the earlier run's model comes last
+        (:func:`gemot.prior_run.note`)."""
+        from . import ablations, prior_run, prompts
 
         if ablations.enabled("biology_blind"):
             return prompts.BIOLOGY_BLIND_TASK
@@ -368,9 +369,10 @@ class Scenario:
         task = prompts.INDRA_TASK if indra else self.task
         if indra and ablations.enabled("causal_constraints"):
             task += prompts.INDRA_CONSTRAINTS_NOTE
-        if not self.known_constants or not ablations.enabled("reference_handoff"):
-            return task
-        return f"{task}\n\n{self.known_constants}{'' if indra else KNOWN_CONSTANTS_READOUT_NOTE}"
+        if self.known_constants and ablations.enabled("reference_handoff"):
+            readout = "" if indra else KNOWN_CONSTANTS_READOUT_NOTE
+            task = f"{task}\n\n{self.known_constants}{readout}"
+        return task + prior_run.note(self)
 
     @property
     def agent_entities(self) -> list[str]:

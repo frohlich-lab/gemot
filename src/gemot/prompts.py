@@ -782,6 +782,22 @@ INDRA_CONSTRAINTS_NOTE = (
     "and nothing applies, so build your first model to make them all."
 )
 
+# Appended to the task on the adversarial_prior arm (gemot.prior_run.note), for the panel's lead and
+# the null alike, so it names no tool. `{score}` is the prior's criterion value in parentheses, or ""
+# where the progress_signals arm withholds such numbers; `{model}` is the prior's scored model text.
+ADVERSARIAL_PRIOR_NOTE_TMPL = (
+    "\n\nA RIVAL HYPOTHESIS: an earlier attempt at this same problem settled on the model "
+    "below{score}. Assume its mechanism is WRONG, and build a rival: a model whose mechanism "
+    "differs in which species act on which, how the inputs reach the readouts, or what "
+    "regulates what. The same network renamed, re-parameterised or extended by one term is not "
+    "a rival. Keep from it only what any model of these data must share, such as what each "
+    "readout measures. Aim to explain the data as well as the earlier model does, or better. If, "
+    "after genuine attempts at rival mechanisms, none fits as well, say so and what you tried: "
+    "that is evidence for the earlier model, and a result. Your final report says how your "
+    "mechanism differs from the earlier one."
+    "\n\nTHE EARLIER MODEL:\n```\n{model}\n```"
+)
+
 
 # ---------------------------------------------------------------- the barebones (null) agent
 # What the NULL ARM (agent/barebones.py) is told: the problem and the delivery contract, none of
@@ -1796,6 +1812,8 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
         "petab-lead-indra-no-model": INDRA_NO_MODEL_NUDGE,
         "petab-lead-indra-task": INDRA_TASK,
         "petab-lead-indra-constraints": INDRA_CONSTRAINTS_NOTE,
+        # Appended to the task only on the adversarial_prior arm, the null's task included.
+        "petab-lead-adversarial-prior": ADVERSARIAL_PRIOR_NOTE_TMPL,
     },
     # The three analyst personas, plus the one-liners the LEAD reads when picking one.
     "analysts": {

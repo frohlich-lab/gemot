@@ -330,7 +330,7 @@ def _base_meta(
     ``experiments`` to keep the runner free of the (heavier, Phoenix-facing) module."""
     from petab_mcp.skills import skills_version
 
-    from .. import ablations
+    from .. import ablations, prior_run
 
     from ..prompts import BIOCURATOR_ENABLED, prompt_group_versions, prompt_version
 
@@ -397,6 +397,9 @@ def _base_meta(
         "ablation_arm": ablations.arm(),
         "ablation_state": ablations.state_key(),
         "ablations": ablations.state(),
+        # WHICH earlier run the adversarial_prior arm showed the agent: the arm says only THAT one
+        # was shown. None off the arm; see gemot.prior_run.
+        "prior_run": prior_run.provenance(scenario),
         # Which OmniPath answered, and from when. A pinned snapshot that nothing records is the
         # `git_sha +dirty` problem in a new costume; None for hosted service or no bio access.
         "omnipath_snapshot": (

@@ -36,7 +36,7 @@ from .failure import _should_reraise, _summarize_exc
 from .main import _constraints, _main_async
 from .server import _shared_build_root
 from ..scenario import Scenario
-from .. import models
+from .. import models, prior_run
 
 
 def _positive_seconds(value: str) -> float:
@@ -213,6 +213,7 @@ def run_scenario(scenario: Scenario, argv: list[str] | None = None) -> int:
     # teardown error: an arm this problem cannot run is refused, not run as something else, and so
     # is a fit pool without its build root.
     _constraints(scenario)
+    prior_run.resolve(scenario)
     _shared_build_root()
     if args.driver in {"codex", "claude"}:
         if not args.model or not args.model.strip():
