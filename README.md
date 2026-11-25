@@ -1,14 +1,25 @@
 # gemot
 
 [![CI](https://github.com/frohlich-lab/gemot/actions/workflows/ci.yml/badge.svg)](https://github.com/frohlich-lab/gemot/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/gemot.svg)](https://pypi.org/project/gemot/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/frohlich-lab/gemot/blob/main/LICENSE)
+
+## Disclaimer
+
+Research software under active, rapid and heavy development: **use it at your own risk**. Its
+command line, result fields and agent prompts change without notice. A run calls a hosted LLM
+for hours and is billed by that provider. Its behaviour has been tuned and checked on benchmark
+problems only, and it is not for clinical or regulatory use. It comes without warranty of any
+kind; see the [LICENSE](https://github.com/frohlich-lab/gemot/blob/main/LICENSE).
 
 ## Overview
 
 The agent harness built around [PEtab MCP](https://github.com/frohlich-lab/PEtab-MCP), an
-MCP server that wraps a single [PEtab v1](https://petab.readthedocs.io) parameter-estimation
-problem and lets an LLM agent change the model only through one constrained tool, with every
-change **scored** (fit and simulated), **versioned** and **justified**.
+MCP server that wraps a single
+[PEtab v2](https://petab.readthedocs.io/en/latest/v2/documentation_data_format.html)
+parameter-estimation problem and lets an LLM agent change the model only through one
+constrained tool, with every change **scored** (fit and simulated), **versioned** and
+**justified**.
 
 gemot spawns that server as a subprocess, launches a panel of agent specialists
 (mathematician, systems scientist, signal engineer) on it and then hands off to the
@@ -22,10 +33,9 @@ Benchmark-Models collection and fits their reference bars — live in
 [frohlich-lab/PEtabAgentBench](https://github.com/frohlich-lab/PEtabAgentBench). The Slurm sweep
 tooling and the paper live in
 [frohlich-lab/gemot_iclr_2026](https://github.com/frohlich-lab/gemot_iclr_2026), which mounts
-those problems at `examples/` and installs gemot pinned to a commit. gemot is a checkout tool: it
-finds that checkout
+those problems at `examples/` and installs gemot pinned to a commit. gemot finds that checkout
 from the running script or the working directory, or from `PETAB_MCP_REPO_ROOT` (see
-[`src/gemot/paths.py`](src/gemot/paths.py)).
+[`src/gemot/paths.py`](https://github.com/frohlich-lab/gemot/blob/main/src/gemot/paths.py)).
 
 ## Quickstart
 
@@ -34,8 +44,23 @@ from the running script or the working directory, or from `PETAB_MCP_REPO_ROOT` 
 Python 3.12+ and a C++ toolchain for AMICI (see [Troubleshooting](#troubleshooting)).
 
 ```bash
-pip install -e .              # gemot + the pinned server release from PyPI
-pip install -e '.[harness]'   # + the deepagents panel and Phoenix tracing, for LLM-driven runs
+pip install gemot              # gemot + the pinned server release
+pip install "gemot[harness]"   # + the deepagents panel and Phoenix tracing, for LLM-driven runs
+```
+
+The `indra_statements` arm builds models from INDRA statements and needs the `statements`
+extra. No released pysb installs beside AMICI, so name its commit:
+
+```bash
+pip install "gemot[harness,statements]" "pysb @ git+https://github.com/pysb/pysb.git@9fc6bcb118683ad851e0a4d5604abe646f77cae3"
+```
+
+From a checkout, the `pins` group (pip >= 25.1) adds the unreleased commits PyPI refuses as
+dependencies: pysb's, the neural route's petab-sciml, and petab's, which imports a problem of
+thousands of experiments (Froehlich_CellSystems2018):
+
+```bash
+pip install -e '.[harness,statements]' --group pins
 ```
 
 To work on the server and gemot together, install your server checkout over the pinned one
@@ -97,11 +122,12 @@ file/shell access and heldout judging tools are restricted to preserve benchmark
 Phoenix records observed native events and actual gateway tool calls under the run trace.
 Codex usage is session aggregate; Claude additionally exposes response usage. Raw events are
 archived as `work/codex_events.jsonl` or `work/claude_events.jsonl`. See
-[CLI drivers](docs/CLI_DRIVERS.md) for setup, trace limits, and the ChatGPT terms assessment.
+[CLI drivers](https://github.com/frohlich-lab/gemot/blob/main/docs/CLI_DRIVERS.md) for setup, trace limits, and the ChatGPT terms assessment.
 
 ## Project structure
 
-[`gemot`](src/gemot/) (under `src/`); each submodule is documented in its own docstrings.
+[`gemot`](https://github.com/frohlich-lab/gemot/tree/main/src/gemot) (under `src/`); each
+submodule is documented in its own docstrings.
 
 - `gemot.runner` — cleanup → server → driver → judge, and the command line every example's
   `run.py` drives.
@@ -110,7 +136,7 @@ archived as `work/codex_events.jsonl` or `work/claude_events.jsonl`. See
   but a stock deepagent with file tools and a sandboxed shell over the PEtab files on disk —
   no server, no panel, no scored editing loop — asked to deliver a finished PEtab problem in
   place, which the same judge then scores at its delivered parameter values (see
-  [`src/gemot/agent/barebones.py`](src/gemot/agent/barebones.py)).
+  [`src/gemot/agent/barebones.py`](https://github.com/frohlich-lab/gemot/blob/main/src/gemot/agent/barebones.py)).
 - `gemot.neural_ode` — the non-LLM model producer. It reads a PEtab problem's tables without
   opening the shipped model, restates the problem as a PEtab SciML neural ODE, fits it
   through AMICI's JAX backend, scores it against the example's held-out set, and distils the
@@ -119,7 +145,7 @@ archived as `work/codex_events.jsonl` or `work/claude_events.jsonl`. See
 - `gemot.explorer` — the run viewer over archived and in-flight runs (`python -m gemot.explorer`).
 - `gemot.sweep` — the Slurm sweep driver for a checkout that pins gemot: one job array of runs
   whose fits share one pool of SLURM workers, and the pool, trace collector and explorer as
-  service jobs (`python -m gemot.sweep`, [docs/SWEEP.md](docs/SWEEP.md)).
+  service jobs (`python -m gemot.sweep`, [docs/SWEEP.md](https://github.com/frohlich-lab/gemot/blob/main/docs/SWEEP.md)).
 - `gemot.analysis`, `gemot.ablations` — sweep analysis (`python -m gemot.analysis`) and the
   registry of every switch that changes what a run does (`python -m gemot.ablations`).
 - `gemot.causal_constraints` — what the `causal_constraints` arm records: the refusals per
@@ -135,16 +161,21 @@ named score every gate reads, the versioned provenance. They are stated in the s
 ## Development
 
 ```bash
-pip install -e '.[dev]'   # dev adds pytest + the agent stack
-pytest                    # needs the full install (AMICI/pyPESTO are hard deps); PubMed is stubbed
+pip install -e '.[dev]' --group pins   # dev adds pytest, the agent stack and every extra
+pytest -n 3                            # needs the full install (AMICI/pyPESTO are hard deps); PubMed is stubbed
 ```
+
+A release is cut by publishing a GitHub release tagged `v<version>`, which the
+[release workflow](https://github.com/frohlich-lab/gemot/blob/main/.github/workflows/release.yml)
+uploads to PyPI. The version is `[project] version` in `pyproject.toml`.
 
 ## License
 
-MIT
+MIT; see [LICENSE](https://github.com/frohlich-lab/gemot/blob/main/LICENSE).
 
 ## Troubleshooting
 
 AMICI compiles generated C++ and needs a toolchain: a C++ compiler, CMake, Ninja, and the
-pip `swig` binary on `PATH` (OpenBLAS ships in the AMICI wheel).
+pip `swig` binary on `PATH`. AMICI ships only a source distribution, so it is built on install
+(BLAS comes from the `scipy-openblas64` wheel, or Accelerate on macOS).
 

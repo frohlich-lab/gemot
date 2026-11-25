@@ -8,14 +8,16 @@ version = "0.1.0"
 description = "An LLM agent panel, and its judge, that builds mechanistic models through the petab-mcp server."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Fabian Fröhlich" }]
 keywords = ["petab", "mcp", "systems-biology", "sbml", "parameter-estimation", "amici"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "License :: OSI Approved :: MIT License",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
@@ -23,8 +25,9 @@ classifiers = [
 dependencies = [
     # The server this harness drives, from PyPI. Pinned to one release so a checkout here names the
     # server it was tested against: bump it deliberately, and see the README for developing both at
-    # once. A server fix gemot needs before it is released can be pinned by commit
-    # (`petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@<sha>`) until the next release.
+    # once. A server fix gemot needs before it is released goes in the `pins` group by commit
+    # (`petab-mcp @ git+https://github.com/frohlich-lab/PEtab-MCP.git@<sha>`) until the next
+    # release, never here: PyPI refuses a direct reference in a package's metadata.
     # PEtab-MCP main (4024358), with frohlich-lab/PEtab-MCP#49: held-out sets are PEtab v2 only,
     # so `read_held_out` refuses a v1 set and `validation_data.as_v2` is gone. PEtabAgentBench
     # converts each problem's training and held-out sets together and ships both as v2. #81: AMICI
@@ -164,18 +167,10 @@ dependencies = [
     # server's flags, so only the dead `NOISE_SIGMA_COLLAPSE_FRACTION` import and the tests that
     # built collapse from it follow. #372: pysb, INDRA and BioNetGen are the `statements` extra; the
     # indra_statements arm starts its server with an entity map, which the server refuses without
-    # them, so gemot asks for the extra. #371: the design notes are in docs/DESIGN.md.
-    "petab-mcp[statements]==0.1.1",
-    # The server's two git pins, which PyPI does not allow in its published metadata
-    # (PEtab-MCP#370), so they are declared here instead; drop each once its release is out.
-    # petab at PEtab-dev/libpetab-python#579 (open), which keeps per-experiment constants in the
-    # condition table: without it Froehlich_CellSystems2018 does not import. It also stands for
-    # the `petab` gemot imports directly (see below).
-    "petab @ git+https://github.com/PEtab-dev/libpetab-python.git@08a13908b060dd605df09f3a58c65ac01464520b",
-    # pysb with pysb/pysb#611 (merged, unreleased), for the `statements` extra: 1.17.0 caps
-    # `sympy<1.12`, and amici 1.2.0 needs `sympy>=1.12.1`, so without it the install does not
-    # resolve.
-    "pysb @ git+https://github.com/pysb/pysb.git@9fc6bcb118683ad851e0a4d5604abe646f77cae3",
+    # them, so gemot's `statements` extra asks for it (below). #371: the design notes are in
+    # docs/DESIGN.md. The server's two git pins (petab, pysb) are commits, which PyPI refuses in a
+    # package's metadata: they are in the `pins` dependency group at the end of this file.
+    "petab-mcp==0.1.1",
     # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
     # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
     # is built on it; 2.3 is the first release fastmcp 4.1 accepts. What 2.0 changed for the code
@@ -193,7 +188,9 @@ dependencies = [
     "uvicorn>=0.23",
     # Imported directly here too (judge, simulate, the neural route), or promised to the
     # barebones agent's sandbox (pyPESTO, which its prompt tells the agent to fit with), so named
-    # rather than left to arrive through petab-mcp, whose pyproject says why each floor.
+    # rather than left to arrive through petab-mcp, whose pyproject says why each floor. petab's
+    # commit for Froehlich_CellSystems2018 is in the `pins` group.
+    "petab>=0.10.0",
     "python-libsbml>=5.19",
     "antimony>=3.2",
     "pandas>=1.5",
@@ -240,8 +237,15 @@ dev = [
     "gemot[agent]",
     "gemot[neural]",
     "gemot[pool]",
+    "gemot[statements]",
     "gemot[tracing]",
 ]
+
+# The indra_statements arm: its server is started with an entity map, which the server refuses
+# without pysb, INDRA and BioNetGen (PEtab-MCP#372). No released pysb installs beside AMICI
+# (1.17.0 caps `sympy<1.12`, amici 1.2.0 needs `sympy>=1.12.1`), so this extra resolves only with
+# the `pins` group's pysb commit, or with that commit named on the command line (README).
+statements = ["petab-mcp[statements]==0.1.1"]
 
 # Fitting on a sweep's fit pool (`PETAB_MCP_FIT_POOL`, runner/server.py): the server's `dask`
 # extra, which brings the dask client its `DaskEngine` joins the pool with, and `petab-mcp-pool`,
@@ -266,10 +270,9 @@ neural = [
     "amici[jax]>=1.2.0",
     "optax>=0.2",
     # The curriculum multiple shooting rewrite (`petab_sciml.training`) is unreleased,
-    # PEtab-dev/petab_sciml#92. Pinned to GitHub's test-merge commit of that PR, because the
-    # branch alone predates `petab_sciml.constants`, which petab 0.9's SciML lint imports.
-    # Revisit once 0.0.4 is on PyPI: `petab-sciml>=0.0.4`.
-    "petab-sciml @ git+https://github.com/PEtab-dev/petab_sciml@08498527900fd6e9de4818df65bde244ad887c86",
+    # PEtab-dev/petab_sciml#92; its commit is in the `pins` group. Raise this floor to the release
+    # that holds it (0.0.4) and drop the pin.
+    "petab-sciml>=0.0.3",
 ]
 
 agent = [
@@ -359,12 +362,21 @@ explorer = ["fastapi>=0.110", "uvicorn>=0.23", "jinja2>=3.1"]
 Homepage = "https://github.com/frohlich-lab/gemot"
 Repository = "https://github.com/frohlich-lab/gemot"
 
-[tool.hatch.metadata]
-# Three dependencies are git pins: petab and pysb, the server's two (see the comment at petab-mcp),
-# and the `neural` extra's petab-sciml (see the comment there: the curriculum multiple shooting
-# rewrite is unreleased). Hatchling refuses a direct reference in metadata unless this says so, so
-# WITHOUT it every `pip install -e .` fails at metadata generation -- CI never reaches the test step.
-allow-direct-references = true
+[dependency-groups]
+# Unreleased commits PyPI refuses as dependencies, so they are not in the published metadata.
+# Install them from a checkout with `pip install -e '.[dev]' --group pins` (pip >= 25.1). With no
+# `allow-direct-references`, hatchling refuses the build if a direct reference comes back into
+# `dependencies` or an extra. Drop each line once its release is out.
+pins = [
+    # PEtab-dev/libpetab-python#579 (open): per-experiment constants stay in the condition table,
+    # without which Froehlich_CellSystems2018 does not import. The server's pin too (PEtab-MCP#370).
+    "petab @ git+https://github.com/PEtab-dev/libpetab-python.git@08a13908b060dd605df09f3a58c65ac01464520b",
+    # pysb/pysb#611 (merged, unreleased), for the `statements` extra: see the comment there.
+    "pysb @ git+https://github.com/pysb/pysb.git@9fc6bcb118683ad851e0a4d5604abe646f77cae3",
+    # PEtab-dev/petab_sciml#92, the `neural` extra's training rewrite, at GitHub's test-merge
+    # commit: the branch alone predates `petab_sciml.constants`, which petab's SciML lint imports.
+    "petab-sciml @ git+https://github.com/PEtab-dev/petab_sciml@08498527900fd6e9de4818df65bde244ad887c86",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gemot"]
