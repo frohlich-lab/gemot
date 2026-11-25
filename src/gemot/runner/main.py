@@ -132,7 +132,7 @@ async def _open_session(
     a reply is lost rather than shortened: run f2e2b86d stopped on one ``get_version`` reply
     (gemot#103). Bounding what a tool returns is the server's to do (frohlich-lab/PEtab-MCP#231),
     and a reply too large for the model's context is offloaded to a file by deepagents. The hosted
-    bio servers keep the default (``bio_sessions``)."""
+    bio servers keep a bound, a larger one (``bio_sessions._BIO_MAX_SSE_EVENT_BYTES``)."""
     # connect/write/pool: mcp's own default for this transport.
     timeout = httpx2.Timeout(30.0, read=read_ceiling_s)
     async with httpx2.AsyncClient(timeout=timeout) as http:
@@ -312,9 +312,10 @@ async def _main_async(scenario: Scenario, args: argparse.Namespace) -> "tuple[in
             # SUPERVISED, ISOLATED task by open_bio_sessions, kept separate from the petab session
             # (which the _ToolClock shadows) and from the run's fatal scope: a transport failure on
             # a bio session — unreachable, a slow/hung connect, or a mid-run ClosedResourceError —
-            # is contained and degrades the biocurator to "dumb", NEVER aborting the run (issue
-            # #86). Empty for scripted or a disabled curator. An enabled curator stays on the
-            # panel even if no bio tools resolve, using the model's own knowledge.
+            # is contained, NEVER aborting the run (issue #86). A server unreachable at connect is
+            # skipped; a session that closes mid-run is reopened, and its tools come back. Empty
+            # for scripted or a disabled curator. An enabled curator stays on the panel even if no
+            # bio tools resolve, using the model's own knowledge.
             bio_urls = (
                 BIO_MCP_URLS if args.driver == "deepagents" and prompts.BIOCURATOR_ENABLED else ()
             )

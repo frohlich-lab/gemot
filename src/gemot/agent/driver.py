@@ -61,6 +61,7 @@ from .guards import (
     new_guard_stats,
 )
 from .literature import _wrap_literature_recorder
+from .uniprot import _wrap_uniprot_trim
 from .probe import _model_committed, _structured
 from .subagents import (
     _build_subagents,
@@ -969,6 +970,7 @@ async def run_deepagents(
     _wrap_literature_recorder(
         [t for t in bio_tools if getattr(t, "name", None) in LITERATURE_BIO_TOOLS], literature_log
     )
+    _wrap_uniprot_trim(bio_tools)  # outside the breaker, which reads the whole reply
     tools_by_name = {n: t for t in all_tools if (n := getattr(t, "name", None))}
     # Declared BEFORE the subagents are built: the panel shares this one dict, so the reasoning
     # guard's counters aggregate over the lead AND every analyst rather than reporting the lead's
@@ -1955,7 +1957,8 @@ async def run_deepagents(
         "max_input_tokens": max_input_tokens,
         "prompt_cache_key": prompt_cache_key,
         # How often each finish-gate refusal fired, and how often a finish went through on a
-        # relent, by gate (no_fit, sigma, parsimony, adequacy): whether the gate changed how the
+        # relent, by gate (no_fit, sigma, parsimony, adequacy; parsimony_stale and
+        # parsimony_unavailable where that check could not run): whether the gate changed how the
         # run ended is otherwise only in the log.
         "finish_gate": {
             "refusals": dict(finish_state.get("refusals", {})),

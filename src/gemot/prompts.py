@@ -1292,6 +1292,14 @@ TOOL_DISABLED_TRANSPORT_TMPL = (
     "disabled for the rest of this run. Do NOT call it again — {hint}"
 )
 
+# The same cut on a hosted bio tool whose session is being reopened (bio_sessions): it comes back,
+# so "for the rest of this run" would be false.
+TOOL_REOPENING_TMPL = (
+    "TOOL DISABLED: `{name}`'s server closed its connection (transport error), and the session "
+    "to it is being reopened in the background. Until it is, a call returns this notice without "
+    "reaching the server; once it is, the tool works again. Do not wait for it — {hint}"
+)
+
 # What a fit call that came back without its result still does on the server, and how the lead
 # waits for it (agent/circuit_breaker.py). Nothing cancels the fit, and the server refuses every
 # other change until it ends (PEtab-MCP#108), so a resend only costs a turn. Deliberately no advice
@@ -1439,6 +1447,20 @@ FINISH_REFUSED_PARSIMONY_LEFT_OUT = (
     " Left out: any direction carried only by the problem's own observation or noise parameters, "
     "which no model edit reaches."
 )
+
+# Ends the ARM and CONFIRM text when the parsimony gate could not check the version it judges
+# (finish_gate._parsimony_unchecked) and so let it through, as it does by design. Without it the
+# pass read as a cleared check: froehlich 63619743_29 and lucarelli 63968832_7 (gemot#162) finished
+# on versions whose fits stored no FIM, with nothing said. `why` is one of the two constants below.
+# Like the refusal it does not say when the gate stops refusing.
+FINISH_PARSIMONY_UNCHECKED_TMPL = (
+    " NOTE — the finish gate could not check this version for parameters the data cannot "
+    "constrain: {why}. Its passing says nothing about whether they are identifiable."
+)
+FINISH_PARSIMONY_STALE = (
+    "the only parameter diagnosis on hand describes another structure's fit, not this version's"
+)
+FINISH_PARSIMONY_UNAVAILABLE = "no Fisher-information verdict could be read for it"
 
 # The CHI2 gate (finish_gate._MAX_ADEQUACY_FINISH_REFUSALS): only where the run is judged by chi2
 # and the fit estimated no noise sigma. `p` is the scored fit's chi2_gof_pvalue and `alpha` the
@@ -1631,6 +1653,17 @@ SUBAGENT_TURN_CAP_REPORT_TMPL = (
     "finding.]\n\n{last}"
 )
 SUBAGENT_TURN_CAP_NOTHING_WRITTEN = "(It had written nothing.)"
+
+# An analyst's report when its model provider refuses one of its requests outright (a content
+# filter, a request rejected as malformed or too large; agent/provider_refusals.py). The refusal
+# used to escape the analyst's `task` call, which cancelled the other analysts' rounds and ended
+# the run (gemot#166). The lead reads that this analyst's work is lost and why, not that it found
+# nothing.
+SUBAGENT_PROVIDER_REFUSAL_TMPL = (
+    "[analyst stopped: the model provider refused its request ({reason}). This analyst's findings "
+    "are lost; the other analysts' reports are not affected. Delegate again, worded differently, "
+    "if you still need them.]"
+)
 
 # Escalating notice as a subagent delegation nears its turn cap, injected into the OUTGOING request
 # by `agent.guards._subagent_turn_limit`. Lives HERE, not in guards.py, because it is model-facing
@@ -1958,6 +1991,9 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "sigma_fallback_advice": FINISH_SIGMA_FALLBACK_ADVICE,
             "refused_parsimony": FINISH_REFUSED_PARSIMONY_TMPL,
             "refused_parsimony_left_out": FINISH_REFUSED_PARSIMONY_LEFT_OUT,
+            "parsimony_unchecked": FINISH_PARSIMONY_UNCHECKED_TMPL,
+            "parsimony_stale": FINISH_PARSIMONY_STALE,
+            "parsimony_unavailable": FINISH_PARSIMONY_UNAVAILABLE,
             "refused_adequacy": FINISH_REFUSED_ADEQUACY_TMPL,
             "restored_best": FINISH_RESTORED_BEST_TMPL,
             "armed": FINISH_ARMED_TMPL,
@@ -1985,6 +2021,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "empty_report_marker": SUBAGENT_EMPTY_REPORT_MARKER,
             "turn_cap_report": SUBAGENT_TURN_CAP_REPORT_TMPL,
             "turn_cap_nothing_written": SUBAGENT_TURN_CAP_NOTHING_WRITTEN,
+            "provider_refusal": SUBAGENT_PROVIDER_REFUSAL_TMPL,
             # One entry PER notice, not a joined blob: each is injected verbatim into a subagent's
             # system prompt on its own, so each must be a tracked LEAF (see
             # tests/test_prompt_tracking.py). A concatenation would leave the individual texts
@@ -1992,6 +2029,7 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             **{f"turn_notice_{threshold}": text for threshold, text in SUBAGENT_TURN_NOTICES},
             "tool_disabled_repeated": TOOL_DISABLED_REPEATED_TMPL,
             "tool_disabled_transport": TOOL_DISABLED_TRANSPORT_TMPL,
+            "tool_reopening": TOOL_REOPENING_TMPL,
             "fit_call_timeout": FIT_CALL_TIMEOUT_TMPL,
             "fit_still_compiling": FIT_STILL_COMPILING_TMPL,
             "call_behind_compile": CALL_BEHIND_COMPILE_TMPL,

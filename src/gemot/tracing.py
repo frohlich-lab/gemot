@@ -172,6 +172,23 @@ _HELD_BY_CHILD = {"tools": "TOOL", "model": "LLM"}
 _AGENT_CHILD = "model"
 _STRIPPED_OUTPUT_KEYS = ("output.value", "output.mime_type")
 
+# ------------------------------------------------------------------- consumer-closed spans
+# The driver stops a run at a step boundary (a budget, an early stop) by leaving the graph's
+# stream and closing it, and closing a suspended langgraph stream throws GeneratorExit into it,
+# which the LangChain instrumentor records as the graph span's ERROR. Nothing failed, yet each such
+# run carried a failed span that the explorer marked and `metrics` counted (`n_span_errors`), and the
+# 2026-11 trace review read them as errors (gemot#166). Exported UNSET instead; the exception event
+# stays on the span. A stall cancels the step rather than closing the stream: CancelledError, kept.
+_CONSUMER_CLOSED = "GeneratorExit"
+
+
+def _closed_by_consumer(span: Any) -> bool:
+    """Whether ``span`` failed only because its stream was closed (see above)."""
+    status = getattr(span, "status", None)
+    return getattr(getattr(status, "status_code", None), "name", None) == "ERROR" and (
+        getattr(status, "description", None) or ""
+    ).startswith(_CONSUMER_CLOSED)
+
 
 def _child_mark(span: Any) -> str | None:
     """What ``span`` tells the exporter about its parent: ``TOOL`` or ``LLM`` (it holds an output
@@ -510,9 +527,11 @@ def _strip_span(
     agent = _AGENT_CHILD in children
     inputs = agent or span.name in _STRIPPED_INPUT_SPANS or kind in _STRIPPED_INPUT_KINDS
     outputs = agent or _held_by_children(span, children)
-    if not (inputs or outputs):
+    closed = _closed_by_consumer(span)
+    if not (inputs or outputs or closed):
         return span
     from opentelemetry.sdk.trace import ReadableSpan
+    from opentelemetry.trace import Status, StatusCode
 
     stripped = (_STRIPPED_INPUT_KEYS if inputs else ()) + (_STRIPPED_OUTPUT_KEYS if outputs else ())
     attributes = {
@@ -531,7 +550,7 @@ def _strip_span(
         events=span.events,
         links=span.links,
         kind=span.kind,
-        status=span.status,
+        status=Status(StatusCode.UNSET) if closed else span.status,
         start_time=span.start_time,
         end_time=span.end_time,
         instrumentation_scope=span.instrumentation_scope,

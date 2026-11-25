@@ -571,10 +571,17 @@ async def test_parsimony_gate_fails_open_when_identifiability_unavailable():
     must NOT refuse — identifiability is best-effort and cannot hold a finish hostage. The finish
     arms/confirms normally."""
     mod = _agent
-    for ident in (_ident(available=False), _ident(fim=False), {}):
-        tool = _tool_for(mod, _fit(), identifiability=ident)
-        assert "FINISH ARMED" in await _finish(tool)
-        assert (await _finish(tool)).startswith("Recorded: finish")
+    no_rank = {**_IDENTIFIABLE, "fim": {"rank": 3, "n_estimated": 3}}
+    note = prompts.FINISH_PARSIMONY_UNCHECKED_TMPL.format(why=prompts.FINISH_PARSIMONY_UNAVAILABLE)
+    for ident in (_ident(available=False), _ident(fim=False), {}, no_rank):
+        fs = {}
+        tool = _tool_for(mod, _fit(), identifiability=ident, finish_state=fs)
+        armed = await _finish(tool)
+        assert "FINISH ARMED" in armed and armed.endswith(note)
+        confirmed = await _finish(tool)
+        assert confirmed.startswith("Recorded: finish") and confirmed.endswith(note)
+        # gemot#162: each unchecked pass is a relent of its own, never a silent one
+        assert fs["relents"] == {"parsimony_unavailable": 2} and fs["refusals"] == {}
 
 
 @pytest.mark.asyncio
@@ -755,7 +762,104 @@ async def test_a_stale_diagnosis_never_refuses_a_finish():
         **_ident(rank_deficient=True, flat_directions=[{"participants": [{"id": "a"}]}]),
         "stale": True,
     }
-    assert "FINISH ARMED" in await _finish(_tool_for(mod, _fit(), identifiability=ident))
+    fs = {}
+    armed = await _finish(_tool_for(mod, _fit(), identifiability=ident, finish_state=fs))
+    assert "FINISH ARMED" in armed
+    assert armed.endswith(
+        prompts.FINISH_PARSIMONY_UNCHECKED_TMPL.format(why=prompts.FINISH_PARSIMONY_STALE)
+    )
+    assert fs["relents"] == {"parsimony_stale": 1}
+
+
+def test_a_checked_diagnosis_is_not_unchecked():
+    """The fail-open record must not fire on a diagnosis the gate did read, either way it read."""
+    unchecked = _agent.finish_gate._parsimony_unchecked
+    assert unchecked(_IDENTIFIABLE) is None
+    assert unchecked(_FLAT_16_ICS) is None
+
+
+# What the server answers after a restore when the restored version's fit stored no verdict of its
+# own (froehlich 63619743_29 and lucarelli 63968832_7 stored no FIM, gemot#162): the in-memory fit
+# record is another structure's, so the section is either that record labelled stale or no verdict.
+_STALE_AFTER_RESTORE = {
+    **_IDENTIFIABLE,
+    "stale": True,
+    "stale_note": "this describes the LAST FIT, not the model in front of you",
+}
+_NONE_AFTER_RESTORE = {"available": False, "method": "none", "note": "no fitted optimum"}
+
+
+class _RestoreSession(_FakeSession):
+    """A :class:`_FakeSession` whose diagnosis turns into ``after_restore`` once a version is
+    restored, as the server's does when the restored version's own verdict is not on hand."""
+
+    def __init__(self, *args, after_restore, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.after_restore = after_restore
+
+    async def call_tool(self, name, args):
+        res = await super().call_tool(name, args)
+        if name == "restore_version" and args["version"] in self.restored:
+            self.identifiability = self.after_restore
+        return res
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("after_restore", "reason", "why"),
+    [
+        (_STALE_AFTER_RESTORE, "stale", prompts.FINISH_PARSIMONY_STALE),
+        (_NONE_AFTER_RESTORE, "unavailable", prompts.FINISH_PARSIMONY_UNAVAILABLE),
+    ],
+)
+async def test_a_refused_version_restored_and_passed_unchecked_is_a_relent(
+    after_restore, reason, why, capsys
+):
+    """REGRESSION gemot#162: refused on v15, the lead explores on to v20, and the next finish
+    restores v15 onto a diagnosis the gate cannot use. It fails open, by design; froehlich
+    63619743_29 and lucarelli 63968832_7 passed that way with relents `{}` and nothing said. The
+    pass still goes through, but it is a relent, under its reason, and both replies tell the lead
+    the check did not run."""
+    mod = _agent
+    best = _fit(version=15, bic=205.0)
+    rows = [
+        {"version": 15, "criterion_value": 205.0, "bic": 205.0},
+        {"version": 20, "criterion_value": 260.0, "bic": 260.0},
+    ]
+    session = _RestoreSession(
+        best,
+        identifiability=_FLAT_16_ICS,
+        versions=rows[:1],
+        head=15,
+        summaries={15: best},
+        after_restore=after_restore,
+    )
+    fs = {}
+    tool = mod._finish_tool(session, fs)
+
+    refused = await _finish(tool)
+    assert "FINISH REFUSED" in refused and "rank-deficient" in refused.lower()
+    assert session.restored == []
+
+    # The lead explores past v15 without beating it; its own last fit is identifiable.
+    session.versions, session.head = rows, 20
+    session.fit_summary = _fit(version=20, bic=260.0)
+    session.identifiability = _IDENTIFIABLE
+
+    note = prompts.FINISH_PARSIMONY_UNCHECKED_TMPL.format(why=why)
+    armed = await _finish(tool)
+    assert session.restored == [15]
+    assert armed.startswith(prompts.FINISH_RESTORED_BEST_TMPL.format(best=15, head=20))
+    assert "FINISH ARMED" in armed and "bic=205" in armed and armed.endswith(note)
+    confirmed = await _finish(tool)
+    assert confirmed.startswith("Recorded: finish") and confirmed.endswith(note)
+
+    assert fs["confirmed"] is True
+    assert fs["refusals"] == {"parsimony": 1}
+    assert fs["relents"] == {f"parsimony_{reason}": 2}
+    # the log names the server's own reason, so a run's .out says which source failed
+    said = after_restore.get("stale_note") or after_restore["note"]
+    assert f"[finish UNCHECKED] parsimony: diagnosis {reason} ({said})" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio
@@ -1004,6 +1108,40 @@ async def test_the_gate_restores_nothing_when_head_is_the_best():
     armed = await _finish(mod._finish_tool(session))
     assert "FINISH ARMED" in armed and "restored" not in armed
     assert "restore_version" not in session.calls
+
+
+@pytest.mark.asyncio
+async def test_a_fit_armed_fresh_confirms_once_the_gate_restores_it(capsys):
+    """gemot#166, bruno 63612603_50/53. The server serves a restored version's summary with
+    ``version: None`` (its stored simulation carries none). Keyed on that version, the fit the lead
+    armed while it was HEAD (v4) re-armed when, after a worse v5, the gate restored it: the lead had
+    sent its confirmation and was handed ARMED again. The gate names HEAD by describe_problem."""
+    mod = _agent
+    best = _fit(version=4, bic=205.0, neg_log_likelihood=90.0)
+    session = _FakeSession(
+        best, versions=_ROWS[:2], head=4, summaries={4: {**best, "version": None}}
+    )
+    tool = mod._finish_tool(session)
+    assert "FINISH ARMED" in await _finish(tool)
+    # The lead tries one more structure, which fits worse, and HEAD moves to it.
+    session.versions, session.head, session.fit_summary = _ROWS, 5, _fit(version=5, bic=260.0)
+    confirmed = await _finish(tool)
+    assert session.restored == [4]
+    assert "Recorded: finish" in confirmed and "bic=205" in confirmed
+    # ...and the log names the version, where it printed `v=None`.
+    assert "[finish CONFIRMED v=4]" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_the_log_names_a_restored_version_the_summary_leaves_unnamed(capsys):
+    mod = _agent
+    worse_head = _fit(version=5, bic=260.0)
+    best = _fit(version=None, bic=205.0, neg_log_likelihood=90.0)
+    session = _FakeSession(worse_head, versions=_ROWS, head=5, summaries={4: best})
+    tool = mod._finish_tool(session)
+    assert "FINISH ARMED" in await _finish(tool)
+    assert "[finish ARMED v=4]" in capsys.readouterr().out
+    assert "Recorded: finish" in await _finish(tool)
 
 
 @pytest.mark.asyncio
