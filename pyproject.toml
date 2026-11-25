@@ -204,6 +204,10 @@ dev = [
     # (test_tool_descriptions, test_diagnosis_never_compiles). Both bounds are the server's:
     # petab-mcp pins `fastmcp>=4,<5`.
     "fastmcp>=4,<5",
+    # tests/test_sweep.py builds the fit pool's worker job script from the settings its service job
+    # exports, as the pool's own dask-jobqueue will (gemot.sweep). The floor is the server's `dask`
+    # extra's: below 0.8.5 every sbatch the pool runs blocks its scheduler (dask/dask-jobqueue#610).
+    "dask-jobqueue>=0.8.5",
     "gemot[agent]",
     "gemot[neural]",
     "gemot[pool]",

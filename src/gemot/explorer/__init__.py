@@ -9,5 +9,5 @@ The harness records a run in two disjoint stores joined by ``phoenix_trace_id``:
 
 This package assembles both into one view model (:mod:`.bundle`), archives each run's on-disk
 half at run end so it survives the next ``cleanup()`` wipe (:mod:`.archive`), and serves a
-scroll-synced viewer (:mod:`.server`). Entry point: gemot_iclr_2026's ``scripts/explore_ui.py``.
+scroll-synced viewer (:mod:`.server`). Entry point: ``python -m gemot.explorer`` (:mod:`.__main__`).
 """

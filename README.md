@@ -116,7 +116,10 @@ archived as `work/codex_events.jsonl` or `work/claude_events.jsonl`. See
   through AMICI's JAX backend, scores it against the example's held-out set, and distils the
   field into Antimony rate laws with PySR for the same judge.
   `python -m gemot.neural_ode fit|propose` runs either half.
-- `gemot.explorer` — the run viewer over archived and in-flight runs.
+- `gemot.explorer` — the run viewer over archived and in-flight runs (`python -m gemot.explorer`).
+- `gemot.sweep` — the Slurm sweep driver for a checkout that pins gemot: one job array of runs
+  whose fits share one pool of SLURM workers, and the pool, trace collector and explorer as
+  service jobs (`python -m gemot.sweep`, [docs/SWEEP.md](docs/SWEEP.md)).
 - `gemot.analysis`, `gemot.ablations` — sweep analysis (`python -m gemot.analysis`) and the
   registry of every switch that changes what a run does (`python -m gemot.ablations`).
 - `gemot.causal_constraints` — what the `causal_constraints` arm records: the refusals per
