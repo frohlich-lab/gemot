@@ -16,9 +16,9 @@ A change here reaches the benchmark when its gemot pin is bumped.
 
 ## Read before you change behaviour
 
-The "Overview" and "Design Notes" sections of the
-[PEtab MCP README](https://github.com/frohlich-lab/PEtab-MCP#design-notes). The design principles
-of the package are defined there.
+The "Overview" section of the [PEtab MCP README](https://github.com/frohlich-lab/PEtab-MCP) and
+its [design notes](https://github.com/frohlich-lab/PEtab-MCP/blob/main/docs/DESIGN.md). The design
+principles of the package are defined there.
 
 ## Writing code here
 

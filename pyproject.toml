@@ -158,15 +158,23 @@ dependencies = [
     # `edit_rejects`, and #366's `pin` op.
     # #370: the server's git pins leave its published metadata (below). The rest change texts and
     # fields gemot does not read.
-    "petab-mcp==0.1.0",
+    # Then 0.1.1 from PyPI (v0.1.1, 948eb52). #374: a noise sigma is judged against its data's
+    # replicate pure error where there are replicates (cap raised to 1.5x it, collapsed only below
+    # 0.5x it, never without replicates), PEtab-MCP#320's rule; the judge and finish gate read the
+    # server's flags, so only the dead `NOISE_SIGMA_COLLAPSE_FRACTION` import and the tests that
+    # built collapse from it follow. #372: pysb, INDRA and BioNetGen are the `statements` extra; the
+    # indra_statements arm starts its server with an entity map, which the server refuses without
+    # them, so gemot asks for the extra. #371: the design notes are in docs/DESIGN.md.
+    "petab-mcp[statements]==0.1.1",
     # The server's two git pins, which PyPI does not allow in its published metadata
     # (PEtab-MCP#370), so they are declared here instead; drop each once its release is out.
     # petab at PEtab-dev/libpetab-python#579 (open), which keeps per-experiment constants in the
     # condition table: without it Froehlich_CellSystems2018 does not import. It also stands for
     # the `petab` gemot imports directly (see below).
     "petab @ git+https://github.com/PEtab-dev/libpetab-python.git@08a13908b060dd605df09f3a58c65ac01464520b",
-    # pysb with pysb/pysb#611 (merged, unreleased): 1.17.0 caps `sympy<1.12`, and amici 1.2.0
-    # needs `sympy>=1.12.1`, so without it the install does not resolve.
+    # pysb with pysb/pysb#611 (merged, unreleased), for the `statements` extra: 1.17.0 caps
+    # `sympy<1.12`, and amici 1.2.0 needs `sympy>=1.12.1`, so without it the install does not
+    # resolve.
     "pysb @ git+https://github.com/pysb/pysb.git@9fc6bcb118683ad851e0a4d5604abe646f77cae3",
     # The MCP *client* (runner/*, bio_sessions) and, under the `agent` extra's tool bridge, the
     # session that bridge calls through (agent/mcp_tools.py). 2.x because the server's fastmcp 4
@@ -225,6 +233,10 @@ dev = [
     # (test_tool_descriptions, test_diagnosis_never_compiles). Both bounds are the server's:
     # petab-mcp pins `fastmcp>=4,<5`.
     "fastmcp>=4,<5",
+    # tests/test_sweep.py builds the fit pool's worker job script from the settings its service job
+    # exports, as the pool's own dask-jobqueue will (gemot.sweep). The floor is the server's `dask`
+    # extra's: below 0.8.5 every sbatch the pool runs blocks its scheduler (dask/dask-jobqueue#610).
+    "dask-jobqueue>=0.8.5",
     "gemot[agent]",
     "gemot[neural]",
     "gemot[pool]",

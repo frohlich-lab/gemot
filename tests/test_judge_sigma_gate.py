@@ -18,7 +18,6 @@ from pathlib import Path
 
 import pytest
 from gemot.runner import (  # noqa: E402
-    _NOISE_SIGMA_COLLAPSE_FRACTION,
     _judge,
     _noise_sigma_flag,
     _reference_sigma_flag,
@@ -30,10 +29,18 @@ def _sigma_entry(fitted, cap, frac):
     return {"fitted": fitted, "upper_bound_cap": cap, "data_std": 1.0, "fraction_of_data_std": frac}
 
 
-_COLLAPSE_FRAC = _NOISE_SIGMA_COLLAPSE_FRACTION / 2  # well below the collapse floor
-_PLAUSIBLE = {"sigma": _sigma_entry(0.08, 0.1, 0.4)}  # below its cap, above the collapse floor
+_COLLAPSE_FRAC = 0.001
+_PLAUSIBLE = {"sigma": _sigma_entry(0.08, 0.1, 0.4)}  # below its cap, no replicate floor
 _INFLATED = {"sigma": _sigma_entry(0.5, 0.1, 2.5)}  # past the data-driven cap (absorbs misfit)
-_COLLAPSED = {"sigma": _sigma_entry(_COLLAPSE_FRAC, 0.5, _COLLAPSE_FRAC)}  # overfits the noise
+# Overfits the noise: under half its data's replicate pure error (PEtab-MCP#374), the only place
+# a collapse is judged.
+_COLLAPSED = {
+    "sigma": {
+        **_sigma_entry(_COLLAPSE_FRAC, 0.5, _COLLAPSE_FRAC),
+        "data_noise_method": "replicate",
+        "data_noise_estimate": 0.1,
+    }
+}
 # schwen's shape: comfortably under its data-std cap, but 7.83x a MEASURED pure-error replicate floor
 # — schwen's own published reference. #140 vetoed exactly this; that arm is now gone (a ratio of two
 # point estimates discards the floor's uncertainty, and schwen's n_i = 2 technical duplicates make
