@@ -152,7 +152,9 @@ dependencies = [
     # serves every standing tie. #354: the noise-sigma advice names every flagged sigma and says
     # when no model can meet the cap, so the finish gate's refusal no longer adds "fix the model
     # FORM". #356: 100 is free only as the factor of a whole readout, and the FIM rank and flat
-    # directions skip pinned parameters. #349: `query_data` columns are snake_case (gemot#176
+    # directions skip pinned parameters. #344: the 0/1 convention holds only a direct start, so
+    # the null's scoring charges the factors of a compound one. #349: `query_data` columns are
+    # snake_case (gemot#176
     # follows). #351, #352, #360, #366: new refusal causes for `edit_rejects`, and #366's `pin` op.
     # #370: the server's git pins leave its published metadata (below). The rest change texts and
     # fields gemot does not read.
