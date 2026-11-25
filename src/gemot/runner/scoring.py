@@ -18,7 +18,6 @@ from __future__ import annotations
 
 # The collapse threshold lives in petab_mcp.constants so the session's adequacy gate and this
 # judge gate share ONE value (re-exported under the old name for callers/tests).
-from petab_mcp.constants import NOISE_SIGMA_COLLAPSE_FRACTION as _NOISE_SIGMA_COLLAPSE_FRACTION
 from petab_mcp.constants import (
     NOISE_SIGMA_BAND_ALPHA as _NOISE_SIGMA_BAND_ALPHA,
     NOISE_SIGMA_BAND_MIN_DF as _NOISE_SIGMA_BAND_MIN_DF,
@@ -33,7 +32,6 @@ from ..scenario import (
 )
 
 __all__ = [
-    "_NOISE_SIGMA_COLLAPSE_FRACTION",
     "_NOISE_SIGMA_BAND_ALPHA",
     "_NOISE_SIGMA_BAND_MIN_DF",
     "_NOISE_SIGMA_REFERENCE_FACTOR",
@@ -523,9 +521,8 @@ def _noise_sigma_flag(report) -> dict | None:
     An inflated/collapsed sigma DISQUALIFIES an otherwise-passing score (see _judge). The verdict is
     the server's own (its predicates, below), the one every fit result and the finish gate show the
     agent (gemot#135). The full block is also written to result.json so a gated (or borderline) run
-    is auditable. The collapse threshold
-    ``_NOISE_SIGMA_COLLAPSE_FRACTION`` is a heuristic — tune it if a genuinely better, more flexible
-    model (a legitimately small residual sigma) is being false-failed.
+    is auditable. Since PEtab-MCP#374 a sigma is collapsed only where its data have replicates,
+    below half their pure error, and the cap is raised to 1.5x that pure error where it is higher.
     """
     if not isinstance(report, dict) or not report:
         return None

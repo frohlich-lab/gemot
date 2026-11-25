@@ -9,7 +9,6 @@ skip where that is absent."""
 from __future__ import annotations
 
 from gemot.runner.scoring import (  # noqa: E402
-    _NOISE_SIGMA_COLLAPSE_FRACTION,
     _noise_sigma_flag,
     _residual_structure_fields,
 )
@@ -121,6 +120,12 @@ def _sigma_entry(fitted, cap, frac):
     return {"fitted": fitted, "upper_bound_cap": cap, "data_std": 1.0, "fraction_of_data_std": frac}
 
 
+def _replicated(entry, pure_error):
+    """``entry`` over data with replicates: a collapse is judged only there, below half their pure
+    error (PEtab-MCP#374)."""
+    return {**entry, "data_noise_method": "replicate", "data_noise_estimate": pure_error}
+
+
 def test_noise_sigma_flag_none_when_no_estimated_sigma():
     assert _noise_sigma_flag(None) is None
     assert _noise_sigma_flag({}) is None
@@ -140,11 +145,18 @@ def test_noise_sigma_flag_detects_inflation():
 
 
 def test_noise_sigma_flag_detects_collapse():
-    # fraction below the collapse floor -> collapsed (overfitting the noise).
-    frac = _NOISE_SIGMA_COLLAPSE_FRACTION / 2
-    f = _noise_sigma_flag({"sigma": _sigma_entry(frac, 0.5, frac)})
+    # under half the data's replicate pure error -> collapsed (overfitting the noise).
+    frac = 0.001
+    f = _noise_sigma_flag({"sigma": _replicated(_sigma_entry(frac, 0.5, frac), 0.1)})
     assert f["collapsed"] is True and f["inflated"] is False
     assert f["min_fraction_of_data_std"] == frac
+
+
+def test_noise_sigma_flag_judges_no_collapse_without_replicates():
+    # however small, a sigma over data without replicates is not called collapsed: BIC's k*ln(n)
+    # is the guard there (PEtab-MCP#374).
+    f = _noise_sigma_flag({"sigma": _sigma_entry(0.001, 0.5, 0.001)})
+    assert f["collapsed"] is False and f["inflated"] is False
 
 
 def test_noise_sigma_flag_detects_both_inflated_and_collapsed():
@@ -153,7 +165,7 @@ def test_noise_sigma_flag_detects_both_inflated_and_collapsed():
     f = _noise_sigma_flag(
         {
             "sig_hi": _sigma_entry(0.5, 0.1, 2.5),  # inflated
-            "sig_lo": _sigma_entry(0.01, 0.5, _NOISE_SIGMA_COLLAPSE_FRACTION / 2),  # collapsed
+            "sig_lo": _replicated(_sigma_entry(0.01, 0.5, 0.01), 0.1),  # collapsed
         }
     )
     assert f["inflated"] is True and f["collapsed"] is True
