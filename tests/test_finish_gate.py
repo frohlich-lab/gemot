@@ -777,9 +777,9 @@ def test_a_checked_diagnosis_is_not_unchecked():
     assert _agent._parsimony_unchecked(_FLAT_16_ICS) is None
 
 
-# raimundez 63782292_14 (gemot#162), as the server answers after a restore: the in-memory fit record
-# is v20's, another structure, so with no stored verdict of v15's to re-serve the section is either
-# that record labelled stale or no verdict at all.
+# What the server answers after a restore when the restored version's fit stored no verdict of its
+# own (froehlich 63619743_29 and lucarelli 63968832_7 stored no FIM, gemot#162): the in-memory fit
+# record is another structure's, so the section is either that record labelled stale or no verdict.
 _STALE_AFTER_RESTORE = {
     **_IDENTIFIABLE,
     "stale": True,
@@ -814,11 +814,11 @@ class _RestoreSession(_FakeSession):
 async def test_a_refused_version_restored_and_passed_unchecked_is_a_relent(
     after_restore, reason, why, capsys
 ):
-    """REGRESSION gemot#162 (raimundez 63782292_14): `[finish BLOCKED 1/3]` on v15, the lead
-    explored on to v20, and the next finish restored v15 and ARMED and CONFIRMED it with relents
-    `{}`: the parsimony gate failed open on a diagnosis it could not use, by design, and nothing
-    said so. The pass still goes through, but it is a relent, under its reason, and both replies
-    tell the lead the check did not run."""
+    """REGRESSION gemot#162: refused on v15, the lead explores on to v20, and the next finish
+    restores v15 onto a diagnosis the gate cannot use. It fails open, by design; froehlich
+    63619743_29 and lucarelli 63968832_7 passed that way with relents `{}` and nothing said. The
+    pass still goes through, but it is a relent, under its reason, and both replies tell the lead
+    the check did not run."""
     mod = _agent
     best = _fit(version=15, bic=205.0)
     rows = [

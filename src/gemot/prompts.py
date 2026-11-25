@@ -1373,9 +1373,9 @@ FINISH_REFUSED_PARSIMONY_LEFT_OUT = (
 
 # Ends the ARM and CONFIRM text when the parsimony gate could not check the version it judges
 # (finish_gate._parsimony_unchecked) and so let it through, as it does by design. Without it the
-# pass read as a cleared check: raimundez 63782292_14 (gemot#162) was refused on v15 and then
-# passed on v15 restored, with nothing said. `why` is one of the two constants below. Like the
-# refusal it does not say when the gate stops refusing.
+# pass read as a cleared check: froehlich 63619743_29 and lucarelli 63968832_7 (gemot#162) finished
+# on versions whose fits stored no FIM, with nothing said. `why` is one of the two constants below.
+# Like the refusal it does not say when the gate stops refusing.
 FINISH_PARSIMONY_UNCHECKED_TMPL = (
     " NOTE — the finish gate could not check this version for parameters the data cannot "
     "constrain: {why}. Its passing says nothing about whether they are identifiable."

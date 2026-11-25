@@ -209,9 +209,12 @@ def _parsimony_unchecked(ident) -> str | None:
     counter).
 
     The gate fails open on both, by design, and records the pass as a relent under
-    ``parsimony_<reason>``. Recorded because a silent one let a refused version through: raimundez
-    63782292_14 (gemot#162) was refused on v15, then passed on v15 restored as HEAD, with
-    ``relents`` empty and nothing in the text to tell the pass from a cleared check.
+    ``parsimony_<reason>``. In gemot_pools_20261107 two runs finished this way with ``relents``
+    empty and nothing in the text to tell the pass from a cleared check (gemot#162): froehlich
+    63619743_29 (k=160) and lucarelli 63968832_7 (k=171), whose scored versions stored no FIM.
+    Deliberately NOT the raimundez 63782292_14 case #162 was opened on: there the pass was a real
+    check of v15's own full-rank verdict, and the earlier refusal of v15 was the server serving the
+    last fit's FIM after a restore onto another fit of the same structure.
     """
     if not isinstance(ident, dict) or not ident.get("available"):
         return "unavailable"
