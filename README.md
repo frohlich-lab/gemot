@@ -34,7 +34,7 @@ from the running script or the working directory, or from `PETAB_MCP_REPO_ROOT` 
 Python 3.12+ and a C++ toolchain for AMICI (see [Troubleshooting](#troubleshooting)).
 
 ```bash
-pip install -e .              # gemot + the pinned server
+pip install -e .              # gemot + the pinned server release from PyPI
 pip install -e '.[harness]'   # + the deepagents panel and Phoenix tracing, for LLM-driven runs
 ```
 
@@ -116,7 +116,10 @@ archived as `work/codex_events.jsonl` or `work/claude_events.jsonl`. See
   through AMICI's JAX backend, scores it against the example's held-out set, and distils the
   field into Antimony rate laws with PySR for the same judge.
   `python -m gemot.neural_ode fit|propose` runs either half.
-- `gemot.explorer` — the run viewer over archived and in-flight runs.
+- `gemot.explorer` — the run viewer over archived and in-flight runs (`python -m gemot.explorer`).
+- `gemot.sweep` — the Slurm sweep driver for a checkout that pins gemot: one job array of runs
+  whose fits share one pool of SLURM workers, and the pool, trace collector and explorer as
+  service jobs (`python -m gemot.sweep`, [docs/SWEEP.md](docs/SWEEP.md)).
 - `gemot.analysis`, `gemot.ablations` — sweep analysis (`python -m gemot.analysis`) and the
   registry of every switch that changes what a run does (`python -m gemot.ablations`).
 - `gemot.causal_constraints` — what the `causal_constraints` arm records: the refusals per
@@ -126,8 +129,8 @@ archived as `work/codex_events.jsonl` or `work/claude_events.jsonl`. See
 ## Design notes
 
 The principles gemot is built on are the server's — the single scored editing tool, the one
-named score every gate reads, the versioned provenance. They are stated in the
-[PEtab MCP README](https://github.com/frohlich-lab/PEtab-MCP#design-notes).
+named score every gate reads, the versioned provenance. They are stated in the server's
+[design notes](https://github.com/frohlich-lab/PEtab-MCP/blob/main/docs/DESIGN.md).
 
 ## Development
 
@@ -145,9 +148,3 @@ MIT
 AMICI compiles generated C++ and needs a toolchain: a C++ compiler, CMake, Ninja, and the
 pip `swig` binary on `PATH` (OpenBLAS ships in the AMICI wheel).
 
-The server repository is private, and pip fetches it with `git`, so `git` needs read access
-to it — through `gh auth setup-git`, or by fetching that one URL over SSH:
-
-```bash
-git config --global url."git@github.com:frohlich-lab/PEtab-MCP".insteadOf https://github.com/frohlich-lab/PEtab-MCP
-```

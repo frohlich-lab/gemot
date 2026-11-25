@@ -271,9 +271,10 @@ def test_numbers_outside_the_estimated_rows_are_charged(tmp_path):
 
 def test_the_panels_free_numbers_stay_free(tmp_path):
     """What the reconcile leaves fixed costs the null nothing either: a start at 0, unset, or 1 —
-    written as a number or through the parameters of its initial assignment (`D = D0` with D0 at 1,
-    `H = H_tot*H_fold` with both at 0 or 1), with or without a fixed row — and a value a rule
-    computes (it cannot have a row at all)."""
+    written as a number or as one parameter at that value (`D = D0` with D0 at 1), with or without
+    a fixed row — and a value a rule computes (it cannot have a row at all). The factors of a
+    compound start (`H = H_tot*H_fold`, both at 0 or 1) are estimated, as the panel's reconcile
+    mints them (PEtab-MCP#344), so the null is charged for them too."""
     import libsbml
 
     work = _workspace(tmp_path)
@@ -300,7 +301,11 @@ def test_the_panels_free_numbers_stay_free(tmp_path):
     _add_rows(work, "D20\tlin\t0.0\t1.0\t0.0\t0")
     out = R.check_delivery(work, staged)
     assert out["petab_lint"]["ok"], out["petab_lint"]
-    assert out["estimated"] == ["k1", "k2"] and out["uncharged"] == []
+    assert out["estimated"] == ["H_fold", "H_tot", "k1", "k2"]
+    assert out["uncharged"] == [
+        "H_fold = 1: no parameter-table row",
+        "H_tot = 0: no parameter-table row",
+    ]
 
 
 def test_the_delivered_value_decides_the_unit_start(tmp_path):

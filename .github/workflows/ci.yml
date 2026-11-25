@@ -44,10 +44,10 @@ jobs:
           restore-keys: pip-ninja-${{ runner.os }}-py${{ matrix.python-version }}-
 
       # AMICI generates and compiles C++ for every model, and is itself built
-      # from source here: petab-mcp pins a git commit of it, and so does the
-      # `neural` extra (pyproject.toml); its build pulls BLAS from the
-      # scipy-openblas64 wheel. A C/C++ compiler and CMake ship on ubuntu-latest;
-      # the Ninja generator AMICI drives CMake with does not, so install it.
+      # from source here: its release is an sdist (pyproject.toml); its build
+      # pulls BLAS from the scipy-openblas64 wheel. A C/C++ compiler and CMake
+      # ship on ubuntu-latest; the Ninja generator AMICI drives CMake with does
+      # not, so install it.
       #
       # No HDF5: AMICI >= 1.2.0 pickles a solver as a dict of its settings, so a
       # fit start reaches a worker without it, and petab-mcp's CI dropped it
@@ -76,21 +76,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --unshare-all --ro-bind / / --proc /proc --dev /dev true
-
-      # petab-mcp is a git dependency on a PRIVATE repository (pyproject.toml), which this job's
-      # GITHUB_TOKEN cannot read: fetch that one URL over SSH with a read-only deploy key of that
-      # repository, held here as a secret.
-      - name: Read access to the server repository
-        env:
-          DEPLOY_KEY: ${{ secrets.PETAB_MCP_DEPLOY_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/petab_mcp && chmod 600 ~/.ssh/petab_mcp
-          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts
-          git config --global core.sshCommand "ssh -i ~/.ssh/petab_mcp -o IdentitiesOnly=yes"
-          git config --global \
-            url."ssh://git@github.com/frohlich-lab/PEtab-MCP".insteadOf \
-            "https://github.com/frohlich-lab/PEtab-MCP"
 
       # AMICI's source build compiles serially unless told otherwise; the pip
       # cache keeps the built wheel for the pinned commit.

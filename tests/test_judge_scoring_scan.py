@@ -25,7 +25,10 @@ from gemot.runner import _judge, _noise_sigma_flag, _ToolClock  # noqa: E402
 #: brannmark's own numbers: the reference's fitted sigma for sigmaYDosR, and the data's spread.
 _REF_SIGMA = 17.578327340872296
 _DATA_STD = 34.5
-#: A sigma the server flags collapsed: under NOISE_SIGMA_COLLAPSE_FRACTION (1%) of the data's spread.
+#: The replicate pure error of sigmaYDosR's data, as the server reports it. A collapse is judged
+#: only against it, below half of it (PEtab-MCP#374).
+_PURE_ERROR = 2.0
+#: A sigma the server flags collapsed: under half the replicate pure error.
 _COLLAPSED_SIGMA = 0.2
 #: A sigma the server accepts, 0.68 of the reference's.
 _CLEAN_SIGMA = 12.0
@@ -47,6 +50,8 @@ def _report(sigma):
             "upper_bound_cap": 30.0,
             "data_std": _DATA_STD,
             "fraction_of_data_std": sigma / _DATA_STD,
+            "data_noise_method": "replicate",
+            "data_noise_estimate": _PURE_ERROR,
         }
     }
 

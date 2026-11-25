@@ -623,8 +623,8 @@ async def _judge(
     )
 
     # Estimated-noise-sigma plausibility of the SCORED model: a sigma the server flags (inflated past
-    # its data-driven cap, or collapsed below a fraction of the data's spread) disqualifies an
-    # otherwise-passing score. The raw report is stored in result.json to audit it after the fact.
+    # its data-driven cap, or collapsed below half its data's replicate pure error, PEtab-MCP#374)
+    # disqualifies an otherwise-passing score. The raw report is stored in result.json to audit it after the fact.
     noise_sigma_report = final.get("noise_sigma_report") if isinstance(final, dict) else None
     ref = scenario.reference()
     judge_mode = _judge_mode(scenario)
