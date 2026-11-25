@@ -28,6 +28,14 @@ wall-clock is the number of sequential WAVES, not the start count:
     waves(n_starts)      = ceil(n_starts / fit_workers(n_starts))
     fit_time_budget(...) = FIT_COMPILE_MARGIN_S + waves * FIT_PER_START_TIMEOUT_S
 
+On a sweep's fit pool (``PETAB_MCP_FIT_POOL``) the starts do not run on the job's own cores: the
+server sends them to the pool's workers and spreads a fit over the idle ones (PEtab-MCP#254), so a
+fit takes about one wave. Waves counted over the job's ``FIT_N_WORKERS`` then overstate it by up to
+the pool's size over the job's CPUs: alkan's 100 starts on 8 CPUs came to 13 waves of 2,400 s, and
+its pooled fits took 2,400-3,000 s (gemot#117). The timeouts keep that generous figure, since each
+live heartbeat moves them out anyway. Only the driver's last-step reserve counts one wave on a pool
+(``pool=True``): it is the one place where overstating a fit costs the run, which it stops early.
+
 Both the per-start cap and the worker count are shared with the SERVER (``petab_mcp.fitting``,
 which applies both) through the ``PETAB_MCP_FIT_PER_START_TIMEOUT`` / ``PETAB_MCP_FIT_N_WORKERS``
 env vars — the runner exports its resolved values onto the server subprocess (:mod:`runner`), so
@@ -157,15 +165,18 @@ def fit_workers(n_starts: int) -> int:
     return max(1, min(FIT_N_WORKERS, max(1, int(n_starts))))
 
 
-def fit_time_budget(n_starts: int) -> float:
+def fit_time_budget(n_starts: int, *, pool: bool = False) -> float:
     """Wall-clock (seconds) the stall watchdog sizes itself to for one full ``n_starts``
     multistart fit: the number of sequential worker WAVES times the per-start
     cap, plus compile slack, times ``FIT_BUDGET_MARGIN`` so a fit that legitimately uses its
     entire nominal budget (every wave hitting its per-start cap) still has headroom over normal
     MCP/network/serialization overhead before being mistaken for a hang. Callers size their stall
-    timeouts to this so a within-budget fit is never flagged as a hang."""
+    timeouts to this so a within-budget fit is never flagged as a hang.
+
+    ``pool`` counts one wave, as a fit on a sweep's fit pool takes (see the module docstring). Only
+    the driver's last-step reserve passes it; a timeout keeps the job's waves."""
     n = max(1, int(n_starts))
-    waves = math.ceil(n / fit_workers(n))
+    waves = 1 if pool else math.ceil(n / fit_workers(n))
     return (FIT_COMPILE_MARGIN_S + waves * FIT_PER_START_TIMEOUT_S) * FIT_BUDGET_MARGIN
 
 

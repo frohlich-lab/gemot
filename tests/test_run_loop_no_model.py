@@ -891,3 +891,36 @@ def test_time_queued_for_the_fit_pool_is_not_the_runs(monkeypatch):
 
     assert result["stop_reason"] == "silent_stop"
     assert result["provider_outage_retries"] == 2
+
+
+@requires_harness
+@pytest.mark.parametrize(
+    "fit_pool, stop_reason", [(False, "wall_time_budget_exceeded"), (True, "silent_stop")]
+)
+def test_a_run_on_the_fit_pool_is_not_stopped_a_fits_waves_early(
+    monkeypatch, fit_pool, stop_reason
+):
+    """gemot#117, replayed: alkan (100 starts, a 2,400 s cap, a job of 8 CPUs, a pool of 384
+    workers) at 15.6 h of its 100,000 s budget, 12.2 h left. Counted over the job's CPUs a fit is
+    13 waves, 44,520 s, so the run stopped there. On the pool it is one wave, 4,200 s, and the run
+    goes on to its normal end."""
+    import types
+
+    from test_fit_timeouts import alkan
+
+    mod = _load_agent_module()
+    alkan(monkeypatch)
+    started = [0.0]  # the driver's first reading starts the budget; every later one is 15.6 h on
+    monkeypatch.setattr(
+        mod.driver,
+        "time",
+        types.SimpleNamespace(monotonic=lambda: started.pop() if started else 56_000.0),
+    )
+    result, agent = _run(
+        mod,
+        monkeypatch,
+        _Probe(model_authored=True),
+        driver_options={"n_starts": 100, "max_wall_seconds": 100_000.0, "fit_pool": fit_pool},
+    )
+
+    assert result["stop_reason"] == stop_reason

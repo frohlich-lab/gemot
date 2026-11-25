@@ -299,6 +299,9 @@ async def _drive(
                         n_starts=args.n_starts,
                         max_wall_seconds=args.max_wall_seconds,
                         heartbeats=heartbeats,
+                        # Where the server's bootstrap sends the fits (runner/server.py), read
+                        # under the same name; the run records it in `fit_settings`.
+                        fit_pool=bool(os.environ.get("PETAB_MCP_FIT_POOL")),
                         progress_probe=raw_call_tool,
                         # The exact liveness signal, not a probe: Popen.poll() cannot confuse
                         # a server busy fitting with one that is gone (see _server_is_alive).
