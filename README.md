@@ -126,8 +126,8 @@ archived as `work/codex_events.jsonl` or `work/claude_events.jsonl`. See
 ## Design notes
 
 The principles gemot is built on are the server's — the single scored editing tool, the one
-named score every gate reads, the versioned provenance. They are stated in the
-[PEtab MCP README](https://github.com/frohlich-lab/PEtab-MCP#design-notes).
+named score every gate reads, the versioned provenance. They are stated in the server's
+[design notes](https://github.com/frohlich-lab/PEtab-MCP/blob/main/docs/DESIGN.md).
 
 ## Development
 
