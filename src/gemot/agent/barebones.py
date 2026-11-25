@@ -65,6 +65,43 @@ from .token_usage import _token_accountant
 _FINAL_REPLY_CHARS = 4000
 
 
+def _tool_counter(stats: dict[str, Any]):
+    """Middleware counting the agent's tool dispatches into ``stats["tools_executed"]``, as the
+    panel's dispatch guard (:func:`.guards._tool_dispatch_guard`) does, and doing nothing else:
+    the guard's push-backs are design this arm goes without. Without it the arm recorded the
+    guard's seeded 0 (#164)."""
+    from langchain.agents.middleware.types import AgentMiddleware
+
+    class _ToolCounter(AgentMiddleware):
+        def wrap_tool_call(self, request, handler):
+            out = handler(request)
+            stats["tools_executed"] += 1
+            return out
+
+        async def awrap_tool_call(self, request, handler):
+            out = await handler(request)
+            stats["tools_executed"] += 1
+            return out
+
+    return _ToolCounter()
+
+
+def _agent_counts(audit: dict[str, Any]) -> dict[str, Any]:
+    """The agent's work under the keys the panel's is recorded under, from its shell audit.
+
+    The shell is this arm's work tool, as the PEtab server is the panel's: ``tool_calls`` and
+    ``tool_call_counts`` are its commands, ``n_errors`` those that failed (a non-zero exit or a
+    timeout). The judge's own calls on the server it scores the delivery with are ``judge_*``
+    (:func:`gemot.runner.judge._judge`); they used to fill these keys (#164).
+    """
+    n = audit["n_shell_commands"]
+    return {
+        "tool_calls": n,
+        "tool_call_counts": {"execute": n} if n else {},
+        "n_errors": audit["n_nonzero_exits"],
+    }
+
+
 def _final_reply(state: Any) -> str | None:
     """The text of the last AI message in a ``stream_mode="values"`` emission, or ``None``."""
     if not isinstance(state, dict):
@@ -209,8 +246,12 @@ async def run_barebones(
         tools=bio_tools,
         system_prompt=system_prompt,
         backend=backend,
-        # Infrastructure only: the runaway guard and the breaker's disabled-tool filter.
-        middleware=[_disabled_tool_filter(breaker_state), _reasoning_runaway_guard(guard_stats)],
+        # Infrastructure only: the runaway guard, the breaker's disabled-tool filter and a count.
+        middleware=[
+            _disabled_tool_filter(breaker_state),
+            _reasoning_runaway_guard(guard_stats),
+            _tool_counter(guard_stats),
+        ],
         **({"checkpointer": checkpointer} if checkpointer is not None else {}),
     )
 
@@ -399,6 +440,7 @@ async def run_barebones(
         "provider_outage_wait_s": outage_wait_s,
         "final_reply": final_reply,
         "workspace_audit": audit,
+        **_agent_counts(audit),
         "openrouter_extra_body": _extra_body(model, reasoning_effort),
         "openrouter_endpoints": token_accountant.endpoints(),
         "token_usage": token_usage,

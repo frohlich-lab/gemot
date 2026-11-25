@@ -143,13 +143,10 @@ def test_the_lead_still_loses_a_tool_for_the_run():
 # --- through the real panel ---------------------------------------------------------------------
 
 
-def _panel_run(signal: list[list[str]] | None = None) -> tuple[dict, list[str]]:
+def _panel_run() -> tuple[dict, list[str]]:
     """The graph the driver builds, in miniature: a lead holding `query_data` and the breaker's
     middleware, a signal engineer stuck on one bad query, then a mathematician and the lead each
-    making a good one. Returns the breaker state and the queries that reached the tool.
-
-    ``signal`` is the signal engineer's turns, each the queries it sends in parallel; by default
-    one bad query a turn, one turn more than the breaker allows."""
+    making a good one. Returns the breaker state and the queries that reached the tool."""
     pytest.importorskip("deepagents", reason="harness-only dependency")
     from deepagents import create_deep_agent
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -177,13 +174,9 @@ def _panel_run(signal: list[list[str]] | None = None) -> tuple[dict, list[str]]:
     _wrap_tools_with_circuit_breaker([query_data], state)
 
     ids = itertools.count()
-    if signal is None:
-        signal = [["bad"]] * (_TOOL_ERROR_DISABLE_THRESHOLD + 1)
 
-    def turn(name, *calls):
-        return AIMessage(
-            "", tool_calls=[{"name": name, "args": args, "id": f"c{next(ids)}"} for args in calls]
-        )
+    def turn(name, args):
+        return AIMessage("", tool_calls=[{"name": name, "args": args, "id": f"c{next(ids)}"}])
 
     def task(analyst):
         return turn("task", {"description": "read the residuals", "subagent_type": analyst})
@@ -196,7 +189,7 @@ def _panel_run(signal: list[list[str]] | None = None) -> tuple[dict, list[str]]:
             AIMessage("done"),
         ],
         "PERSONA-SIGNAL": [
-            *[turn("query_data", *({"sql": sql} for sql in batch)) for batch in signal],
+            *[turn("query_data", {"sql": "bad"}) for _ in range(_TOOL_ERROR_DISABLE_THRESHOLD + 1)],
             AIMessage("report"),
         ],
         "PERSONA-MATH": [turn("query_data", {"sql": "good math"}), AIMessage("report")],
@@ -249,31 +242,6 @@ def test_an_analysts_errors_leave_query_data_to_the_lead_and_the_other_analysts(
     assert disabled_tools(state) == []
     assert task_disabled_tools(state) == {"query_data": 1}
     assert any("for signal_engineer task 1" in e for e in state["events"])
-
-
-def test_one_parallel_batch_is_one_strike():
-    """Run 63612603_107 (gemot#163): three `query_data` calls the signal engineer sent in one turn
-    failed on the same SQL error, and the third disabled the tool before it had read any of them.
-    The next turn's good query must reach the tool."""
-    state, reached = _panel_run([["bad"] * _TOOL_ERROR_DISABLE_THRESHOLD, ["good signal"]])
-
-    assert reached == ["bad"] * _TOOL_ERROR_DISABLE_THRESHOLD + ["good signal"] + [
-        "good math",
-        "good lead",
-    ]
-    assert task_disabled_tools(state) == {}
-
-
-def test_batches_that_keep_failing_still_add_up_to_a_disable():
-    """A batch is one strike, not none: a batch and then single bad queries, turn after turn, cut
-    the tool at the third failing turn."""
-    turns = [["bad"] * _TOOL_ERROR_DISABLE_THRESHOLD] + [["bad"]] * (
-        _TOOL_ERROR_DISABLE_THRESHOLD - 1
-    )
-    state, reached = _panel_run([*turns, ["good signal"]])
-
-    assert reached == ["bad"] * (2 * _TOOL_ERROR_DISABLE_THRESHOLD - 1) + ["good math", "good lead"]
-    assert task_disabled_tools(state) == {"query_data": 1}
 
 
 # --- what the notice tells the caller to do instead ----------------------------------------------

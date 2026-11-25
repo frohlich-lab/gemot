@@ -65,6 +65,8 @@ _RESULT_FIELDS = (
     "scored_version",
     "fit_wait_status",
     "fit_wait_seconds",
+    # The agent's calls on its work tool and the ones that failed: the PEtab server on the panel,
+    # the shell on the null arm, whose judge's own calls are `judge_*` in result.json (#164).
     "n_errors",
     "n_tool_errors",
     "tool_calls",

@@ -59,15 +59,16 @@ def test_a_clean_stop_is_not_a_runaway():
     assert not _is_reasoning_runaway(_resp(content="done", finish="stop"))
 
 
-def test_truncated_but_substantive_text_is_not_a_runaway():
-    # length-terminated with real content: the turn was cut short but said something a
-    # downstream consumer can act on — retrying it would discard that.
-    assert not _is_reasoning_runaway(_resp(content="The model needs a Hill term", finish="length"))
+def test_text_cut_off_at_the_output_cap_is_a_runaway():
+    # gemot#161: a lead turn spent 131072 tokens, wrote a few hundred of prose and was cut
+    # mid-sentence. Exempting it for having text left it uncounted and unrecovered: the driver
+    # bounced it as a silent stop after 48 minutes (armistead 63612603_22).
+    assert _is_reasoning_runaway(_resp(content="The model needs a Hill term on", finish="length"))
 
 
-def test_block_content_with_text_is_not_a_runaway():
+def test_text_blocks_cut_off_at_the_output_cap_are_a_runaway():
     blocks = [{"type": "text", "text": "partial answer"}]
-    assert not _is_reasoning_runaway(_resp(content=blocks, finish="length"))
+    assert _is_reasoning_runaway(_resp(content=blocks, finish="length"))
 
 
 # ---------------------------------------------------------------- retry ladder
@@ -225,6 +226,38 @@ def test_healthy_call_passes_through_untouched():
     asyncio.run(guard.awrap_model_call(_Request(), handler))
     assert calls == 1
     assert stats["reasoning_runaways"] == 0
+
+
+def _counted(*results):
+    """The guard's stats after it saw ``results`` in turn, one per call (retries included)."""
+    stats = new_guard_stats()
+    guard = _reasoning_runaway_guard(stats)
+    queue = list(results)
+
+    async def handler(request):
+        return queue.pop(0)
+
+    asyncio.run(guard.awrap_model_call(_Request(), handler))
+    return stats
+
+
+def test_a_turn_cut_off_with_text_is_counted_and_retried():
+    # gemot#161: counted where the other runaway counts live, and retried like an empty one.
+    stats = _counted(_resp(content="so the next step is to", finish="length"), _resp("ok", "stop"))
+    assert stats["output_cap_hits"] == 1
+    assert stats["reasoning_runaways"] == 1 and stats["reasoning_runaway_recovered"] == 1
+
+
+def test_every_call_cut_at_the_output_cap_is_counted_tool_call_or_not():
+    # The cap counter is how often the provider's budget was reached at all; a turn whose tool
+    # call survived the cut is no runaway, but it hit the cap.
+    calls = [{"name": "make_changes", "args": {}, "id": "1", "type": "tool_call"}]
+    stats = _counted(_resp(content="", finish="length", tool_calls=calls))
+    assert stats["output_cap_hits"] == 1 and stats["reasoning_runaways"] == 0
+    # Every rung of the ladder is a call of its own: three cut off, three hits, one runaway.
+    stats = _counted(*[_resp(content="", finish="length")] * 3)
+    assert stats["output_cap_hits"] == 3 and stats["reasoning_runaways"] == 1
+    assert _counted(_resp("fine", "stop"))["output_cap_hits"] == 0
 
 
 # ------------------------------------------------- panel coverage + replay detection
