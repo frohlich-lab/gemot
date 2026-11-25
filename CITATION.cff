@@ -1,7 +1,7 @@
 # How to cite gemot. GitHub renders this as "Cite this repository" (APA and BibTeX).
 # Bump `version` and `date-released` with `[project] version` in pyproject.toml at each release.
 cff-version: 1.2.0
-message: "If you use gemot, please cite it as below."
+message: "If you use gemot, please cite the preprint that describes it (preferred-citation)."
 type: software
 title: "gemot: an agent harness for building mechanistic models through PEtab MCP"
 abstract: >-
@@ -27,3 +27,20 @@ keywords:
   - systems biology
   - mechanistic modelling
   - parameter estimation
+preferred-citation:
+  type: article
+  status: preprint
+  title: "GEMOT: Towards Mechanistic World Models for Biology"
+  authors:
+    - name-particle: "de"
+      family-names: "Pomereu"
+      given-names: "Theodore"
+    - family-names: "Snelling"
+      given-names: "Branwen"
+    - family-names: "Fröhlich"
+      given-names: "Fabian"
+  journal: "bioRxiv"
+  year: 2026
+  month: 9
+  doi: "10.64898/2026.09.26.754619"
+  url: "https://www.biorxiv.org/content/10.64898/2026.09.26.754619v1"
