@@ -1,0 +1,29 @@
+# How to cite gemot. GitHub renders this as "Cite this repository" (APA and BibTeX).
+# Bump `version` and `date-released` with `[project] version` in pyproject.toml at each release.
+cff-version: 1.2.0
+message: "If you use gemot, please cite it as below."
+type: software
+title: "gemot: an agent harness for building mechanistic models through PEtab MCP"
+abstract: >-
+  gemot is the agent harness built around the PEtab MCP server, which holds one PEtab v2
+  parameter-estimation problem and lets an LLM agent change the model only through one
+  constrained tool, with every change fitted, scored, versioned and justified. gemot runs a
+  panel of agent specialists on that server, then a judge that scores the best version against
+  a true or published reference, or by an absolute goodness-of-fit test, with the trace and
+  version history kept for review.
+authors:
+  - family-names: "Fröhlich"
+    given-names: "Fabian"
+version: "0.1.0"
+date-released: "2026-11-25"
+license: MIT
+repository-code: "https://github.com/frohlich-lab/gemot"
+repository-artifact: "https://pypi.org/project/gemot/"
+url: "https://github.com/frohlich-lab/gemot"
+keywords:
+  - PEtab
+  - Model Context Protocol
+  - LLM agents
+  - systems biology
+  - mechanistic modelling
+  - parameter estimation

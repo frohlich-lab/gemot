@@ -167,7 +167,28 @@ pytest -n 3                            # needs the full install (AMICI/pyPESTO a
 
 A release is cut by publishing a GitHub release tagged `v<version>`, which the
 [release workflow](https://github.com/frohlich-lab/gemot/blob/main/.github/workflows/release.yml)
-uploads to PyPI. The version is `[project] version` in `pyproject.toml`.
+uploads to PyPI. The version is `[project] version` in `pyproject.toml`; bump `version` and
+`date-released` in `CITATION.cff` with it.
+
+## Citation
+
+If you use gemot, please cite it. [`CITATION.cff`](https://github.com/frohlich-lab/gemot/blob/main/CITATION.cff)
+holds the citation metadata, and GitHub's "Cite this repository" button (in the sidebar) renders
+it as APA or BibTeX:
+
+```bibtex
+@software{gemot,
+  author = {Fröhlich, Fabian},
+  title  = {gemot: an agent harness for building mechanistic models through PEtab MCP},
+  year   = {2026},
+  url    = {https://github.com/frohlich-lab/gemot},
+  note   = {Python package \texttt{gemot} on PyPI}
+}
+```
+
+Please also cite the server it drives, [PEtab MCP](https://github.com/frohlich-lab/PEtab-MCP), and
+the simulation and optimization tools underneath it,
+[AMICI](https://github.com/AMICI-dev/AMICI) and [pyPESTO](https://github.com/ICB-DCM/pyPESTO).
 
 ## License
 

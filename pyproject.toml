@@ -382,7 +382,7 @@ pins = [
 packages = ["src/gemot"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/gemot", "tests", "README.md", "LICENSE"]
+include = ["src/gemot", "tests", "README.md", "LICENSE", "CITATION.cff"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
