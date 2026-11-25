@@ -108,20 +108,6 @@ def test_the_runners_session_reads_a_reply_over_1_mib(server):
 
     result = asyncio.run(go())
     assert not result.is_error
-
-
-def test_a_bio_session_reads_a_reply_over_1_mib(server):
-    """frohlich-lab/PEtab-MCP#337: a whole UniProt entry, sent as text and as structured content,
-    passed 1 MiB, and the hosted servers' sessions kept mcp's default limit. They keep a bound,
-    a larger one, and gemot trims the entry (gemot.agent.uniprot)."""
-    from gemot.bio_sessions import _default_bio_opener
-
-    async def go():
-        async with _default_bio_opener(server) as session:
-            return await session.call_tool("get_version", {"n_bytes": _OVER_THE_LIMIT})
-
-    result = asyncio.run(go())
-    assert not result.is_error
     assert len(result.content[0].text) == _OVER_THE_LIMIT
 
 

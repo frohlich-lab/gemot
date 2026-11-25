@@ -57,7 +57,6 @@ from .circuit_breaker import (
 )
 from .guards import _reasoning_runaway_guard, new_guard_stats
 from .literature import _wrap_literature_recorder
-from .uniprot import _wrap_uniprot_trim
 from .sandbox import default_env_prefix, new_shell_audit, sandbox_backend_class
 from .subagents import _general_purpose_enabled
 from .token_usage import _token_accountant
@@ -141,7 +140,6 @@ async def run_barebones(
     _wrap_literature_recorder(
         [t for t in bio_tools if getattr(t, "name", None) in LITERATURE_BIO_TOOLS], literature_log
     )
-    _wrap_uniprot_trim(bio_tools)  # outside the breaker, which reads the whole reply
     if bio_tools:
         system_prompt = system_prompt + BAREBONES_BIO_TOOLS_TMPL.format(
             n=len(bio_names), names=", ".join(bio_names)
