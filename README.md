@@ -19,7 +19,9 @@ MCP server that wraps a single
 [PEtab v2](https://petab.readthedocs.io/en/latest/v2/documentation_data_format.html)
 parameter-estimation problem and lets an LLM agent change the model only through one
 constrained tool, with every change **scored** (fit and simulated), **versioned** and
-**justified**.
+**justified**. The preprint
+[GEMOT: Towards Mechanistic World Models for Biology](https://www.biorxiv.org/content/10.64898/2026.09.26.754619v1)
+describes the framework and its evaluation on 18 published biological problems.
 
 gemot spawns that server as a subprocess, launches a panel of agent specialists
 (mathematician, systems scientist, signal engineer) on it and then hands off to the
@@ -167,7 +169,32 @@ pytest -n 3                            # needs the full install (AMICI/pyPESTO a
 
 A release is cut by publishing a GitHub release tagged `v<version>`, which the
 [release workflow](https://github.com/frohlich-lab/gemot/blob/main/.github/workflows/release.yml)
-uploads to PyPI. The version is `[project] version` in `pyproject.toml`.
+uploads to PyPI. The version is `[project] version` in `pyproject.toml`; bump `version` and
+`date-released` in `CITATION.cff` with it.
+
+## Citation
+
+gemot is described in the preprint
+[GEMOT: Towards Mechanistic World Models for Biology](https://www.biorxiv.org/content/10.64898/2026.09.26.754619v1)
+(de Pomereu, Snelling & Fröhlich, bioRxiv 2026). If you use gemot, please cite it:
+
+```bibtex
+@article{dePomereu2026gemot,
+  author  = {de Pomereu, Theodore and Snelling, Branwen and Fr{\"o}hlich, Fabian},
+  title   = {{GEMOT}: Towards Mechanistic World Models for Biology},
+  journal = {bioRxiv},
+  year    = {2026},
+  doi     = {10.64898/2026.09.26.754619},
+  url     = {https://www.biorxiv.org/content/10.64898/2026.09.26.754619v1}
+}
+```
+
+[`CITATION.cff`](https://github.com/frohlich-lab/gemot/blob/main/CITATION.cff) holds the same
+reference, which GitHub's "Cite this repository" button (in the sidebar) renders as APA or BibTeX.
+
+Please also cite the server it drives, [PEtab MCP](https://github.com/frohlich-lab/PEtab-MCP), and
+the simulation and optimization tools underneath it,
+[AMICI](https://github.com/AMICI-dev/AMICI) and [pyPESTO](https://github.com/ICB-DCM/pyPESTO).
 
 ## License
 

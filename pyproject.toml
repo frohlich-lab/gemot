@@ -10,7 +10,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "Fabian Fröhlich" }]
+authors = [
+    { name = "Theodore de Pomereu" },
+    { name = "Branwen Snelling" },
+    { name = "Fabian Fröhlich" },
+]
 keywords = ["petab", "mcp", "systems-biology", "sbml", "parameter-estimation", "amici"]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -382,7 +386,7 @@ pins = [
 packages = ["src/gemot"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/gemot", "tests", "README.md", "LICENSE"]
+include = ["src/gemot", "tests", "README.md", "LICENSE", "CITATION.cff"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
