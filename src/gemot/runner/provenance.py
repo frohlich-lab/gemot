@@ -336,6 +336,7 @@ def _base_meta(
 
     scripted = args.driver == "scripted"
     cli_driver = args.driver in {"codex", "claude"}
+    null_arm = args.driver == "barebones"
     from ..biology_blinding import read_names
 
     blind_names = (
@@ -394,9 +395,10 @@ def _base_meta(
         # moves whenever a default does (after 2026-08-15 "baseline" carries free_exponents=on
         # where it used to carry off). Grouping a sweep that spans such a commit on `arm` alone
         # pools opposite configurations; `ablation_state` spells every switch out and is safe.
-        "ablation_arm": ablations.arm(),
-        "ablation_state": ablations.state_key(),
-        "ablations": ablations.state(),
+        # The null arm records only the switches it reads, under its own arm (`ablations.arm`).
+        "ablation_arm": ablations.arm(null_arm=null_arm),
+        "ablation_state": ablations.state_key(null_arm=null_arm),
+        "ablations": ablations.state(null_arm=null_arm),
         # Which OmniPath answered, and from when. A pinned snapshot that nothing records is the
         # `git_sha +dirty` problem in a new costume; None for hosted service or no bio access.
         "omnipath_snapshot": (

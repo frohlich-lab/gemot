@@ -339,7 +339,10 @@ def _wrap_call_timeout(session: ClientSession) -> _Heartbeats:
     A cut call raises ``MCPError(REQUEST_TIMEOUT)``, the error mcp's clock raised. So it takes the
     path a timed-out fit always took (``agent.circuit_breaker._fit_wedged``), and the server is not
     told to stop the fit: the cut cancels the call's task, and ``runner.main._ToolCallsRunOn``
-    sends no cancel for a ``tools/call`` abandoned that way either.
+    sends no cancel for a ``tools/call`` abandoned that way either. A call cut while the server's
+    heartbeats still came, showing a compile past its margin, carries the last one as the error's
+    ``data["heartbeat"]``: the server is alive and goes on with the change, so the tool wrapper
+    hands the cut to its caller as such and never counts it towards a wedge (gemot#160).
 
     The caller's own ``progress_callback`` is still called with every heartbeat. Shadowing the
     instance method is how the runner already reaches every call site (see
@@ -378,12 +381,15 @@ def _wrap_call_timeout(session: ClientSession) -> _Heartbeats:
             return await original(*args, **kwargs)
         # Reached only when the scope's own deadline passed: it swallowed that cancellation.
         name = args[0] if args else kwargs.get("name")
-        why = (
-            f"its change has been {stuck} (the compile margin is {FIT_COMPILE_MARGIN_S:g}s)"
-            if stuck is not None
-            else f"no heartbeat from the server in {CALL_IDLE_WINDOW_S:g}s"
+        if stuck is None:
+            why = f"no heartbeat from the server in {CALL_IDLE_WINDOW_S:g}s"
+            raise MCPError(code=REQUEST_TIMEOUT, message=f"Request {name!r} timed out: {why}")
+        why = f"its change has been {stuck} (the compile margin is {FIT_COMPILE_MARGIN_S:g}s)"
+        raise MCPError(
+            code=REQUEST_TIMEOUT,
+            message=f"Request {name!r} timed out: {why}",
+            data={"heartbeat": stuck},
         )
-        raise MCPError(code=REQUEST_TIMEOUT, message=f"Request {name!r} timed out: {why}")
 
     try:
         session.call_tool = idle_timeout  # type: ignore[method-assign]

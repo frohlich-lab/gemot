@@ -24,6 +24,7 @@ from typing import Any
 from .. import prompts
 from ..prompts import _IDLE_NUDGE
 from .dedup import _dedupe_raw_tool_calls, _dedupe_tool_calls
+from .thinking import is_runaway_message
 
 #: Set once if appending the turn-budget notice ever fails, so the warning in `_augment` prints
 #: one line per process rather than one per turn. See the comment there for why there is no
@@ -64,81 +65,69 @@ _MAX_IDLE_MODEL_STEPS = 3  # consecutive no-tool turns to push back on before gi
 _RUNAWAY_EFFORT_LADDER = ("low", "minimal")
 
 
-def _is_reasoning_runaway(result: Any) -> bool:
-    """Did the model burn its whole completion budget thinking and emit NOTHING?
+def _terminal_ai(result: Any) -> Any:
+    """The turn's TERMINAL model message: the last AI message in ``result``, or None.
 
-    The signature is exact and cheap to test: ``finish_reason == "length"`` with empty content
-    AND no tool calls. Measured on z-ai/glm-5.3-flash over isensee and lucarelli: four
-    consecutive turns each returning completion_tokens=65536 of which reasoning_tokens=65504,
-    content "", no tool call, ~25 minutes apiece. The provider truncates mid-thought at its own
-    65536 output cap (half the 131072 it advertises) before the model reaches a conclusion.
+    ``result`` is a langchain ModelResponse (fields: ``.result`` -- a list[BaseMessage] -- and
+    ``.structured_response``) or, defensively, a bare AIMessage. Same contract as
+    _dedupe_response below. Reading the wrong attribute here is silent: getattr degrades to the
+    [result] fallback and the runaway detector never fires -- so this is pinned by
+    tests/test_reasoning_runaway.py against the real ModelResponse class.
 
-    Downstream this is indistinguishable from a model that CHOSE to say nothing, so the dispatch
-    guard bounces it as an idle turn and the run ends `no_model_built` with zero make_changes
-    attempted -- a silent, expensive nothing. It is worth catching precisely rather than by
-    lowering reasoning effort globally, which would also remove the reasoning that makes this
-    model good on the examples where it does converge.
+    The verdict on a turn belongs to this message and to nothing before it. ``.result`` may hold
+    more than one message (langchain appends a ToolMessage when a tool produced the structured
+    output), and scanning past a healthy final message to convict on an earlier truncated one
+    made the ladder discard a good answer and re-call the provider. Verified:
+    [truncated(length,""), healthy("...", stop)] read as a runaway before this. Skipped on MESSAGE
+    TYPE, not on whether finish_reason happens to be present: a healthy final AI turn whose
+    provider/middleware set no finish_reason would otherwise be skipped, letting an earlier
+    truncated turn decide.
     """
-    # `result` is a langchain ModelResponse (fields: .result — a list[BaseMessage] — and
-    # .structured_response) or, defensively, a bare AIMessage. Same contract as
-    # _dedupe_response below. Reading the wrong attribute here is silent: getattr degrades to
-    # the [result] fallback and the detector never fires — so this is pinned by
-    # tests/test_reasoning_runaway.py against the real ModelResponse class.
     msgs = getattr(result, "result", None) or ([result] if result is not None else [])
-    # The verdict belongs to the TERMINAL message — the last one carrying a finish_reason —
-    # and to nothing before it. `.result` may hold more than one message (langchain appends a
-    # ToolMessage when a tool produced the structured output), and scanning past a healthy
-    # final message to convict on an earlier truncated one made the ladder discard a good
-    # answer and re-call the provider. Verified: [truncated(length,""), healthy("...", stop)]
-    # read as a runaway before this.
-    for m in reversed(list(msgs)):
-        # Skip on MESSAGE TYPE, not on whether finish_reason happens to be present: a healthy
-        # final AI turn whose provider/middleware set no finish_reason would otherwise be
-        # skipped, letting an earlier truncated turn decide — reinstating the very bug the
-        # terminal-message rule fixed. Only a trailing non-AI message (the ToolMessage
-        # langchain appends for structured output) is skippable.
-        if getattr(m, "type", None) != "ai":
-            continue
-        if getattr(m, "tool_calls", None):
-            return False
-        meta = getattr(m, "response_metadata", None) or {}
-        return meta.get("finish_reason") == "length" and _content_is_empty(
-            getattr(m, "content", None)
-        )
-    return False
+    return next((m for m in reversed(list(msgs)) if getattr(m, "type", None) == "ai"), None)
 
 
-def _content_is_empty(content: Any) -> bool:
-    """Nothing a downstream consumer could act on: None, whitespace, or blocks with no text.
+def _is_reasoning_runaway(result: Any) -> bool:
+    """Did the model spend its whole completion budget without reaching a tool call?
 
-    Reasoning models return content as a LIST of blocks as often as a bare string, and a
-    truncated turn can carry a reasoning block with no text field — both must read as empty or
-    the runaway detector misses exactly the responses it exists to catch.
+    The signature is exact and cheap to test: ``finish_reason == "length"`` and no tool call
+    (:func:`.thinking.is_runaway_message`, the one definition). Measured on z-ai/glm-5.3-flash
+    over isensee and lucarelli: four consecutive turns each returning completion_tokens=65536 of
+    which reasoning_tokens=65504, content "", no tool call, ~25 minutes apiece. The provider
+    truncates mid-thought at its own 65536 output cap (half the 131072 it advertises) before the
+    model reaches a conclusion.
+
+    Downstream this is indistinguishable from a model that CHOSE to stop, so the dispatch guard
+    bounces it as an idle turn, or the driver as a silent stop, and the run loses the whole turn
+    -- a silent, expensive nothing. It is worth catching precisely rather than by lowering
+    reasoning effort globally, which would also remove the reasoning that makes this model good
+    on the examples where it does converge.
+
+    Whatever text the turn wrote before the cut does not exempt it (gemot#161): the reasoning is
+    in :func:`.thinking.is_runaway_message`.
     """
-    if content is None:
-        return True
-    if isinstance(content, str):
-        return not content.strip()
-    if isinstance(content, list):
-        for block in content:
-            if isinstance(block, str):
-                if block.strip():
-                    return False
-            elif isinstance(block, dict):
-                if str(block.get("text") or "").strip():
-                    return False
-        return True
-    return False
+    message = _terminal_ai(result)
+    return message is not None and is_runaway_message(message)
 
 
 def _thinking_handoff(result: Any) -> dict | None:
     """What agent.thinking recorded on the turn's terminal AI message, if it handed thinking back."""
-    msgs = getattr(result, "result", None) or ([result] if result is not None else [])
-    for m in reversed(list(msgs)):
-        if getattr(m, "type", None) == "ai":
-            record = (getattr(m, "response_metadata", None) or {}).get("thinking_handoff")
-            return record if isinstance(record, dict) else None
-    return None
+    meta = getattr(_terminal_ai(result), "response_metadata", None) or {}
+    record = meta.get("thinking_handoff")
+    return record if isinstance(record, dict) else None
+
+
+def _hit_output_cap(result: Any, handoff: dict | None) -> bool:
+    """Did the provider cut this call at its output budget, whatever it had written?
+
+    A hand-off replaces the turn, so its record says why the call was stopped; a turn handed back
+    unanswered carries ``finish_reason == "length"`` even when it was stopped for repetition, so
+    the record decides whenever there is one.
+    """
+    if handoff is not None:
+        return handoff.get("reason") == "length"
+    meta = getattr(_terminal_ai(result), "response_metadata", None) or {}
+    return meta.get("finish_reason") == "length"
 
 
 def _effort_is_set(request) -> bool:
@@ -154,9 +143,9 @@ def _reasoning_runaway_guard(
 ):
     """Retry a truncated-mid-thought turn at reduced reasoning effort, then restore.
 
-    Only the offending CALL is retried, and only while it keeps coming back empty; the request
+    Only the offending CALL is retried, and only while it keeps coming back cut off; the request
     is otherwise untouched, so a run that never trips this never sees a changed effort. Bounded
-    by the ladder length, so a model that returns empty at every effort costs a fixed number of
+    by the ladder length, so a model that is cut off at every effort costs a fixed number of
     extra calls rather than looping.
     """
     from langchain.agents.middleware.types import AgentMiddleware
@@ -176,7 +165,10 @@ def _reasoning_runaway_guard(
         at detection, so ``reasoning_runaways`` counts events and ``reasoning_runaway_recovered``
         the subset that a retry rescued.
         """
-        handoff = _thinking_handoff(result) if rung == 0 else None
+        record = _thinking_handoff(result)
+        if _hit_output_cap(result, record):
+            stats["output_cap_hits"] += 1
+        handoff = record if rung == 0 else None
         if handoff is not None:
             # The model class already stopped this turn's thinking and handed it back
             # (agent.thinking): counted here, from what it recorded.
@@ -195,15 +187,16 @@ def _reasoning_runaway_guard(
         if rung == 0 and handoff is None:
             stats["reasoning_runaways"] += 1
         if rung >= len(ladder) or _effort_is_set(request):
-            # Empty at every effort: hand it back honestly rather than loop. A run that set its
+            # Cut off at every effort: hand it back honestly rather than loop. A run that set its
             # own effort (--reasoning-effort) is never retried at another: effort is then the
             # variable under test, and a max-effort run rescued at "low" is no longer one. The
-            # runaway is counted and the empty turn handed back, which the idle nudge answers.
+            # runaway is counted and the truncated turn handed back, which the idle nudge or the
+            # driver's silent-stop bounce answers.
             return None
         effort = ladder[rung]
         print(
-            f"[reasoning guard] the model spent its whole completion budget thinking "
-            f"and returned nothing — retrying this call at reasoning_effort={effort}"
+            f"[reasoning guard] the model spent its whole completion budget without a "
+            f"tool call — retrying this call at reasoning_effort={effort}"
         )
         try:
             return request.override(model_settings=_retry_settings(request, effort))
@@ -279,7 +272,10 @@ def new_guard_stats() -> dict[str, Any]:
         "gave_up_no_tools": False,
         # task-arg guard
         "unexpected_task_kwargs": [],
+        "task_arg_hoists": 0,
         "task_arg_rejections": 0,
+        "task_arg_relents": 0,
+        "task_arg_relent_failures": 0,
         # empty-report guard
         "empty_subagent_reports": 0,
         "empty_subagent_retries": 0,
@@ -288,6 +284,10 @@ def new_guard_stats() -> dict[str, Any]:
         "reasoning_runaways": 0,
         "reasoning_runaway_recovered": 0,
         "reasoning_runaway_retry_errors": 0,
+        # model calls the provider cut at the output budget (finish_reason "length"), lead and
+        # analysts, ladder retries included, whatever they had written: the ones without a tool
+        # call are runaways too, so this is how often the cap itself was reached.
+        "output_cap_hits": 0,
         # agent.thinking: turns whose thinking was stopped, by why (repetition, budget, or the
         # provider's own length cap), and how many of them a model that would not stream ran.
         "thinking_cutoffs": {},
@@ -397,7 +397,16 @@ def _tool_dispatch_guard(stats: dict[str, Any], *, max_idle_steps: int = _MAX_ID
 # everything in `description` (this protects the analysts' `prompt=` drops too). deepagents 0.7.18
 # refuses such a call itself now; the guard stays for what upstream does not do: count it
 # (`task_arg_rejections`, in result.json), keep it out of `tools_executed`, and relent after a bound.
-_TASK_ALLOWED_ARGS = frozenset({"description", "subagent_type"})
+#
+# GPT-6 luna wraps the arguments instead: `task(subagent_type=X, parameters={"description": ...})`.
+# The relent kept the top-level keys only, so it dispatched `{subagent_type}` alone, and the task
+# tool's schema refused every one of those calls: 108 in 16 luna runs, a lead turn each (gemot#158).
+# So the guard lifts an allowed key out of such a wrapper, and a wrapper that held nothing else is
+# dispatched at once: nothing is lost, so there is nothing to bounce. A call it changes is
+# dispatched only with both arguments `task` needs; otherwise it goes back to the lead naming the
+# missing one.
+_TASK_REQUIRED_ARGS = ("description", "subagent_type")
+_TASK_ALLOWED_ARGS = frozenset(_TASK_REQUIRED_ARGS)
 _MAX_TASK_ARG_REJECTIONS = 3  # bounded push-back on unexpected task kwargs per run, then relent
 
 
@@ -409,9 +418,49 @@ def _unexpected_task_kwargs(args: "dict | None") -> "list[str]":
     return [k for k in args if k not in _TASK_ALLOWED_ARGS]
 
 
+def _hoist_task_args(args: dict) -> "tuple[dict, bool]":
+    """The ``task`` arguments a call meant, and whether getting them lost nothing. Pure.
+
+    An allowed key nested one level down in an unexpected dict (luna's ``parameters=``) is lifted
+    to the top level, where a key the call already has wins. Every other unexpected key is dropped.
+    Nothing is lost when each unexpected key is such a dict and holds only allowed keys that agree
+    with the top level.
+    """
+    kept = {k: v for k, v in args.items() if k in _TASK_ALLOWED_ARGS}
+    lossless = True
+    for key, wrapper in args.items():
+        if key in _TASK_ALLOWED_ARGS:
+            continue
+        if not isinstance(wrapper, dict):
+            lossless = False
+            continue
+        for k, v in wrapper.items():
+            if k not in _TASK_ALLOWED_ARGS:
+                lossless = False
+            elif k not in kept:
+                kept[k] = v
+            elif kept[k] != v:
+                lossless = False
+    return kept, lossless
+
+
+def _missing_task_args(args: dict) -> "list[str]":
+    """The arguments ``task`` needs that ``args`` has no non-blank string for. Pure."""
+    return [
+        k for k in _TASK_REQUIRED_ARGS if not (isinstance(args.get(k), str) and args[k].strip())
+    ]
+
+
 def _task_arg_reject_message(bad_keys: "list[str]") -> str:
     """The corrective error returned to the model in place of dispatching a mis-called ``task``."""
     return prompts.TASK_ARG_REJECT_TMPL.format(bad_keys=bad_keys)
+
+
+def _task_arg_incomplete_message(bad_keys: "list[str]", missing: "list[str]") -> str:
+    """The error returned in place of a relented ``task`` call that still lacks ``missing``."""
+    return prompts.TASK_ARG_INCOMPLETE_TMPL.format(
+        bad_keys=bad_keys, missing=" or ".join(f"`{k}`" for k in missing)
+    )
 
 
 #: The model routes the indra_statements arm refuses: each authors or edits the model other than
@@ -564,18 +613,26 @@ def _task_arg_guard(stats: dict[str, Any], *, max_rejections: int = _MAX_TASK_AR
     """Lead-only middleware: reject a ``task`` call that carries unexpected kwargs (see above).
 
     ``stats`` is a caller-owned dict the middleware mutates so run_deepagents can report the
-    outcome: ``unexpected_task_kwargs`` (the offending keys seen across the run) and
-    ``task_arg_rejections`` (how many calls were bounced). It works by returning an error
-    ``ToolMessage`` in place of dispatching (the same short-circuit shape the circuit breaker
-    uses) — it does NOT call ``handler``, so the subagent never runs on truncated input. The
-    push-back is bounded: once ``max_rejections`` is hit it RELENTS and dispatches the call with the
-    extras dropped, so a stubborn model still makes progress; the occurrence is still recorded. The
-    guard drops them itself: the task tool did until deepagents 0.7.18, and now refuses unknown keys,
-    so a call let through unchanged would only trade this rejection for its own. Defined lazily so
-    importing this module doesn't require langchain — only the deepagents driver does.
+    outcome: ``unexpected_task_kwargs`` (the offending keys seen across the run),
+    ``task_arg_hoists`` (calls dispatched at once with their arguments lifted out of a wrapper),
+    ``task_arg_rejections`` (how many calls were bounced), ``task_arg_relents`` (calls past the
+    bound) and ``task_arg_relent_failures`` (those it could not dispatch, for want of a
+    ``description`` or ``subagent_type``). It bounces a call by returning an error ``ToolMessage``
+    in place of dispatching (the same short-circuit shape the circuit breaker uses) — it does NOT
+    call ``handler``, so the subagent never runs on truncated input. The push-back is bounded: once
+    ``max_rejections`` is hit it RELENTS and dispatches the call with the extras dropped (lifting
+    what it can out of a wrapper), so a stubborn model still makes progress; the occurrence is still
+    recorded. The guard drops them itself: the task tool did until deepagents 0.7.18, and now
+    refuses unknown keys, so a call let through unchanged would only trade this rejection for its
+    own. Defined lazily so importing this module doesn't require langchain — only the deepagents
+    driver does.
     """
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.messages import ToolMessage
+
+    def _count(key: str) -> int:
+        stats[key] = stats.get(key, 0) + 1
+        return stats[key]
 
     def _check(request):
         """An error ToolMessage to bounce this call, else the request to dispatch."""
@@ -588,14 +645,31 @@ def _task_arg_guard(stats: dict[str, Any], *, max_rejections: int = _MAX_TASK_AR
         stats["unexpected_task_kwargs"] = sorted(
             set(stats.get("unexpected_task_kwargs") or []) | set(bad)
         )
+        args, lossless = _hoist_task_args(tc["args"])
+        missing = _missing_task_args(args)
+        if lossless and not missing:
+            _count("task_arg_hoists")
+            print(f"[task-arg guard] lifting task args out of {bad}; dispatching.")
+            return request.override(tool_call={**tc, "args": args})
         if stats.get("task_arg_rejections", 0) >= max_rejections:
+            _count("task_arg_relents")
+            if missing:
+                _count("task_arg_relent_failures")
+                print(
+                    f"[task-arg guard] unexpected task kwargs {bad} — past {max_rejections} "
+                    f"rejections, but without them the call has no {missing}; not dispatching."
+                )
+                return ToolMessage(
+                    content=_task_arg_incomplete_message(bad, missing),
+                    tool_call_id=tc.get("id") or "",
+                    status="error",
+                )
             print(
                 f"[task-arg guard] unexpected task kwargs {bad} — relenting after "
                 f"{max_rejections} rejections; dispatching without them."
             )
-            args = {k: v for k, v in tc["args"].items() if k in _TASK_ALLOWED_ARGS}
             return request.override(tool_call={**tc, "args": args})
-        stats["task_arg_rejections"] = stats.get("task_arg_rejections", 0) + 1
+        _count("task_arg_rejections")
         print(
             f"[task-arg guard] rejecting task(...) with unexpected kwargs {bad} "
             f"({stats['task_arg_rejections']}/{max_rejections})"
@@ -792,9 +866,9 @@ def _turn_notice(turns_used: int, cap: int) -> "str | None":
     "start converging" on the delegation's very first turn (left = 8 <= 10) and a cap of 5 would
     open on the WARNING. `cap // 2` leaves the shipped 20-turn caps EXACTLY as they were (10 -> 10)
     while keeping the notices a genuine approach signal at any smaller cap.
+
+    The same on every arm (see :data:`gemot.prompts.SUBAGENT_TURN_NOTICES`).
     """
-    if not prompts.PROGRESS_SIGNALS_ENABLED:
-        return None
     left = cap - turns_used
     for threshold, text in sorted(_TURN_NOTICES, key=lambda t: t[0]):
         earned = min(threshold, max(1, cap // 2))
@@ -868,15 +942,34 @@ def _subagent_turn_limit(max_turns: int):
 
     def _check(state):
         # The hard stop. `jump_to: end` is safe with a tool call outstanding (nothing further is
-        # sent to the provider), unlike returning to the model; a delegation cut off mid-call
-        # yields a thin report, which _EmptyReportGuard already covers.
+        # sent to the provider), unlike returning to the model.
         # `>=`, not `>`: at `max_turns` AIMessages the budget is SPENT, and `>` allowed a
         # (max_turns + 1)-th model call -- an off-by-one against this factory's own contract
         # ("bound one delegation to `max_turns` model calls") and against the measured sizing.
-        if _turns(state.get("messages")) >= max_turns:
-            print(f"[subagent] turn limit ({max_turns}) reached — ending this delegation")
-            return {"jump_to": "end"}
-        return None
+        messages = state.get("messages") or []
+        if _turns(messages) < max_turns:
+            return None
+        print(f"[subagent] turn limit ({max_turns}) reached — ending this delegation")
+        last = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+        if last is None or not last.tool_calls:
+            return {"jump_to": "end"}  # its last turn was its report: nothing was cut off
+        # Cut off mid-work, so the lead's report would be this delegation's last text, written
+        # between tool calls -- read as a finding (gemot#159), and not blank, so _EmptyReportGuard
+        # passes it. deepagents reports the LAST AIMessage with text, so this one, appended to the
+        # subagent's own state (which never reaches the lead's), says it is incomplete. Nothing
+        # is sent to the provider after it, so the tool calls it follows need no results.
+        text = next(
+            (
+                m.text.strip()
+                for m in reversed(messages)
+                if isinstance(m, AIMessage) and m.text.strip()
+            ),
+            "",
+        )
+        report = prompts.SUBAGENT_TURN_CAP_REPORT_TMPL.format(
+            cap=max_turns, last=text or prompts.SUBAGENT_TURN_CAP_NOTHING_WRITTEN
+        )
+        return {"messages": [AIMessage(content=report)], "jump_to": "end"}
 
     class _SubagentTurnLimit(AgentMiddleware):
         def wrap_model_call(self, request, handler):

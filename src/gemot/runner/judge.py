@@ -73,6 +73,22 @@ class MixedVersionsError(RuntimeError):
 #: (``clock._wrap_call_timeout``).
 _WAIT_FOR_FIT_S = 540
 
+#: What the judge reads off its server session rather than computes: its clock's call counts, the
+#: server's error log and its compile/fit timing. On the panel the agent worked through that same
+#: session, so they are the run's. On a server the judge started on a delivery (``own_server``),
+#: they are the judge's alone and go under ``judge_*``, beside the agent's own counts (#164).
+_SESSION_FIELDS = (
+    "n_errors",
+    "compile_seconds",
+    "fit_seconds",
+    "queue_seconds",
+    "n_compiles",
+    "n_fits",
+    "tool_calls",
+    "tool_call_counts",
+    "edit_rejects",
+)
+
 
 def _stall_window() -> float:
     """How long a ``running`` fit may go without a start finishing before the judge stops waiting
@@ -467,6 +483,7 @@ async def _judge(
     t0: float,
     estimated: "list[str] | None" = None,
     deadline: "float | None" = None,
+    own_server: bool = False,
 ) -> "tuple[int, dict]":
     """Judge the repaired model against the true model by the run's criterion (structure-agnostic).
 
@@ -490,7 +507,10 @@ async def _judge(
     A candidate scored on a different number of data points than the reference has no Δ against
     it: the deltas are withheld (``n_mismatch``) and the run fails. ``estimated`` is the null's (see
     :func:`_candidate_k`). ``deadline`` is the end of the run's wall budget, past which the judge
-    waits on no fit the agent left running (:func:`_wait_for_running_fit`).
+    waits on no fit the agent left running (:func:`_wait_for_running_fit`). ``own_server`` is the
+    null's too: the server holds a delivery the agent never touched it for, so the
+    :data:`_SESSION_FIELDS` it yields are recorded as ``judge_*``, and those keys take the agent's
+    counts from ``meta`` (None where it has none).
 
     Returns ``(exit_code, result)``: the process exit code (0 on success, 1 otherwise) and
     the machine-readable result dict (also written to ``work/result.json``), so the caller
@@ -917,7 +937,8 @@ async def _judge(
             )
         print(
             f"  time:                 total {wall:.0f}s | compute {compute_s:.0f}s "
-            f"({clock.calls} tool calls){breakdown} | LLM+overhead {llm_s:.0f}s"
+            f"({clock.calls} {'judge ' if own_server else ''}tool calls){breakdown} "
+            f"| LLM+overhead {llm_s:.0f}s"
         )
     if errors:
         print(f"  rejected tool calls:  {len(errors)} (see get_errors)")
@@ -1084,6 +1105,9 @@ async def _judge(
         "run_ended_at": _now_iso(),
         **diag_fields,
     }
+    if own_server:
+        result.update({f"judge_{key}": result[key] for key in _SESSION_FIELDS})
+        result.update({key: meta.get(key) for key in _SESSION_FIELDS})
     (work / "result.json").write_text(json.dumps(result, indent=2))
     print(
         f"  (machine-readable result -> {(work / 'result.json').relative_to(scenario.example_dir.parent)})"
