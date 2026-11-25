@@ -58,14 +58,14 @@ _BIO_SSE_READ_TIMEOUT_S = 120.0  # in-session streaming read window (tool respon
 _BIO_CONNECT_TIMEOUT_S = 20.0
 _BIO_CONNECT_RETRIES = 2  # extra attempts after the first (up to 3 total per server)
 _BIO_CONNECT_BACKOFF_S = 2.0  # wait between connect attempts
-# Grace period at teardown for holder tasks to exit cleanly on the shutdown signal before any
-# still-wedged one is cancelled.
-_BIO_TEARDOWN_GRACE_S = 5.0
 #: Cap on the wait between attempts to reopen a session that closed mid-run. The wait starts at
 #: ``_BIO_CONNECT_BACKOFF_S`` and doubles. A server that never comes back then costs one connect
 #: attempt every five minutes, which a fair-use endpoint does not notice, and one that does is
 #: back in a run measured in hours within minutes of its server.
 _BIO_REOPEN_MAX_BACKOFF_S = 300.0
+# Grace period at teardown for holder tasks to exit cleanly on the shutdown signal before any
+# still-wedged one is cancelled.
+_BIO_TEARDOWN_GRACE_S = 5.0
 
 
 # A bio "opener": given a URL, an async context manager yielding an initialized MCP session.
