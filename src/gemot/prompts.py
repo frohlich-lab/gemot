@@ -168,10 +168,13 @@ _MERGE_BIOLOGY = _pointing(
 
 #: Where the priced ties are. A fit result lists only the ties new or re-priced since its parent
 #: version (frohlich-lab/PEtab-MCP#211, #353), so one listed earlier at the same price shows on a
-#: later fit only in ``n_merge_hints``; ``get_fit_summary`` serves every tie the current fit priced.
+#: later fit only in ``n_merge_hints``. The lead's own ``get_fit_diagnosis`` prices every pair of
+#: the current fit (``merge_candidates``); ``get_fit_summary``, which also serves them, is an
+#: analyst's tool, not the lead's.
 _MERGE_HINTS_WHERE = _pointing(
-    "`merge_hints` in `get_fit_summary` (every tie the current fit priced; a fit result lists only "
-    "the ones new or re-priced since its parent, and `n_merge_hints` counts them all),"
+    "`merge_hints` on your last fit (only the ties new or re-priced since its parent; "
+    "`n_merge_hints` counts every one that stands, and `get_fit_diagnosis` prices them all as "
+    "`merge_candidates`),"
 )
 
 #: The residual tests decide neither way when a run is done, and the actionable consequence in ops
