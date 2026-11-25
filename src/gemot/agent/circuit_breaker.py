@@ -487,19 +487,6 @@ def _turn() -> tuple[str, int] | None:
     return str(metadata.get("langgraph_checkpoint_ns") or "").rpartition("|")[0], step
 
 
-def _cut_this_turn(state: dict[str, Any], name: str) -> bool:
-    """Whether the caller's tool was disabled in the turn now running.
-
-    That turn's other calls go through: they were written before any of its errors was read, as
-    the strike's other calls were. Without this, which of them reached the tool depended on whether
-    each had started before the one that tripped returned, and the scheduler decided that
-    (tests/test_breaker_batches.py failed on main for #170 one run in a few, a call short).
-    """
-    turn = _turn()
-    streak = _scope(state)["streaks"].get(name)
-    return turn is not None and streak is not None and streak["turn"] == turn
-
-
 def _record_error(state: dict[str, Any], name: str, err: str) -> bool:
     """Count a tool error; return True iff it TRIPS the breaker (disables the tool now, for the
     calling scope).
@@ -601,7 +588,7 @@ def _wrap_tools_with_circuit_breaker(
                 if name in state["unreachable"]:
                     _note_call(state, name, _CALL_DISABLED)
                     return (_transport_breaker_message(state, name, hint), None)
-                if name in _scope(state)["disabled"] and not _cut_this_turn(state, name):
+                if name in _scope(state)["disabled"]:
                     _note_call(state, name, _CALL_DISABLED)
                     return (_breaker_message(name, hint), None)  # short-circuit, no server hit
                 arguments = _coerce_json_string_args(arguments, containers)

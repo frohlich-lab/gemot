@@ -30,12 +30,12 @@ _CAST_ERROR = (
 )
 
 
-def _run(caller: str, turns: list[list[str]], yields: bool = True) -> tuple[dict, list[str]]:
+def _run(caller: str, turns: list[list[str]]) -> tuple[dict, list[str]]:
     """Drive a panel whose ``caller`` (``"lead"`` or ``"analyst"``) takes ``turns``.
 
     A turn is the `query_data` calls one model message issues together, one per SQL string; a
-    query containing "bad" fails. With ``yields`` off the tool never yields, so a turn's calls run
-    one after another. Returns the breaker state and the queries that reached the tool."""
+    query containing "bad" fails. Returns the breaker state and the queries that reached the
+    tool."""
     pytest.importorskip("deepagents", reason="harness-only dependency")
     from deepagents import create_deep_agent
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -52,8 +52,7 @@ def _run(caller: str, turns: list[list[str]], yields: bool = True) -> tuple[dict
     async def _query_data(sql: str):
         reached.append(sql)
         # Yield, as the server round trip does, so a turn's calls are all in flight at once.
-        if yields:
-            await asyncio.sleep(0)
+        await asyncio.sleep(0)
         ok = "bad" not in sql
         payload = {"ok": True, "rows": []} if ok else {"ok": False, "error": _CAST_ERROR}
         return ([{"type": "text", "text": json.dumps(payload)}], {"structured_content": payload})
@@ -142,14 +141,3 @@ def test_the_same_failure_in_consecutive_turns_still_trips(caller):
     assert state["calls"]["query_data"] == {"tool_error": T * T, "disabled": 1}
     assert _disabled(state, caller)
     assert len(state["events"]) == 1 and f"after {T} consecutive turns" in state["events"][0]
-
-
-@pytest.mark.parametrize("caller", ["lead", "analyst"])
-def test_the_threshold_turn_reaches_the_tool_whatever_order_its_calls_run_in(caller):
-    """The test above failed on main one run in a few, a call short: a call of the threshold turn
-    that started after the one that tripped returned was short-circuited. Run one after another,
-    the turn's calls still all reach the tool, and the next turn's does not."""
-    state, reached = _run(caller, [["bad"] * T] * T + [["bad"]], yields=False)
-
-    assert reached == ["bad"] * T * T
-    assert state["calls"]["query_data"] == {"tool_error": T * T, "disabled": 1}
