@@ -773,8 +773,9 @@ async def test_a_stale_diagnosis_never_refuses_a_finish():
 
 def test_a_checked_diagnosis_is_not_unchecked():
     """The fail-open record must not fire on a diagnosis the gate did read, either way it read."""
-    assert _agent._parsimony_unchecked(_IDENTIFIABLE) is None
-    assert _agent._parsimony_unchecked(_FLAT_16_ICS) is None
+    unchecked = _agent.finish_gate._parsimony_unchecked
+    assert unchecked(_IDENTIFIABLE) is None
+    assert unchecked(_FLAT_16_ICS) is None
 
 
 # What the server answers after a restore when the restored version's fit stored no verdict of its
