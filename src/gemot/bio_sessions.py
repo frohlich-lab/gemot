@@ -50,6 +50,10 @@ _BIO_CONNECT_BACKOFF_S = 2.0  # wait between connect attempts
 # Grace period at teardown for holder tasks to exit cleanly on the shutdown signal before any
 # still-wedged one is cancelled.
 _BIO_TEARDOWN_GRACE_S = 5.0
+#: The largest server-sent event a bio session reads, 16 MiB where mcp's default is 1 MiB. Still a
+#: bound, since the hosted servers are not the run's own, but one a whole UniProt entry fits in
+#: (TP53's reply is about 2 MB; see :mod:`gemot.agent.uniprot`).
+_BIO_MAX_SSE_EVENT_BYTES = 16 * 1024 * 1024
 
 
 # A bio "opener": given a URL, an async context manager yielding an initialized MCP session.
@@ -89,7 +93,9 @@ async def _default_bio_opener(url: str) -> AsyncIterator[Any]:
     # transport's `timeout` and `sse_read_timeout`).
     timeout = httpx2.Timeout(_BIO_TRANSPORT_TIMEOUT_S, read=_BIO_SSE_READ_TIMEOUT_S)
     async with httpx2.AsyncClient(timeout=timeout) as http:
-        async with streamable_http_client(url, http_client=http) as (read, write):
+        async with streamable_http_client(
+            url, http_client=http, max_sse_event_size=_BIO_MAX_SSE_EVENT_BYTES
+        ) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 yield session
