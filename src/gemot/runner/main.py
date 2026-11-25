@@ -132,7 +132,7 @@ async def _open_session(
     a reply is lost rather than shortened: run f2e2b86d stopped on one ``get_version`` reply
     (gemot#103). Bounding what a tool returns is the server's to do (frohlich-lab/PEtab-MCP#231),
     and a reply too large for the model's context is offloaded to a file by deepagents. The hosted
-    bio servers keep the default (``bio_sessions``)."""
+    bio servers keep a bound, a larger one (``bio_sessions._BIO_MAX_SSE_EVENT_BYTES``)."""
     # connect/write/pool: mcp's own default for this transport.
     timeout = httpx2.Timeout(30.0, read=read_ceiling_s)
     async with httpx2.AsyncClient(timeout=timeout) as http:

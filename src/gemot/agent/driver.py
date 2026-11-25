@@ -61,6 +61,7 @@ from .guards import (
     new_guard_stats,
 )
 from .literature import _wrap_literature_recorder
+from .uniprot import _wrap_uniprot_trim
 from .probe import _model_committed, _structured
 from .subagents import (
     _build_subagents,
@@ -969,6 +970,7 @@ async def run_deepagents(
     _wrap_literature_recorder(
         [t for t in bio_tools if getattr(t, "name", None) in LITERATURE_BIO_TOOLS], literature_log
     )
+    _wrap_uniprot_trim(bio_tools)  # outside the breaker, which reads the whole reply
     tools_by_name = {n: t for t in all_tools if (n := getattr(t, "name", None))}
     # Declared BEFORE the subagents are built: the panel shares this one dict, so the reasoning
     # guard's counters aggregate over the lead AND every analyst rather than reporting the lead's
