@@ -1027,3 +1027,71 @@ def test_a_phoenix_dataframe_is_read_with_its_tools_pointer_nested_or_flat():
     want = {"a": [fit, ls], "b": [fit, ls], "c": [fit], "d": [fit], "e": None}
     assert rebuild_tools_from_dataframe(nested) == want
     assert rebuild_tools_from_dataframe(flat) == want
+
+
+# ------------------------------------------------------------------- consumer-closed spans
+
+
+def _closed_stream_spans():
+    """What the driver's budget and early stops leave: a langgraph stream left after its first
+    step and closed. Recorded as the instrumentor reports it, and as the exporter sends it."""
+    import asyncio
+    from typing import TypedDict
+
+    from langgraph.graph import END, StateGraph
+    from openinference.instrumentation import TracerProvider
+    from openinference.instrumentation.langchain import LangChainInstrumentor
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    class State(TypedDict):
+        n: int
+
+    async def step(state):
+        return {"n": state["n"] + 1}
+
+    graph = StateGraph(State)
+    graph.add_node("a", step)
+    graph.add_node("b", step)
+    graph.set_entry_point("a")
+    graph.add_edge("a", "b")
+    graph.add_edge("b", END)
+    app = graph.compile()
+
+    async def stop_after_one_step():
+        agen = app.astream({"n": 0}, stream_mode="values").__aiter__()
+        await agen.__anext__()
+        await agen.aclose()
+
+    recorded, exported = InMemorySpanExporter(), InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(recorded))
+    provider.add_span_processor(SimpleSpanProcessor(_make_stripping_exporter(exported)))
+    instrumentor = LangChainInstrumentor()
+    instrumentor.instrument(tracer_provider=provider, skip_dep_check=True)
+    try:
+        asyncio.run(stop_after_one_step())
+    finally:
+        instrumentor.uninstrument()
+    return recorded.get_finished_spans(), exported.get_finished_spans()
+
+
+def test_a_stream_the_driver_closes_is_not_a_failed_span():
+    """gemot#166: every budget or early stop left the graph span ERROR with GeneratorExit, which
+    the explorer marked failed and `metrics` counted as an error."""
+    recorded, exported = _closed_stream_spans()
+    graph = next(s for s in recorded if s.name == "LangGraph")
+    assert graph.status.status_code.name == "ERROR"
+    assert graph.status.description.startswith("GeneratorExit")
+    sent = next(s for s in exported if s.name == "LangGraph")
+    assert sent.status.status_code.name == "UNSET"
+    assert [e.name for e in sent.events] == [e.name for e in graph.events]  # the record stays
+    assert all(s.status.status_code.name != "ERROR" for s in exported)
+
+
+def test_a_cancelled_span_stays_failed():
+    """A stall cancels the step rather than closing the stream: that one is kept."""
+    from opentelemetry.trace import Status, StatusCode
+
+    span = ReadableSpan(name="LangGraph", status=Status(StatusCode.ERROR, "CancelledError()"))
+    assert _strip_span(span) is span

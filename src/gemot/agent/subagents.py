@@ -47,6 +47,7 @@ from ..prompts import (
     SYSTEMS_SCIENTIST_PROMPT,
 )
 from .guards import _reasoning_runaway_guard, _subagent_turn_limit
+from .provider_refusals import _provider_refusal_report
 from .tools import (
     MATHEMATICIAN_TOOLS,
     SIGNAL_ENGINEER_TOOLS,
@@ -162,9 +163,19 @@ def _build_subagents(
                 # retry recovers.
                 #
                 # And the built-in filter, for the same reason: see _BUILTIN_TOOLS_TO_HIDE.
+                #
+                # Innermost, a provider refusal ends this analyst's round, not the run's
+                # (agent/provider_refusals.py), the runaway guard's own retries included.
                 "middleware": (
                     [_builtin_tool_filter(), _subagent_turn_limit(ANALYST_MAX_TURNS)]
-                    + ([_reasoning_runaway_guard(stats)] if stats is not None else [])
+                    + (
+                        [
+                            _reasoning_runaway_guard(stats),
+                            _provider_refusal_report(stats, spec["name"]),
+                        ]
+                        if stats is not None
+                        else []
+                    )
                 ),
             }
         )
