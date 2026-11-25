@@ -866,7 +866,8 @@ BAREBONES_SYSTEM_PROMPT_TMPL = (
     + _FREE_LITERALS
     + " are free), each parameter it declares with no row or with an {fixed} row the problem does "
     "not ship, and each species initial value written as a number. An initial value of 0 or 1 "
-    "costs nothing however it is written, and neither does a "
+    "costs nothing written as the number or as one parameter at that value (an expression of "
+    "several, such as `a*b`, is charged for each of them), and neither does a "
     "row the problem ships fixed; freezing a value you fitted costs what estimating it costs. "
     "Lower is better, and the score is compared against a reference mechanism you cannot "
     "see. So fit your parameters well before you finish, write the fitted values back into "
@@ -1557,10 +1558,10 @@ FINISH_ARMED_MERGE_TMPL = (
 
 #: One tie inside :data:`FINISH_ARMED_MERGE_TMPL`.
 FINISH_ARMED_MERGE_TIE_TMPL = (
-    " {parameters} — tying them into ONE symbol is estimated to cost {dnll} of neg_log_likelihood "
-    "and to LOWER the score by {dscore} (it moves a parameter {move} on its estimation scale — a "
-    "move of 1 or more there, a decade on log10, makes the estimate unreliable, and many decades "
-    "mean a flat direction, not an edit that survives a refit)."
+    " {parameters} — tying them into ONE symbol, by a local estimate a refit decides, costs {dnll} "
+    "of neg_log_likelihood and LOWERS the score by {dscore} (it moves a parameter {move} on its "
+    "estimation scale — a move of 1 or more there, a decade on log10, makes the estimate "
+    "unreliable, and many decades mean a flat direction, not an edit that survives a refit)."
 )
 
 # Appended to the ARM text when the run's last "does adding structure help?" experiment was
