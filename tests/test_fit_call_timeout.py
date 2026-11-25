@@ -1,11 +1,16 @@
-"""A fit that outruns its call timeout is the lead's to hear about, once; a second is a wedge.
+"""A fit that outruns its call timeout is the lead's to hear about, once; a silent server behind
+it is a wedge.
 
 gemot#56: in the INDRA sweep a 150-start fit hung on the server (PEtab-MCP#108). Its call timed out
 after 7560 s, and each of three resumes re-sent the identical fit into the server still holding the
 first, waiting out the full timeout again: 8.4 h of the run's last 9 h. These pin the tool
 wrapper's half: the first timeout goes back to the lead as the tool's result, and a further timeout
-behind it, or the server saying that fit is still running, ends the run as an infrastructure stop.
-Every other timeout keeps the resume it had.
+behind it ends the run as an infrastructure stop. Every other timeout keeps the resume it had.
+
+gemot#160: a server that answers is not wedged. On luna froehlich (63982610_55) the first compile ran
+past its margin, the lead resent the change, and the server's `fit_in_progress` ended the run with
+no fit. A call cut while the server's heartbeats show its change compiling, and `fit_in_progress`,
+now reach their caller. The replay over a real session is in tests/test_heartbeat_timeout.py.
 
 The driver loop's half is in tests/test_run_loop_no_model.py, next to the other loop exits.
 """
@@ -122,17 +127,93 @@ def test_a_further_timeout_behind_it_stops_the_run_as_a_wedged_fit(behind):
     ],
     ids=["raised", "returned"],
 )
-def test_the_server_saying_the_fit_still_runs_stops_the_run_at_once(reply):
-    """PEtab-MCP#108: the next make_changes answers at once instead of queueing behind the fit,
-    so the run need not wait out a second timeout to know."""
-    fit = _Tool("make_changes", _timeout(), reply)
-    _wrap(fit)
+def test_the_server_saying_the_fit_still_runs_reaches_the_lead(reply):
+    """gemot#160: the server answering is a server working, and its reply says to call
+    `wait_for_fit`. It used to end the run as `fit_wedged`, with the lead never seeing it. The fit
+    is still outstanding, so the server going silent behind it is still a wedge."""
+    fit = _Tool("make_changes", _timeout(), reply, _timeout())
+    state = _wrap(fit)
     _call(fit)
+    held = state["fit_timeout"]
 
+    content, _ = _call(fit)
+    assert _STILL_RUNNING in (content if isinstance(content, str) else content[0]["text"])
+    assert state["infrastructure"]["tool_calls"] == 0
+    assert state["fit_timeout"] == held
     with pytest.raises(I.InfrastructureError) as raised:
         _call(fit)
     assert raised.value.evidence.cause == I.FIT_WEDGED
-    assert "fit_in_progress" in raised.value.evidence.text
+
+
+# What `runner.clock._wrap_call_timeout` raises on a call whose heartbeats show a compile past its
+# margin: 63982610_55's, at 877 s.
+_COMPILING = "compiling for 877s"
+
+
+def _compile_cut(name="make_changes"):
+    return MCPError(
+        code=REQUEST_TIMEOUT,
+        message=f"Request {name!r} timed out: its change has been {_COMPILING} (the compile "
+        "margin is 600s)",
+        data={"heartbeat": _COMPILING},
+    )
+
+
+def test_a_fit_cut_on_a_slow_compile_tells_the_lead_it_runs_on():
+    """gemot#160: the lead was told the result was unknown and to choose fewer starts, so it
+    resent the change. The server was compiling it, and fits it once built."""
+    fit = _Tool("make_changes", _compile_cut())
+    state = _wrap(fit)
+
+    content, artifact = _call(fit)
+
+    assert content == prompts.FIT_STILL_COMPILING_TMPL.format(
+        name="make_changes", heartbeat=_COMPILING
+    )
+    assert "wait_for_fit" in content and "fewer starts" not in content
+    assert artifact is None
+    assert state["fit_timeout"] is not None
+
+
+@pytest.mark.parametrize("behind", ["make_changes", "get_model_structure", "wait_for_fit"])
+def test_a_cut_on_a_slow_compile_behind_a_timed_out_fit_is_no_wedge(behind):
+    """gemot#160, 63782292_55: after the fit's cut, the lead's `get_model_structure` waited behind
+    the same compile and was cut too, which ended the run as `fit_wedged`. A server still beating
+    is working, so each cut reaches its caller; only silence behind it is a wedge."""
+    fit = _Tool("make_changes", _compile_cut(), _compile_cut())
+    other = _Tool(behind, _compile_cut(behind))
+    state = _wrap(fit, other)
+    _call(fit)
+
+    content, _ = _call(fit if behind == "make_changes" else other)
+
+    if behind == "make_changes":
+        assert content.startswith("FIT STILL RUNNING")
+    else:
+        assert content == prompts.CALL_BEHIND_COMPILE_TMPL.format(name=behind, heartbeat=_COMPILING)
+    assert state["infrastructure"]["tool_calls"] == 0
+
+
+@pytest.mark.parametrize(
+    "status, ended", [("committed", True), ("no_version", True), ("still_running", False)]
+)
+def test_wait_for_fit_saying_the_fit_ended_ends_the_wait(status, ended):
+    """The lead's wait on the fit it was told of: once the server says no change is running, a
+    later timeout is a new one, the lead's to hear about, not a wedge."""
+    fit = _Tool("make_changes", _timeout(), _timeout())
+    wait = _Tool("wait_for_fit", (_text(json.dumps({"status": status})), None))
+    state = _wrap(fit, wait)
+    _call(fit)
+
+    _call(wait)
+
+    assert (state["fit_timeout"] is None) is ended
+    if ended:
+        content, _ = _call(fit)
+        assert content.startswith("FIT TIMED OUT")
+    else:
+        with pytest.raises(I.InfrastructureError):
+            _call(fit)
 
 
 def test_a_fit_that_returns_ends_the_wait_so_a_later_timeout_reaches_the_lead_again():

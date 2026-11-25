@@ -86,6 +86,12 @@ ORCHESTRATOR_TOOLS = [
     # (parameters=), or both — and always fits, snapshotting one version. It replaces the
     # set_model -> change_parameters -> fit cycle that was 55% of the lead's calls.
     "make_changes",
+    # The wait on a fit whose `make_changes` came back without it: the call cut on a compile past
+    # its margin or a silent server (agent/circuit_breaker.py), whose note says to call this. The
+    # server refuses a resend with `fit_in_progress`, whose text says the same. Without it the lead
+    # could only resend: on luna froehlich it did, and the run ended as `fit_wedged` with no fit
+    # (gemot#160). A schema re-sent every turn for a rare call, kept because nothing else waits.
+    "wait_for_fit",
     # The indra_statements arm's mechanism library, each entry as the PySB rules it builds, so a
     # row's policy is chosen knowing what it does and a new one is written from a near one
     # (stripped off the arm below).

@@ -1292,12 +1292,38 @@ TOOL_DISABLED_TRANSPORT_TMPL = (
     "disabled for the rest of this run. Do NOT call it again — {hint}"
 )
 
-# In place of a fit that outran its call timeout (gemot#56). Nothing cancels that fit on the
-# server, and the server runs one fit at a time.
+# What a fit call that came back without its result still does on the server, and how the lead
+# waits for it (agent/circuit_breaker.py). Nothing cancels the fit, and the server refuses every
+# other change until it ends (PEtab-MCP#108), so a resend only costs a turn. Deliberately no advice
+# on the number of starts: no call is cut on its fit's length, only on a silent server or a compile
+# past its margin (runner/clock.py), and "choose fewer starts" sent luna froehlich's lead into a
+# resend that ended its run with no fit (gemot#160).
+_FIT_RUNS_ON = (
+    "Nothing cancels it, and the server takes no other change until it ends, so do not send "
+    "this one again: when it ends, its result becomes the next version. Call `wait_for_fit` to "
+    "wait for it."
+)
+
+# In place of a fit call the server went silent on (gemot#56).
 FIT_CALL_TIMEOUT_TMPL = (
     "FIT TIMED OUT: `{name}` did not return in time ({error}), so its result is unknown. The fit "
-    "may still be running on the server, which runs one fit at a time: your next fit starts only "
-    "once it ends. Choose fewer starts or a different model."
+    "may still be running on the server. " + _FIT_RUNS_ON
+)
+
+# In place of a fit call cut while the server's heartbeats showed its model still compiling, past
+# the compile margin (gemot#160): the server is working on it.
+FIT_STILL_COMPILING_TMPL = (
+    "FIT STILL RUNNING: the server is still compiling the model of your `{name}` ({heartbeat}), "
+    "so the call came back before its fit. The server fits the model once it is built. "
+    + _FIT_RUNS_ON
+)
+
+# In place of any other call cut while it waited on a change whose model the server is still
+# compiling (gemot#160): a read queued behind it, or `wait_for_fit` itself.
+CALL_BEHIND_COMPILE_TMPL = (
+    "CALL CUT: `{name}` waited on the change the server is still compiling ({heartbeat}) and came "
+    "back without a result. Nothing is wrong with the call and nothing is lost: make it again to "
+    "go on waiting."
 )
 
 # Closes a fit result (agent.fit_cost): what the fit took of the run's budget, and what is left of
@@ -1822,6 +1848,9 @@ BIOLOGY_BLIND_TOOL_DESCRIPTIONS = {
     "get_version": "Inspect one recorded model version, its parameters and score.",
     "diff_versions": "Compare two recorded versions: the model text diff, the parameter rows "
     "added, removed or changed, and both fits' scores.",
+    "wait_for_fit": "Wait for the change still being fitted, after a make_changes that came back "
+    "before its fit; call it again while it answers still_running. It answers committed with the "
+    "new version, no_version when the change ended without one, or idle.",
     "get_model": "Read the current or a recorded model in Antimony or SBML.",
     "make_changes": "Author or edit the ODE model and parameter search space with a justification. "
     "Every call fits and records one coherent change. Start with antimony, then edit "
@@ -1952,6 +1981,8 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "tool_disabled_repeated": TOOL_DISABLED_REPEATED_TMPL,
             "tool_disabled_transport": TOOL_DISABLED_TRANSPORT_TMPL,
             "fit_call_timeout": FIT_CALL_TIMEOUT_TMPL,
+            "fit_still_compiling": FIT_STILL_COMPILING_TMPL,
+            "call_behind_compile": CALL_BEHIND_COMPILE_TMPL,
             "fit_cost": FIT_COST_TMPL,
             "fit_cost_unbudgeted": FIT_COST_UNBUDGETED_TMPL,
             "disabled_tool_hint_default": _DISABLED_TOOL_HINT_DEFAULT,
