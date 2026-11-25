@@ -34,7 +34,8 @@ _MAX_NO_FIT_FINISH_ATTEMPTS = 5
 _MAX_SIGMA_FINISH_REFUSALS = 3
 
 # A finish on an OVER-parameterised model — one whose bic rests on a parameter combination the data
-# cannot constrain, so the FIM at the optimum is RANK-DEFICIENT (rank < n_estimated) — is REFUSED
+# cannot constrain, so the FIM at the optimum is RANK-DEFICIENT (rank below the parameters inside
+# their bounds) — is REFUSED
 # with GENERAL identifiability advice, so the agent doesn't submit a good-looking bic inflated by
 # free parameters the experiment can't pin (the judge fails those, and bic should have penalised
 # them). This is the sigma gate's structural blind spot: extra free parameters keep the per-point
@@ -43,11 +44,11 @@ _MAX_SIGMA_FINISH_REFUSALS = 3
 # non-identifiable because equilibrium is IC-independent, finished at a great BIC with the sigma
 # gate none the wiser — and a rank-deficient FIM). The gate keys on rank deficiency ALONE, NOT on
 # the mere presence of a near-flat eigen-direction: calibration across the reference structures
-# showed the latter over-refuses legitimate, identifiable fits (a parameter at a bound, or a
-# correlated-but-full-rank group, routinely produces a flat_direction while the FIM stays full
-# rank). Bounded exactly like the sigma gate: after this many consecutive refusals it RELENTS, so a
-# model that genuinely cannot be made identifiable still terminates at its honest score instead of
-# spamming finish. An identifiable (full-rank) fit RESETS the counter. FAILS OPEN — an unavailable or
+# showed the latter over-refuses legitimate, identifiable fits (a correlated-but-full-rank group
+# routinely produces a flat_direction while the FIM stays full rank; a parameter at a bound did too
+# until the server left pins out of the FIM, PEtab-MCP#356). Bounded exactly like the sigma gate:
+# after this many consecutive refusals it RELENTS, so a model that genuinely cannot be made
+# identifiable still terminates at its honest score instead of spamming finish. An identifiable (full-rank) fit RESETS the counter. FAILS OPEN — an unavailable or
 # STALE diagnosis (no FIM, a diagnosis of a DIFFERENT structure, or the probe returned {}) never
 # refuses a finish — but such a pass is counted with the relents and said in the text the lead gets
 # (:func:`_parsimony_unchecked`), since it is not a cleared check. The advice is deliberately
@@ -168,16 +169,20 @@ def _out_of_reach(direction, fixed: frozenset[str]) -> bool:
 def _deficiency_out_of_reach(fim_info: dict, flat_directions, fixed: frozenset[str]) -> bool:
     """Whether the FIM's rank deficiency lies only along directions in ``fixed`` parameters.
 
-    The deficient directions are the ``n_estimated - rank`` flat directions with the smallest
-    ``|eigenvalue|``: the diagnosis keeps every direction far flatter than its rank tolerance, the
-    deficient ones among them, and an ill-conditioned but full-rank direction beside them does not
-    count (see the gate). Every deficient direction has to be listed and out of reach; anything
-    the payload does not show (a missing rank, fewer directions listed than the deficiency) keeps
-    the refusal."""
+    The deficient directions are the ``n_estimated - n_at_bound - rank`` flat directions with the
+    smallest ``|eigenvalue|``: the diagnosis keeps every direction far flatter than its rank
+    tolerance, the deficient ones among them, and an ill-conditioned but full-rank direction beside
+    them does not count (see the gate). The server takes the rank and the directions over the
+    parameters inside their bounds (PEtab-MCP#356) while ``n_estimated`` still counts the pinned
+    ones, so ``n_estimated - rank`` would count each pin as a deficient direction: it would take
+    the full-rank direction beside a deficiency for a deficient one, or find too few listed, and
+    keep a refusal no edit can clear. Every deficient direction has to be listed and out of reach;
+    anything the payload does not show (a missing count, fewer directions listed than the
+    deficiency) keeps the refusal."""
     if not fixed:
         return False
     try:
-        nullity = int(fim_info["n_estimated"]) - int(fim_info["rank"])
+        nullity = int(fim_info["n_estimated"]) - int(fim_info["n_at_bound"]) - int(fim_info["rank"])
     except (KeyError, TypeError, ValueError):
         nullity = len(flat_directions)
     if nullity < 1 or len(flat_directions) < nullity:
@@ -267,6 +272,47 @@ def _render_merge(hints) -> str:
         return prompts.FINISH_ARMED_MERGE_TMPL.format(ties="".join(ties))
     except Exception:  # noqa: BLE001 - inside the fail-open boundary too: a template slot
         return ""  # mistake must cost the advisory line, never every finish in the run
+
+
+def _render_pinned(pins) -> str:
+    """The PINNED line for the ARM text, or ``""`` when the judged version holds no parameter at a
+    bound.
+
+    ``pins`` is ``get_fit_summary``'s ``parameters_at_bound``, rows of ``{parameter_id, side, value,
+    bound_value}``: every pin of the version, where a fit result splits them into the new ones and
+    the bare ids of those its parent held (frohlich-lab/PEtab-MCP#368). All are named, none
+    capped, so no pinned value reaches the final report as an estimate. Fails OPEN like
+    :func:`_render_merge`: an odd shape costs the line, never the finish, and one unreadable row
+    does not silence the readable ones.
+    """
+    if not isinstance(pins, (list, tuple)):
+        return ""
+    rows: list[str] = []
+    for pin in pins:
+        if (
+            not isinstance(pin, dict)
+            or not pin.get("parameter_id")
+            or pin.get("side") not in ("lower", "upper")
+        ):
+            continue
+        bound = pin.get("bound_value")
+        numeric = isinstance(bound, (int, float)) and not isinstance(bound, bool)
+        try:
+            rows.append(
+                prompts.FINISH_ARMED_PIN_TMPL.format(
+                    parameter_id=pin["parameter_id"],
+                    side=pin["side"],
+                    bound=f"{bound:g}" if numeric else bound,
+                )
+            )
+        except Exception:  # noqa: BLE001 - an advisory line never fails a finish
+            continue
+    if not rows:
+        return ""
+    try:
+        return prompts.FINISH_ARMED_PINNED_TMPL.format(pins=",".join(rows))
+    except Exception:  # noqa: BLE001 - inside the fail-open boundary, as in _render_merge
+        return ""
 
 
 #: How many of ``residual_structure.sigma_heterogeneity`` the ARM text names, smallest ``p`` first:
@@ -589,19 +635,26 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
             )
         else:
             fim_info = ident["fim"]
-            # Gate on RANK DEFICIENCY only (rank < n_estimated), NOT on the mere presence of a
-            # flat_direction. Calibration across the reference structures showed the latter
-            # over-refuses: a legitimate, identifiable fit routinely carries a flat_direction
-            # from ill-conditioning — a parameter pinned at a bound (zero-curvature axis) or a
-            # merely correlated group — while its FIM stays full rank (enzyme_kinetics: rank
-            # 5/5, two flat directions, correct model). A rank-deficient FIM is the STRONGER
-            # signal: a parameter combination the data cannot constrain AT ALL (blasi's 16 free
-            # initial conditions on steady-state data, where equilibrium is IC-independent, drop
-            # the rank exactly). It is NOT clean either, though — several reference structures
-            # are themselves rank-deficient and DO trip this gate (armistead / brannmark / bruno
-            # / crauste: parameters pinned at bounds, or genuine collinearity). That is
-            # tolerable ONLY because the gate RELENTS after _MAX_PARSIMONY_FINISH_REFUSALS; do
-            # NOT drop the relent believing rank deficiency is false-positive-free.
+            # Gate on RANK DEFICIENCY only (rank below the parameters inside their bounds), NOT on
+            # the mere presence of a flat_direction. Calibration across the reference structures
+            # showed the latter over-refuses: a legitimate, identifiable fit routinely carries a
+            # flat_direction from ill-conditioning, a merely correlated group, while its FIM stays
+            # full rank (enzyme_kinetics: rank 5/5, two flat directions, correct model). A
+            # rank-deficient FIM is the STRONGER signal: a parameter combination the data cannot
+            # constrain AT ALL (blasi's 16 free initial conditions on steady-state data, where
+            # equilibrium is IC-independent, drop the rank exactly). It is NOT clean either,
+            # though. Several reference structures are themselves rank-deficient and tripped this
+            # gate (armistead / brannmark / bruno / crauste), through parameters pinned at bounds
+            # or genuine collinearity. Pins no longer do: since petab-mcp 0.1.0 the server takes
+            # the rank and the directions over the parameters inside their bounds (PEtab-MCP#356;
+            # the published optima of brannmark and crauste hold 4 and 2 pins), and the ARM text
+            # names pins on a line of their own. Collinearity still does: bruno's published
+            # optimum has no parameter at a bound. So the relent after
+            # _MAX_PARSIMONY_FINISH_REFUSALS stays load-bearing. Its budget stays 3 until runs
+            # under 0.1.0 show whether a refusal, now rarer, moves a run to a lower BIC more often
+            # than before. Do NOT drop the relent believing rank deficiency is
+            # false-positive-free, and do not tell the lead the budget (PEtab-MCP#338's review
+            # upheld keeping it from the agent, as the chi2 gate does).
             # flat_directions is still used below — to NAME the offending
             # params — but only rank deficiency triggers the refusal.
             rank_deficient = bool(fim_info.get("rank_deficient"))
@@ -699,6 +752,10 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
             # result lists only the new), so the gate names the ties the lead already saw instead of
             # projecting new ones.
             merge_line = _render_merge(fit.get("merge_hints"))
+            # Every parameter of the judged version held by its bound rather than the data, off the
+            # same score read: the FIM leaves pins out (PEtab-MCP#356), so the refusal above never
+            # names one, and this is where the lead sees them before writing its report.
+            pinned_line = _render_pinned(fit.get("parameters_at_bound"))
             print(
                 f"[finish ARMED v={version}] bic={bic:.6g} — presented diagnosis, "
                 "awaiting confirming finish"
@@ -711,6 +768,7 @@ def _finish_tool(session, finish_state=None, probe=None, *, adequacy=None):
                 worst_line=worst_line,
                 sigma_line=sigma_line,
                 merge_line=merge_line,
+                pinned_line=pinned_line,
                 invalid_line=invalid_line,
             )
             return armed + unchecked_note

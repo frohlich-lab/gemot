@@ -1507,7 +1507,9 @@ FINISH_ARMED_TMPL = (
     "FINISH ARMED — review before confirming. "
     + _signal("Current fit: bic={bic:.6g}, neg_log_likelihood={nll:.6g}. ")
     + "Residual structure: {struct}{caveat}{worst_line}"
-    "{sigma_line}{merge_line}{invalid_line} " + _RESIDUALS_DO_NOT_DECIDE_DONE + " If you have "
+    "{sigma_line}{merge_line}{pinned_line}{invalid_line} "
+    + _RESIDUALS_DO_NOT_DECIDE_DONE
+    + " If you have "
     "genuinely bottomed out BIC, call finish AGAIN to confirm and end the run."
 )
 
@@ -1566,6 +1568,22 @@ FINISH_ARMED_MERGE_TIE_TMPL = (
     "estimation scale — a move of 1 or more there, a decade on log10, makes the estimate "
     "unreliable, and many decades mean a flat direction, not an edit that survives a refit)."
 )
+
+# Appended to the ARM text when the judged version holds parameters at a bound of their search
+# range: `get_fit_summary`'s `parameters_at_bound`, every pin, where a fit result names only the pins
+# new since its parent beside the bare ids of those it kept (frohlich-lab/PEtab-MCP#368). With no
+# such line in the finish review, pinned values reached final reports as estimates: run 63612603_28
+# reported `k_offI` as interior at 3.28 while it sat at its upper bound of 100 (PEtab-MCP#334). Since
+# PEtab-MCP#356 the FIM leaves a pinned parameter out, so the parsimony gate's flat directions no
+# longer name one, and this is where a pin shows at finish. It refuses nothing; what a pin means for
+# the model is the server's to say (its reading-fits skill), not this line's.
+FINISH_ARMED_PINNED_TMPL = (
+    " PINNED — fitted at a bound of the search range, so the bound sets these values, not the "
+    "data:{pins}. Report each as at its bound, not as an estimate."
+)
+
+#: One parameter inside :data:`FINISH_ARMED_PINNED_TMPL`.
+FINISH_ARMED_PIN_TMPL = " {parameter_id} at its {side} bound {bound}"
 
 # Appended to the ARM text when the run's last "does adding structure help?" experiment was
 # INVALID: a variant nested in its parent that gained parameters yet fit WORSE, which only a fit
@@ -2007,6 +2025,8 @@ PROMPT_GROUPS: "dict[str, dict[str, str | dict]]" = {
             "armed_sigma_more": FINISH_ARMED_SIGMA_MORE_TMPL,
             "armed_merge": FINISH_ARMED_MERGE_TMPL,
             "armed_merge_tie": FINISH_ARMED_MERGE_TIE_TMPL,
+            "armed_pinned": FINISH_ARMED_PINNED_TMPL,
+            "armed_pin": FINISH_ARMED_PIN_TMPL,
             "armed_invalid_comparison": FINISH_ARMED_INVALID_COMPARISON_TMPL,
             "struct_unavailable": FINISH_STRUCT_UNAVAILABLE,
             "confirmed": FINISH_CONFIRMED_TMPL,

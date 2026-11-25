@@ -646,6 +646,43 @@ async def test_the_armed_finish_names_a_priced_merge():
     assert "PRICED MERGES" not in await _finish(_tool_for(mod, _fit()))
 
 
+_PINS = [
+    {"parameter_id": "k_offI", "side": "upper", "value": 99.99998, "bound_value": 100.0},
+    {"parameter_id": "k1e", "side": "lower", "value": 1.0000001e-06, "bound_value": 1e-06},
+]
+
+
+@pytest.mark.asyncio
+async def test_the_armed_finish_names_every_pinned_parameter_with_its_bound():
+    """PEtab-MCP#334: with no pin line in the finish review, run 63612603_28 reported `k_offI` as
+    interior at 3.28 while it sat at its upper bound of 100. The ARM text names every pin of the
+    judged version off `get_fit_summary`'s full `parameters_at_bound` (a fit result splits it into
+    new and held, PEtab-MCP#368), and a version with none says nothing."""
+    armed = await _finish(_tool_for(_agent, _fit(parameters_at_bound=_PINS)))
+    assert "FINISH ARMED" in armed and "PINNED" in armed
+    assert "k_offI at its upper bound 100" in armed and "k1e at its lower bound 1e-06" in armed
+    assert "PINNED" not in await _finish(_tool_for(_agent, _fit(parameters_at_bound=[])))
+    assert "PINNED" not in await _finish(_tool_for(_agent, _fit()))
+
+
+@pytest.mark.parametrize(
+    "pins",
+    [
+        "k_offI",
+        [None, 3, {"side": "upper", "bound_value": 1.0}, {"parameter_id": "k", "side": None}],
+        [{"parameter_id": "k", "side": "upper", "bound_value": "inf"}, *_PINS],
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_malformed_pin_never_raises_a_finish(pins):
+    """The line fails open like the merge line: an odd payload costs the line, and an unreadable
+    row does not silence the readable ones."""
+    armed = await _finish(_tool_for(_agent, _fit(parameters_at_bound=pins)))
+    assert armed.startswith("FINISH ARMED")
+    named = isinstance(pins, list) and _PINS[0] in pins
+    assert ("k_offI at its upper bound 100" in armed) is named
+
+
 @pytest.mark.asyncio
 async def test_the_armed_finish_names_every_priced_tie_not_just_the_cheapest():
     """One named tie per arm is what taught the lead to merge PIECEMEAL — take the cheapest, refit,
@@ -919,12 +956,27 @@ _SCHWEN_ROWS = [
 ]
 
 
-def _schwen(*, rank, directions, parameters=_SCHWEN_ROWS, model_parameters=("k1", "k2", "k3")):
-    """A session whose FIM, over 4 estimated parameters, has ``rank`` and ``directions``."""
+def _schwen(
+    *,
+    rank,
+    directions,
+    parameters=_SCHWEN_ROWS,
+    model_parameters=("k1", "k2", "k3"),
+    n_at_bound=0,
+):
+    """A session whose FIM, over 4 estimated parameters inside their bounds, has ``rank`` and
+    ``directions``. ``n_at_bound`` more are estimated but pinned, which the server counts in
+    ``n_estimated`` and leaves out of the rank and the directions (PEtab-MCP#356)."""
     ident = {
         "available": True,
         "method": "fim+multistart",
-        "fim": {"rank": rank, "n_estimated": 4, "condition": 1e16, "rank_deficient": rank < 4},
+        "fim": {
+            "rank": rank,
+            "n_estimated": 4 + n_at_bound,
+            "n_at_bound": n_at_bound,
+            "condition": 1e16,
+            "rank_deficient": rank < 4,
+        },
         "flat_directions": directions,
     }
     return _FakeSession(
@@ -944,6 +996,21 @@ async def test_a_deficiency_only_a_shipped_observation_parameter_carries_is_no_r
     assert "FINISH ARMED" in await _finish(tool)
     assert (await _finish(tool)).startswith("Recorded: finish")
     assert fs["refusals"] == {} and fs["relents"] == {}
+
+
+@pytest.mark.parametrize("n_at_bound", [1, 2])
+@pytest.mark.asyncio
+async def test_a_pinned_parameter_is_not_counted_as_a_deficient_direction(n_at_bound):
+    """petab-mcp 0.1.0 takes the FIM's rank over the parameters inside their bounds while
+    `n_estimated` still counts the pinned ones (PEtab-MCP#356). Read as `n_estimated - rank`, one
+    pin beside schwen's km deficiency made the model's ill-conditioned but full-rank direction a
+    deficient one, and two made more deficient directions than were listed: either way the gate
+    refused a finish no edit can clear, the case gemot#134 took out."""
+    fs = {}
+    session = _schwen(rank=3, directions=[_RATES, _KM_ONLY], n_at_bound=n_at_bound)
+    tool = _agent._finish_tool(session, fs)
+    assert "FINISH ARMED" in await _finish(tool)
+    assert fs["refusals"] == {}
 
 
 @pytest.mark.asyncio
