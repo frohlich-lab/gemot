@@ -9,9 +9,9 @@ from __future__ import annotations
 
 # Hardcoded bio-knowledge MCP endpoints the biocurator queries (no custom-endpoint config). Each
 # is opened best-effort in its OWN supervised task by bio_sessions.open_bio_sessions: an
-# unreachable server is skipped, and a transport failure at ANY point (connect OR live session)
-# degrades the biocurator to "dumb" instead of aborting the run (issue #86). See the biocurator
-# design in agent.py and the isolation rationale in bio_sessions.py.
+# unreachable server is skipped, a session that closes mid-run is reopened, and a transport failure
+# at ANY point (connect OR live session) degrades the biocurator instead of aborting the run (issue
+# #86). See the biocurator design in agent.py and the isolation rationale in bio_sessions.py.
 _BIOCONTEXT_MCP_URL = (
     "https://biocontext-kb.fastmcp.app/mcp"  # BioContextAI Knowledgebase (hosted; fair-use)
 )

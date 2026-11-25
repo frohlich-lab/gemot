@@ -9,6 +9,7 @@ from contextvars import ContextVar
 from typing import Any
 
 from .. import infrastructure, prompts
+from ..bio_sessions import BioSessionClosed
 from ..infrastructure import Evidence, InfrastructureError
 from ..prompts import _DISABLED_TOOL_HINT_DEFAULT, _DISABLED_TOOL_HINTS
 
@@ -240,6 +241,8 @@ def _new_breaker_state() -> dict[str, Any]:
         "tasks": {},
         # Tools whose server went away (a transport error on a bio tool): cut for every caller.
         "unreachable": set(),
+        # Those of them whose session is being reopened, and come back once it is open again.
+        "reopening": set(),
         "n_tool_errors": 0,
         "events": [],
         # Separate from `streaks`: an operation REJECTION is not a tool error (see
@@ -295,14 +298,45 @@ def _breaker_message(name: str, hint: str) -> list[dict[str, str]]:
     return [{"type": "text", "text": text}]
 
 
-def _transport_breaker_message(name: str, hint: str) -> list[dict[str, str]]:
+def _transport_breaker_message(state: dict[str, Any], name: str, hint: str) -> list[dict[str, str]]:
     """Degraded block for a tool disabled after a transport failure (an unreachable/closed server).
 
     Distinct from :func:`_breaker_message`: a transport error disables on the FIRST failure, so the
-    "failed repeatedly with the same error" wording would misdescribe it."""
-    return [
-        {"type": "text", "text": prompts.TOOL_DISABLED_TRANSPORT_TMPL.format(name=name, hint=hint)}
-    ]
+    "failed repeatedly with the same error" wording would misdescribe it. A tool whose session is
+    being reopened is told so: it comes back, and "for the rest of this run" would be false."""
+    reopening = name in state["reopening"]
+    tmpl = prompts.TOOL_REOPENING_TMPL if reopening else prompts.TOOL_DISABLED_TRANSPORT_TMPL
+    return [{"type": "text", "text": tmpl.format(name=name, hint=hint)}]
+
+
+def _cut_unreachable(state: dict[str, Any], name: str, exc: BaseException) -> None:
+    """Cut ``name`` for every caller after a transport error: its server went away.
+
+    A hosted bio session that closed is being reopened
+    (:class:`~gemot.bio_sessions.BioSessionClosed`), so the tool is given back once a session is
+    open again. Any other transport error keeps it cut for the run."""
+    state["unreachable"].add(name)
+    if not isinstance(exc, BioSessionClosed):
+        msg = f"cut `{name}` for every caller: its server is unreachable ({type(exc).__name__}: "
+        _note_event(state, f"{msg}{exc})")
+        return
+    state["reopening"].add(name)
+    _note_event(state, f"cut `{name}` for every caller: {exc}")
+    exc.session.when_open(lambda: _restore(state, name))
+
+
+def _restore(state: dict[str, Any], name: str) -> None:
+    """Give ``name`` back to every caller: its server's session is open again."""
+    if name not in state["reopening"]:
+        return
+    state["unreachable"].discard(name)
+    state["reopening"].discard(name)
+    _note_event(state, f"restored `{name}`: its server's session is open again")
+
+
+def _note_event(state: dict[str, Any], msg: str) -> None:
+    state["events"].append(msg[:300])
+    print(f"[circuit-breaker] {msg[:300]}")
 
 
 def _result_error(content: Any, artifact: Any) -> str | None:
@@ -479,7 +513,7 @@ def _wrap_tools_with_circuit_breaker(
                     raise InfrastructureError(state["infrastructure"]["evidence"])
                 if name in state["unreachable"]:
                     _note_call(state, name, _CALL_DISABLED)
-                    return (_transport_breaker_message(name, hint), None)
+                    return (_transport_breaker_message(state, name, hint), None)
                 if name in _scope(state)["disabled"]:
                     _note_call(state, name, _CALL_DISABLED)
                     return (_breaker_message(name, hint), None)  # short-circuit, no server hit
@@ -549,15 +583,16 @@ def _wrap_tools_with_circuit_breaker(
                         return (detail, None)
                     # A transport error (unreachable/closed server) on an EXTERNAL bio tool can't be
                     # fixed by the model and aborts the whole run if it propagates — disable that
-                    # tool for the rest of the run and return the degraded message NOW, without
-                    # waiting for the 3-strike breaker. (Mid-run counterpart to the bio-session
-                    # isolation that already handles connect/discovery failures.) A transport error
-                    # on a CORE petab tool is NOT auto-disabled here: it falls through to the normal
-                    # 3-strike / re-raise path, so a single localhost blip can't strip `fit` or
-                    # `make_changes` for the rest of the run.
+                    # tool, until its session is reopened if it is being (_cut_unreachable), and
+                    # return the degraded message NOW, without waiting for the 3-strike breaker.
+                    # (Mid-run counterpart to the bio-session isolation that already handles
+                    # connect/discovery failures.) A transport error on a CORE petab tool is NOT
+                    # auto-disabled here: it falls through to the normal 3-strike / re-raise path,
+                    # so a single localhost blip can't strip `fit` or `make_changes` for the rest
+                    # of the run.
                     if name in transport_disable and _is_transport_error(exc):
-                        state["unreachable"].add(name)
-                        return (_transport_breaker_message(name, hint), None)
+                        _cut_unreachable(state, name, exc)
+                        return (_transport_breaker_message(state, name, hint), None)
                     if tripped:
                         return (_breaker_message(name, hint), None)
                     if _is_client_mcp_error(exc) and not _is_transport_error(exc):

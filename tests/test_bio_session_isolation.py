@@ -97,7 +97,7 @@ def _run(coro):
 def test_all_servers_connect_yields_all_sessions():
     async def go():
         async with bio.open_bio_sessions(["a", "b"], opener=_opener_ok(), log=lambda *_: None) as s:
-            return [x.name for x in s]
+            return [x.session.name for x in s]
 
     assert _run(go()) == ["a", "b"]
 
@@ -119,7 +119,7 @@ def test_one_connect_failure_is_skipped_others_kept_no_raise():
         async with bio.open_bio_sessions(
             ["bad", "good"], opener=mixed, retries=0, log=lambda *_: None
         ) as s:
-            return [x.name for x in s]
+            return [x.session.name for x in s]
 
     assert _run(go()) == ["good"]
 
@@ -159,7 +159,7 @@ def test_connect_retries_then_succeeds():
         async with bio.open_bio_sessions(
             ["r"], opener=flaky, retries=2, backoff=0.01, log=lambda *_: None
         ) as s:
-            return [x.name for x in s]
+            return [x.session.name for x in s]
 
     assert _run(go()) == ["retried"]
     assert state["n"] == 2  # failed once, succeeded on the retry
