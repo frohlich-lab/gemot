@@ -1045,6 +1045,7 @@ _ROW_PASSTHROUGH = (
     "reasoning_runaways",
     "reasoning_runaway_recovered",
     "reasoning_runaway_retry_errors",
+    "output_cap_hits",
     "max_output_tokens",
     "ablation_state",
     "judge_mode",
