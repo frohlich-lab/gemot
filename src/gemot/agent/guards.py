@@ -792,9 +792,9 @@ def _turn_notice(turns_used: int, cap: int) -> "str | None":
     "start converging" on the delegation's very first turn (left = 8 <= 10) and a cap of 5 would
     open on the WARNING. `cap // 2` leaves the shipped 20-turn caps EXACTLY as they were (10 -> 10)
     while keeping the notices a genuine approach signal at any smaller cap.
+
+    The same on every arm (see :data:`gemot.prompts.SUBAGENT_TURN_NOTICES`).
     """
-    if not prompts.PROGRESS_SIGNALS_ENABLED:
-        return None
     left = cap - turns_used
     for threshold, text in sorted(_TURN_NOTICES, key=lambda t: t[0]):
         earned = min(threshold, max(1, cap // 2))
@@ -868,15 +868,34 @@ def _subagent_turn_limit(max_turns: int):
 
     def _check(state):
         # The hard stop. `jump_to: end` is safe with a tool call outstanding (nothing further is
-        # sent to the provider), unlike returning to the model; a delegation cut off mid-call
-        # yields a thin report, which _EmptyReportGuard already covers.
+        # sent to the provider), unlike returning to the model.
         # `>=`, not `>`: at `max_turns` AIMessages the budget is SPENT, and `>` allowed a
         # (max_turns + 1)-th model call -- an off-by-one against this factory's own contract
         # ("bound one delegation to `max_turns` model calls") and against the measured sizing.
-        if _turns(state.get("messages")) >= max_turns:
-            print(f"[subagent] turn limit ({max_turns}) reached — ending this delegation")
-            return {"jump_to": "end"}
-        return None
+        messages = state.get("messages") or []
+        if _turns(messages) < max_turns:
+            return None
+        print(f"[subagent] turn limit ({max_turns}) reached — ending this delegation")
+        last = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+        if last is None or not last.tool_calls:
+            return {"jump_to": "end"}  # its last turn was its report: nothing was cut off
+        # Cut off mid-work, so the lead's report would be this delegation's last text, written
+        # between tool calls -- read as a finding (gemot#159), and not blank, so _EmptyReportGuard
+        # passes it. deepagents reports the LAST AIMessage with text, so this one, appended to the
+        # subagent's own state (which never reaches the lead's), says it is incomplete. Nothing
+        # is sent to the provider after it, so the tool calls it follows need no results.
+        text = next(
+            (
+                m.text.strip()
+                for m in reversed(messages)
+                if isinstance(m, AIMessage) and m.text.strip()
+            ),
+            "",
+        )
+        report = prompts.SUBAGENT_TURN_CAP_REPORT_TMPL.format(
+            cap=max_turns, last=text or prompts.SUBAGENT_TURN_CAP_NOTHING_WRITTEN
+        )
+        return {"messages": [AIMessage(content=report)], "jump_to": "end"}
 
     class _SubagentTurnLimit(AgentMiddleware):
         def wrap_model_call(self, request, handler):
