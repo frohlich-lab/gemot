@@ -34,6 +34,13 @@ def _server():
         """Always fails."""
         raise ToolError("infrastructure_error: disk_full: no space left")
 
+    @srv.tool()
+    def get_reactome_info_by_identifier(
+        identifier: str, species: str | list[str] | None = None
+    ) -> dict:
+        """BioContextAI's Reactome lookup, as far as its `species` argument goes."""
+        return {"identifier": identifier, "species": species}
+
     return srv
 
 
@@ -122,3 +129,21 @@ def test_an_error_result_reaches_the_model_as_a_failed_tool_message():
     message = asyncio.run(go())
     assert message.status == "error"
     assert "disk_full" in message.content[0]["text"]
+
+
+def test_an_int_sent_where_the_schema_wants_a_string_reaches_the_server_as_one():
+    """Run 63782292_21: the biocurator sent `species=9606` to BioContextAI's Reactome tool, whose
+    `species` is a string, a list of strings or null. The server refused it (`species.str Input
+    should be a valid string`), and the breaker disabled the tool on the repeats."""
+    from gemot.agent.circuit_breaker import _new_breaker_state, _wrap_tools_with_circuit_breaker
+
+    async def go():
+        async with _session() as s:
+            tools = await load_mcp_tools(s)
+            _wrap_tools_with_circuit_breaker(tools, _new_breaker_state())
+            reactome = {t.name: t for t in tools}["get_reactome_info_by_identifier"]
+            return await reactome.ainvoke(_call(reactome, identifier="P00533", species=9606))
+
+    message = asyncio.run(go())
+    assert message.status == "success"
+    assert message.artifact == {"structured_content": {"identifier": "P00533", "species": "9606"}}

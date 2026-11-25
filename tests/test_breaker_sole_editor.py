@@ -15,11 +15,13 @@ import pytest
 
 from gemot.agent.circuit_breaker import (
     _TOOL_ERROR_DISABLE_THRESHOLD,
+    _coerce_int_args,
     _coerce_json_string_args,
     _container_arg_names,
     _is_transport_error,
     _new_breaker_state,
     _record_error,
+    _string_arg_names,
     _wrap_tools_with_circuit_breaker,
 )
 
@@ -179,6 +181,32 @@ def test_unparseable_or_wrongly_shaped_strings_pass_through_untouched():
     for value in ("[not valid json", '"just a string"', "[1, 2", "42", '{"parameter_id": "k1"}'):
         args = {"parameters": value}
         assert _coerce_json_string_args(args, {"parameters": "array"}) == args
+
+
+def test_an_int_becomes_a_string_only_where_the_schema_allows_no_number():
+    """Run 63782292_21 sent `species=9606` to a string-or-list `species`. An argument that also
+    allows a number keeps its int, and a bool is not an int to stringify."""
+    tool = _FakeTool(
+        "get_reactome_info_by_identifier",
+        args={
+            "species": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "array", "items": {"type": "string"}},
+                    {"type": "null"},
+                ]
+            },
+            "taxon": {"type": ["string", "integer"]},
+            "page_size": {"type": "integer"},
+            "resource": {"type": "string"},
+        },
+    )
+    strings = _string_arg_names(tool)
+
+    assert strings == {"species", "resource"}
+    assert _coerce_int_args(
+        {"species": 9606, "taxon": 9606, "page_size": 20, "resource": True}, strings
+    ) == {"species": "9606", "taxon": 9606, "page_size": 20, "resource": True}
 
 
 def test_the_wrapper_hands_the_coerced_value_to_the_tool():

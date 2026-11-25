@@ -52,6 +52,7 @@ columns the model queries, and a subset on four ``dorothea_*`` sub-flags it neve
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +121,12 @@ def _connect(directory: "Path | None" = None):
     return con
 
 
+#: A string literal, a double-quoted identifier or a backtick-quoted one, each running to the end
+#: of the query if it is never closed: the spans :func:`_quote_reserved` leaves alone.
+_QUOTED = re.compile(r"""('(?:[^']|'')*'?|"(?:[^"]|"")*"?|`[^`]*`?)""")
+_BARE_REFERENCES = re.compile(r"\breferences\b", flags=re.IGNORECASE)
+
+
 def _quote_reserved(sql: str) -> str:
     """Quote bare ``references`` identifiers so DuckDB will parse the model's SQL.
 
@@ -129,18 +136,18 @@ def _quote_reserved(sql: str) -> str:
     queries failing against this snapshot, on a column that is present and correct.
 
     Rewriting rather than renaming the column, because the goal is that the SQL the model ALREADY
-    writes runs unchanged. Quoted occurrences and anything inside a string literal are left alone:
-    the split below alternates non-literal and literal segments on the single quote, and only the
-    non-literal ones are touched — so `WHERE label = 'references'` is untouched.
+    writes runs unchanged. Anything already quoted is left alone: a string literal (`WHERE label =
+    'references'`), a double-quoted identifier, and a backtick-quoted one. DuckDB reads backticks
+    as identifier quotes too, and the first version of this, which skipped only single and double
+    quotes, turned `` `references` `` into `` `"references"` ``: a column named with the quote
+    marks in it, `Referenced column ""references"" not found` (run 63612603_82, where it got the
+    tool disabled).
     """
-    import re
-
-    parts = sql.split("'")
-    for i in range(0, len(parts), 2):  # even indices are OUTSIDE string literals
-        parts[i] = re.sub(
-            r'(?<!")\breferences\b(?!")', '"references"', parts[i], flags=re.IGNORECASE
-        )
-    return "'".join(parts)
+    parts = _QUOTED.split(sql)  # odd indices are the quoted spans
+    return "".join(
+        part if i % 2 else _BARE_REFERENCES.sub('"references"', part)
+        for i, part in enumerate(parts)
+    )
 
 
 def run_sql(

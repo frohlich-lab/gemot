@@ -595,8 +595,9 @@ def _wrap_tools_with_circuit_breaker(
             continue
         hint = _DISABLED_TOOL_HINTS.get(name, _DISABLED_TOOL_HINT_DEFAULT)
         containers = _container_arg_names(tool)
+        strings = _string_arg_names(tool)
 
-        def _make(name: str, orig, hint: str, containers: dict):
+        def _make(name: str, orig, hint: str, containers: dict, strings: frozenset[str]):
             ours = name not in transport_disable  # a tool of the run's own server
 
             @wraps(orig)
@@ -613,6 +614,7 @@ def _wrap_tools_with_circuit_breaker(
                     _note_call(state, name, _CALL_DISABLED)
                     return (_breaker_message(name, hint), None)  # short-circuit, no server hit
                 arguments = _coerce_json_string_args(arguments, containers)
+                arguments = _coerce_int_args(arguments, strings)
                 try:
                     result = await orig(**arguments)
                 except Exception as exc:  # a raised tool error (e.g. MCP isError -> ToolException)
@@ -769,7 +771,7 @@ def _wrap_tools_with_circuit_breaker(
                 pass
             return _breaker
 
-        tool.coroutine = _make(name, orig, hint, containers)
+        tool.coroutine = _make(name, orig, hint, containers, strings)
     return tools
 
 
@@ -874,13 +876,8 @@ def _note_repeated_rejection(state: dict[str, Any], name: str, content: Any, art
     return (content + note, artifact)
 
 
-def _container_arg_names(tool: Any) -> dict[str, str]:
-    """``{argument: declared container type}`` for this tool, read off its published schema.
-
-    Only these are candidates for JSON-string coercion — never a plain `str` argument, so an
-    Antimony model or a justification that happens to start with `[` is left alone. The declared
-    type is kept so a parse can be checked against the container the schema actually asked for.
-    """
+def _arg_specs(tool: Any) -> dict[str, dict]:
+    """``{argument: its JSON schema}`` off this tool's published schema; empty if unreadable."""
     # `BaseTool.args` is a PROPERTY that indexes `args_schema["properties"]`, so it raises
     # KeyError for a zero-argument MCP tool published as `{"type": "object"}` — and getattr's
     # default only swallows AttributeError. The hosted bio servers' schemas are not ours to fix,
@@ -892,10 +889,49 @@ def _container_arg_names(tool: Any) -> dict[str, str]:
         return {}
     if not isinstance(schema, dict):
         return {}
+    return {arg: spec for arg, spec in schema.items() if isinstance(spec, dict)}
+
+
+def _string_arg_names(tool: Any) -> frozenset[str]:
+    """The arguments this tool's published schema declares a string and never a number."""
+    names = set()
+    for arg, spec in _arg_specs(tool).items():
+        types: set = set()
+        for branch in spec.get("anyOf") or spec.get("oneOf") or [spec]:
+            declared = branch.get("type") if isinstance(branch, dict) else None
+            types |= set(declared) if isinstance(declared, list) else {declared}
+        if "string" in types and not types & {"integer", "number"}:
+            names.add(arg)
+    return frozenset(names)
+
+
+def _coerce_int_args(arguments: dict, strings: frozenset[str]) -> dict:
+    """Pass an int as its decimal string where the schema declares a string and no number.
+
+    The biocurator sent ``species=9606`` to `get_reactome_info_by_identifier`, whose `species` is
+    a string, a list of strings or null. The hosted server rejected it (``species.str Input should
+    be a valid string``) and the identical errors disabled the tool (run 63782292_21). The tools
+    are given a JSON schema, not a model, so nothing on this side validates a call before the
+    server does. Like :func:`_coerce_json_string_args`, this only widens what is accepted: a call
+    it changes was one the schema rejects.
+    """
+    ints = {
+        arg: str(value)
+        for arg, value in arguments.items()
+        if arg in strings and isinstance(value, int) and not isinstance(value, bool)
+    }
+    return {**arguments, **ints} if ints else arguments
+
+
+def _container_arg_names(tool: Any) -> dict[str, str]:
+    """``{argument: declared container type}`` for this tool, read off its published schema.
+
+    Only these are candidates for JSON-string coercion — never a plain `str` argument, so an
+    Antimony model or a justification that happens to start with `[` is left alone. The declared
+    type is kept so a parse can be checked against the container the schema actually asked for.
+    """
     names = {}
-    for arg, spec in schema.items():
-        if not isinstance(spec, dict):
-            continue
+    for arg, spec in _arg_specs(tool).items():
         branches = spec.get("anyOf") or spec.get("oneOf") or [spec]
         for branch in branches:
             if isinstance(branch, dict) and branch.get("type") in _JSON_CONTAINER_TYPES:
