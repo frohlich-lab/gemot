@@ -12,6 +12,11 @@ abstract: >-
   a true or published reference, or by an absolute goodness-of-fit test, with the trace and
   version history kept for review.
 authors:
+  - name-particle: "de"
+    family-names: "Pomereu"
+    given-names: "Theodore"
+  - family-names: "Snelling"
+    given-names: "Branwen"
   - family-names: "Fröhlich"
     given-names: "Fabian"
 version: "0.1.0"
