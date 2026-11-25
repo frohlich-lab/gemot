@@ -34,7 +34,7 @@ from the running script or the working directory, or from `PETAB_MCP_REPO_ROOT` 
 Python 3.12+ and a C++ toolchain for AMICI (see [Troubleshooting](#troubleshooting)).
 
 ```bash
-pip install -e .              # gemot + the pinned server
+pip install -e .              # gemot + the pinned server release from PyPI
 pip install -e '.[harness]'   # + the deepagents panel and Phoenix tracing, for LLM-driven runs
 ```
 
@@ -129,8 +129,8 @@ archived as `work/codex_events.jsonl` or `work/claude_events.jsonl`. See
 ## Design notes
 
 The principles gemot is built on are the server's — the single scored editing tool, the one
-named score every gate reads, the versioned provenance. They are stated in the
-[PEtab MCP README](https://github.com/frohlich-lab/PEtab-MCP#design-notes).
+named score every gate reads, the versioned provenance. They are stated in the server's
+[design notes](https://github.com/frohlich-lab/PEtab-MCP/blob/main/docs/DESIGN.md).
 
 ## Development
 
@@ -148,9 +148,3 @@ MIT
 AMICI compiles generated C++ and needs a toolchain: a C++ compiler, CMake, Ninja, and the
 pip `swig` binary on `PATH` (OpenBLAS ships in the AMICI wheel).
 
-The server repository is private, and pip fetches it with `git`, so `git` needs read access
-to it — through `gh auth setup-git`, or by fetching that one URL over SSH:
-
-```bash
-git config --global url."git@github.com:frohlich-lab/PEtab-MCP".insteadOf https://github.com/frohlich-lab/PEtab-MCP
-```

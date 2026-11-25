@@ -60,7 +60,6 @@ _LAZY = {
     "_git_sha": ".provenance",
     "_now_iso": ".provenance",
     "_write_live_marker": ".provenance",
-    "_NOISE_SIGMA_COLLAPSE_FRACTION": ".scoring",
     "_NOISE_SIGMA_BAND_ALPHA": ".scoring",
     "_NOISE_SIGMA_REFERENCE_FACTOR": ".scoring",
     "_NOISE_SIGMA_BAND_MIN_DF": ".scoring",
