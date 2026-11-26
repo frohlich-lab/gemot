@@ -239,6 +239,7 @@ dev = [
     # extra's: below 0.8.5 every sbatch the pool runs blocks its scheduler (dask/dask-jobqueue#610).
     "dask-jobqueue>=0.8.5",
     "gemot[agent]",
+    "gemot[explorer]",
     "gemot[neural]",
     "gemot[pool]",
     "gemot[statements]",
@@ -357,10 +358,12 @@ tracing = [
 # the hardcoded bio-knowledge MCP endpoints (gemot.runner.endpoints.BIO_MCP_URLS) over
 # streamable-HTTP with the langchain-mcp-adapters / mcp client already pinned above.
 
-# Run-explorer web UI (gemot_iclr_2026's scripts/explore_ui.py): serves the archived runs + Phoenix trace.
-# The Phoenix client it reads traces through ships with the `harness` extra above; these are
-# just the web-serving deps.
-explorer = ["fastapi>=0.110", "uvicorn>=0.23", "jinja2>=3.1"]
+# The run explorer (`python -m gemot.explorer`): petab-mcp's viewer of each run's store, the server's
+# `viz` extra, with the conversation as a tab of its own; Panel comes with it. The Phoenix client the
+# conversation is read through ships with the `harness` extra above. No URL: the version is the pin
+# above, and a pin before the release that ships `viz` has no such extra, which pip and uv pass over:
+# the explorer then says what it is missing instead of starting.
+explorer = ["petab-mcp[viz]"]
 
 [project.urls]
 Homepage = "https://github.com/frohlich-lab/gemot"
