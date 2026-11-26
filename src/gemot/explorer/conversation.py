@@ -93,7 +93,9 @@ def turn_view(turn: dict, committed: int | None) -> pn.Card:
             ],
         )
     )
-    body = [pn.pane.Markdown(turn.get("text") or "_(no text)_", sizing_mode="stretch_width")]
+    # A turn that only calls tools has no text to show: most of a real run's turns.
+    text = turn.get("text") or ("" if turn.get("tools") else "_(no text)_")
+    body = [pn.pane.Markdown(text, sizing_mode="stretch_width")] if text else []
     body += [tool_view(t) for t in turn.get("tools") or []]
     return pn.Card(*body, title=title, sizing_mode="stretch_width")
 
@@ -139,15 +141,17 @@ def header(data: dict) -> str:
         )
         if x
     )
+    # Token totals are per role, each {prompt, completion, cache_read, total} (bundle._tally).
+    counts = {**totals, "tokens": (totals.get("total") or {}).get("total")}
     used = " · ".join(
-        f"{label} {int(totals[key]):,}"
+        f"{label} {int(counts[key]):,}"
         for key, label in (
             ("lead_turns", "lead turns"),
             ("analyst_turns", "analyst turns"),
             ("tool_calls", "tool calls"),
-            ("total", "tokens"),
+            ("tokens", "tokens"),
         )
-        if isinstance(totals.get(key), (int, float))
+        if isinstance(counts.get(key), (int, float))
     )
     lines = [f"**{run}**" if run else "", used]
     if not phoenix.get("ok"):

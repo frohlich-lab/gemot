@@ -87,6 +87,7 @@ def runs(archive_root: Path, examples_root: Path) -> pd.DataFrame:
             {**r, "status": f"{status}: {r['stop_reason']}" if r.get("stop_reason") else status}
         )
     df = pd.DataFrame(rows, columns=list(COLUMNS))
+    df["delta_bic"] = pd.to_numeric(df["delta_bic"], errors="coerce").round(1)
     return df.rename(columns=COLUMNS)
 
 

@@ -94,7 +94,7 @@ _BUNDLE = {
         },
         {"i": 4, "text": "done", "tools": []},
     ],
-    "totals": {"lead_turns": 5, "total": 1234},
+    "totals": {"lead_turns": 5, "total": {"prompt": 1000, "completion": 234, "total": 1234}},
     "phoenix": {"ok": True},
 }
 
@@ -139,3 +139,9 @@ def test_a_run_without_a_trace_says_only_that(monkeypatch, tmp_path):
     tab = C.Conversation("trace-1", tmp_path, {}, "http://localhost:6006", live=False)
     text = tab._render(0, 0, False, 1).object
     assert "No conversation: no phoenix_trace_id" in text and "every turn" not in text
+
+
+def test_the_header_counts_the_runs_tokens():
+    """bundle._tally nests the token totals per role: the header read `total` as a number and
+    dropped the run's tokens on every real trace."""
+    assert "tokens 1,234" in C.header(_BUNDLE)
