@@ -128,7 +128,7 @@ python -m gemot.sweep submit --driver deepagents --repeats 5
 | --- | --- | --- |
 | `--examples` | every `examples/*/run.py` | |
 | `--driver` | `scripted` | `deepagents`, `codex`, `claude`, `scripted`, `barebones` |
-| `--models` | `glm-flash` | OpenRouter id(s) or gemot aliases |
+| `--models` | `glm-flash` | OpenRouter id(s) or aliases from the models file: `GEMOT_MODELS`, as an absolute path, else gemot's `models.toml` |
 | `--temperatures` / `--reasoning-effort` | `1.0` / `run.py`'s | |
 | `--repeats` | `1` | runs per (example, model, temperature) |
 | `--n-starts` | `100` | an example's `AGENT_N_STARTS` raises it |

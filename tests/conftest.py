@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 from pathlib import Path
 
 import pytest
+
+# The suite checks the packaged models file, so a GEMOT_MODELS left in the shell that runs it must
+# not swap in another: gemot.models reads it once, at import.
+os.environ.pop("GEMOT_MODELS", None)
 
 DATA_DIR = Path(__file__).parent / "data" / "toy_v1"
 YAML_PATH = DATA_DIR / "problem.yaml"

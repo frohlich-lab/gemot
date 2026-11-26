@@ -1,4 +1,4 @@
-"""Provider pinning in ``models.py``.
+"""Provider pinning in the packaged ``models.toml``, and the loader that reads a models file.
 
 Routing exists to stop a request silently landing on an endpoint that is far more expensive
 (Luna: 11x on prompt price) or that bills a different cache-read rate (v4-flash: 26x across
@@ -6,13 +6,21 @@ providers, on a workload that is ~97% prompt tokens). None of that surfaces as a
 the run succeeds and the bill arrives later -- so the invariants are pinned here.
 """
 
+import json
+import os
+import subprocess
+import sys
+
 import pytest
 
 from gemot.models import (
     MODELS,
+    MODELS_FILE,
+    PACKAGED_MODELS,
     _CACHING,
     _ROUTING,
     caching_config,
+    load_models,
     provider_routing,
     resolve,
 )
@@ -82,6 +90,80 @@ def test_resolve_maps_the_alias_to_the_pinned_id():
     assert provider_routing(resolve("v4-flash")) is not None, (
         "the alias resolves to an id with no routing -- see test_every_pinned_id_is_one_we_actually_use"
     )
+
+
+# ------------------------------------------------------------------ the models file
+
+_BASE_MODELS = """default = "a"
+
+[models.a]
+id = "vendor/model-a"
+provider.only = ["vendor/fp8"]
+{extra}"""
+
+
+def _models_file(tmp_path, extra="", text=None):
+    path = tmp_path / "models.toml"
+    path.write_text(_BASE_MODELS.format(extra=extra) if text is None else text)
+    return path
+
+
+def test_the_suite_checks_the_packaged_file():
+    """Every invariant above is about the file gemot ships; conftest drops a GEMOT_MODELS left in
+    the shell, which would otherwise make them check someone else's."""
+    assert MODELS_FILE == PACKAGED_MODELS
+
+
+def test_a_models_file_loads_into_aliases_pins_and_default(tmp_path):
+    aliases, routing, default = load_models(_models_file(tmp_path))
+    assert aliases == {"a": "vendor/model-a"}
+    assert routing == {"vendor/model-a": {"only": ["vendor/fp8"]}}
+    assert default == "a"
+
+
+def test_a_misspelt_key_is_refused_not_dropped(tmp_path):
+    """A typo in `provider` would drop the pin, and an unpinned request still succeeds: the run
+    goes through at whatever endpoint OpenRouter picks and the bill is where it shows."""
+    with pytest.raises(ValueError, match="unknown key"):
+        load_models(_models_file(tmp_path, extra='provder.only = ["vendor/fp8"]\n'))
+
+
+def test_one_id_takes_one_pin(tmp_path):
+    """Pins are keyed by id, so a second alias for the same id would leave one of two pins
+    silently in force."""
+    extra = '\n[models.b]\nid = "vendor/model-a"\n'
+    with pytest.raises(ValueError, match="two aliases"):
+        load_models(_models_file(tmp_path, extra=extra))
+
+
+def test_the_default_must_be_one_of_its_models(tmp_path):
+    """A replacement file without the packaged default would otherwise send `glm-flash` to
+    OpenRouter as a model id."""
+    text = _BASE_MODELS.format(extra="").replace('default = "a"', 'default = "glm-flash"')
+    with pytest.raises(ValueError, match="default"):
+        load_models(_models_file(tmp_path, text=text))
+
+
+def test_gemot_models_replaces_the_packaged_file_whole(tmp_path):
+    """Read at import, so in a fresh interpreter. Replaced, not merged: none of the packaged
+    aliases or pins survive, so a run's routing is the one file it names."""
+    path = _models_file(tmp_path)
+    probe = (
+        "import json; from gemot import models as M; "
+        "print(json.dumps([str(M.MODELS_FILE), M.MODELS, M._ROUTING, M.DEFAULT]))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        env={**os.environ, "GEMOT_MODELS": str(path)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    models_file, aliases, routing, default = json.loads(out.stdout)
+    assert models_file == str(path)
+    assert aliases == {"a": "vendor/model-a"}, "a packaged alias survived the replacement"
+    assert routing == {"vendor/model-a": {"only": ["vendor/fp8"]}}
+    assert default == "a"
 
 
 # ------------------------------------------------------------------ reasoning config

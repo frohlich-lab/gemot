@@ -68,11 +68,9 @@ def build_parser(scenario: Scenario) -> argparse.ArgumentParser:
         default=None,
         help="OpenRouter model id, or a go-to alias (deepagents driver); for codex/claude, "
         "an explicit model id accepted by that CLI (required, no gemot alias resolution). Aliases: "
-        f"{', '.join(models.MODELS)} (see gemot/models.py). Default "
-        f"'{models.DEFAULT}' = {models.resolve(models.DEFAULT)}, 1M-token context. "
-        "Every aliased model is pinned to a single provider (see "
-        "models.provider_routing) so a mirrored copy at another price cannot "
-        "silently take the traffic.",
+        f"{', '.join(models.MODELS)}, from {models.MODELS_FILE} (GEMOT_MODELS names another), "
+        "which pins each to its endpoints so a mirrored copy at another price cannot silently "
+        f"take the traffic. Default '{models.DEFAULT}' = {models.resolve(models.DEFAULT)}.",
     )
     p.add_argument(
         "--biocurator-model",

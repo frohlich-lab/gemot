@@ -101,6 +101,10 @@ simulations, multistart (`optimization.json.gz`) and pyPESTO's HDF5 result.
 `--model` picks another OpenRouter model, and `--driver scripted` builds the true model
 without an LLM as a self-test of the pipeline.
 
+The go-to aliases (`luna`, `haiku`, `glm-flash`, …), the endpoints each one is pinned to and the
+default come from [`src/gemot/models.toml`](src/gemot/models.toml). To add a model or pin your
+own endpoints, copy that file and point `GEMOT_MODELS` at the copy, which replaces it whole.
+
 ### Codex and Claude CLI drivers
 
 Run a native CLI agent for the whole task with `.[harness]` installed and the CLI authenticated:
