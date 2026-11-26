@@ -359,9 +359,8 @@ tracing = [
 # streamable-HTTP with the langchain-mcp-adapters / mcp client already pinned above.
 
 # The run explorer (`python -m gemot.explorer`): petab-mcp's viewer of each run's store, the server's
-# `viz` extra, with the conversation as a tab of its own; Panel comes with it. The Phoenix client the
-# conversation is read through ships with the `harness` extra above. No URL: the version is the pin
-# above, and a pin before the release that ships `viz` has no such extra, which pip and uv pass over:
+# `viz` extra; Panel comes with it. No URL: the version is the pin above, and a pin before the
+# release that ships `viz` has no such extra, which pip and uv pass over:
 # the explorer then says what it is missing instead of starting.
 explorer = ["petab-mcp[viz]"]
 

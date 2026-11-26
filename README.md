@@ -145,7 +145,7 @@ submodule is documented in its own docstrings.
   field into Antimony rate laws with PySR for the same judge.
   `python -m gemot.neural_ode fit|propose` runs either half.
 - `gemot.explorer` — archived and in-flight runs in petab-mcp's viewer of their version store,
-  with the agents' conversation as a tab (`python -m gemot.explorer`, the `explorer` extra).
+  (`python -m gemot.explorer`, the `explorer` extra).
 - `gemot.sweep` — the Slurm sweep driver for a checkout that pins gemot: one job array of runs
   whose fits share one pool of SLURM workers, and the pool, trace collector and explorer as
   service jobs (`python -m gemot.sweep`, [docs/SWEEP.md](https://github.com/frohlich-lab/gemot/blob/main/docs/SWEEP.md)).

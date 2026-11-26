@@ -4,12 +4,10 @@
 
     python -m gemot.explorer                 # serve archived runs on :8000
     python -m gemot.explorer --port 8080
-    python -m gemot.explorer --phoenix http://localhost:6006 --archive examples/_runs_archive
+    python -m gemot.explorer --archive examples/_runs_archive
 
 Each harness run archives its on-disk half (:mod:`.archive`); this serves it in petab-mcp's viewer
-with the run's conversation (:mod:`.app`). The conversation needs a persistent Phoenix (the
-collector the runs exported to) reachable at ``--phoenix``; everything else works from the archive
-alone.
+(:mod:`.app`), from the archive alone.
 
 The entry point the sweep's explorer job runs (``gemot/sweep/explorer_server.sh``).
 """
@@ -32,11 +30,6 @@ def main(argv: list[str] | None = None) -> int:
         help="dir holding each example's live work/ (default: the archive's parent, "
         "i.e. examples/) — where in-flight runs are discovered for live watching",
     )
-    p.add_argument(
-        "--phoenix",
-        default=None,
-        help="Phoenix base URL (default: $PHOENIX_COLLECTOR_ENDPOINT or :6006)",
-    )
     args = p.parse_args(argv)
     try:
         from .app import serve
@@ -48,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
         f"[explorer] serving runs from "
         f"{args.archive or 'examples/_runs_archive'} on http://{args.host}:{args.port}"
     )
-    serve(args.archive, args.examples_root, args.phoenix, args.host, args.port)
+    serve(args.archive, args.examples_root, args.host, args.port)
     return 0
 
 

@@ -1,4 +1,4 @@
-"""Run-explorer: a checkout's model-building runs, in petab-mcp's viewer with their conversation.
+"""Run-explorer: a checkout's model-building runs, in petab-mcp's viewer.
 
 The harness records a run in two disjoint stores joined by ``phoenix_trace_id``:
 
@@ -9,6 +9,6 @@ The harness records a run in two disjoint stores joined by ``phoenix_trace_id``:
 
 This package archives each run's on-disk half at run end so it survives the next ``cleanup()``
 wipe (:mod:`.archive`), assembles the conversation from the trace (:mod:`.bundle`), and serves
-each run in petab-mcp's viewer of its store with the conversation as a tab (:mod:`.app`,
-:mod:`.conversation`). Entry point: ``python -m gemot.explorer`` (:mod:`.__main__`).
+each run in petab-mcp's viewer of its store (:mod:`.app`). Entry point: ``python -m gemot.explorer``
+(:mod:`.__main__`).
 """

@@ -16,10 +16,6 @@
 # one per scratch example dir plus the real `examples/<example>` dirs (for local runs) --
 # and re-syncs it every $EXPLORER_LIVE_REFRESH seconds so tasks that start later (throttled
 # array slots) show up without a restart.
-#
-# Phoenix: the explorer fetches spans server-side (explorer/bundle.py), so only this port
-# needs tunnelling -- not the collector's 6006 as well.
-set -euo pipefail
 
 : "${REPO_ROOT:?set by explorer_ctl.sh}"
 : "${ENV_PREFIX:?set by explorer_ctl.sh}"
@@ -68,7 +64,6 @@ sync_live_root() {
 
 HOST="$(hostname -f 2>/dev/null || hostname)"
 ENDPOINT="http://${HOST}:${PORT}"
-PHOENIX_URL="$(cat "$REPO_ROOT/slurm/phoenix_data/endpoint.txt" 2>/dev/null || true)"
 
 cleanup() {
     echo "[explorer_server] shutting down"
@@ -79,22 +74,13 @@ cleanup() {
 trap cleanup TERM INT EXIT
 
 sync_live_root
-if [[ -z "$PHOENIX_URL" ]]; then
-    echo "[explorer_server] warning: no Phoenix endpoint published " \
-         "($REPO_ROOT/slurm/phoenix_data/endpoint.txt missing) -- the model-variant and " \
-         "nllh/BIC panels work from the archive alone, but the conversation panels will be " \
-         "empty. Start it with 'python -m gemot.sweep phoenix start', then restart this job." >&2
-fi
 
-echo "[explorer_server] starting on ${HOST}:${PORT} | phoenix='${PHOENIX_URL:-<none>}'"
+echo "[explorer_server] starting on ${HOST}:${PORT}"
 cd "$REPO_ROOT"
-PX_ARGS=()
-[[ -n "$PHOENIX_URL" ]] && PX_ARGS=(--phoenix "$PHOENIX_URL")
 "$ENV_PREFIX/bin/python" -m gemot.explorer \
     --host 0.0.0.0 --port "$PORT" \
     --archive "$REPO_ROOT/examples/_runs_archive" \
-    --examples-root "$LIVE_ROOT" \
-    "${PX_ARGS[@]}" &
+    --examples-root "$LIVE_ROOT" &
 SERVER_PID=$!
 
 # Keep the live root current while the UI is up (new array tasks, finished ones cleaned away).

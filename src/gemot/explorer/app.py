@@ -1,9 +1,8 @@
 """The run explorer: a checkout's runs, archived or still running, each opened in petab-mcp's viewer.
 
 ``/`` lists the runs, the running ones first. ``/run?run=<id>`` is petab-mcp's viewer of the run's
-version store (``petab_mcp.viz``: the multistart, the model, the fit, version by version) with the
-agents' conversation as a tab of its own (:mod:`.conversation`). A running run is followed as the
-server writes it.
+version store (``petab_mcp.viz``: the versions, the multistart and the fit, version by version).
+A running run is followed as the server writes it.
 
 The viewer reads two things: the run's store, and the PEtab problem the server was given, for the
 design tables it does not store. A live run has both in its ``work/``. An archive keeps the store
@@ -17,7 +16,6 @@ imports :mod:`.bundle` or :mod:`.archive` pays for them.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,7 +23,6 @@ import pandas as pd
 import panel as pn
 
 from . import archive
-from .conversation import Conversation
 
 
 @dataclass(frozen=True)
@@ -118,7 +115,7 @@ def index(archive_root: Path, examples_root: Path) -> pn.viewable.Viewable:
         main=[
             pn.pane.Markdown(
                 f"Runs in `{archive_root}`, and those running under `{examples_root}`. Open a run "
-                "to see its versions in petab-mcp's viewer, with the agents' conversation.",
+                "to see its versions in petab-mcp's viewer.",
                 sizing_mode="stretch_width",
             ),
             table,
@@ -126,9 +123,7 @@ def index(archive_root: Path, examples_root: Path) -> pn.viewable.Viewable:
     )
 
 
-def run_page(
-    run_id: str, archive_root: Path, examples_root: Path, phoenix_base_url: str
-) -> pn.viewable.Viewable:
+def run_page(run_id: str, archive_root: Path, examples_root: Path) -> pn.viewable.Viewable:
     from petab_mcp.viz.app import build
 
     found = locate(run_id, archive_root, examples_root)
@@ -139,44 +134,27 @@ def run_page(
             f"Run `{run_id}`'s example has no problem on this machine, which the viewer reads the "
             "design tables from."
         )
-    conversation = Conversation(run_id, found.run_dir, found.meta, phoenix_base_url, found.live)
     scenario = found.meta.get("scenario") or run_id
     return build(
         found.store,
         found.problem,
         poll_seconds=3.0 if found.live else 0,
-        extra_tabs=[("Conversation", conversation.view)],
         title=f"gemot · {scenario} · {run_id}",
-    )
-
-
-def phoenix_base_url(explicit: str | None) -> str:
-    """The Phoenix the conversations are read from: ``explicit``, then the standard environment
-    variables, then the local default, normalised to the base the Phoenix client wants."""
-    from ..tracing import phoenix_base_url as base
-
-    return base(
-        explicit
-        or os.environ.get("PHOENIX_COLLECTOR_ENDPOINT")
-        or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
-        or "http://localhost:6006"
     )
 
 
 def serve(
     archive_root: Path | None = None,
     examples_root: Path | None = None,
-    phoenix: str | None = None,
     host: str = "127.0.0.1",
     port: int = 8000,
 ) -> None:
     archive_root = Path(archive_root) if archive_root else archive.default_archive_root()
     examples_root = Path(examples_root) if examples_root else archive_root.parent
-    px = phoenix_base_url(phoenix)
 
     def run():
         run_id = (pn.state.session_args.get("run") or [b""])[0].decode()
-        return run_page(run_id, archive_root, examples_root, px)
+        return run_page(run_id, archive_root, examples_root)
 
     # Bokeh checks a page's websocket against the address it is browsed at: bound to every
     # interface on a compute node, it is browsed through an SSH tunnel at an address it cannot
