@@ -3,308 +3,86 @@
 OpenRouter serves a single model across SEVERAL providers at different prices. GPT-5.6 Luna, for
 instance, is offered OpenAI-direct at ~$0.10/M prompt but ALSO via Amazon Bedrock ($0.22/M) and
 Azure ($1.00-1.10/M) — up to ~11x more. Left to default routing a request can silently land on an
-expensive copy, so the Luna family is pinned to OpenAI via provider routing (``only: [openai]``):
-it serves OpenAI's documented standard tier, never the Bedrock/Azure copies. (We avoid
-``sort: price``, which would opt into OpenAI's cheaper but undocumented ``flex`` tier.)
+expensive copy, so every go-to model is pinned to its endpoints by an OpenRouter ``provider``
+block: the Luna family to OpenAI (``only: [openai]``), its documented standard tier, never the
+Bedrock/Azure copies. (We avoid ``sort: price``, which would opt into OpenAI's cheaper but
+undocumented ``flex`` tier.)
 
-``MODELS`` maps a short alias to its OpenRouter id so ``--model luna`` works; :func:`resolve`
-passes a full id through unchanged.
+**The aliases and pins are data, in a models file.** Which endpoint a model is held to is the
+operator's policy -- this lab's is zero-data-retention endpoints only, fp8 or better, Anthropic
+through its own key -- and endpoints come and go (six pinned tags were gone on 2026-11-07). In a
+public package a pin hard-coded here is a 404 for every user until a release, and a new model is a
+release too. So ``models.toml`` beside this module holds each alias's OpenRouter id and
+``provider`` block, and the default lead, with the notes on how each pin was chosen. ``MODELS``,
+``_ROUTING`` and ``DEFAULT`` are read from it once, at import.
 
-Three per-model request tables live here, each keyed by OpenRouter id and omitted from the request
-when a model has no entry: ``_ROUTING`` (:func:`provider_routing`) pins the endpoint,
-``_REASONING`` (:func:`reasoning_config`) turns thinking on where it ships off, and ``_CACHING``
-(:func:`caching_config`) asks for prompt caching where the provider does not do it implicitly. A
-fourth, ``_RETURNS_REASONING`` (:func:`returns_reasoning`), names the models whose earlier
-reasoning goes back to them at all.
+``GEMOT_MODELS`` names a file that REPLACES it whole. Deliberately not merged: a run's aliases and
+pins are then the one file it names, never a mix of two that nobody wrote down. A sweep task
+inherits the variable through sbatch's ``--export=ALL``, so set it, as an absolute path, before
+submitting. Each run's ``result.json`` records what its requests asked for
+(``openrouter_extra_body``) and which endpoints served them (``openrouter_endpoints``), whichever
+file it read.
+
+**What stays here is what a model's API needs**, the same for every operator. Four per-model
+request tables, keyed by OpenRouter id and omitted from the request when a model has no entry:
+``_REASONING`` (:func:`reasoning_config`) turns thinking on where it ships off, ``_CACHING``
+(:func:`caching_config`) asks for prompt caching where the provider does not do it implicitly,
+``_HEADERS`` (:func:`request_headers`) sends a beta header, and ``_RETURNS_REASONING``
+(:func:`returns_reasoning`) names the models whose earlier reasoning goes back to them at all. A
+model that needs one of these is a change here, not in a models file.
 """
 
 from __future__ import annotations
 
-#: alias -> OpenRouter id. The panel's go-to leads, every one pinned to an endpoint (``_ROUTING``).
-MODELS: dict[str, str] = {
-    # GPT-6 Luna since 2026-11-07, at $0.10/$0.50, half of GPT-5.6 Luna's price that day. Runs
-    # before then are GPT-5.6, recorded under its own id.
-    "luna": "openai/gpt-6-luna",
-    "luna-pro": "openai/gpt-6-luna-pro",
-    # DeepSeek's newest since 2026-11-07, both dated snapshots: V4.1 Flash of 17 Oct and V4 Pro of
-    # 13 Aug (there is no V4.1 Pro). The aliases keep their names; runs before then are the
-    # floating V4 ids, recorded under those.
-    "v4-flash": "deepseek/deepseek-v4.1-flash-1017",
-    "v4-pro": "deepseek/deepseek-v4-pro-0813",
-    # Each family's newest since 2026-11-07, as luna and v4 above: MiniMax M3.1 Flash (the alias
-    # was `minimax-m3`), MiMo V2.6 Pro (was V2.5), Gemini 3.8 Flash and 4 Argon (were 3.6 Flash
-    # and 3.1 Pro preview), GPT-6.1 Terra (was 5.6) and Grok 4.7 (was 4.20). Earlier runs are
-    # recorded under the ids they ran.
-    "minimax": "minimax/minimax-m3.1-flash",
-    "mimo": "xiaomi/mimo-v2.6-pro",
-    "mimo-flash": "xiaomi/mimo-v2.6-flash",
-    "glm-flash": "z-ai/glm-5.3-flash",
-    # The tier above the panel: ~10x luna per run, added to test whether capability buys
-    # anything on the examples the panel cannot solve. Not defaults -- opt in with --models.
-    "terra": "openai/gpt-6.1-terra",
-    "astra": "openai/gpt-6-astra",
-    "grok": "x-ai/grok-4.7",
-    "gemini-flash": "google/gemini-3.8-flash",
-    "gemini-pro": "google/gemini-4-argon",
-    # Open-weight families added 2026-11-07, at that tier's price (~$2 a median run): Moonshot's
-    # Kimi K3.1 Pro and Qwen 3.8's open-weight 2.4T-A95B, the open variant of Qwen 3.8 Max.
-    "kimi": "moonshotai/kimi-k3.1-pro",
-    "qwen": "qwen/qwen3.8-2.4t-a95b",
-    # Anthropic, also opt-in: the only models whose caching is not implicit (``_CACHING``).
-    "sonnet": "anthropic/claude-sonnet-5.5",
-    "opus": "anthropic/claude-opus-5.5",
-    "haiku": "anthropic/claude-haiku-5.5",
-    # Claude Fable 5.2 (2026-11-09), Anthropic's tier above Opus: $8/$40 per M, cache reads $0.20,
-    # one-hour cache writes $16. Added 2026-11-16 for the Fujita support-ladder cohort.
-    "fable": "anthropic/claude-fable-5.2",
-    # Two small models, added 2026-11-26 for the six-problem harness panel: Qwen 3.8
-    # 27B, the 27B of the family `qwen` above belongs to, and Thinking Machines' Inkling 2 Mini.
-    # Both think by default and cache implicitly (verified live), so neither has a _REASONING or
-    # _CACHING entry.
-    "qwen-27b": "qwen/qwen3.8-27b",
-    "inkling-mini": "thinkingmachines/inkling-2-mini",
-}
+import os
+import tomllib
+from pathlib import Path
 
-#: Default lead. 1M-token context, single pinned provider (Z.AI), and the best measured accuracy
-#: on this benchmark: the 2026-08-28/29 campaign scored 71/78 (91%) across 18 examples, against
-#: luna's 55/90 (61%) on the same post-fix harness. It is also the only model to have passed
-#: bachmann (3/5) and lucarelli (4/4) on their current versions, both flat 0 for every other
-#: model tested. Headline prices are 25-58% below luna's, but cost parity is NOT the reason and
-#: is NOT established — cache reads are $0.015/M against luna's $0.010, and on a workload that is
-#: ~89% cache reads that one rate decides the comparison (see the routing note below).
-#:
-#: The accuracy figure depends on the reasoning-runaway guard: unguarded, this model scored 0/15
-#: on bachmann/isensee/boehm because it burned whole completion budgets thinking and returned
-#: nothing. Do not roll the default forward onto a harness without agent/guards.py.
-DEFAULT = "glm-flash"
+#: Names a models file that replaces the packaged one whole.
+MODELS_ENV = "GEMOT_MODELS"
 
-#: Per-model OpenRouter provider routing, needed only where a model is MIRRORED across providers at
-#: very different prices. OpenRouter serves the Luna family via OpenAI *and* Amazon Bedrock
-#: ($0.22/M) and Azure ($1.00-1.10/M — a separate ``azure`` and ``azure/eu`` endpoint each). We use
-#: an ALLOWLIST — ``only: [openai]`` — NOT a denylist: routing keys off each endpoint's ``tag``, and
-#: a denylist would have to enumerate every expensive tag (``azure``, ``azure/eu``,
-#: ``amazon-bedrock/us-east-1``, …) and would still miss any provider added later. An allowlist
-#: excludes all of them by construction, with nothing to track. We deliberately do NOT add
-#: ``sort: price`` (that opts into OpenAI's undocumented ``openai/flex`` $0.05/M tier); left alone,
-#: ``only: [openai]`` serves the standard ``openai`` tier at the documented $0.10/M — verified live
-#: (served by OpenAI, completion billed $0.60/M, not flex's $0.30/M). ``flex``/``priority`` are
-#: opt-in.
-#:
-#: DeepSeek v4-flash needs pinning for a DIFFERENT reason, and the earlier claim here that it was
-#: single-provider was simply wrong — OpenRouter serves it from 20 endpoints. What matters is not
-#: the prompt price but the CACHE-READ price: this workload is ~97% prompt tokens and the driver
-#: runs no history trimmer because the resent history is ~98% near-free ``cache_read`` (see
-#: ``agent/driver.py``). Cache-read varies far more across providers than prompt price does —
-#: $0.003/M to $0.078/M, a 26x spread, against 2.9x on prompt — so a route chosen on prompt price
-#: can still be an order of magnitude wrong on the number that actually bills. Effective cost at
-#: our median run (3.63M prompt / 125k completion) ranges $0.055 to $0.145 across endpoints.
-#:
-#: DeepSeek's own endpoint is the cheapest ($0.055/run, the only one with implicit caching) but is
-#: NOT available under a zero-data-retention policy — verified live: ``only: [deepseek]`` returns
-#: 404 "No endpoints available matching your ... data policy". Of the ZDR-eligible ones we exclude
-#: DeepInfra despite it being cheapest ($0.093/run): it serves **fp4**, and comparing a benchmark
-#: across differently-quantized endpoints confounds the result the benchmark exists to measure.
-#: That leaves DigitalOcean ($0.087/run) and Novita (fp8, $0.145/run).
-#:
-#: ``order`` sets the priority, ``only`` bounds the fallback to the same two — ``order`` alone
-#: still permits fallback to any other provider. Verified live: three consecutive calls all served
-#: by DigitalOcean, with Novita as the standby if it goes down. AkashML is deliberately absent —
-#: it serves the date-pinned ``-0731`` id but not this floating one.
-#:
-#: Checked again on 2026-11-07, against each model's endpoint list and OpenRouter's list of ZDR
-#: endpoints (``/api/v1/endpoints/zdr``). Six models had lost a pinned tag (Novita, Parasail,
-#: Together, and the bare and ``/eu`` Vertex tags); each lost tag is replaced by a ZDR endpoint at
-#: fp8 or better, with 1M context and tool calls, which answered a live call. The other endpoints
-#: are unchanged.
-#:
-#: Three things that check found:
-#:
-#: * **ZDR has to be read off OpenRouter's ZDR list now.** The account no longer enforces it:
-#:   every endpoint probed answered, including GMICloud, Baidu, StreamLake and
-#:   ``google-ai-studio``, which the notes below record as ZDR-blocked when they were checked.
-#: * **Which pins are not ZDR.** The ``openai`` tag of the OpenAI family is not on the list
-#:   (``azure`` is, at the same price), nor is ``xiaomi/fp8``, nor grok's ``xai`` standby. The
-#:   ``anthropic`` tag of sonnet and haiku isn't either, but it runs through this account's own
-#:   key. Every other pinned tag is on the list.
-#: * **How a bare provider slug matches.** It takes the provider's quantization variants but not
-#:   its service tiers. ``only: [z-ai]`` reached ``z-ai/fp8``, the only Z.AI endpoint left.
-#:   ``only: [openai]`` billed luna's standard rate on 3 of 3 calls, where ``openai/flex`` billed
-#:   half.
-#:
-#: The same day every family moved to its newest model (``MODELS``), and Kimi and Qwen were added.
-#: Each new pin follows the same rules and was verified live: at ``reasoning: {effort: max}``, as
-#: the sweeps send it, every endpoint billed exactly its standard rate and finished a two-step tool
-#: loop with the tool result sent back but not the reasoning. The notes above about v4-flash are
-#: about the V4 id it replaced.
-_ROUTING: dict[str, dict] = {
-    # glm-flash: ONE provider (Z.AI itself), so the pin is not about price mirrors -- it is a
-    # standing guarantee that a provider added later cannot silently take the traffic. Verified
-    # live 2026-08-28: `only: ["z-ai"]` returns HTTP 200 served by Z.AI, so unlike deepseek/mimo
-    # the cheap endpoint IS reachable under this account's data policy. Context is 1M+, clearing
-    # driver.py's 1M assumption with no fallback endpoint to worry about.
-    #
-    # Cache read is $0.015/M -- 1.5x luna's $0.010 -- and on this workload cache reads are ~89% of
-    # prompt tokens, so that one rate decides the comparison: measured over the 66-run luna
-    # campaign, GLM lands ~17% cheaper ($0.033 vs $0.038/run median) despite headline prices 25%
-    # and 58% below luna's. It needs a >=78% cache hit rate just to break even, and can only
-    # afford 1.16x luna's token consumption before it costs MORE. Treat cost parity as unproven
-    # until a real sweep reports its own cache_read_tokens.
-    #
-    # 2026-11-07: no longer ONE provider. 41 endpoints serve it, and Z.AI's own is now tagged
-    # `z-ai/fp8` (ZDR; $0.15/$0.50, cache read $0.03 -- GPT-5.6 Luna's doubled too, to $0.02).
-    # Named by that tag, so a Z.AI variant added later is not taken by the bare slug. Kept on Z.AI
-    # alone, with no standby: the 2026-08 campaign was measured there.
-    "z-ai/glm-5.3-flash": {"only": ["z-ai/fp8"]},
-    # GPT-6 Luna: the same endpoints and tiers as 5.6's (`openai`, `openai/flex` at half price,
-    # `openai/fast`, Azure, Bedrock), so the same `openai` pin. Verified live 2026-11-07: served
-    # by OpenAI at the standard rate, with a correct tool call.
-    "openai/gpt-6-luna": {"only": ["openai"]},
-    "openai/gpt-6-luna-pro": {"only": ["openai"]},
-    # V4.1 Flash (1017): 51 endpoints. Pinned to the cheapest that is ZDR, NAMED fp8, 1M and
-    # standard tier, `deepinfra/fp8` ($0.098/$0.294, cache read $0.00294: about $0.065 for the
-    # median run above, at 95% cache reads), with `novita/fp8` ($0.165/$0.66, $0.0033; ~$0.12)
-    # the standby. DigitalOcean, the V4 primary, is left out: OpenRouter lists its quantization
-    # for every model as "unknown", and DigitalOcean's own docs do not say either. Named with the
-    # quantization, so DeepInfra's fp4 or its `/flex` and `/priority` tiers are never taken:
-    # verified live 2026-11-07, both endpoints billed their standard rate and made a tool call.
-    "deepseek/deepseek-v4.1-flash-1017": {
-        "order": ["deepinfra/fp8", "novita/fp8"],
-        "only": ["deepinfra/fp8", "novita/fp8"],
-    },
-    # mimo (V2.6 Pro): `deepinfra/fp8` (ZDR, 1M; $0.387/$0.783, cache read $0.00324, ~$0.18 a
-    # median run) alone. Its other ZDR endpoint, `primalabs/fp8`, is ten times the price, and
-    # Xiaomi's own and GMICloud's are not on the ZDR list. V2.5, which this replaced, was down to
-    # one endpoint (`venice/fp8`, $0.40/$2.00) by 2026-11-07.
-    "xiaomi/mimo-v2.6-pro": {"only": ["deepinfra/fp8"]},
-    # v2.6 Flash: unlike v2.5's, Xiaomi's own endpoint is not ZDR-blocked here (every one of its
-    # eight endpoints answered a tool call, 2026-10-17); first-party fp8, with a standby.
-    # 2026-11-07: Novita no longer serves it, so the standby is `deepinfra/fp8` (ZDR, 1M, Xiaomi's
-    # own price). `xiaomi/fp8` is not on OpenRouter's ZDR list.
-    "xiaomi/mimo-v2.6-flash": {
-        "order": ["xiaomi/fp8", "deepinfra/fp8"],
-        "only": ["xiaomi/fp8", "deepinfra/fp8"],
-    },
-    # V4 Pro (0813): the cheapest ZDR, named-fp8, 1M endpoint is `novita/fp8` ($0.99/$2.97, cache
-    # read $0.033), with `parasail/fp8` ($1.32/$3.96, $0.044) the standby. Baidu, StreamLake and
-    # DeepSeek itself are cheaper on prompt but not on the ZDR list. Verified live 2026-11-07:
-    # both billed their standard rate and made a tool call.
-    "deepseek/deepseek-v4-pro-0813": {
-        "order": ["novita/fp8", "parasail/fp8"],
-        "only": ["novita/fp8", "parasail/fp8"],
-    },
-    # minimax (M3.1 Flash): every ZDR endpoint serves 1M and charges the same ($0.15/$0.60, cache
-    # read $0.015, ~$0.15 a median run), so the pin is for precision: the two that name it,
-    # `novita/fp16` then `parasail/fp8`. Four others serve fp4 and four do not say.
-    #
-    # M3, which this replaced, was pinned for CONTEXT: five of its nine endpoints served 524,288
-    # tokens, and default routing landed on one. 524K is deliberate headroom, not a guess -- the
-    # largest single call across 210 archived runs was 171k tokens, and the run-level cap is the
-    # recursion limit, not the window.
-    "minimax/minimax-m3.1-flash": {
-        "order": ["novita/fp16", "parasail/fp8"],
-        "only": ["novita/fp16", "parasail/fp8"],
-    },
-    # terra: same Azure trap as the rest of the OpenAI family (OpenAI $1.00 vs Azure $2.75, a
-    # 5.5x spread, for GPT-5.6 Terra), so the bare `openai` tag is mandatory -- it also excludes
-    # `openai/flex` and `openai/priority`, the undocumented cheap and dear tiers we refuse
-    # everywhere else. GPT-6.1 Terra is $1/$5 on `openai` and `azure` alike.
-    "openai/gpt-6.1-terra": {"only": ["openai"]},
-    # astra: the family's standing `openai` tag, which also excludes `openai/flex` (half price,
-    # undocumented tier), `openai/fast` (2x) and the Azure mirrors. Verified live: `openai` and
-    # `azure` both answer for this account at the same price, so the pin fixes the endpoint
-    # rather than the bill.
-    "openai/gpt-6-astra": {"only": ["openai"]},
-    # grok: `xai/zdr` and `xai` are the SAME price; pin the zdr tag because it names the data
-    # guarantee in the request rather than leaning on the account policy, and it excludes the
-    # `/priority` tiers which cost exactly double for no benefit here.
-    #
-    # Grok 4.7 has a 500K window, not 4.20's 2M -- inside the 524K headroom accepted for MiniMax
-    # M3 above. It costs more too: $2/$6, cache read $0.50 (4.20: $1.25/$2.50, $0.20), ~$2.84 a
-    # median run against ~$1.23. `amazon-bedrock/global` is ZDR but does not cache.
-    "x-ai/grok-4.7": {"order": ["xai/zdr", "xai"], "only": ["xai/zdr", "xai"]},
-    # Gemini: READ THIS BEFORE ADDING ANOTHER GOOGLE MODEL. Google publishes no ZDR-tagged endpoint
-    # at all -- grok's `xai/zdr` has no counterpart here, and `data_policy` comes back `{}` for
-    # every endpoint (terra's included), so the API cannot answer the retention question either
-    # way. These two are reachable only because ZDR enforcement is relaxed account-side, the same
-    # concession that admitted terra. That is a policy decision, not a property of the pin.
-    #
-    # All six endpoints are byte-identical on price and context (1M, so no context trap of the kind
-    # mimo and m3 have). The standby is the OTHER TWO VERTEX tags, not `google-ai-studio`: the
-    # Flash-Lite note below records `google-ai-studio` as ZDR-BLOCKED (verified live, 404 on data
-    # policy) while `google-vertex` and `google-vertex/eu` are not. Pinning AI Studio as the fallback
-    # -- as this did -- meant a `google-vertex/global` outage left an effectively EMPTY allowlist, so
-    # every gemini task in the array job would error out instead of degrading, which is the opposite
-    # of what the fallback is for. flex is half price and priority 1.8x, and is excluded by the same
-    # standing rule we apply to `openai/flex`.
-    #
-    # Unlike every incumbent, Gemini prices cache WRITES ($0.083/M flash, $0.375/M pro). That rate
-    # bills only for explicit `cache_control` breakpoints; we set none anywhere in the harness, so
-    # implicit caching applies and the write column stays at zero. Adding cache_control later would
-    # start billing it -- on pro the write rate is 1.9x its own cache-read rate.
-    #
-    # No _REASONING entry on purpose: both models think by DEFAULT (verified live, 140-210
-    # reasoning tokens on a one-shot tool call, tool calls intact). Contrast Flash-Lite below,
-    # where thinking was off and had to be asked for.
-    #
-    # 2026-11-07: the Vertex tags have changed, and the models with them: Gemini 3.8 Flash ($0.75/
-    # $3.75, as 3.6) and Gemini 4 Argon, Google's flagship reasoning model ($2/$10, as 3.1 Pro).
-    # Neither has a bare `google-vertex` or `google-vertex/eu` endpoint; both have
-    # `google-vertex/global` and `google-vertex/us` (10% dearer), the standby. OpenRouter's ZDR
-    # list now has every standard-tier Vertex endpoint, so the first paragraph above no longer
-    # holds. AI Studio answers but is not on the list.
-    "google/gemini-3.8-flash": {
-        "order": ["google-vertex/global", "google-vertex/us"],
-        "only": ["google-vertex/global", "google-vertex/us"],
-    },
-    "google/gemini-4-argon": {
-        "order": ["google-vertex/global", "google-vertex/us"],
-        "only": ["google-vertex/global", "google-vertex/us"],
-    },
-    # kimi (K3.1 Pro): 23 of its 24 endpoints are ZDR, most at fp4 or mxfp4 -- Moonshot's own
-    # (`moonshotai/mxfp4`) included. Two name fp8 or better: `deepinfra/bf16` ($1.90/$9.50, cache
-    # read $0.19, ~$2.19 a median run), then `morph/fp8` ($1.91/$12, cache read $0.47, ~$3.47),
-    # the standby. DeepInfra answered 429 ("temporarily rate-limited upstream") on 1 of 4 calls,
-    # 2026-11-07. Its default effort is max; it accepts max/high/low/none, so the runaway
-    # ladder's "minimal" rung is refused and handled as for any other provider.
-    "moonshotai/kimi-k3.1-pro": {
-        "order": ["deepinfra/bf16", "morph/fp8"],
-        "only": ["deepinfra/bf16", "morph/fp8"],
-    },
-    # qwen (3.8 2.4T-A95B): `siliconflow/fp8` (ZDR, 1M; $2/$6, cache read $0.25, ~$1.98 a median
-    # run) alone: of its other ZDR endpoints Novita does not name its precision and Venice serves
-    # 262K. Alibaba's own is not on the ZDR list, nor are Qwen 3.8 Max, Plus and Flash at all.
-    # Reasoning is mandatory, at efforts xhigh/medium/low; `max` was accepted live.
-    "qwen/qwen3.8-2.4t-a95b": {"only": ["siliconflow/fp8"]},
-    # Anthropic: one tag, no `order` fallback -- pinned for the cache namespace, not the price.
-    # `anthropic`, `claude-on-aws` and `azure/*` are ZDR-blocked here (404, verified per tag).
-    # Through this account's own Anthropic key (BYOK), which the ZDR block above does not apply to.
-    "anthropic/claude-sonnet-5.5": {"only": ["anthropic"]},
-    "anthropic/claude-opus-5.5": {"only": ["google-vertex/global"]},
-    # The Anthropic endpoint, through this account's own key (BYOK).
-    "anthropic/claude-haiku-5.5": {"only": ["anthropic"]},
-    # Fable 5.2 the same way, verified live 2026-11-16: two two-step tool loops through the
-    # `anthropic` tag, both billed upstream to this key (`is_byok`, OpenRouter cost 0), the
-    # reasoning sent back accepted, and at effort max it thought after the tool result too.
-    "anthropic/claude-fable-5.2": {"only": ["anthropic"]},
-    # qwen-27b (Qwen 3.8 27B): pinned for CONTEXT, as MiniMax M3 was. Of its 23 endpoints the
-    # ZDR ones at fp8 or better all serve 262,144 tokens. On the six-problem panel of 2026-11-09
-    # the median run's largest prompt was 135k-428k tokens by model, and the largest 638k, so a
-    # 262K window would end runs the other models finish. The three 1M endpoints are `alibaba` and
-    # `streamlake` (neither on the ZDR list) and `nebius/fp4` (ZDR; $0.45/$3.00, cache read
-    # $0.10), which is pinned alone. Named with its quantization, and the fp4 is a property of
-    # the model's only admissible endpoint, not a mix across endpoints. Verified live 2026-11-26:
-    # two-step tool loops at effort high and max, served by Nebius, 12,608 of 12,634 prompt
-    # tokens cached on a repeat.
-    "qwen/qwen3.8-27b": {"only": ["nebius/fp4"]},
-    # inkling-mini (Inkling 2 Mini): every endpoint is fp4 or nvfp4, so there is no fp8 to hold
-    # it to. `primeintellect/fp4` ($0.075/$0.30, cache read $0.015; ZDR, 1M) alone: it is the
-    # standard tier, where `primeintellect/flex` and `/fast` are the half- and double-price
-    # tiers refused everywhere else; `deepinfra/fp4` takes no tools, `relace/fp4` and
-    # `io-net/nvfp4` serve 131K and 262K, and `darkbloom/nvfp4` is not on the ZDR list. Its
-    # max_completion_tokens is listed as 65,536, but a request at max_tokens 131,072 was
-    # served. Verified live 2026-11-26: two-step tool loops at effort high and max.
-    "thinkingmachines/inkling-2-mini": {"only": ["primeintellect/fp4"]},
-}
+#: The packaged models file: this lab's aliases, their pins and the default lead.
+PACKAGED_MODELS = Path(__file__).with_name("models.toml")
+
+
+def load_models(path: Path) -> tuple[dict[str, str], dict[str, dict], str]:
+    """Read a models file into its aliases (alias -> OpenRouter id), its routing (OpenRouter id ->
+    ``provider`` block) and its default alias.
+
+    Strict about its own keys and nothing else: a misspelt ``provder`` would otherwise drop a pin,
+    and an unpinned request still succeeds -- the bill is where it would surface. The ``provider``
+    block itself is OpenRouter's and passes through as written. One id takes one pin, so two
+    aliases for the same id are refused rather than one pin silently winning."""
+    with path.open("rb") as fh:
+        table = tomllib.load(fh)
+    if unknown := set(table) - {"default", "models"}:
+        raise ValueError(f"{path}: unknown top-level key(s) {sorted(unknown)}")
+    aliases: dict[str, str] = {}
+    routing: dict[str, dict] = {}
+    for alias, entry in table.get("models", {}).items():
+        if not isinstance(entry, dict) or "id" not in entry:
+            raise ValueError(f"{path}: [models.{alias}] needs an `id`")
+        if unknown := set(entry) - {"id", "provider"}:
+            raise ValueError(f"{path}: [models.{alias}] has unknown key(s) {sorted(unknown)}")
+        model_id = entry["id"]
+        if model_id in aliases.values():
+            raise ValueError(f"{path}: {model_id} has two aliases; one id takes one pin")
+        aliases[alias] = model_id
+        if "provider" in entry:
+            routing[model_id] = entry["provider"]
+    default = table.get("default")
+    if default not in aliases:
+        raise ValueError(f"{path}: default {default!r} is not one of its models")
+    return aliases, routing, default
+
+
+#: The models file this process read: ``GEMOT_MODELS`` when set, else the packaged one.
+MODELS_FILE = Path(os.environ.get(MODELS_ENV) or PACKAGED_MODELS)
+
+#: ``MODELS`` maps an alias to its OpenRouter id so ``--model luna`` works (:func:`resolve`),
+#: ``_ROUTING`` an OpenRouter id to its ``provider`` block (:func:`provider_routing`), and
+#: ``DEFAULT`` is the lead when ``--model`` is not given.
+MODELS, _ROUTING, DEFAULT = load_models(MODELS_FILE)
 
 
 #: Per-model OpenRouter ``reasoning`` config, for models whose thinking is OFF by default.
@@ -428,15 +206,15 @@ def resolve(name: str) -> str:
 
 
 def provider_routing(model_id: str) -> dict | None:
-    """The OpenRouter ``provider`` block for ``model_id``, or ``None`` when no pinning is needed.
+    """The OpenRouter ``provider`` block for ``model_id`` in the models file, or ``None``.
 
     For the Luna family this restricts routing to OpenAI (an allowlist), so a request can never
     silently route off OpenAI's standard $0.10/M tier onto the ~2-11x Bedrock/Azure copies — nor
     onto any provider added later.
 
-    EVERY panel model is pinned, single-provider ones included (``test_every_panel_model_is_pinned``
-    enforces it): the pin on a model with one endpoint today, like ``z-ai/glm-5.3-flash``, is a
-    standing guard against a second provider appearing later and silently taking the traffic at a
-    different price or data policy. ``None`` therefore means "not a panel model", not "nothing to
-    pin", and the caller omits the ``provider`` field for it."""
+    EVERY model in the packaged file is pinned, single-provider ones included
+    (``test_every_panel_model_is_pinned`` enforces it): the pin on a model with one endpoint today,
+    like ``z-ai/glm-5.3-flash``, is a standing guard against a second provider appearing later and
+    silently taking the traffic at a different price or data policy. ``None`` therefore means "not
+    pinned by the file this process read", and the caller omits the ``provider`` field for it."""
     return _ROUTING.get(model_id)

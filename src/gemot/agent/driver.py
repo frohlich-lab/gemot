@@ -1050,7 +1050,7 @@ async def run_deepagents(
     # every run compacted (81 events), each costing ~102k NOVEL tokens (cache hit 0.46 vs
     # 0.85-0.89 normal) and ~33s, at a median trigger prompt of 169,266 tokens — 16% of the
     # 1M window this driver already assumes everywhere else (it deliberately runs no history
-    # trimmer, and models.py pins 1M-context endpoints for exactly that reason). With the
+    # trimmer, and models.toml pins 1M-context endpoints for exactly that reason). With the
     # profile set, the trigger becomes 0.85 x window ≈ 891k -- or, from deepagents 0.7.14, the
     # input budget if lower: 0.95 x window minus the `max_tokens` asked for below, ≈ 865k at
     # the defaults. That reserves room for the full output budget; it does not cap it. Long
