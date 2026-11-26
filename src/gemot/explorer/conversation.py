@@ -188,9 +188,11 @@ class Conversation:
 
     def view(self, viz) -> pn.viewable.Viewable:
         """The tab, for ``petab_mcp.viz``'s ``extra_tabs``: it follows ``viz``'s version, and its
-        ``tick`` for a live run."""
-        return pn.Column(
+        ``tick`` for a live run. Lazy: the trace is fetched when the tab is first opened, not with
+        the page, which waited on Phoenix for a tab nobody had opened."""
+        return pn.panel(
             pn.bind(self._render, viz.param.version, viz.param.tick, self.whole, self.page),
+            lazy=True,
             sizing_mode="stretch_width",
         )
 
