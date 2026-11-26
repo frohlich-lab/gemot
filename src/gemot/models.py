@@ -57,6 +57,12 @@ MODELS: dict[str, str] = {
     # Claude Fable 5.2 (2026-11-09), Anthropic's tier above Opus: $8/$40 per M, cache reads $0.20,
     # one-hour cache writes $16. Added 2026-11-16 for the Fujita support-ladder cohort.
     "fable": "anthropic/claude-fable-5.2",
+    # Two small models, added 2026-11-26 for the six-problem harness panel: Qwen 3.8
+    # 27B, the 27B of the family `qwen` above belongs to, and Thinking Machines' Inkling 2 Mini.
+    # Both think by default and cache implicitly (verified live), so neither has a _REASONING or
+    # _CACHING entry.
+    "qwen-27b": "qwen/qwen3.8-27b",
+    "inkling-mini": "thinkingmachines/inkling-2-mini",
 }
 
 #: Default lead. 1M-token context, single pinned provider (Z.AI), and the best measured accuracy
@@ -280,6 +286,24 @@ _ROUTING: dict[str, dict] = {
     # `anthropic` tag, both billed upstream to this key (`is_byok`, OpenRouter cost 0), the
     # reasoning sent back accepted, and at effort max it thought after the tool result too.
     "anthropic/claude-fable-5.2": {"only": ["anthropic"]},
+    # qwen-27b (Qwen 3.8 27B): pinned for CONTEXT, as MiniMax M3 was. Of its 23 endpoints the
+    # ZDR ones at fp8 or better all serve 262,144 tokens. On the six-problem panel of 2026-11-09
+    # the median run's largest prompt was 135k-428k tokens by model, and the largest 638k, so a
+    # 262K window would end runs the other models finish. The three 1M endpoints are `alibaba` and
+    # `streamlake` (neither on the ZDR list) and `nebius/fp4` (ZDR; $0.45/$3.00, cache read
+    # $0.10), which is pinned alone. Named with its quantization, and the fp4 is a property of
+    # the model's only admissible endpoint, not a mix across endpoints. Verified live 2026-11-26:
+    # two-step tool loops at effort high and max, served by Nebius, 12,608 of 12,634 prompt
+    # tokens cached on a repeat.
+    "qwen/qwen3.8-27b": {"only": ["nebius/fp4"]},
+    # inkling-mini (Inkling 2 Mini): every endpoint is fp4 or nvfp4, so there is no fp8 to hold
+    # it to. `primeintellect/fp4` ($0.075/$0.30, cache read $0.015; ZDR, 1M) alone: it is the
+    # standard tier, where `primeintellect/flex` and `/fast` are the half- and double-price
+    # tiers refused everywhere else; `deepinfra/fp4` takes no tools, `relace/fp4` and
+    # `io-net/nvfp4` serve 131K and 262K, and `darkbloom/nvfp4` is not on the ZDR list. Its
+    # max_completion_tokens is listed as 65,536, but a request at max_tokens 131,072 was
+    # served. Verified live 2026-11-26: two-step tool loops at effort high and max.
+    "thinkingmachines/inkling-2-mini": {"only": ["primeintellect/fp4"]},
 }
 
 
